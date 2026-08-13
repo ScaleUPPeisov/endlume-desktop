@@ -1,0 +1,102 @@
+name: ENDLUME macOS updater build
+
+on:
+  push:
+    branches: [release]
+  workflow_dispatch:
+
+jobs:
+  build-macos-arm64:
+    # Bootstrap pushes should not create releases. Future release commits start with "release:".
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.event.head_commit.message, 'release:')
+    runs-on: macos-15
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout ENDLUME
+        uses: actions/checkout@v7
+
+      - name: Verify ARM64 runner
+        run: |
+          uname -m
+          test "$(uname -m)" = "arm64"
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: Install frontend dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Prepare FFmpeg sidecars
+        shell: bash
+        run: |
+          set -euo pipefail
+          brew list ffmpeg >/dev/null 2>&1 || brew install ffmpeg
+          mkdir -p src-tauri/binaries
+          cp "$(command -v ffmpeg)" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp "$(command -v ffprobe)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          chmod +x src-tauri/binaries/*
+
+      - name: Frontend check
+        run: npm run build
+
+      - name: Rust check
+        run: cargo check --manifest-path src-tauri/Cargo.toml --target aarch64-apple-darwin
+
+      - name: Build signed updater artifact
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
+        run: npx tauri build --target aarch64-apple-darwin --bundles app
+
+      - name: Prepare release metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="$(python3 -c 'import json; print(json.load(open("src-tauri/tauri.conf.json"))["version"])')"
+          BUNDLE_DIR="src-tauri/target/aarch64-apple-darwin/release/bundle/macos"
+          TAR="$(find "$BUNDLE_DIR" -maxdepth 1 -type f -name '*.app.tar.gz' -print -quit)"
+          SIG="$TAR.sig"
+          test -f "$TAR"
+          test -f "$SIG"
+          mkdir -p updater-release
+          cp "$TAR" "$SIG" updater-release/
+          SIG_CONTENT="$(cat "$SIG")"
+          ARTIFACT="$(basename "$TAR")"
+          NOTES="$(cat RELEASE_NOTES.md 2>/dev/null || echo 'ENDLUME update')"
+          python3 - "$VERSION" "$ARTIFACT" "$SIG_CONTENT" "$NOTES" <<'PY'
+          import json,sys,datetime
+          version,artifact,signature,notes=sys.argv[1:]
+          data={
+            'version':version,
+            'pub_date':datetime.datetime.now(datetime.timezone.utc).isoformat().replace('+00:00','Z'),
+            'target':'darwin',
+            'arch':'aarch64',
+            'artifact':artifact,
+            'signature':signature,
+            'notes':notes,
+          }
+          open('updater-release/release.json','w').write(json.dumps(data,ensure_ascii=False,indent=2)+'\n')
+          PY
+
+      - name: Upload signed updater artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ENDLUME-macOS-aarch64-updater
+          path: updater-release/*
+          if-no-files-found: error
+          retention-days: 30

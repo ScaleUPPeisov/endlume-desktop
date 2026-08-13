@@ -1,0 +1,12 @@
+ENDLUME Studio 1.0.0-alpha.8 — MacBook M1
+
+1) Распакуйте папку ENDLUME на MacBook M1.
+2) Двойной клик: CHECK_AND_BUILD_ENDLUME_M1.command
+3) Если macOS блокирует файл: правой кнопкой → Открыть.
+4) Builder сам проверит Apple Tools, Homebrew, Node, Rust и FFmpeg.
+5) Потом он ОБЯЗАТЕЛЬНО выполнит React build + cargo check + FFmpeg test.
+6) Только если все проверки успешны, он соберёт ENDLUME.app и ENDLUME.dmg.
+7) В конце автоматически откроется папка bundle.
+8) Если что-то не прошло — пришлите файл из build_logs/, там будет точная ошибка.
+
+Это development alpha для тестирования на вашем M1. Для продажи другим Mac-пользователям позже нужна Apple Developer подпись/notarization.

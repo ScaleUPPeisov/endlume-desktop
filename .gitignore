@@ -1,0 +1,11 @@
+node_modules/
+dist/
+build_logs/
+.DS_Store
+*.log
+*.sig
+*.key
+src-tauri/target/
+src-tauri/binaries/
+ENDLUME Remote Release*/
+ENDLUME Release Bootstrap*/

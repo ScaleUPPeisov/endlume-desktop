@@ -1,0 +1,119 @@
+export type Page = 'project'|'render'|'library'|'settings';
+export type ProjectStatus = 'validating'|'queued'|'rendering'|'done'|'error'|'interrupted';
+export type DurationMode = 'exact'|'whole-track';
+export type LoopMode = 'image'|'crossfade'|'pingpong'|'original';
+export type EffectMode = 'chromakey'|'luma'|'screen';
+export type EncoderPreference = 'auto'|'quality'|'speed';
+
+export interface ProjectScanItem {
+  id: string;
+  name: string;
+  path: string;
+  media: string[];
+  audio: string[];
+  valid: boolean;
+  error?: string;
+}
+
+export interface RenderProject extends ProjectScanItem {
+  status: ProjectStatus;
+  progress: number;
+  stage: string;
+  startedAt?: number;
+  elapsedSec: number;
+  etaSec?: number;
+  resultPath?: string;
+  resultBytes?: number;
+  actualVideoBitrate?: number;
+  cpuPct?: number;
+  ramBytes?: number;
+  ramTotalBytes?: number;
+  ramAvailableBytes?: number;
+  gpuPct?: number;
+  engineTimings?: Record<string,number>;
+  encoder?: string;
+  attempt?: number;
+  smartSize?: boolean;
+  targetVideoKbps?: number;
+}
+
+export interface EffectPreset {
+  id: string;
+  name: string;
+  source: string;
+  enabled: boolean;
+  mode: EffectMode;
+  keyColor: string;
+  similarity: number;
+  blend: number;
+  despill: number;
+  lumaThreshold: number;
+  lumaTolerance: number;
+  saturation: number;
+  x: number;
+  y: number;
+  scale: number;
+  fullscreen: boolean;
+  previewFrameTime: number;
+  startSec: number;
+  endSec: number | null;
+  cacheKey?: string;
+  cacheReady?: boolean;
+}
+
+export interface SubscribePreset extends EffectPreset {
+  firstAtSec: number;
+  secondAtSec: number;
+  repeatEverySec: number;
+}
+
+export interface RenderSettings {
+  width: number;
+  height: number;
+  fps: 24|30|60;
+  codec: 'h264'|'h265';
+  bitrateMbps: number;
+  durationHours: number;
+  durationMode: DurationMode;
+  loopMode: LoopMode;
+  crossfadeSec: number;
+  normalizeLufs: boolean;
+  outputDir: string;
+  preset: 'ultrafast'|'superfast'|'fast'|'medium';
+  encoderPreference: EncoderPreference;
+}
+
+export interface LibraryPayload {
+  effects: EffectPreset[];
+  subscribes: SubscribePreset[];
+  ambient?: string;
+}
+
+export interface RecoveryPayload {
+  interrupted?: boolean;
+  active?: QueueJob | null;
+  pending?: QueueJob[];
+  interruptedProjectName?: string;
+}
+
+export interface QueueJob {
+  project: ProjectScanItem;
+  settings: RenderSettings;
+  effects: EffectPreset[];
+  subscribes: SubscribePreset[];
+  ambient?: string;
+}
+
+export interface BenchmarkResult {
+  selected: string;
+  candidates: Array<{encoder:string;ok:boolean;seconds?:number;note?:string}>;
+  platform: string;
+}
+
+export interface LicenseStatus {
+  valid: boolean;
+  type?: 'owner-lifetime'|'monthly'|'trial'|'development';
+  expiresAt?: string | null;
+  maskedKey?: string;
+  offlineUntil?: string | null;
+}

@@ -1,0 +1,13 @@
+ENDLUME Studio 1.0.0-alpha.8.1 — START HERE (MacBook M1)
+
+1. Распакуйте ZIP в обычную папку, например Downloads/ENDLUME.
+2. Правой кнопкой по CHECK_AND_BUILD_ENDLUME_M1.command → Открыть.
+3. Разрешите Terminal, если macOS спросит.
+4. Builder сначала ПРОВЕРЯЕТ код и только после успешных проверок делает DMG.
+5. Если попросит установить Apple Command Line Tools — установите и запустите builder повторно.
+6. Во время первого build нужен интернет для Node/Rust/Homebrew/FFmpeg dependencies.
+7. В конце откроется папка с ENDLUME Studio.app и .dmg.
+8. При первой загрузке ENDLUME запросит ключ лицензии.
+9. Если build остановился, файл build_logs/ENDLUME-M1-....log нужно прислать в чат — там точная строка ошибки.
+
+ВАЖНО: дизайн ENDLUME внутри проекта зафиксирован под LoopForge в DESIGN_LOCK.md.

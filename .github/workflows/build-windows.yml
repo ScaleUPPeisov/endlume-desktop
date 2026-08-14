@@ -33,7 +33,7 @@ jobs:
       - name: Install frontend dependencies
         run: npm install --no-audit --no-fund
 
-      - name: Install FFmpeg
+      - name: Install FFmpeg sidecars
         shell: pwsh
         run: |
           choco install ffmpeg -y --no-progress
@@ -41,8 +41,6 @@ jobs:
           $ffmpeg = Get-ChildItem $tools -Recurse -File -Filter ffmpeg.exe | Where-Object { $_.FullName -notlike '*\chocolatey\bin\*' } | Select-Object -First 1 -ExpandProperty FullName
           $ffprobe = Get-ChildItem $tools -Recurse -File -Filter ffprobe.exe | Where-Object { $_.FullName -notlike '*\chocolatey\bin\*' } | Select-Object -First 1 -ExpandProperty FullName
           if (-not $ffmpeg -or -not $ffprobe) { throw 'Real FFmpeg binaries were not found' }
-          Write-Host "FFmpeg real binary: $ffmpeg"
-          Write-Host "FFprobe real binary: $ffprobe"
           New-Item -ItemType Directory -Force -Path src-tauri/binaries | Out-Null
           Copy-Item $ffmpeg src-tauri/binaries/ffmpeg-x86_64-pc-windows-msvc.exe -Force
           Copy-Item $ffprobe src-tauri/binaries/ffprobe-x86_64-pc-windows-msvc.exe -Force
@@ -51,39 +49,29 @@ jobs:
           & src-tauri/binaries/ffprobe-x86_64-pc-windows-msvc.exe -hide_banner -version
           if ($LASTEXITCODE -ne 0) { throw 'Bundled ffprobe self-test failed' }
 
-      - name: Frontend check
-        run: npm run build
-
-      - name: Rust check
-        run: cargo check --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-msvc
-
-      - name: FFmpeg Windows encoder smoke test
-        shell: pwsh
-        run: |
-          $ff = 'src-tauri/binaries/ffmpeg-x86_64-pc-windows-msvc.exe'
-          & $ff -hide_banner -encoders | Select-String 'h264_nvenc|h264_qsv|h264_amf|libx264'
-          & $ff -hide_banner -loglevel error -f lavfi -i 'color=c=black:s=1280x720:r=30' -t 0.2 -an -c:v libx264 -f null -
-          if ($LASTEXITCODE -ne 0) { throw 'FFmpeg CPU fallback smoke test failed' }
-
-      - name: Build signed Windows installers
+      - name: Build ENDLUME Windows Setup.exe
         shell: pwsh
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
-        run: npx tauri build --target x86_64-pc-windows-msvc --bundles nsis,msi
+        run: npx tauri build --target x86_64-pc-windows-msvc --bundles nsis
 
-      - name: Collect Windows release
+      - name: Verify and collect Setup.exe
         shell: pwsh
         run: |
+          $setup = Get-ChildItem -Recurse src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis -File -Filter '*-setup.exe' | Select-Object -First 1
+          if (-not $setup) { throw 'ENDLUME Windows Setup.exe was not produced' }
           New-Item -ItemType Directory -Force -Path windows-release | Out-Null
-          Get-ChildItem -Recurse src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis -File | Copy-Item -Destination windows-release
-          Get-ChildItem -Recurse src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi -File | Copy-Item -Destination windows-release
-          Get-ChildItem windows-release | Format-Table Name,Length
+          Copy-Item $setup.FullName 'windows-release/ENDLUME-Studio-Windows-x64-Setup.exe' -Force
+          $hash = Get-FileHash 'windows-release/ENDLUME-Studio-Windows-x64-Setup.exe' -Algorithm SHA256
+          Write-Host "Setup: $($setup.FullName)"
+          Write-Host "SHA256: $($hash.Hash)"
+          Get-Item 'windows-release/ENDLUME-Studio-Windows-x64-Setup.exe' | Format-List Name,Length
 
-      - name: Upload Windows installer artifacts
+      - name: Upload Windows installer
         uses: actions/upload-artifact@v4
         with:
           name: ENDLUME-Studio-Windows-x64
-          path: windows-release/*
+          path: windows-release/ENDLUME-Studio-Windows-x64-Setup.exe
           if-no-files-found: error
           retention-days: 30

@@ -37,13 +37,19 @@ jobs:
         shell: pwsh
         run: |
           choco install ffmpeg -y --no-progress
-          $ffmpeg = (Get-Command ffmpeg.exe).Source
-          $ffprobe = (Get-Command ffprobe.exe).Source
+          $tools = 'C:\ProgramData\chocolatey\lib\ffmpeg\tools'
+          $ffmpeg = Get-ChildItem $tools -Recurse -File -Filter ffmpeg.exe | Where-Object { $_.FullName -notlike '*\chocolatey\bin\*' } | Select-Object -First 1 -ExpandProperty FullName
+          $ffprobe = Get-ChildItem $tools -Recurse -File -Filter ffprobe.exe | Where-Object { $_.FullName -notlike '*\chocolatey\bin\*' } | Select-Object -First 1 -ExpandProperty FullName
+          if (-not $ffmpeg -or -not $ffprobe) { throw 'Real FFmpeg binaries were not found' }
+          Write-Host "FFmpeg real binary: $ffmpeg"
+          Write-Host "FFprobe real binary: $ffprobe"
           New-Item -ItemType Directory -Force -Path src-tauri/binaries | Out-Null
           Copy-Item $ffmpeg src-tauri/binaries/ffmpeg-x86_64-pc-windows-msvc.exe -Force
           Copy-Item $ffprobe src-tauri/binaries/ffprobe-x86_64-pc-windows-msvc.exe -Force
           & src-tauri/binaries/ffmpeg-x86_64-pc-windows-msvc.exe -hide_banner -version
+          if ($LASTEXITCODE -ne 0) { throw 'Bundled ffmpeg self-test failed' }
           & src-tauri/binaries/ffprobe-x86_64-pc-windows-msvc.exe -hide_banner -version
+          if ($LASTEXITCODE -ne 0) { throw 'Bundled ffprobe self-test failed' }
 
       - name: Frontend check
         run: npm run build

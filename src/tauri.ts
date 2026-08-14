@@ -39,6 +39,7 @@ export const api = {
   license:()=>invoke<LicenseStatus>('license_status'),
   cacheStats:()=>invoke<{count:number;bytes:number}>('cache_stats'),
   powerStatus:()=>invoke<{supported:boolean;onBattery:boolean;percent?:number|null}>('power_status'),
+  diskStatus:(path?:string)=>invoke<{totalBytes:number;freeBytes:number;usedBytes:number;mount:string}>('disk_status',{path:path||null}),
   clearCache:()=>invoke<void>('clear_effect_cache'),
   openPath:(p:string)=>invoke<void>('open_result_path',{path:p}),
   reveal:(p:string)=>invoke<void>('reveal_result_path',{path:p}),
@@ -46,7 +47,7 @@ export const api = {
   showInfo:(text:string)=>message(text,{title:'ENDLUME Studio',kind:'info'}),
   checkUpdate:async()=>{
     const update=await check();
-    if(!update)return {none:true,current:'1.0.0-alpha.8.5',channel:'alpha',signedUpdater:true};
+    if(!update)return {none:true,current:'1.0.0-alpha.8.6',channel:'alpha',signedUpdater:true};
     let downloaded=0,total=0;
     return {
       version:update.version,

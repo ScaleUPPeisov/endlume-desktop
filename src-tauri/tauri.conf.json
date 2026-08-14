@@ -40,6 +40,7 @@
     "active": true,
     "targets": "all",
     "category": "Video",
+    "publisher": "ENDLUME Studio",
     "shortDescription": "Fast long-video factory",
     "longDescription": "ENDLUME Studio creates long-form videos from images, short loops and music using a cache-first FFmpeg pipeline.",
     "externalBin": [
@@ -53,6 +54,16 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "displayLanguageSelector": true,
+        "languages": ["Russian", "English"]
+      },
+      "wix": {
+        "language": ["ru-RU", "en-US"]
+      }
+    },
     "macOS": {
       "minimumSystemVersion": "11.0",
       "bundleName": "ENDLUME Studio",

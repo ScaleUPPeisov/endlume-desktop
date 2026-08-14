@@ -1,0 +1,116 @@
+name: ENDLUME Windows x64 build
+
+on:
+  push:
+    branches: [windows-v1, windows-v1-alpha8.7]
+  workflow_dispatch:
+
+jobs:
+  build-windows-x64:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout ENDLUME
+        uses: actions/checkout@v7
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: Install frontend dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Generate ENDLUME app icon
+        shell: pwsh
+        run: |
+          if (-not (Test-Path 'app-icon-v2.svg')) { throw 'app-icon-v2.svg is missing' }
+          npx tauri icon app-icon-v2.svg --output src-tauri/icons
+          if (-not (Test-Path 'src-tauri/icons/icon.ico')) { throw 'Windows icon.ico was not generated' }
+
+      - name: Install FFmpeg sidecars
+        shell: pwsh
+        run: |
+          choco install ffmpeg -y --no-progress
+          $tools = 'C:\ProgramData\chocolatey\lib\ffmpeg\tools'
+          $ffmpeg = Get-ChildItem $tools -Recurse -File -Filter ffmpeg.exe | Where-Object { $_.FullName -notlike '*\chocolatey\bin\*' } | Select-Object -First 1 -ExpandProperty FullName
+          $ffprobe = Get-ChildItem $tools -Recurse -File -Filter ffprobe.exe | Where-Object { $_.FullName -notlike '*\chocolatey\bin\*' } | Select-Object -First 1 -ExpandProperty FullName
+          if (-not $ffmpeg -or -not $ffprobe) { throw 'Real FFmpeg binaries were not found' }
+          New-Item -ItemType Directory -Force -Path src-tauri/binaries | Out-Null
+          Copy-Item $ffmpeg src-tauri/binaries/ffmpeg-x86_64-pc-windows-msvc.exe -Force
+          Copy-Item $ffprobe src-tauri/binaries/ffprobe-x86_64-pc-windows-msvc.exe -Force
+          & src-tauri/binaries/ffmpeg-x86_64-pc-windows-msvc.exe -hide_banner -version
+          if ($LASTEXITCODE -ne 0) { throw 'Bundled ffmpeg self-test failed' }
+          & src-tauri/binaries/ffprobe-x86_64-pc-windows-msvc.exe -hide_banner -version
+          if ($LASTEXITCODE -ne 0) { throw 'Bundled ffprobe self-test failed' }
+
+      - name: Frontend check
+        run: npm run build
+
+      - name: Rust check
+        run: cargo check --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-msvc
+
+      - name: FFmpeg original-audio stream-copy smoke test
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path .endlume-smoke | Out-Null
+          ffmpeg -hide_banner -loglevel error -f lavfi -i 'sine=frequency=440:sample_rate=44100' -t 0.4 -c:a libmp3lame -b:a 192k -y .endlume-smoke/a.mp3
+          ffmpeg -hide_banner -loglevel error -f lavfi -i 'sine=frequency=550:sample_rate=44100' -t 0.4 -c:a libmp3lame -b:a 192k -y .endlume-smoke/b.mp3
+          @("file '$((Resolve-Path .endlume-smoke/a.mp3).Path.Replace('\','/'))'","file '$((Resolve-Path .endlume-smoke/b.mp3).Path.Replace('\','/'))'") | Set-Content -Encoding utf8 .endlume-smoke/audio.txt
+          ffmpeg -hide_banner -loglevel error -f concat -safe 0 -i .endlume-smoke/audio.txt -c:a copy -y .endlume-smoke/audio.mka
+          ffprobe -hide_banner -loglevel error -show_entries stream=codec_name,sample_rate,channels -select_streams a:0 .endlume-smoke/audio.mka
+
+      - name: Build signed ENDLUME Windows updater
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
+        run: npx tauri build --target x86_64-pc-windows-msvc --bundles nsis
+
+      - name: Verify and collect Windows release
+        shell: pwsh
+        run: |
+          $bundle = 'src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis'
+          $setup = Get-ChildItem $bundle -File -Filter '*-setup.exe' | Select-Object -First 1
+          if (-not $setup) { throw 'ENDLUME Windows Setup.exe was not produced' }
+          $sigPath = "$($setup.FullName).sig"
+          if (-not (Test-Path $sigPath)) { throw 'Signed updater .sig was not produced' }
+          New-Item -ItemType Directory -Force -Path windows-release | Out-Null
+          Copy-Item $setup.FullName 'windows-release/ENDLUME-Studio-Windows-x64-Setup.exe' -Force
+          Copy-Item $sigPath 'windows-release/ENDLUME-Studio-Windows-x64-Setup.exe.sig' -Force
+          $version = (Get-Content src-tauri/tauri.conf.json | ConvertFrom-Json).version
+          $signature = (Get-Content 'windows-release/ENDLUME-Studio-Windows-x64-Setup.exe.sig' -Raw).Trim()
+          $meta = [ordered]@{
+            version = $version
+            pub_date = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+            target = 'windows'
+            arch = 'x86_64'
+            artifact = 'ENDLUME-Studio-Windows-x64-Setup.exe'
+            signature = $signature
+            notes = 'ENDLUME Windows: Original Fast Path, real disk telemetry, clean app icon, no console window, signed in-app updater.'
+          }
+          $meta | ConvertTo-Json -Depth 4 | Set-Content -Encoding utf8 'windows-release/release-windows.json'
+          $hash = Get-FileHash 'windows-release/ENDLUME-Studio-Windows-x64-Setup.exe' -Algorithm SHA256
+          Write-Host "Setup: $($setup.FullName)"
+          Write-Host "SHA256: $($hash.Hash)"
+          Get-ChildItem windows-release | Format-Table Name,Length
+
+      - name: Upload Windows installer and updater metadata
+        uses: actions/upload-artifact@v4
+        with:
+          name: ENDLUME-Studio-Windows-x64-alpha8.7
+          path: windows-release/*
+          if-no-files-found: error
+          retention-days: 30

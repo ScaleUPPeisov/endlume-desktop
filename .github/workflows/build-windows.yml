@@ -1,0 +1,84 @@
+name: ENDLUME Windows x64 build
+
+on:
+  push:
+    branches: [windows-v1]
+  workflow_dispatch:
+
+jobs:
+  build-windows-x64:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout ENDLUME
+        uses: actions/checkout@v7
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: Install frontend dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Install FFmpeg
+        shell: pwsh
+        run: |
+          choco install ffmpeg -y --no-progress
+          $ffmpeg = (Get-Command ffmpeg.exe).Source
+          $ffprobe = (Get-Command ffprobe.exe).Source
+          New-Item -ItemType Directory -Force -Path src-tauri/binaries | Out-Null
+          Copy-Item $ffmpeg src-tauri/binaries/ffmpeg-x86_64-pc-windows-msvc.exe -Force
+          Copy-Item $ffprobe src-tauri/binaries/ffprobe-x86_64-pc-windows-msvc.exe -Force
+          & src-tauri/binaries/ffmpeg-x86_64-pc-windows-msvc.exe -hide_banner -version
+          & src-tauri/binaries/ffprobe-x86_64-pc-windows-msvc.exe -hide_banner -version
+
+      - name: Frontend check
+        run: npm run build
+
+      - name: Rust check
+        run: cargo check --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-msvc
+
+      - name: FFmpeg Windows encoder smoke test
+        shell: pwsh
+        run: |
+          $ff = 'src-tauri/binaries/ffmpeg-x86_64-pc-windows-msvc.exe'
+          & $ff -hide_banner -encoders | Select-String 'h264_nvenc|h264_qsv|h264_amf|libx264'
+          & $ff -hide_banner -loglevel error -f lavfi -i 'color=c=black:s=1280x720:r=30' -t 0.2 -an -c:v libx264 -f null -
+          if ($LASTEXITCODE -ne 0) { throw 'FFmpeg CPU fallback smoke test failed' }
+
+      - name: Build signed Windows installers
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
+        run: npx tauri build --target x86_64-pc-windows-msvc --bundles nsis,msi
+
+      - name: Collect Windows release
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path windows-release | Out-Null
+          Get-ChildItem -Recurse src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis -File | Copy-Item -Destination windows-release
+          Get-ChildItem -Recurse src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi -File | Copy-Item -Destination windows-release
+          Get-ChildItem windows-release | Format-Table Name,Length
+
+      - name: Upload Windows installer artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ENDLUME-Studio-Windows-x64
+          path: windows-release/*
+          if-no-files-found: error
+          retention-days: 30

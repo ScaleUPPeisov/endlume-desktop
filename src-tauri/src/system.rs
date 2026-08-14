@@ -1,4 +1,5 @@
 use serde_json::{json,Value};
+use sysinfo::Disks;
 
 #[tauri::command]
 pub fn power_status()->Value{
@@ -17,6 +18,17 @@ pub fn power_status()->Value{
   { json!({"supported":false,"onBattery":false,"percent":null}) }
 }
 
+#[tauri::command]
+pub fn disk_status(path:Option<String>)->Value{
+  let disks=Disks::new_with_refreshed_list();
+  let requested=path.filter(|p|!p.trim().is_empty()).map(std::path::PathBuf::from).unwrap_or_else(||std::env::current_dir().unwrap_or_else(|_|std::path::PathBuf::from("/")));
+  let best=disks.list().iter().filter(|d|requested.starts_with(d.mount_point())).max_by_key(|d|d.mount_point().as_os_str().len()).or_else(||disks.list().iter().max_by_key(|d|d.total_space()));
+  if let Some(d)=best{
+    let total=d.total_space();let free=d.available_space();let used=total.saturating_sub(free);
+    return json!({"totalBytes":total,"freeBytes":free,"usedBytes":used,"mount":d.mount_point().to_string_lossy()});
+  }
+  json!({"totalBytes":0,"freeBytes":0,"usedBytes":0,"mount":""})
+}
 
 fn ensure_exists(path:&str)->Result<(),String>{
   if std::path::Path::new(path).exists(){Ok(())}else{Err(format!("Файл не найден: {path}"))}

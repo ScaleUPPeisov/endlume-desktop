@@ -8,7 +8,7 @@ use tauri_plugin_shell::ShellExt;
 fn color(hex:&str)->String{format!("0x{}",hex.trim().trim_start_matches('#').trim_start_matches("0x"))}
 
 fn cache_dir(app:&AppHandle)->Result<PathBuf,String>{
-  let p=app.path().app_cache_dir().map_err(|e|e.to_string())?.join("effects-v1");
+  let p=app.path().app_cache_dir().map_err(|e|e.to_string())?.join("effects-v2");
   fs::create_dir_all(&p).map_err(|e|e.to_string())?;
   Ok(p)
 }
@@ -18,7 +18,7 @@ fn fingerprint(e:&EffectPreset,fps:u32)->String{
   let modified=meta.as_ref().and_then(|m|m.modified().ok()).and_then(|t|t.duration_since(UNIX_EPOCH).ok()).map(|d|d.as_secs()).unwrap_or(0);
   let size=meta.as_ref().map(|m|m.len()).unwrap_or(0);
   let mut h=Sha256::new();
-  h.update(format!("{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",e.source,size,modified,fps,e.mode,e.key_color,e.similarity,e.blend,e.luma_threshold,e.luma_tolerance,e.saturation));
+  h.update(format!("{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",e.source,size,modified,fps,e.mode,e.key_color,e.similarity,e.blend,e.luma_threshold,e.luma_tolerance,e.saturation,e.scale,e.fullscreen));
   hex::encode(h.finalize())[..24].to_string()
 }
 
@@ -27,10 +27,14 @@ pub async fn prepare(app:&AppHandle,e:&EffectPreset,fps:u32)->Result<EffectPrese
   if !Path::new(&e.source).is_file(){return Err(format!("Не найден файл эффекта: {}",e.source))}
   let key=fingerprint(e,fps);let path=cache_dir(app)?.join(format!("{}.mov",key));
   if !path.exists(){
+    // IMPORTANT: small overlays are scaled once while building the persistent lossless cache.
+    // Previously a 25-35% Subscribe clip could remain 4K in qtrle and then be scaled for every
+    // render. Pre-scaling removes most decode/filter work while keeping the same final geometry.
+    let prescale=if e.fullscreen||e.mode=="screen"{String::new()}else{format!(",scale=iw*{}:ih*{}",e.scale.max(0.01),e.scale.max(0.01))};
     let vf=match e.mode.as_str(){
-      "luma"=>format!("fps={fps},format=rgba,eq=saturation={},lumakey=threshold={}:tolerance={}:softness=0.08,format=argb",e.saturation,e.luma_threshold,e.luma_tolerance),
+      "luma"=>format!("fps={fps},format=rgba,eq=saturation={},lumakey=threshold={}:tolerance={}:softness=0.08{prescale},format=argb",e.saturation,e.luma_threshold,e.luma_tolerance),
       "screen"=>format!("fps={fps},format=rgb24,eq=saturation={}",e.saturation),
-      _=>format!("fps={fps},format=rgba,chromakey={}:{}:{},format=argb",color(&e.key_color),e.similarity.max(0.00001),e.blend)
+      _=>format!("fps={fps},format=rgba,chromakey={}:{}:{}{prescale},format=argb",color(&e.key_color),e.similarity.max(0.00001),e.blend)
     };
     let pix=if e.mode=="screen"{"rgb24"}else{"argb"};
     let args=vec!["-hide_banner","-loglevel","error","-i",e.source.as_str(),"-vf",vf.as_str(),"-an","-c:v","qtrle","-pix_fmt",pix,"-y",path.to_string_lossy().as_ref()].into_iter().map(String::from).collect::<Vec<_>>();
@@ -39,6 +43,8 @@ pub async fn prepare(app:&AppHandle,e:&EffectPreset,fps:u32)->Result<EffectPrese
   }
   let mut prepared=e.clone();prepared.source=path.to_string_lossy().into_owned();prepared.cache_key=Some(key.clone());prepared.cache_ready=Some(true);
   prepared.mode=if e.mode=="screen"{"screen-cache".into()}else{"prealpha".into()};
+  // The cached alpha clip already has the requested size, so the render graph must not shrink it again.
+  if !e.fullscreen&&e.mode!="screen"{prepared.scale=1.0;}
   let _=app.emit("cache-updated",json!({"id":e.id,"cacheKey":key,"cacheReady":true}));
   Ok(prepared)
 }

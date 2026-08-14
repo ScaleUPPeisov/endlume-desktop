@@ -1,4 +1,4 @@
-# ENDLUME Studio 1.0.0-alpha.8.6 — 14.08.2026
+# ENDLUME Studio 1.0.0-alpha.8.6 — 14.08.2026 · macOS Apple Silicon
 
 - Новая чистая macOS-иконка ENDLUME: цветной interlocking-loop без старой двойной рамки.
 - Effects, Subscribe и ambient получили отдельные ВКЛ/ВЫКЛ без удаления сохранённых настроек.

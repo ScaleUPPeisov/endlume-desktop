@@ -41,6 +41,32 @@ jobs:
       - name: Install frontend dependencies
         run: npm install --no-audit --no-fund
 
+      - name: Generate clean ENDLUME macOS icon
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f app-icon-v2.svg
+          brew list librsvg >/dev/null 2>&1 || brew install librsvg
+          rsvg-convert -w 1024 -h 1024 app-icon-v2.svg > app-icon.png
+          ICONSET="src-tauri/icons/ENDLUME.iconset"
+          rm -rf "$ICONSET"
+          mkdir -p "$ICONSET"
+          sips -z 16 16 app-icon.png --out "$ICONSET/icon_16x16.png" >/dev/null
+          sips -z 32 32 app-icon.png --out "$ICONSET/icon_16x16@2x.png" >/dev/null
+          sips -z 32 32 app-icon.png --out "$ICONSET/icon_32x32.png" >/dev/null
+          sips -z 64 64 app-icon.png --out "$ICONSET/icon_32x32@2x.png" >/dev/null
+          sips -z 128 128 app-icon.png --out "$ICONSET/icon_128x128.png" >/dev/null
+          sips -z 256 256 app-icon.png --out "$ICONSET/icon_128x128@2x.png" >/dev/null
+          sips -z 256 256 app-icon.png --out "$ICONSET/icon_256x256.png" >/dev/null
+          sips -z 512 512 app-icon.png --out "$ICONSET/icon_256x256@2x.png" >/dev/null
+          sips -z 512 512 app-icon.png --out "$ICONSET/icon_512x512.png" >/dev/null
+          sips -z 1024 1024 app-icon.png --out "$ICONSET/icon_512x512@2x.png" >/dev/null
+          iconutil -c icns "$ICONSET" -o src-tauri/icons/icon.icns
+          cp "$ICONSET/icon_32x32.png" src-tauri/icons/32x32.png
+          cp "$ICONSET/icon_128x128.png" src-tauri/icons/128x128.png
+          cp "$ICONSET/icon_128x128@2x.png" src-tauri/icons/128x128@2x.png
+          echo "ENDLUME icon regenerated from app-icon-v2.svg"
+
       - name: Prepare FFmpeg sidecars
         shell: bash
         run: |

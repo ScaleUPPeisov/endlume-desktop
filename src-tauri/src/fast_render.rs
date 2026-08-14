@@ -14,7 +14,7 @@ fn is_image(path:&str)->bool{Path::new(path).extension().and_then(|x|x.to_str())
 fn safe_name(name:&str)->String{name.chars().map(|c|if ['/', '\\', ':', '*', '?', '"', '<', '>', '|'].contains(&c){'_'}else{c}).collect()}
 fn unique_output(dir:&Path,name:&str)->PathBuf{let safe=safe_name(name);let mut p=dir.join(format!("{} — Ready Videos.mp4",safe));let mut n=2;while p.exists(){p=dir.join(format!("{} — Ready Videos_{}.mp4",safe,n));n+=1}p}
 fn fmt_ts(sec:f64)->String{let s=sec.max(0.0).round() as u64;format!("{:02}:{:02}:{:02}",s/3600,(s%3600)/60,s%60)}
-fn concat_line(path:&str)->String{format!("file '{}'",path.replace('\\',"/").replace(''',"'\\''"))}
+fn concat_line(path:&str)->String{format!("file '{}'",path.replace('\\',"/").replace("'","'\\''"))}
 
 pub fn eligible(job:&QueueJob)->bool{
   job.project.media.len()==1&&is_image(&job.project.media[0])&&!job.project.audio.is_empty()
@@ -36,10 +36,13 @@ async fn probe_duration(app:&AppHandle,path:&str)->Result<f64,String>{
 }
 
 async fn probe_audio_profile(app:&AppHandle,path:&str)->Result<AudioProfile,String>{
-  let args=vec!["-v","error","-select_streams","a:0","-show_entries","stream=codec_name,sample_rate,channels","-of","csv=p=0:s=|",path].into_iter().map(String::from).collect();
+  let args=vec!["-v","error","-select_streams","a:0","-show_entries","stream=codec_name,sample_rate,channels","-of","json",path].into_iter().map(String::from).collect();
   let (stdout,_)=output(app,"ffprobe",args).await?;
-  let text=String::from_utf8_lossy(&stdout);let mut p=text.trim().split('|');
-  let codec=p.next().unwrap_or("").trim().to_ascii_lowercase();let sample_rate=p.next().unwrap_or("").trim().to_string();let channels=p.next().unwrap_or("").trim().to_string();
+  let value:serde_json::Value=serde_json::from_slice(&stdout).map_err(|e|e.to_string())?;
+  let stream=value.get("streams").and_then(|x|x.as_array()).and_then(|x|x.first()).ok_or_else(||format!("Не удалось определить аудиопрофиль: {path}"))?;
+  let codec=stream.get("codec_name").and_then(|x|x.as_str()).unwrap_or("").to_ascii_lowercase();
+  let sample_rate=stream.get("sample_rate").and_then(|x|x.as_str()).unwrap_or("").to_string();
+  let channels=stream.get("channels").and_then(|x|x.as_u64()).map(|x|x.to_string()).unwrap_or_default();
   if codec.is_empty()||sample_rate.is_empty()||channels.is_empty(){return Err(format!("Не удалось определить аудиопрофиль: {path}"))}
   Ok(AudioProfile{codec,sample_rate,channels})
 }
@@ -142,7 +145,7 @@ pub async fn try_render_job(app:&AppHandle,job:&QueueJob,cancel:Arc<AtomicBool>)
     let (master,master_duration)=build_hq_static_master(app,job,&work,started,&timer,&cancel).await?;
     let target=job.settings.duration_hours*3600.0;let final_duration=smart_final_duration(target,&durations,&job.settings.duration_mode);let list=build_audio_list(&work,&job.project.audio,&durations,final_duration)?;
     emit_progress(app,job,started,&timer,34.0,"Подготавливаю музыку — ORIGINAL STREAM COPY",&encoder);
-    let args=vec!["-hide_banner","-loglevel","error","-stream_loop","-1","-i",master.to_string_lossy().as_ref(),"-f","concat","-safe","0","-i",list.to_string_lossy().as_ref(),"-t",&final_duration.to_string(),"-map","0:v:0","-map","1:a:0","-c:v","copy","-c:a","copy","-movflags","+faststart","-progress","pipe:1","-y",out.to_string_lossy().as_ref()].into_iter().map(String::from).collect();
+    let args=vec!["-hide_banner","-loglevel","error","-stream_loop","-1","-i",master.to_string_lossy().as_ref(),"-f","concat","-safe","0","-i",list.to_string_lossy().as_ref(),"-t",&final_duration.to_string(),"-map","0:v:0","-map","1:a:0","-c:v","copy","-c:a","copy","-progress","pipe:1","-y",out.to_string_lossy().as_ref()].into_iter().map(String::from).collect();
     run_ffmpeg(app,job,started,&timer,args,"Собираю итоговое видео — без повторного кодирования",35.0,61.0,final_duration,"HQ static + audio-copy",&cancel).await?;
     let _=master_duration;emit_progress(app,job,started,&timer,97.0,"Финальная проверка FFprobe","HQ static + audio-copy");verify_result(app,&out,final_duration,&job.settings).await?;let stem=out.file_stem().and_then(|x|x.to_str()).unwrap_or(&job.project.name);write_side_files(job,&out_dir,&durations,final_duration,stem)?;
     let bytes=std::fs::metadata(&out).ok().map(|m|m.len());let bitrate=probe_video_bitrate(app,&out).await;let _=app.emit("engine-profile",json!({"id":job.project.id,"smartSize":true,"originalAudio":true,"audioCodec":first.codec,"audioSampleRate":first.sample_rate}));

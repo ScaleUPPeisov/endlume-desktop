@@ -8,6 +8,7 @@ export type SingleAppStatus={
   supported:boolean;
   singleApp:boolean;
   canonicalName?:boolean;
+  canonicalInstall?:boolean;
   canonicalPath?:string;
   currentName?:string;
   currentPath?:string;
@@ -58,7 +59,7 @@ export const api = {
   powerStatus:()=>invoke<{supported:boolean;onBattery:boolean;percent?:number|null}>('power_status'),
   diskStatus:(path?:string)=>invoke<{totalBytes:number;freeBytes:number;usedBytes:number;mount:string}>('disk_status',{path:path||null}),
   cleanupDuplicateApps:(aggressive=false)=>invoke<SingleAppStatus>('cleanup_duplicate_apps',{aggressive}),
-  normalizeAppName:()=>invoke<{supported:boolean;renamed:boolean;canonicalName:boolean;currentPath?:string;previousPath?:string;reason?:string}>('normalize_current_app_name'),
+  normalizeAppName:()=>invoke<{supported:boolean;renamed:boolean;canonicalName:boolean;canonicalInstall?:boolean;currentPath?:string;previousPath?:string;reason?:string}>('normalize_current_app_name'),
   clearCache:()=>invoke<void>('clear_effect_cache'),
   openPath:(p:string)=>invoke<void>('open_result_path',{path:p}),
   reveal:(p:string)=>invoke<void>('reveal_result_path',{path:p}),
@@ -66,7 +67,7 @@ export const api = {
   showInfo:(text:string)=>message(text,{title:'ENDLUME Studio',kind:'info'}),
   checkUpdate:async()=>{
     const update=await check();
-    if(!update)return {none:true,current:'1.0.0-alpha.8.8',channel:'alpha',signedUpdater:true};
+    if(!update)return {none:true,current:'1.0.0-alpha.8.9',channel:'alpha',signedUpdater:true};
     let downloaded=0,total=0;
     return {
       version:update.version,
@@ -74,13 +75,21 @@ export const api = {
       body:update.body||'',
       current:update.currentVersion,
       install:async(onProgress?:(percent:number)=>void)=>{
-        await invoke<SingleAppStatus>('cleanup_duplicate_apps',{aggressive:false}).catch(()=>null);
+        const guard=await invoke<SingleAppStatus>('cleanup_duplicate_apps',{aggressive:true}).catch(()=>null);
+        if(guard?.supported&&guard.canonicalInstall===false){
+          await invoke('normalize_current_app_name');
+          return;
+        }
+        if(guard?.failed?.length){
+          throw new Error(`Не удалось удалить старые копии ENDLUME: ${guard.failed.map(x=>x.path).join(', ')}`);
+        }
         await update.downloadAndInstall((event:any)=>{
           if(event.event==='Started'){total=Number(event.data?.contentLength||0);downloaded=0;onProgress?.(0)}
           else if(event.event==='Progress'){downloaded+=Number(event.data?.chunkLength||0);if(total>0)onProgress?.(Math.min(100,downloaded/total*100))}
           else if(event.event==='Finished'){onProgress?.(100)}
         });
-        await invoke<SingleAppStatus>('cleanup_duplicate_apps',{aggressive:true}).catch(()=>null);
+        const after=await invoke<SingleAppStatus>('cleanup_duplicate_apps',{aggressive:true}).catch(()=>null);
+        if(after?.failed?.length)console.warn('ENDLUME duplicate cleanup after update',after.failed);
         await relaunch();
       }
     };

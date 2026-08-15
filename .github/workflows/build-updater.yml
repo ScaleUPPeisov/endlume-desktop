@@ -88,6 +88,36 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
         run: npx tauri build --target aarch64-apple-darwin --bundles app
 
+      - name: Validate one-app updater identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="$(node -p "require('./package.json').version")"
+          CONFIG_VERSION="$(python3 -c 'import json; print(json.load(open("src-tauri/tauri.conf.json"))["version"])')"
+          CARGO_VERSION="$(python3 - <<'PY'
+          import re
+          s=open('src-tauri/Cargo.toml').read()
+          print(re.search(r'^version\s*=\s*"([^"]+)"',s,re.M).group(1))
+          PY
+          )"
+          test "$VERSION" = "$CONFIG_VERSION"
+          test "$VERSION" = "$CARGO_VERSION"
+          BUNDLE_DIR="src-tauri/target/aarch64-apple-darwin/release/bundle/macos"
+          TAR="$(find "$BUNDLE_DIR" -maxdepth 1 -type f -name '*.app.tar.gz' -print -quit)"
+          test -f "$TAR"
+          TMP="$(mktemp -d)"
+          tar -xzf "$TAR" -C "$TMP"
+          mapfile -t APPS < <(find "$TMP" -maxdepth 1 -type d -name '*.app' -print)
+          test "${#APPS[@]}" -eq 1
+          APP="${APPS[0]}"
+          test "$(basename "$APP")" = "ENDLUME Studio.app"
+          BUNDLE_ID="$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$APP/Contents/Info.plist")"
+          APP_VERSION="$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist")"
+          test "$BUNDLE_ID" = "studio.endlume.desktop"
+          test "$APP_VERSION" = "$VERSION"
+          test -f "$APP/Contents/Resources/icon.icns"
+          echo "Verified: one ENDLUME Studio.app • $BUNDLE_ID • $APP_VERSION"
+
       - name: Prepare release metadata
         shell: bash
         run: |

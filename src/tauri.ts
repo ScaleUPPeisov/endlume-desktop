@@ -2,7 +2,21 @@ import { invoke, convertFileSrc } from '@tauri-apps/api/core';
 import { open, message } from '@tauri-apps/plugin-dialog';
 import { check } from '@tauri-apps/plugin-updater';
 import { relaunch } from '@tauri-apps/plugin-process';
-import type { BenchmarkResult, EffectPreset, LibraryPayload, LicenseStatus, ProjectScanItem, QueueJob, RecoveryPayload, RenderSettings, SubscribePreset } from './types';
+import type { BenchmarkResult, EffectPreset, LibraryPayload, LicenseStatus, ProjectScanItem, RecoveryPayload, RenderSettings, SubscribePreset } from './types';
+
+export type SingleAppStatus={
+  supported:boolean;
+  singleApp:boolean;
+  currentPath?:string;
+  currentVersion?:string;
+  currentInApplications?:boolean;
+  found?:string[];
+  removed?:string[];
+  remaining?:string[];
+  failed?:Array<{path:string;error:string}>;
+  skipped?:Array<{path:string;reason:string;version?:string}>;
+  error?:string;
+};
 
 export const api = {
   chooseRoots: async()=>{
@@ -40,6 +54,7 @@ export const api = {
   cacheStats:()=>invoke<{count:number;bytes:number}>('cache_stats'),
   powerStatus:()=>invoke<{supported:boolean;onBattery:boolean;percent?:number|null}>('power_status'),
   diskStatus:(path?:string)=>invoke<{totalBytes:number;freeBytes:number;usedBytes:number;mount:string}>('disk_status',{path:path||null}),
+  cleanupDuplicateApps:(aggressive=false)=>invoke<SingleAppStatus>('cleanup_duplicate_apps',{aggressive}),
   clearCache:()=>invoke<void>('clear_effect_cache'),
   openPath:(p:string)=>invoke<void>('open_result_path',{path:p}),
   reveal:(p:string)=>invoke<void>('reveal_result_path',{path:p}),
@@ -47,7 +62,7 @@ export const api = {
   showInfo:(text:string)=>message(text,{title:'ENDLUME Studio',kind:'info'}),
   checkUpdate:async()=>{
     const update=await check();
-    if(!update)return {none:true,current:'1.0.0-alpha.8.6',channel:'alpha',signedUpdater:true};
+    if(!update)return {none:true,current:'1.0.0-alpha.8.7',channel:'alpha',signedUpdater:true};
     let downloaded=0,total=0;
     return {
       version:update.version,
@@ -55,11 +70,14 @@ export const api = {
       body:update.body||'',
       current:update.currentVersion,
       install:async(onProgress?:(percent:number)=>void)=>{
+        // Tauri replaces the currently running .app bundle. Clean stale ENDLUME copies before and after the signed install so Finder keeps one app.
+        await invoke<SingleAppStatus>('cleanup_duplicate_apps',{aggressive:false}).catch(()=>null);
         await update.downloadAndInstall((event:any)=>{
           if(event.event==='Started'){total=Number(event.data?.contentLength||0);downloaded=0;onProgress?.(0)}
           else if(event.event==='Progress'){downloaded+=Number(event.data?.chunkLength||0);if(total>0)onProgress?.(Math.min(100,downloaded/total*100))}
           else if(event.event==='Finished'){onProgress?.(100)}
         });
+        await invoke<SingleAppStatus>('cleanup_duplicate_apps',{aggressive:true}).catch(()=>null);
         await relaunch();
       }
     };

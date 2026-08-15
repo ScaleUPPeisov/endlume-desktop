@@ -24,6 +24,8 @@ export function App(){
     api.license().then(setLicense).catch(()=>setLicense({valid:false}));
     api.loadLibrary().then(setLibrary).catch(()=>setLibrary({effects:[],subscribes:[]}));
     api.loadRecovery().then(r=>{if(r?.interrupted)setRecovery(r)}).catch(()=>{});
+    // Silent Single App Guard: keep the currently running ENDLUME and remove stale writable copies with the same bundle id.
+    api.cleanupDuplicateApps(false).catch(()=>{});
     const updateTimer=window.setTimeout(()=>{api.checkUpdate().then(u=>{if(u?.version)setAvailableUpdate(u)}).catch(()=>{})},2200);
     const off:Promise<()=>void>[]=[];
     off.push(listen<any>('render-progress',e=>patchProject(e.payload.id,compactPayload(e.payload))));
@@ -44,7 +46,6 @@ function ActivationScreen({onActivated}:{onActivated:(v:LicenseStatus)=>void}){
   const [key,setKey]=useState(''),[busy,setBusy]=useState(false),[error,setError]=useState('');
   return <div className="activationScreen"><div className="activationCard"><div className="activationBrand"><span className="activationInfinity">∞</span><div><b>ENDLUME</b><small>STUDIO</small></div></div><h1>Активация ENDLUME</h1><p>Для запуска введите ключ лицензии. После активации рендер работает локально и не требует постоянного интернета.</p><input autoFocus placeholder="ENDLUME-XXXX-XXXX-XXXX" value={key} onChange={e=>setKey(e.target.value)} onKeyDown={e=>e.key==='Enter'&&document.getElementById('activate')?.click()}/>{error&&<div className="activationError">{error}</div>}<button id="activate" disabled={busy||!key.trim()} onClick={async()=>{setBusy(true);setError('');try{onActivated(await api.activate(key))}catch(e){setError(String(e))}finally{setBusy(false)}}}>{busy?'ПРОВЕРЯЮ КЛЮЧ…':'АКТИВИРОВАТЬ →'}</button><small className="activationFoot">ENDLUME Studio 1.0 • Windows / macOS Apple Silicon</small></div></div>
 }
-
 
 function UpdateNotice({update,onLater}:{update:any;onLater:()=>void}){
   const [progress,setProgress]=useState<number|null>(null),[error,setError]=useState('');

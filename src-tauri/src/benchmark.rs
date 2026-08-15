@@ -64,7 +64,7 @@ async fn functional_test(app:&AppHandle,encoder:&str)->(bool,Option<f64>,String)
     Ok(out)=>{
       let _=fs::remove_file(&out_path);
       let note=short_error(&out.stderr);
-      (false,None,if note.is_empty(){format!("FFmpeg exit status: {}",out.status)}else{note})
+      (false,None,if note.is_empty(){format!("FFmpeg exit status: {:?}",out.status)}else{note})
     }
     Err(e)=>{let _=fs::remove_file(&out_path);(false,None,e.to_string())}
   }

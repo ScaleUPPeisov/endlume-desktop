@@ -1,0 +1,135 @@
+/* ENDLUME Studio — compact premium navigation only.
+   Kept separate from the main stylesheet so this visual update cannot affect render/editor logic. */
+.topnav{
+  align-items:center;
+  gap:5px;
+}
+
+.topnav button{
+  position:relative;
+  isolation:isolate;
+  height:31px;
+  min-width:0;
+  padding:0 9px;
+  gap:6px;
+  overflow:hidden;
+  border:1px solid rgba(69,78,111,.28);
+  border-radius:9px;
+  background:linear-gradient(180deg,rgba(17,21,34,.64),rgba(10,13,24,.56));
+  color:#8d96b4;
+  font-size:11px;
+  font-weight:500;
+  letter-spacing:.01em;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,.018),
+    inset 0 -1px 0 rgba(0,0,0,.18);
+  transform:translateZ(0);
+  transition:
+    color .18s ease,
+    border-color .18s ease,
+    background .18s ease,
+    box-shadow .18s ease,
+    transform .18s cubic-bezier(.2,.8,.2,1);
+}
+
+.topnav button::before{
+  content:"";
+  position:absolute;
+  inset:0;
+  z-index:-1;
+  pointer-events:none;
+  opacity:0;
+  background:
+    radial-gradient(80px 34px at 18% 115%,rgba(50,194,255,.20),transparent 68%),
+    radial-gradient(110px 42px at 78% 112%,rgba(118,82,255,.22),transparent 72%);
+  transition:opacity .18s ease;
+}
+
+.topnav button::after{
+  content:"";
+  position:absolute;
+  left:-28%;
+  bottom:-1px;
+  width:28%;
+  height:1px;
+  pointer-events:none;
+  opacity:0;
+  background:linear-gradient(90deg,transparent,#42c8ff 28%,#8a6dff 66%,transparent);
+  filter:drop-shadow(0 0 4px rgba(99,111,255,.9));
+}
+
+.topnav button:hover{
+  color:#dfe4f4;
+  border-color:rgba(91,104,151,.48);
+  background:linear-gradient(180deg,rgba(20,25,41,.82),rgba(12,15,27,.76));
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,.028),
+    0 5px 14px rgba(0,0,0,.16),
+    0 0 12px rgba(74,95,180,.07);
+  transform:translateY(-1px) translateZ(0);
+}
+
+.topnav button:hover::before{opacity:.62}
+
+.topnav button.active{
+  color:#fff;
+  border:1px solid transparent;
+  background:
+    linear-gradient(180deg,rgba(25,29,47,.97),rgba(14,17,31,.96)) padding-box,
+    linear-gradient(118deg,rgba(53,194,255,.72) 0%,rgba(111,91,255,.95) 48%,rgba(235,62,158,.58) 100%) border-box;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,.055),
+    inset 0 -8px 20px rgba(92,72,255,.055),
+    0 0 0 1px rgba(105,87,255,.08),
+    0 5px 17px rgba(0,0,0,.24),
+    0 0 16px rgba(91,78,255,.13),
+    0 0 8px rgba(53,190,255,.07);
+}
+
+.topnav button.active::before{opacity:1}
+.topnav button.active::after{
+  opacity:.92;
+  animation:endlumeNavLight 3.4s cubic-bezier(.42,0,.2,1) infinite;
+}
+
+.topnav button .icon{
+  width:14px;
+  height:14px;
+  opacity:.9;
+  transition:opacity .18s ease,filter .18s ease,transform .18s ease;
+}
+
+.topnav button:hover .icon{
+  opacity:1;
+  filter:drop-shadow(0 0 4px rgba(109,110,255,.42));
+}
+
+.topnav button.active .icon{
+  opacity:1;
+  filter:
+    drop-shadow(0 0 3px rgba(75,194,255,.62))
+    drop-shadow(0 0 6px rgba(117,83,255,.42));
+}
+
+.topnav button b{
+  min-width:15px;
+  padding:1px 4px;
+  border:1px solid rgba(139,119,255,.48);
+  background:linear-gradient(180deg,#6657ff,#4d43d0);
+  box-shadow:0 0 8px rgba(102,87,255,.26);
+  font-size:8px;
+  line-height:12px;
+}
+
+@keyframes endlumeNavLight{
+  0%{transform:translateX(-30%);opacity:0}
+  12%{opacity:.92}
+  50%{opacity:1}
+  88%{opacity:.84}
+  100%{transform:translateX(470%);opacity:0}
+}
+
+@media (prefers-reduced-motion:reduce){
+  .topnav button,.topnav button .icon{transition:none}
+  .topnav button.active::after{animation:none;left:36%;opacity:.8}
+}

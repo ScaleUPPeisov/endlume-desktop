@@ -76,6 +76,19 @@ jobs:
           cp "$(command -v ffprobe)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
           chmod +x src-tauri/binaries/*
 
+      - name: Validate bundled FFmpeg encoders
+        shell: bash
+        run: |
+          set -euo pipefail
+          FFMPEG="src-tauri/binaries/ffmpeg-aarch64-apple-darwin"
+          "$FFMPEG" -hide_banner -encoders > /tmp/endlume-encoders.txt
+          grep -q 'h264_videotoolbox' /tmp/endlume-encoders.txt
+          grep -q 'hevc_videotoolbox' /tmp/endlume-encoders.txt
+          grep -q 'libx264' /tmp/endlume-encoders.txt
+          "$FFMPEG" -hide_banner -loglevel error -f lavfi -i 'testsrc2=size=640x360:rate=30' -frames:v 15 -an -c:v libx264 -pix_fmt yuv420p -y /tmp/endlume-libx264.mp4
+          test -s /tmp/endlume-libx264.mp4
+          echo 'Verified bundled FFmpeg: h264_videotoolbox • hevc_videotoolbox • libx264'
+
       - name: Frontend check
         run: npm run build
 

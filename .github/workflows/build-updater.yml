@@ -107,9 +107,10 @@ jobs:
           test -f "$TAR"
           TMP="$(mktemp -d)"
           tar -xzf "$TAR" -C "$TMP"
-          mapfile -t APPS < <(find "$TMP" -maxdepth 1 -type d -name '*.app' -print)
-          test "${#APPS[@]}" -eq 1
-          APP="${APPS[0]}"
+          APP_COUNT="$(find "$TMP" -maxdepth 1 -type d -name '*.app' -print | wc -l | tr -d ' ')"
+          test "$APP_COUNT" -eq 1
+          APP="$(find "$TMP" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          test -n "$APP"
           test "$(basename "$APP")" = "ENDLUME Studio.app"
           BUNDLE_ID="$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$APP/Contents/Info.plist")"
           APP_VERSION="$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist")"

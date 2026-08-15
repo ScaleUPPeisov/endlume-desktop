@@ -24,8 +24,13 @@ export function App(){
     api.license().then(setLicense).catch(()=>setLicense({valid:false}));
     api.loadLibrary().then(setLibrary).catch(()=>setLibrary({effects:[],subscribes:[]}));
     api.loadRecovery().then(r=>{if(r?.interrupted)setRecovery(r)}).catch(()=>{});
-    // Silent Single App Guard: keep the currently running ENDLUME and remove stale writable copies with the same bundle id.
-    api.cleanupDuplicateApps(false).catch(()=>{});
+    // Keep one ENDLUME app and repair legacy Finder names such as "ENDLUME Studio alpha8.3 backup.app".
+    // Normalization happens once, then the app reopens from the canonical ENDLUME Studio.app path.
+    api.cleanupDuplicateApps(false).then(status=>{
+      if(status.supported&&status.canonicalName===false&&status.currentPath&&!status.currentPath.startsWith('/Volumes/')){
+        window.setTimeout(()=>{api.normalizeAppName().catch(()=>{})},700);
+      }
+    }).catch(()=>{});
     const updateTimer=window.setTimeout(()=>{api.checkUpdate().then(u=>{if(u?.version)setAvailableUpdate(u)}).catch(()=>{})},2200);
     const off:Promise<()=>void>[]=[];
     off.push(listen<any>('render-progress',e=>patchProject(e.payload.id,compactPayload(e.payload))));

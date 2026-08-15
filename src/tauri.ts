@@ -47,7 +47,7 @@ export const api = {
   showInfo:(text:string)=>message(text,{title:'ENDLUME Studio',kind:'info'}),
   checkUpdate:async()=>{
     const update=await check();
-    if(!update)return {none:true,current:'1.0.0-alpha.8.7',channel:'alpha',signedUpdater:true};
+    if(!update)return {none:true,current:'1.0.0-alpha.8.8',channel:'alpha',signedUpdater:true};
     let downloaded=0,total=0;
     return {
       version:update.version,

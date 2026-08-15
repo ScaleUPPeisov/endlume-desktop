@@ -6,6 +6,8 @@ use std::{collections::HashSet,fs,path::{Path,PathBuf},process::Command};
 
 #[cfg(target_os="macos")]
 const ENDLUME_BUNDLE_ID:&str="studio.endlume.desktop";
+#[cfg(target_os="macos")]
+const ENDLUME_APP_NAME:&str="ENDLUME Studio.app";
 
 #[tauri::command]
 pub fn power_status()->Value{
@@ -44,6 +46,12 @@ fn current_app_bundle()->Option<PathBuf>{
 
 #[cfg(target_os="macos")]
 fn canon(path:&Path)->PathBuf{fs::canonicalize(path).unwrap_or_else(|_|path.to_path_buf())}
+
+#[cfg(target_os="macos")]
+fn app_name(path:&Path)->String{path.file_name().and_then(|x|x.to_str()).unwrap_or_default().to_string()}
+
+#[cfg(target_os="macos")]
+fn canonical_name(path:&Path)->bool{app_name(path)==ENDLUME_APP_NAME}
 
 #[cfg(target_os="macos")]
 fn plist_value(bundle:&Path,key:&str)->Option<String>{
@@ -88,9 +96,22 @@ fn discover_endlume_apps(current:&Path)->Vec<PathBuf>{
 
 #[cfg(target_os="macos")]
 fn privileged_remove(path:&Path)->Result<(),String>{
-  let raw=path.to_string_lossy().replace('\\',"\\\\").replace('"',"\\\"");
-  let script=format!("do shell script \"/bin/rm -rf \" & quoted form of \"{}\" with administrator privileges",raw);
-  let out=Command::new("/usr/bin/osascript").args(["-e",&script]).output().map_err(|e|e.to_string())?;
+  let script=r#"on run argv
+set targetPath to item 1 of argv
+do shell script "/bin/rm -rf " & quoted form of targetPath with administrator privileges
+end run"#;
+  let out=Command::new("/usr/bin/osascript").args(["-e",script]).arg(path.to_string_lossy().as_ref()).output().map_err(|e|e.to_string())?;
+  if out.status.success(){Ok(())}else{Err(String::from_utf8_lossy(&out.stderr).trim().to_string())}
+}
+
+#[cfg(target_os="macos")]
+fn privileged_move(from:&Path,to:&Path)->Result<(),String>{
+  let script=r#"on run argv
+set sourcePath to item 1 of argv
+set targetPath to item 2 of argv
+do shell script "/bin/mv " & quoted form of sourcePath & " " & quoted form of targetPath with administrator privileges
+end run"#;
+  let out=Command::new("/usr/bin/osascript").args(["-e",script]).arg(from.to_string_lossy().as_ref()).arg(to.to_string_lossy().as_ref()).output().map_err(|e|e.to_string())?;
   if out.status.success(){Ok(())}else{Err(String::from_utf8_lossy(&out.stderr).trim().to_string())}
 }
 
@@ -98,7 +119,7 @@ fn privileged_remove(path:&Path)->Result<(),String>{
 pub fn cleanup_duplicate_apps(aggressive:bool)->Value{
   #[cfg(target_os="macos")]
   {
-    let Some(current_raw)=current_app_bundle() else{return json!({"supported":true,"singleApp":false,"error":"Не удалось определить текущий ENDLUME.app"})};
+    let Some(current_raw)=current_app_bundle() else{return json!({"supported":true,"singleApp":false,"canonicalName":false,"error":"Не удалось определить текущий ENDLUME.app"})};
     let current=canon(&current_raw);let current_version=plist_value(&current_raw,"CFBundleShortVersionString").unwrap_or_default();
     let current_in_applications=current.starts_with(Path::new("/Applications"));
     let apps=discover_endlume_apps(&current_raw);let mut removed=Vec::<String>::new();let mut failed=Vec::<Value>::new();let mut skipped=Vec::<Value>::new();let mut valid=Vec::<String>::new();
@@ -110,7 +131,6 @@ pub fn cleanup_duplicate_apps(aggressive:bool)->Value{
       if !candidate_version.is_empty()&&!current_version.is_empty()&&version_cmp(&candidate_version,&current_version)==std::cmp::Ordering::Greater{
         skipped.push(json!({"path":raw,"reason":"newer-version","version":candidate_version}));continue
       }
-      // Never silently delete the canonical /Applications copy while the user is currently running a stray copy from Downloads/Desktop.
       if !current_in_applications&&p.starts_with(Path::new("/Applications")){
         skipped.push(json!({"path":raw,"reason":"canonical-applications-copy","version":candidate_version}));continue
       }
@@ -121,10 +141,14 @@ pub fn cleanup_duplicate_apps(aggressive:bool)->Value{
       }
     }
     let remaining=discover_endlume_apps(&current_raw).into_iter().filter(|p|!canon(p).starts_with(Path::new("/Volumes"))).map(|p|p.to_string_lossy().into_owned()).collect::<Vec<_>>();
+    let canonical_path=current_raw.parent().map(|p|p.join(ENDLUME_APP_NAME)).unwrap_or_else(||PathBuf::from(ENDLUME_APP_NAME));
     return json!({
       "supported":true,
       "bundleId":ENDLUME_BUNDLE_ID,
       "currentPath":current_raw,
+      "currentName":app_name(&current),
+      "canonicalName":canonical_name(&current),
+      "canonicalPath":canonical_path,
       "currentVersion":current_version,
       "currentInApplications":current_in_applications,
       "found":valid,
@@ -136,7 +160,35 @@ pub fn cleanup_duplicate_apps(aggressive:bool)->Value{
     });
   }
   #[cfg(not(target_os="macos"))]
-  {let _=aggressive;json!({"supported":false,"singleApp":true})}
+  {let _=aggressive;json!({"supported":false,"singleApp":true,"canonicalName":true})}
+}
+
+#[tauri::command]
+pub fn normalize_current_app_name(app:tauri::AppHandle)->Result<Value,String>{
+  #[cfg(target_os="macos")]
+  {
+    let current=current_app_bundle().ok_or("Не удалось определить текущий ENDLUME.app")?;
+    if current.starts_with(Path::new("/Volumes")){return Ok(json!({"supported":true,"renamed":false,"canonicalName":false,"reason":"mounted-volume","currentPath":current}));}
+    if canonical_name(&current){return Ok(json!({"supported":true,"renamed":false,"canonicalName":true,"currentPath":current}));}
+    let parent=current.parent().ok_or("Не удалось определить папку ENDLUME.app")?;
+    let target=parent.join(ENDLUME_APP_NAME);
+    if target.exists(){
+      let target_id=plist_value(&target,"CFBundleIdentifier");
+      if target_id.as_deref()!=Some(ENDLUME_BUNDLE_ID){return Err(format!("Файл '{}' уже существует и не является ENDLUME Studio.",target.display()))}
+      let current_version=plist_value(&current,"CFBundleShortVersionString").unwrap_or_default();
+      let target_version=plist_value(&target,"CFBundleShortVersionString").unwrap_or_default();
+      if !target_version.is_empty()&&!current_version.is_empty()&&version_cmp(&target_version,&current_version)==std::cmp::Ordering::Greater{return Err(format!("В '{}' уже находится более новая ENDLUME {}.",target.display(),target_version))}
+      if let Err(e)=fs::remove_dir_all(&target){privileged_remove(&target).map_err(|admin|format!("Не удалось освободить каноническое имя: {e}; {admin}"))?;}
+    }
+    if let Err(e)=fs::rename(&current,&target){privileged_move(&current,&target).map_err(|admin|format!("Не удалось переименовать ENDLUME Studio: {e}; {admin}"))?;}
+    let target_string=target.to_string_lossy().into_owned();
+    Command::new("/bin/sh").arg("-c").arg("sleep 0.7; /usr/bin/open -n \"$1\"").arg("endlume-relaunch").arg(&target_string).spawn().map_err(|e|format!("Имя исправлено, но не удалось перезапустить ENDLUME: {e}"))?;
+    let response=json!({"supported":true,"renamed":true,"canonicalName":true,"previousPath":current,"currentPath":target});
+    app.exit(0);
+    return Ok(response);
+  }
+  #[cfg(not(target_os="macos"))]
+  {let _=app;Ok(json!({"supported":false,"renamed":false,"canonicalName":true}))}
 }
 
 fn ensure_exists(path:&str)->Result<(),String>{

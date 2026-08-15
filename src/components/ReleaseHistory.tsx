@@ -1,0 +1,83 @@
+import React from 'react';
+
+type Release={
+  version:string;
+  date:string;
+  current?:boolean;
+  title:string;
+  items:string[];
+};
+
+const releases:Release[]=[
+  {
+    version:'1.0.0-alpha.8.8',date:'15.08.2026',current:true,title:'История обновлений и нормальное имя приложения',items:[
+      'Добавлена полная история известных alpha-релизов прямо в Настройки → Обновления. Каждую версию можно раскрыть отдельно.',
+      'ENDLUME автоматически приводит имя текущего macOS app-bundle к каноническому «ENDLUME Studio.app», даже если старая установка называлась «alpha8.3 backup» или иначе.',
+      'Single App Guard теперь проверяет не только количество копий и bundle ID, но и правильное имя текущего приложения.',
+      'После нормализации имени ENDLUME автоматически перезапускается уже из «ENDLUME Studio.app», поэтому следующие обновления продолжают ставиться в одно и то же приложение.'
+    ]
+  },
+  {
+    version:'1.0.0-alpha.8.7',date:'15.08.2026',title:'Single App Guard и плавный редактор',items:[
+      'Single App Guard: ENDLUME ищет старые копии с тем же bundle ID и оставляет одну актуальную программу.',
+      'Подписанный Tauri Updater обновляет текущий app-bundle in-place и выполняет автоматический перезапуск.',
+      'Перетаскивание и масштабирование Effects/Subscribe вынесено из React-state: рамка двигается через requestAnimationFrame, состояние сохраняется после отпускания мыши.',
+      'Сохранены VideoToolbox Preview, pre-scaled lossless overlay-cache, ВКЛ/ВЫКЛ/удаление Effects, Subscribe, Ambient и живая SSD-телеметрия.'
+    ]
+  },
+  {
+    version:'1.0.0-alpha.8.6',date:'14.08.2026',title:'Effects, Live Preview и ускорение overlay',items:[
+      'Новая macOS-иконка ENDLUME: чистый цветной знак без старой двойной рамки.',
+      'Subscribe, Effects и ambient получили отдельные глобальные ВКЛ/ВЫКЛ — настройки не теряются при временном отключении.',
+      'Subscribe можно удалить прямо из редактора; у каждого пресета есть явное включение/выключение.',
+      'Live Preview больше не запускает FFmpeg и запись на диск на каждый пиксель движения мыши; реальный preview обновляется после отпускания.',
+      'Предпросмотр на Mac переведён на Apple VideoToolbox, 60 FPS и короткий 960×540 proxy.',
+      'Кэш chromakey/luma заранее уменьшает небольшие overlay-клипы до нужного размера вместо обработки полноразмерного 4K overlay при каждом рендере.',
+      'Финальное разрешение и выбранный битрейт сохраняются; аудио кодируется один раз при необходимости обработки, финальный mux выполняется stream-copy.',
+      'В Render Center показывается реальный SSD: использовано / свободно / всего, обновление каждую секунду.'
+    ]
+  },
+  {
+    version:'1.0.0-alpha.8.5',date:'13.08.2026',title:'Уведомление об обновлении',items:[
+      'Новое обновление появляется отдельным уведомлением сверху слева и не перекрывает рабочий экран.',
+      'Добавлены кнопки «Обновить» и «Обновить позже».',
+      'Прогресс скачивания и установки показывается прямо в карточке обновления.',
+      'После установки ENDLUME автоматически перезапускается; «Обновить позже» скрывает карточку до следующего запуска.'
+    ]
+  },
+  {
+    version:'1.0.0-alpha.8.4',date:'13.08.2026',title:'Подписанный встроенный Updater',items:[
+      'Встроен подписанный ENDLUME Updater: проверка обновлений при запуске и вручную из Настроек.',
+      'Новое обновление показывает версию, дату и список изменений; установка выполняется внутри ENDLUME с прогрессом и автоматическим перезапуском.',
+      'Обновления проверяются через постоянный HTTPS-канал ENDLUME; Terminal и повторная установка приложения после этой версии больше не нужны.',
+      'Каждый update-пакет проверяется криптографической подписью перед установкой.'
+    ]
+  },
+  {
+    version:'1.0.0-alpha.8.3',date:'13.08.2026',title:'Smart Size и быстрый статичный master',items:[
+      'Smart Size переделан на короткий 8–12-секундный master: качественный первый keyframe + низкий bitrate повторяющихся статичных кадров.',
+      'Первые 0–5 секунд защищены отдельным high-quality I-frame.',
+      'Для статичной картинки используется короткий libx264 Smart Size master, затем stream-copy.',
+      'Нижняя панель проекта закреплена у нижней границы окна.'
+    ]
+  }
+];
+
+export function ReleaseHistory(){
+  return <section style={{marginTop:28,borderTop:'1px solid #262c3d',paddingTop:20}}>
+    <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:12,marginBottom:12}}>
+      <div><h4 style={{margin:'0 0 5px',fontSize:13,letterSpacing:'.25px'}}>ИСТОРИЯ ОБНОВЛЕНИЙ</h4><p className="settingsNote" style={{margin:0}}>Все известные релизы ENDLUME Studio. Нажмите на версию, чтобы посмотреть полный список изменений.</p></div>
+      <span style={{fontSize:10,color:'#8f98b4',border:'1px solid #30374d',borderRadius:999,padding:'6px 9px',whiteSpace:'nowrap'}}>{releases.length} версий</span>
+    </div>
+    <div style={{display:'grid',gap:8}}>{releases.map((release,index)=><details key={release.version} open={index===0} style={{border:'1px solid #292f42',borderRadius:10,background:'#0d111c',overflow:'hidden'}}>
+      <summary style={{cursor:'pointer',listStyle:'none',display:'flex',alignItems:'center',justifyContent:'space-between',gap:12,padding:'12px 14px',userSelect:'none'}}>
+        <span style={{display:'flex',alignItems:'center',gap:9,minWidth:0}}><strong style={{fontSize:11,color:'#eef1fa'}}>{release.version}</strong>{release.current&&<em style={{fontStyle:'normal',fontSize:8,color:'#43d5a0',border:'1px solid #285c4b',borderRadius:999,padding:'3px 6px'}}>ТЕКУЩАЯ</em>}<span style={{fontSize:9,color:'#77819e',whiteSpace:'nowrap'}}>{release.date}</span></span>
+        <span style={{fontSize:10,color:'#8b85ff'}}>ПОКАЗАТЬ ▾</span>
+      </summary>
+      <div style={{padding:'0 14px 13px',borderTop:'1px solid #202638'}}>
+        <b style={{display:'block',fontSize:11,marginTop:12,color:'#dfe4f2'}}>{release.title}</b>
+        <ul style={{margin:'9px 0 0',paddingLeft:19,color:'#818ba8',fontSize:10,lineHeight:1.55}}>{release.items.map(item=><li key={item} style={{margin:'5px 0'}}>{item}</li>)}</ul>
+      </div>
+    </details>)}</div>
+  </section>
+}

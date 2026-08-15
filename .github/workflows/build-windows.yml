@@ -2,7 +2,9 @@ name: ENDLUME Windows x64 build
 
 on:
   push:
-    branches: [windows-v1, windows-v1-alpha8.7]
+    branches:
+      - windows-v1
+      - 'windows-v1-alpha*'
   workflow_dispatch:
 
 jobs:
@@ -72,6 +74,19 @@ jobs:
           ffmpeg -hide_banner -loglevel error -f concat -safe 0 -i .endlume-smoke/audio.txt -c:a copy -y .endlume-smoke/audio.mka
           ffprobe -hide_banner -loglevel error -show_entries stream=codec_name,sample_rate,channels -select_streams a:0 .endlume-smoke/audio.mka
 
+      - name: Two-hour Ultra Static performance gate
+        shell: pwsh
+        run: |
+          $ff = 'src-tauri/binaries/ffmpeg-x86_64-pc-windows-msvc.exe'
+          & $ff -hide_banner -loglevel error -f lavfi -i 'color=c=0x111827:s=1920x1080:r=2' -t 10 -an -c:v libx264 -preset ultrafast -tune stillimage -b:v 750k -minrate 750k -maxrate 750k -bufsize 1500k -g 20 -keyint_min 20 -sc_threshold 0 -pix_fmt yuv420p -x264-params 'nal-hrd=cbr:filler=1:force-cfr=1:scenecut=0:keyint=20:min-keyint=20' -y .endlume-smoke/static-master.mp4
+          & $ff -hide_banner -loglevel error -f lavfi -i 'sine=frequency=440:sample_rate=48000' -t 30 -c:a aac -b:a 320k -y .endlume-smoke/music.m4a
+          $elapsed = (Measure-Command { & $ff -hide_banner -loglevel error -stream_loop -1 -i .endlume-smoke/static-master.mp4 -stream_loop -1 -i .endlume-smoke/music.m4a -t 7200 -map 0:v:0 -map 1:a:0 -c:v copy -c:a copy -max_interleave_delta 0 -y .endlume-smoke/two-hours.mp4 }).TotalSeconds
+          $bytes = (Get-Item .endlume-smoke/two-hours.mp4).Length
+          Write-Host "Ultra Static 2h mux: $([math]::Round($elapsed,2)) sec / $([math]::Round($bytes/1GB,3)) GiB"
+          if ($elapsed -gt 60) { throw "Ultra Static performance regression: 2h mux took $elapsed seconds" }
+          if ($bytes -lt 500MB -or $bytes -gt 1.5GB) { throw "Ultra Static size regression: $bytes bytes" }
+          Remove-Item .endlume-smoke/two-hours.mp4 -Force
+
       - name: Build signed ENDLUME Windows updater
         shell: pwsh
         env:
@@ -99,7 +114,7 @@ jobs:
             arch = 'x86_64'
             artifact = 'ENDLUME-Studio-Windows-x64-Setup.exe'
             signature = $signature
-            notes = 'ENDLUME Windows: Original Fast Path, real disk telemetry, clean app icon, no console window, signed in-app updater.'
+            notes = 'ENDLUME alpha.8.8: Ultra Static 2 FPS engine, original audio stream-copy, one-pass audio probe, ~1 GB per 2h target, signed in-app updater.'
           }
           $meta | ConvertTo-Json -Depth 4 | Set-Content -Encoding utf8 'windows-release/release-windows.json'
           $hash = Get-FileHash 'windows-release/ENDLUME-Studio-Windows-x64-Setup.exe' -Algorithm SHA256
@@ -110,7 +125,7 @@ jobs:
       - name: Upload Windows installer and updater metadata
         uses: actions/upload-artifact@v4
         with:
-          name: ENDLUME-Studio-Windows-x64-alpha8.7
+          name: ENDLUME-Studio-Windows-x64-alpha8.8
           path: windows-release/*
           if-no-files-found: error
           retention-days: 30

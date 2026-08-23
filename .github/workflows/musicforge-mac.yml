@@ -50,9 +50,11 @@ jobs:
       - name: Build macOS icon
         working-directory: musicforge-ai
         run: |
-          python3 -m pip install --user cairosvg
-          python3 scripts/make_icon.py
+          python3 -m venv /tmp/musicforge-icon-venv
+          /tmp/musicforge-icon-venv/bin/python -m pip install --disable-pip-version-check cairosvg
+          /tmp/musicforge-icon-venv/bin/python scripts/make_icon.py
           iconutil -c icns assets/AppIcon.iconset -o assets/icon.icns
+          test -f assets/icon.icns
 
       - name: Package MusicForge AI.app
         working-directory: musicforge-ai

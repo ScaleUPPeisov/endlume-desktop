@@ -4,6 +4,7 @@ import { Topbar } from '../components/shell';
 import { RecoveryModal } from '../components/recovery';
 import { useApp } from '../store';
 import { api } from '../tauri';
+import { installMotionRuntime } from '../motion';
 import type { LicenseStatus, RecoveryPayload } from '../types';
 import { ProjectPage } from './ProjectPage';
 import { RenderPage } from './RenderPage';
@@ -21,6 +22,9 @@ export function App(){
   const [license,setLicense]=useState<LicenseStatus|null>(null);
   const [availableUpdate,setAvailableUpdate]=useState<any>(null);
   const snoozeUntil=useRef(0),checkingUpdate=useRef(false),lastUpdateCheck=useRef(0);
+
+  useEffect(()=>installMotionRuntime(),[]);
+
   useEffect(()=>{
     let disposed=false,updateTimer:number|undefined,updateInterval:number|undefined;
     api.license().then(setLicense).catch(()=>setLicense({valid:false}));
@@ -74,9 +78,12 @@ export function App(){
       window.removeEventListener('focus',onFocus);document.removeEventListener('visibilitychange',onVisibility);off.forEach(p=>p.then(f=>f()));
     }
   },[]);
+
   if(!license)return <div className="bootScreen"><div className="bootPulse"/>ENDLUME</div>;
   if(!license.valid)return <ActivationScreen onActivated={setLicense}/>;
-  return <div className="appShell"><Topbar/><div className="content">{page==='project'?<ProjectPage/>:page==='render'?<RenderPage/>:page==='library'?<LibraryPage/>:<SettingsPage/>}</div>{editor&&<EditorRouter/>}{recovery&&<RecoveryModal data={recovery} onClose={()=>setRecovery(undefined)}/>} {availableUpdate&&<UpdateNotice update={availableUpdate} onLater={()=>{snoozeUntil.current=Date.now()+60*60*1000;setAvailableUpdate(null)}}/>}</div>
+
+  const pageView=page==='project'?<ProjectPage/>:page==='render'?<RenderPage/>:page==='library'?<LibraryPage/>:<SettingsPage/>;
+  return <div className="appShell"><Topbar/><div className="content"><div key={page} className="pageScene">{pageView}</div></div>{editor&&<EditorRouter/>}{recovery&&<RecoveryModal data={recovery} onClose={()=>setRecovery(undefined)}/>} {availableUpdate&&<UpdateNotice update={availableUpdate} onLater={()=>{snoozeUntil.current=Date.now()+60*60*1000;setAvailableUpdate(null)}}/>}</div>
 }
 
 function ActivationScreen({onActivated}:{onActivated:(v:LicenseStatus)=>void}){

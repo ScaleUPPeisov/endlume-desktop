@@ -5,4 +5,5 @@ import './styles.css';
 import './nav-polish.css';
 import './project-polish.css';
 import './motion-polish.css';
+import './motion-interactions.css';
 createRoot(document.getElementById('root')!).render(<React.StrictMode><App/></React.StrictMode>);

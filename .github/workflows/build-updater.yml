@@ -96,7 +96,7 @@ jobs:
           chmod +x scripts/validate-loop-modes.sh
           scripts/validate-loop-modes.sh src-tauri/binaries/ffmpeg-aarch64-apple-darwin src-tauri/binaries/ffprobe-aarch64-apple-darwin
 
-      - name: Validate compositor motion UI
+      - name: Validate motion and project layout UI
         run: node scripts/validate-motion-ui.mjs
 
       - name: Frontend check
@@ -192,7 +192,7 @@ jobs:
             "source_sha": "$GITHUB_SHA",
             "status": "verified",
             "loop_smoke_checks": 100,
-            "motion_ui_checks": 10,
+            "motion_ui_checks": 16,
             "platform": "macos-arm64"
           }
           JSON

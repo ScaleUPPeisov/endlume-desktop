@@ -96,6 +96,9 @@ jobs:
           chmod +x scripts/validate-loop-modes.sh
           scripts/validate-loop-modes.sh src-tauri/binaries/ffmpeg-aarch64-apple-darwin src-tauri/binaries/ffprobe-aarch64-apple-darwin
 
+      - name: Validate compositor motion UI
+        run: node scripts/validate-motion-ui.mjs
+
       - name: Frontend check
         run: npm run build
 
@@ -189,6 +192,7 @@ jobs:
             "source_sha": "$GITHUB_SHA",
             "status": "verified",
             "loop_smoke_checks": 100,
+            "motion_ui_checks": 10,
             "platform": "macos-arm64"
           }
           JSON
@@ -196,6 +200,6 @@ jobs:
           git config user.email "actions@users.noreply.github.com"
           git add src-tauri/src/render.rs ENDLUME_BUILD_RECEIPT.json
           if ! git diff --cached --quiet; then
-            git commit -m "ci: persist verified alpha.8.13 build receipt [skip ci]"
+            git commit -m "ci: persist verified $VERSION build receipt [skip ci]"
             git push origin HEAD:release
           fi

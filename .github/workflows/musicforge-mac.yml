@@ -16,12 +16,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Unpack MusicForge source
+      - name: Rebuild and verify MusicForge source
         run: |
+          cat musicforge-build/chunks/*.txt > /tmp/musicforge-source.b64
           python3 - <<'PY'
-          import base64, pathlib
-          src = pathlib.Path('musicforge-build/source.zip').read_bytes()
-          pathlib.Path('/tmp/musicforge-source.zip').write_bytes(base64.b64decode(src))
+          import base64, hashlib, pathlib
+          src = pathlib.Path('/tmp/musicforge-source.b64').read_text().strip()
+          data = base64.b64decode(src, validate=True)
+          digest = hashlib.sha256(data).hexdigest()
+          expected = '0468823d5757ab942db22cf3e4b1f4438531f8a00561e26e9aba8377f2fd1c70'
+          print('source zip sha256:', digest)
+          if digest != expected:
+              raise SystemExit(f'Source checksum mismatch: {digest}')
+          pathlib.Path('/tmp/musicforge-source.zip').write_bytes(data)
           PY
           unzip -t /tmp/musicforge-source.zip
           unzip -q /tmp/musicforge-source.zip

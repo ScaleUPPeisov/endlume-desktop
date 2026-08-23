@@ -1,0 +1,66 @@
+name: Build MusicForge AI for Mac M1
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'musicforge-build/**'
+      - '.github/workflows/musicforge-mac.yml'
+
+jobs:
+  build-macos-arm64:
+    runs-on: macos-15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Unpack MusicForge source
+        run: unzip -q musicforge-build/source.zip
+
+      - name: Verify Apple Silicon runner
+        run: |
+          uname -m
+          test "$(uname -m)" = "arm64"
+
+      - name: Use Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Install dependencies
+        working-directory: musicforge-ai
+        run: npm install --no-audit --no-fund
+
+      - name: Build macOS icon
+        working-directory: musicforge-ai
+        run: |
+          python3 -m pip install --user cairosvg
+          python3 scripts/make_icon.py
+          iconutil -c icns assets/AppIcon.iconset -o assets/icon.icns
+
+      - name: Package MusicForge AI.app
+        working-directory: musicforge-ai
+        run: npm run package:mac
+
+      - name: Ad-hoc sign app
+        working-directory: musicforge-ai
+        run: |
+          APP_PATH="dist/MusicForge AI-darwin-arm64/MusicForge AI.app"
+          codesign --force --deep --sign - "$APP_PATH"
+          codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+
+      - name: Make distributable ZIP
+        working-directory: musicforge-ai
+        run: |
+          cd "dist/MusicForge AI-darwin-arm64"
+          ditto -c -k --sequesterRsrc --keepParent "MusicForge AI.app" "../MusicForge-AI-v0.1-Mac-M1.zip"
+
+      - name: Upload app artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MusicForge-AI-v0.1-Mac-M1
+          path: musicforge-ai/dist/MusicForge-AI-v0.1-Mac-M1.zip
+          if-no-files-found: error
+          retention-days: 14

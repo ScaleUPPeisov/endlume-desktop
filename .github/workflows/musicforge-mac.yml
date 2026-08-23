@@ -17,7 +17,10 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Unpack MusicForge source
-        run: unzip -q musicforge-build/source.zip
+        run: |
+          base64 -D musicforge-build/source.zip > /tmp/musicforge-source.zip
+          unzip -t /tmp/musicforge-source.zip
+          unzip -q /tmp/musicforge-source.zip
 
       - name: Verify Apple Silicon runner
         run: |

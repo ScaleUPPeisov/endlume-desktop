@@ -1,12 +1,10 @@
-# ENDLUME Studio 1.0.0-alpha.8.14 — 23.08.2026 · macOS Apple Silicon
+# ENDLUME Studio 1.0.0-alpha.8.15 — 23.08.2026 · macOS Apple Silicon
 
-- Добавлен отдельный ENDLUME Motion Layer для плавного интерфейса без вмешательства в render/editor-логику.
-- Переходы между Проектом, Рендером, Библиотекой и Настройками теперь выполняются через compositor-friendly opacity + transform вместо резких переключений.
-- Прокрутка вниз/вверх остаётся нативной для macOS WebView: smooth scroll, overscroll containment, scrollbar-gutter и тонкий cyan/violet/pink scrollbar. JavaScript не перехватывает wheel и не вызывает preventDefault.
-- Все функциональные кнопки получили единый короткий press/hover motion; Настройки, Editor и раскрытие истории обновлений больше не появляются жёстким скачком.
-- Во время активной прокрутки ENDLUME автоматически приостанавливает декоративные блики и упрощает тяжёлые тени, чтобы отдавать GPU/CPU самой прокрутке.
-- Добавлен адаптивный requestAnimationFrame FPS governor: при устойчивой просадке ниже примерно 48 FPS отключается только тяжёлая декоративная анимация; функциональность, preview и рендер не меняются. После восстановления частоты кадров декорация возвращается.
-- Большие независимые UI-блоки получили paint/layout containment, а секции проекта используют content-visibility для снижения лишней отрисовки вне экрана.
-- Добавлена отдельная release-проверка motion-архитектуры: passive native scroll, compositor transforms, adaptive fallback, reduced-motion и запрет transition: all в Motion Layer.
-- Сохранены все исправления alpha.8.13: GPU Live Preview Effects/Subscribe, быстрый drag без FFmpeg, исправленный Crossfade CFR и 100-прогонная проверка Loop Mode.
-- Motion Layer спроектирован под стабильную визуальную частоту до 60 FPS на 60-Гц дисплее; если железо/нагрузка не держит её, ENDLUME сначала отключает тяжёлую косметику, а не функциональность.
+- Полностью переделан Motion Layer после регрессии alpha.8.14: убраны глобальные scroll/wheel listeners, постоянный requestAnimationFrame FPS governor и переключение CSS-классов во время каждого движения колеса/трекпада.
+- Прокрутка снова полностью нативная для macOS WKWebView — без JavaScript на каждом кадре и без вмешательства в wheel/scroll.
+- Убраны `content-visibility:auto` и тяжёлое layout/style/paint containment на секциях проекта, которые могли провоцировать повторные layout/paint при быстрой прокрутке.
+- Правая полоса прокрутки WKWebView полностью скрыта; зарезервированный scrollbar gutter отключён. Белой полосы справа быть не должно.
+- Переходы между Проектом / Рендером / Библиотекой / Настройками сохранены, но сокращены до лёгких compositor-only opacity + translate3d.
+- Кнопки оставлены плавными, но из transition исключены filter и box-shadow; постоянная анимация свечения активной вкладки отключена ради стабильной частоты кадров.
+- Добавлена release-защита от повторной регрессии: сборка падает, если в Motion Runtime снова появятся wheel/scroll listeners, RAF-governor, `content-visibility:auto`, стабильный scrollbar gutter или тяжёлые transition свойства.
+- Все исправления alpha.8.13 сохранены: GPU Live Preview Effects/Subscribe, быстрый drag/resize без FFmpeg, Crossfade CFR fix и 100-прогонная проверка Loop Mode.

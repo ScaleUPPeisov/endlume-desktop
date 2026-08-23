@@ -3,7 +3,15 @@ import React from 'react';
 type Release={version:string;date:string;current?:boolean;title:string;items:string[]};
 
 const releases:Release[]=[
-  {version:'1.0.0-alpha.8.13',date:'23.08.2026',current:true,title:'GPU Live Preview, LoopForge-полировка и проверка Loop Mode',items:[
+  {version:'1.0.0-alpha.8.14',date:'23.08.2026',current:true,title:'Motion Engine: плавная прокрутка и переходы',items:[
+    'Добавлен отдельный ENDLUME Motion Layer: переходы между Проектом, Рендером, Библиотекой и Настройками выполняются через compositor-friendly opacity + transform без тяжёлых layout-анимаций.',
+    'Прокрутка остаётся нативной для macOS WebView и не перехватывается JavaScript: smooth scroll, overscroll containment, стабильный scrollbar gutter и новый тонкий cyan/violet/pink scrollbar.',
+    'Кнопки по всему приложению получили единый короткий press/hover motion, а карточки Настроек, редакторы и раскрытие истории обновлений больше не появляются резким скачком.',
+    'Во время активной прокрутки ENDLUME временно приостанавливает декоративные блики и тяжёлые тени, чтобы кадры тратились на сам скролл, а не на косметику.',
+    'Добавлен адаптивный FPS governor: requestAnimationFrame оценивает фактическую частоту кадров во время взаимодействия. При устойчивой просадке ниже примерно 48 FPS отключается только тяжёлая декорация; функциональность не меняется.',
+    'В release pipeline добавлена отдельная проверка motion-архитектуры: нативный passive scroll, compositor transforms, reduced-motion fallback и отсутствие transition: all.'
+  ]},
+  {version:'1.0.0-alpha.8.13',date:'23.08.2026',title:'GPU Live Preview, LoopForge-полировка и проверка Loop Mode',items:[
     'Effects и Subscribe переведены на GPU Live Preview: базовый кадр остаётся на экране, а chromakey/luma/screen композятся в WebGL без тяжёлого FFmpeg при каждом движении.',
     'Положение и размер двигаются вместе с реальным эффектом на частоте дисплея. Во время drag/resize React-state и FFmpeg не участвуют; состояние сохраняется после отпускания мыши.',
     'Для первого открытия создаются короткие VideoToolbox proxy в кэше ENDLUME; следующие открытия используют готовый proxy и не дают чёрный экран между изменениями.',

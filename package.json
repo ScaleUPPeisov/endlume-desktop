@@ -4,8 +4,8 @@
   "version": "1.0.0-alpha.8.13",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc && vite build",
+    "dev": "python3 scripts/apply-render-loop-fix.py && vite",
+    "build": "python3 scripts/apply-render-loop-fix.py && tsc && vite build",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build"

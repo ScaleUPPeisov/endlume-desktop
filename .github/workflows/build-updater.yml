@@ -87,6 +87,9 @@ jobs:
           test -s /tmp/endlume-libx264.mp4
           echo 'Verified bundled FFmpeg: h264_videotoolbox • hevc_videotoolbox • libx264'
 
+      - name: Apply production Crossfade CFR fix
+        run: python3 scripts/apply-render-loop-fix.py
+
       - name: Validate loop modes 100 times
         shell: bash
         run: |

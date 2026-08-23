@@ -18,7 +18,11 @@ jobs:
 
       - name: Unpack MusicForge source
         run: |
-          base64 -D musicforge-build/source.zip > /tmp/musicforge-source.zip
+          python3 - <<'PY'
+          import base64, pathlib
+          src = pathlib.Path('musicforge-build/source.zip').read_bytes()
+          pathlib.Path('/tmp/musicforge-source.zip').write_bytes(base64.b64decode(src))
+          PY
           unzip -t /tmp/musicforge-source.zip
           unzip -q /tmp/musicforge-source.zip
 

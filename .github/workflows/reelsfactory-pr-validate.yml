@@ -1,0 +1,82 @@
+name: ReelsFactory PR validate
+
+on:
+  pull_request:
+    branches: [reelsfactory-bootstrap]
+
+jobs:
+  validate-macos-arm64:
+    runs-on: macos-15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Decode source
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat reelsfactory-source.part*.b64 | base64 --decode > /tmp/reelsfactory-source.zip
+          unzip -q /tmp/reelsfactory-source.zip
+          test -f ReelsFactory-v0.1.0/package.json
+      - name: Verify Apple Silicon
+        run: |
+          test "$(uname -s)" = "Darwin"
+          test "$(uname -m)" = "arm64"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+      - name: Install dependencies
+        working-directory: ReelsFactory-v0.1.0
+        run: npm install --no-audit --no-fund
+      - name: Install smoke tools
+        run: |
+          brew list ffmpeg >/dev/null 2>&1 || brew install ffmpeg
+          ffmpeg -hide_banner -encoders | grep -q h264_videotoolbox
+      - name: Build native exporter
+        working-directory: ReelsFactory-v0.1.0
+        run: ./scripts/build-native-macos.sh
+      - name: Generate icons
+        working-directory: ReelsFactory-v0.1.0
+        run: npx tauri icon src-tauri/icons/icon.svg
+      - name: UI and translation contract
+        working-directory: ReelsFactory-v0.1.0
+        run: npm run check
+      - name: Rust check
+        working-directory: ReelsFactory-v0.1.0
+        run: cargo check --manifest-path src-tauri/Cargo.toml --target aarch64-apple-darwin
+      - name: Native smoke suite 100 passes
+        working-directory: ReelsFactory-v0.1.0
+        run: ./scripts/validate-native-macos.sh
+      - name: Build app and DMG
+        working-directory: ReelsFactory-v0.1.0
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
+        run: npx tauri build --target aarch64-apple-darwin --bundles app,dmg
+      - name: Validate bundle
+        working-directory: ReelsFactory-v0.1.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="$(node -p "require('./package.json').version")"
+          APP_DIR="src-tauri/target/aarch64-apple-darwin/release/bundle/macos"
+          APP="$(find "$APP_DIR" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          TAR="$(find "$APP_DIR" -maxdepth 1 -type f -name '*.app.tar.gz' -print -quit)"
+          DMG="$(find src-tauri/target/aarch64-apple-darwin/release/bundle/dmg -maxdepth 1 -type f -name '*.dmg' -print -quit)"
+          test -d "$APP"; test -f "$TAR"; test -f "$TAR.sig"; test -f "$DMG"
+          test "$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$APP/Contents/Info.plist")" = "ai.reelsfactory.desktop"
+          test "$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist")" = "$VERSION"
+          find "$APP/Contents" -name 'reels-exporter*' -type f -print -quit | grep -q .
+          mkdir -p ../../../../../../rf-artifact
+          cp "$DMG" ../../../../../../rf-artifact/
+          cp "$TAR" ../../../../../../rf-artifact/
+          cp "$TAR.sig" ../../../../../../rf-artifact/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ReelsFactory-v0.1.0-macOS-M1
+          path: ReelsFactory-v0.1.0/rf-artifact/*
+          if-no-files-found: error
+          retention-days: 7

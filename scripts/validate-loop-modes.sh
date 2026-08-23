@@ -40,7 +40,7 @@ for n in $(seq 1 25); do
   "$FFMPEG" -hide_banner -loglevel error -i "$SRC" -filter_complex '[0:v]trim=duration=0.8,setpts=PTS-STARTPTS,split[f][r];[r]reverse[rr];[f][rr]concat=n=2:v=1:a=0[x];[x]scale=160:90,fps=30,setsar=1[outv]' -map '[outv]' -t 1.6 -an -c:v libx264 -preset ultrafast -pix_fmt yuv420p -y "$PING_OUT"
   check "$PING_OUT" 1.50 1.70 "PingPong#$n"
 
-  "$FFMPEG" -hide_banner -loglevel error -i "$SRC" -i "$SRC" -filter_complex '[0:v]trim=duration=0.8,setpts=PTS-STARTPTS[a];[1:v]trim=duration=0.8,setpts=PTS-STARTPTS[b];[a][b]xfade=transition=fade:duration=0.2:offset=0.6,trim=start=0.2:duration=0.8,setpts=PTS-STARTPTS[x];[x]scale=160:90,fps=30,setsar=1[outv]' -map '[outv]' -t 0.8 -an -c:v libx264 -preset ultrafast -pix_fmt yuv420p -y "$CROSS_OUT"
+  "$FFMPEG" -hide_banner -loglevel error -i "$SRC" -i "$SRC" -filter_complex '[0:v]trim=duration=0.8,setpts=PTS-STARTPTS,fps=30,settb=AVTB[a];[1:v]trim=duration=0.8,setpts=PTS-STARTPTS,fps=30,settb=AVTB[b];[a][b]xfade=transition=fade:duration=0.2:offset=0.6,trim=start=0.2:duration=0.8,setpts=PTS-STARTPTS[x];[x]scale=160:90,fps=30,setsar=1[outv]' -map '[outv]' -t 0.8 -an -c:v libx264 -preset ultrafast -pix_fmt yuv420p -y "$CROSS_OUT"
   check "$CROSS_OUT" 0.75 0.90 "Crossfade#$n"
 done
 

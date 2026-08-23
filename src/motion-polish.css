@@ -1,112 +1,86 @@
-/* ENDLUME Studio Motion Layer — compositor-first motion tuned for macOS WebView. */
+/* ENDLUME Studio Motion Layer v2 — macOS/WKWebView performance first.
+   Rule: native scrolling only. No scroll listeners, no RAF governor, no layout/content visibility tricks. */
 :root{
   --motion-ease:cubic-bezier(.22,1,.36,1);
-  --motion-soft:cubic-bezier(.2,.8,.2,1);
-  --motion-fast:150ms;
-  --motion-normal:240ms;
-  --motion-page:285ms;
+  --motion-fast:120ms;
+  --motion-page:180ms;
 }
 
-/* Keep scrolling native/compositor driven. No JS scroll hijacking. */
+/* Native macOS scrolling. Hide the WebView scrollbar completely so no white/right-side rail appears. */
+html,body,#root,.appShell,.content,.renderDetails,.queueCards,.assetList,.visualEditor,.simplePage,.settingsPage{
+  scrollbar-width:none!important;
+  scrollbar-gutter:auto!important;
+}
+::-webkit-scrollbar{
+  width:0!important;
+  height:0!important;
+  display:none!important;
+  background:transparent!important;
+}
+::-webkit-scrollbar-track,::-webkit-scrollbar-thumb,::-webkit-scrollbar-corner{
+  background:transparent!important;
+  border:0!important;
+  box-shadow:none!important;
+}
 .content,.renderDetails,.queueCards,.assetList,.visualEditor,.simplePage,.settingsPage{
-  scroll-behavior:smooth;
+  scroll-behavior:auto;
   overscroll-behavior:contain;
-  scrollbar-gutter:stable;
   -webkit-overflow-scrolling:touch;
 }
+.content,.simplePage,.renderDetails{overflow-x:hidden}
 
-/* Premium slim scrollbar without heavy blur/backdrop filters. */
-*{scrollbar-width:thin;scrollbar-color:#5a55a8 transparent}
-::-webkit-scrollbar{width:8px;height:8px}
-::-webkit-scrollbar-track{background:transparent}
-::-webkit-scrollbar-thumb{
-  min-height:38px;
-  border:2px solid transparent;
-  border-radius:999px;
-  background:linear-gradient(180deg,#3dbcf6 0%,#6d5fff 52%,#bf489f 100%) padding-box;
-  box-shadow:inset 0 0 0 1px rgba(255,255,255,.035);
-}
-::-webkit-scrollbar-thumb:hover{background:linear-gradient(180deg,#58c8fb 0%,#8170ff 52%,#dc55ae 100%) padding-box}
-
-/* Route change: only opacity + transform, so WebKit can keep it on the compositor. */
+/* Route change uses only compositor-friendly opacity/transform. */
 .pageScene{
   min-height:100%;
   height:100%;
-  transform:translateZ(0);
+  transform:translate3d(0,0,0);
   backface-visibility:hidden;
-  transform-origin:50% 32%;
   animation:endlumePageIn var(--motion-page) var(--motion-ease) both;
 }
 @keyframes endlumePageIn{
-  from{opacity:.18;transform:translate3d(0,8px,0) scale(.997)}
-  to{opacity:1;transform:translate3d(0,0,0) scale(1)}
+  from{opacity:.35;transform:translate3d(0,5px,0)}
+  to{opacity:1;transform:translate3d(0,0,0)}
 }
 
-/* Editors/settings feel like part of one continuous app rather than hard cuts. */
-.editorPage{animation:endlumePanelIn 260ms var(--motion-ease) both;transform:translateZ(0);backface-visibility:hidden}
-.settingsCard{animation:endlumePanelIn 230ms var(--motion-ease) both;transform:translateZ(0)}
-.updateNotice{animation:endlumeNoticeIn 260ms var(--motion-ease) both;transform:translateZ(0)}
-details[open]>div{animation:endlumeDetailIn 190ms var(--motion-ease) both}
-@keyframes endlumePanelIn{from{opacity:.25;transform:translate3d(0,6px,0)}to{opacity:1;transform:translate3d(0,0,0)}}
-@keyframes endlumeNoticeIn{from{opacity:0;transform:translate3d(-8px,-4px,0) scale(.985)}to{opacity:1;transform:translate3d(0,0,0) scale(1)}}
-@keyframes endlumeDetailIn{from{opacity:.2;transform:translate3d(0,-3px,0)}to{opacity:1;transform:translate3d(0,0,0)}}
+.editorPage,.settingsCard,.updateNotice{
+  animation:endlumePanelIn 170ms var(--motion-ease) both;
+  backface-visibility:hidden;
+}
+details[open]>div{animation:endlumeDetailIn 140ms var(--motion-ease) both}
+@keyframes endlumePanelIn{from{opacity:.45;transform:translate3d(0,4px,0)}to{opacity:1;transform:translate3d(0,0,0)}}
+@keyframes endlumeDetailIn{from{opacity:.5;transform:translate3d(0,-2px,0)}to{opacity:1;transform:translate3d(0,0,0)}}
 
-/* Consistent tactile response on every functional button. */
+/* Buttons: only cheap properties. Avoid animating filter/box-shadow during interaction. */
 .appShell button:not(:disabled),.activationScreen button:not(:disabled){
   -webkit-tap-highlight-color:transparent;
-  transform:translateZ(0);
-  backface-visibility:hidden;
-  transition-property:transform,color,border-color,background-color,box-shadow,opacity,filter;
-  transition-duration:var(--motion-fast);
-  transition-timing-function:var(--motion-soft);
+  transition-property:transform,opacity,color,border-color,background-color!important;
+  transition-duration:var(--motion-fast)!important;
+  transition-timing-function:var(--motion-ease)!important;
 }
 .appShell button:not(:disabled):active,.activationScreen button:not(:disabled):active{
-  transform:translate3d(0,1px,0) scale(.975);
-  transition-duration:80ms;
+  transform:translate3d(0,1px,0) scale(.985)!important;
+  transition-duration:65ms!important;
 }
-
-/* Small focus motion instead of abrupt outlines. */
 .appShell input,.appShell select{
-  transition:border-color 160ms var(--motion-soft),box-shadow 160ms var(--motion-soft),background-color 160ms var(--motion-soft);
+  transition:border-color 130ms var(--motion-ease),background-color 130ms var(--motion-ease)!important;
 }
 .appShell input:focus,.appShell select:focus{
   outline:none;
   border-color:rgba(111,95,255,.82);
-  box-shadow:0 0 0 3px rgba(104,88,255,.10),0 0 18px rgba(69,181,255,.05);
 }
 
-/* Paint containment on large independent blocks. */
-.modeCard,.renderCard,.featureRow,.settingsCard,.queueCard,.resultCard,.stageCard,.systemCard,.selectedFolders,.outputPicker{
-  contain:layout style paint;
+/* Continuous glow animations and CSS filters cost frames in WKWebView. Keep the premium state static. */
+.topnav button.active::after{animation:none!important;opacity:.72!important;transform:translateX(210%)!important;filter:none!important}
+.topnav button .icon,.topnav button:hover .icon,.topnav button.active .icon{filter:none!important}
+
+/* Critical: no content-visibility/contain on scrolling project blocks.
+   WKWebView can re-layout those blocks while fast-scrolling, causing severe frame drops. */
+.sectionBlock,.modeCard,.renderCard,.featureRow,.settingsCard,.queueCard,.resultCard,.stageCard,.systemCard,.selectedFolders,.outputPicker{
+  content-visibility:visible!important;
+  contain:none!important;
 }
-.sectionBlock{content-visibility:auto;contain-intrinsic-size:auto 220px}
-
-/* During active scrolling remove decorative work that can steal a frame. */
-html.motion-scrolling .topnav button.active::after{animation-play-state:paused;opacity:.28}
-html.motion-scrolling .modeCard,
-html.motion-scrolling .renderCard,
-html.motion-scrolling .featureRow,
-html.motion-scrolling .settingsCard,
-html.motion-scrolling .queueCard,
-html.motion-scrolling .resultCard,
-html.motion-scrolling .stageCard,
-html.motion-scrolling .systemCard{
-  box-shadow:inset 0 1px 0 rgba(255,255,255,.015)!important;
-}
-html.motion-scrolling .modeCard::after{filter:none}
-
-/* Adaptive fallback: if RAF detects sustained sub-48fps interaction, drop only decoration, never functionality. */
-html.motion-lite .topnav button.active::after{display:none}
-html.motion-lite .modeCard::before,
-html.motion-lite .modeCard::after{opacity:0!important;filter:none!important}
-html.motion-lite .liveGpuOverlay{box-shadow:0 0 0 1px rgba(72,192,255,.13)}
-html.motion-lite .bigValue{text-shadow:none;box-shadow:inset 0 1px 0 rgba(255,255,255,.02)}
-
-/* Avoid accidental horizontal bounce while keeping vertical motion fluid. */
-.content,.simplePage,.renderDetails{overflow-x:hidden}
 
 @media (prefers-reduced-motion:reduce){
   .pageScene,.editorPage,.settingsCard,.updateNotice,details[open]>div{animation:none!important}
   .appShell button,.activationScreen button,.appShell input,.appShell select{transition:none!important}
-  .content,.renderDetails,.queueCards,.assetList,.visualEditor,.simplePage,.settingsPage{scroll-behavior:auto}
 }

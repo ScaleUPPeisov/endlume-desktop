@@ -29,7 +29,7 @@ done
 
 for i in $(seq 1 25); do
   out="$TMP/crossfade-$i.mp4"
-  "$FFMPEG" -hide_banner -loglevel error -i "$TMP/source.mp4" -i "$TMP/source.mp4" -filter_complex '[0:v]trim=duration=0.7,setpts=PTS-STARTPTS[a];[1:v]trim=duration=0.7,setpts=PTS-STARTPTS[b];[a][b]xfade=transition=fade:duration=0.1:offset=0.6,trim=start=0.1:duration=0.7,setpts=PTS-STARTPTS[x];[x]scale=320:180:force_original_aspect_ratio=decrease,pad=320:180:(ow-iw)/2:(oh-ih)/2,fps=30,setsar=1[outv]' -map '[outv]' -t 0.7 -an -c:v libx264 -preset ultrafast -crf 18 -pix_fmt yuv420p -y "$out"
+  "$FFMPEG" -hide_banner -loglevel error -i "$TMP/source.mp4" -i "$TMP/source.mp4" -filter_complex '[0:v]trim=duration=0.7,setpts=PTS-STARTPTS,fps=30,settb=AVTB[a];[1:v]trim=duration=0.7,setpts=PTS-STARTPTS,fps=30,settb=AVTB[b];[a][b]xfade=transition=fade:duration=0.1:offset=0.6,trim=start=0.1:duration=0.7,setpts=PTS-STARTPTS[x];[x]scale=320:180:force_original_aspect_ratio=decrease,pad=320:180:(ow-iw)/2:(oh-ih)/2,fps=30,setsar=1[outv]' -map '[outv]' -t 0.7 -an -c:v libx264 -preset ultrafast -crf 18 -pix_fmt yuv420p -y "$out"
   verify "$out" 0.60; passes=$((passes+1))
 done
 

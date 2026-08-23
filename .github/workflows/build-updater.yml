@@ -7,7 +7,6 @@ on:
 
 jobs:
   build-macos-arm64:
-    # Bootstrap pushes should not create releases. Future release commits start with "release:".
     if: github.event_name == 'workflow_dispatch' || startsWith(github.event.head_commit.message, 'release:')
     runs-on: macos-15
     permissions:
@@ -64,7 +63,6 @@ jobs:
           cp "$ICONSET/icon_32x32.png" src-tauri/icons/32x32.png
           cp "$ICONSET/icon_128x128.png" src-tauri/icons/128x128.png
           cp "$ICONSET/icon_128x128@2x.png" src-tauri/icons/128x128@2x.png
-          echo "ENDLUME icon regenerated from app-icon-v2.svg"
 
       - name: Prepare FFmpeg sidecars
         shell: bash
@@ -88,6 +86,12 @@ jobs:
           "$FFMPEG" -hide_banner -loglevel error -f lavfi -i 'testsrc2=size=640x360:rate=30' -frames:v 15 -an -c:v libx264 -pix_fmt yuv420p -y /tmp/endlume-libx264.mp4
           test -s /tmp/endlume-libx264.mp4
           echo 'Verified bundled FFmpeg: h264_videotoolbox • hevc_videotoolbox • libx264'
+
+      - name: Validate loop modes 100 times
+        shell: bash
+        run: |
+          chmod +x scripts/validate-loop-modes.sh
+          scripts/validate-loop-modes.sh src-tauri/binaries/ffmpeg-aarch64-apple-darwin src-tauri/binaries/ffprobe-aarch64-apple-darwin
 
       - name: Frontend check
         run: npm run build

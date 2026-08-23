@@ -205,7 +205,7 @@ async fn build_media_clip(app:&AppHandle,job:&QueueJob,media:&str,index:usize,to
   }else{
     let d=probe_duration(app,media).await.unwrap_or(5.0).clamp(1.0,60.0);
     match s.loop_mode.as_str(){
-      "crossfade"=>{let cf=s.crossfade_sec.min((d/3.0).max(0.15)).max(0.1);duration=d;args.extend(vec!["-i",media,"-i",media].into_iter().map(String::from));graph=format!("[0:v]trim=duration={d},setpts=PTS-STARTPTS[a];[1:v]trim=duration={d},setpts=PTS-STARTPTS[b];[a][b]xfade=transition=fade:duration={cf}:offset={},trim=start={cf}:duration={d},setpts=PTS-STARTPTS[x];{}[outv]",(d-cf).max(0.1),base_filter(s,"x"));},
+      "crossfade"=>{let cf=s.crossfade_sec.min((d/3.0).max(0.15)).max(0.1);duration=d;args.extend(vec!["-i",media,"-i",media].into_iter().map(String::from));graph=format!("[0:v]trim=duration={d},setpts=PTS-STARTPTS,fps={},settb=AVTB[a];[1:v]trim=duration={d},setpts=PTS-STARTPTS,fps={},settb=AVTB[b];[a][b]xfade=transition=fade:duration={cf}:offset={},trim=start={cf}:duration={d},setpts=PTS-STARTPTS[x];{}[outv]",s.fps,s.fps,(d-cf).max(0.1),base_filter(s,"x"));},
       "pingpong"=>{duration=d*2.0;args.extend(vec!["-i",media].into_iter().map(String::from));graph=format!("[0:v]trim=duration={d},setpts=PTS-STARTPTS,split[f][r];[r]reverse[rr];[f][rr]concat=n=2:v=1:a=0[x];{}[outv]",base_filter(s,"x"));},
       _=>{duration=d;args.extend(vec!["-i",media].into_iter().map(String::from));graph=format!("{}[outv]",base_filter(s,"0:v"));}
     }

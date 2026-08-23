@@ -1,0 +1,8 @@
+{
+  "version": "1.0.0-alpha.8.13",
+  "run_id": 32641869397,
+  "source_sha": "ac08eddddd6b3df85b064cf2d488155678b94783",
+  "status": "verified",
+  "loop_smoke_checks": 100,
+  "platform": "macos-arm64"
+}

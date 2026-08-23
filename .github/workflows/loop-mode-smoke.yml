@@ -1,0 +1,19 @@
+name: ENDLUME Loop Mode 100x smoke
+
+on:
+  push:
+    branches: [release]
+  workflow_dispatch:
+
+jobs:
+  loop-mode-100x:
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.event.head_commit.message, 'release:')
+    runs-on: macos-15
+    steps:
+      - name: Checkout ENDLUME
+        uses: actions/checkout@v7
+      - name: Install FFmpeg
+        run: |
+          brew list ffmpeg >/dev/null 2>&1 || brew install ffmpeg
+      - name: Run 100 Loop Mode renders
+        run: bash scripts/loop-mode-smoke.sh

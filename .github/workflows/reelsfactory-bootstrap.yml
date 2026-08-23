@@ -1,0 +1,58 @@
+name: ReelsFactory macOS M1 bootstrap
+on:
+  push:
+    branches: [reelsfactory-bootstrap]
+  workflow_dispatch:
+
+jobs:
+  build-macos-arm64:
+    runs-on: macos-15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify Apple Silicon runner
+        run: |
+          uname -m
+          test "$(uname -m)" = "arm64"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+      - name: Unpack ReelsFactory source
+        run: unzip -q ReelsFactory-macOS-M1-v0.1.0-source.zip
+      - name: Install dependencies
+        working-directory: ReelsFactory-macOS-M1-v0.1.0
+        run: npm install --no-audit --no-fund
+      - name: Build native Apple Silicon exporter
+        working-directory: ReelsFactory-macOS-M1-v0.1.0
+        run: ./scripts/build-native-macos.sh
+      - name: Generate app icons
+        working-directory: ReelsFactory-macOS-M1-v0.1.0
+        run: npx tauri icon src-tauri/icons/icon.svg
+      - name: Frontend build check
+        working-directory: ReelsFactory-macOS-M1-v0.1.0
+        run: npm run build
+      - name: Rust check
+        working-directory: ReelsFactory-macOS-M1-v0.1.0
+        run: cargo check --manifest-path src-tauri/Cargo.toml --target aarch64-apple-darwin
+      - name: Build DMG and signed updater artifact
+        working-directory: ReelsFactory-macOS-M1-v0.1.0
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
+        run: npx tauri build --target aarch64-apple-darwin --bundles dmg,app
+      - name: Collect artifacts
+        run: |
+          mkdir -p dist-reelsfactory
+          find ReelsFactory-macOS-M1-v0.1.0/src-tauri/target/aarch64-apple-darwin/release/bundle -type f \( -name '*.dmg' -o -name '*.app.tar.gz' -o -name '*.sig' \) -exec cp {} dist-reelsfactory/ \;
+          ls -lah dist-reelsfactory
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ReelsFactory-macOS-M1-v0.1.0
+          path: dist-reelsfactory/*
+          if-no-files-found: error
+          retention-days: 30

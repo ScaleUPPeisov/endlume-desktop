@@ -3,11 +3,19 @@ import type {EffectPreset} from '../types';
 
 export type LivePreviewAssets={basePath:string;baseKind:'image'|'video';overlayPath:string};
 
-type Props={assets?:LivePreviewAssets;effect:EffectPreset;busy?:boolean};
+type Props={
+  assets?:LivePreviewAssets;
+  effect:EffectPreset;
+  busy?:boolean;
+  overlayRef:React.RefObject<HTMLDivElement|null>;
+  overlayStyle:React.CSSProperties;
+  onDragStart:(e:React.PointerEvent<HTMLDivElement>)=>void;
+  onResizeStart:(e:React.PointerEvent<HTMLElement>)=>void;
+};
 
 function hexRgb(hex:string){const raw=hex.replace('#','').trim();const v=Number.parseInt(raw.length===3?raw.split('').map(x=>x+x).join(''):raw,16);return [((v>>16)&255)/255,((v>>8)&255)/255,(v&255)/255] as const}
 
-export function LiveCompositePreview({assets,effect,busy}:Props){
+export function LiveCompositePreview({assets,effect,busy,overlayRef,overlayStyle,onDragStart,onResizeStart}:Props){
   const canvasRef=useRef<HTMLCanvasElement>(null),videoRef=useRef<HTMLVideoElement>(null),rafRef=useRef<number|undefined>(undefined),effectRef=useRef(effect);
   effectRef.current=effect;
   useEffect(()=>{
@@ -26,5 +34,13 @@ export function LiveCompositePreview({assets,effect,busy}:Props){
   },[assets?.overlayPath]);
   if(!assets)return <div className="livePreviewEmpty"><span>{busy?'Подготавливаю Live Preview…':'Выберите проект на основном экране'}</span></div>;
   const base=assets.baseKind==='video'?<video className="livePreviewBase" src={assets.basePath} autoPlay loop muted playsInline/>:<img className="livePreviewBase" src={assets.basePath} draggable={false}/>;
-  return <div className="liveComposite">{base}<video ref={videoRef} className="liveOverlaySource" src={assets.overlayPath} autoPlay loop muted playsInline/><canvas ref={canvasRef} className="liveOverlayCanvas" style={{mixBlendMode:effect.mode==='screen'?'screen':'normal'}}/>{busy&&<div className="livePreviewPreparing">Обновляю proxy…</div>}</div>
+  return <div className="liveComposite">
+    {base}
+    <div ref={overlayRef} className={`liveGpuOverlay ${effect.fullscreen?'fullscreen':''}`} style={overlayStyle} onPointerDown={onDragStart}>
+      <video ref={videoRef} className="liveOverlaySource" src={assets.overlayPath} autoPlay loop muted playsInline/>
+      <canvas ref={canvasRef} className="liveOverlayCanvas" style={{mixBlendMode:effect.mode==='screen'?'screen':'normal'}}/>
+      {!effect.fullscreen&&<><i className="corner nw"/><i className="corner ne"/><i className="corner sw"/><i className="corner se" onPointerDown={onResizeStart}/></>}
+    </div>
+    {busy&&<div className="livePreviewPreparing">Обновляю proxy…</div>}
+  </div>
 }

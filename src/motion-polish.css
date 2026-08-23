@@ -1,9 +1,10 @@
-/* ENDLUME Studio Motion Layer v2 — macOS/WKWebView performance first.
-   Rule: native scrolling only. No scroll listeners, no RAF governor, no layout/content visibility tricks. */
+/* ENDLUME Studio Motion Layer v3 — macOS/WKWebView performance + layout safety.
+   Native scrolling only. The route wrapper MUST NOT use transform because transformed ancestors
+   change the containing block of position:fixed descendants such as the Project queue footer. */
 :root{
   --motion-ease:cubic-bezier(.22,1,.36,1);
   --motion-fast:120ms;
-  --motion-page:180ms;
+  --motion-page:160ms;
 }
 
 /* Native macOS scrolling. Hide the WebView scrollbar completely so no white/right-side rail appears. */
@@ -29,19 +30,21 @@ html,body,#root,.appShell,.content,.renderDetails,.queueCards,.assetList,.visual
 }
 .content,.simplePage,.renderDetails{overflow-x:hidden}
 
-/* Route change uses only compositor-friendly opacity/transform. */
+/* IMPORTANT: opacity-only route transition.
+   Do not add transform/filter/perspective/contain here: ProjectPage contains .projectBottom (position:fixed).
+   A transformed ancestor makes that footer scroll with the page and overlap the form. */
 .pageScene{
   min-height:100%;
   height:100%;
-  transform:translate3d(0,0,0);
-  backface-visibility:hidden;
-  animation:endlumePageIn var(--motion-page) var(--motion-ease) both;
+  transform:none!important;
+  filter:none!important;
+  perspective:none!important;
+  contain:none!important;
+  animation:endlumePageIn var(--motion-page) var(--motion-ease);
 }
-@keyframes endlumePageIn{
-  from{opacity:.35;transform:translate3d(0,5px,0)}
-  to{opacity:1;transform:translate3d(0,0,0)}
-}
+@keyframes endlumePageIn{from{opacity:.38}to{opacity:1}}
 
+/* Editors/settings can use short compositor transforms because they do not contain the fixed project footer. */
 .editorPage,.settingsCard,.updateNotice{
   animation:endlumePanelIn 170ms var(--motion-ease) both;
   backface-visibility:hidden;
@@ -49,6 +52,17 @@ html,body,#root,.appShell,.content,.renderDetails,.queueCards,.assetList,.visual
 details[open]>div{animation:endlumeDetailIn 140ms var(--motion-ease) both}
 @keyframes endlumePanelIn{from{opacity:.45;transform:translate3d(0,4px,0)}to{opacity:1;transform:translate3d(0,0,0)}}
 @keyframes endlumeDetailIn{from{opacity:.5;transform:translate3d(0,-2px,0)}to{opacity:1;transform:translate3d(0,0,0)}}
+
+/* Project footer is a viewport-level control. Keep it fixed and reserve content space below it. */
+.projectColumn{padding-bottom:105px!important}
+.projectBottom{
+  position:fixed!important;
+  left:0!important;
+  right:0!important;
+  bottom:0!important;
+  transform:none!important;
+  z-index:50!important;
+}
 
 /* Buttons: only cheap properties. Avoid animating filter/box-shadow during interaction. */
 .appShell button:not(:disabled),.activationScreen button:not(:disabled){
@@ -73,8 +87,7 @@ details[open]>div{animation:endlumeDetailIn 140ms var(--motion-ease) both}
 .topnav button.active::after{animation:none!important;opacity:.72!important;transform:translateX(210%)!important;filter:none!important}
 .topnav button .icon,.topnav button:hover .icon,.topnav button.active .icon{filter:none!important}
 
-/* Critical: no content-visibility/contain on scrolling project blocks.
-   WKWebView can re-layout those blocks while fast-scrolling, causing severe frame drops. */
+/* No virtualized paint/layout tricks on the vertically scrolling Project page. */
 .sectionBlock,.modeCard,.renderCard,.featureRow,.settingsCard,.queueCard,.resultCard,.stageCard,.systemCard,.selectedFolders,.outputPicker{
   content-visibility:visible!important;
   contain:none!important;

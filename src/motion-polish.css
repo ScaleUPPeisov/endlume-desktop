@@ -1,0 +1,112 @@
+/* ENDLUME Studio Motion Layer — compositor-first motion tuned for macOS WebView. */
+:root{
+  --motion-ease:cubic-bezier(.22,1,.36,1);
+  --motion-soft:cubic-bezier(.2,.8,.2,1);
+  --motion-fast:150ms;
+  --motion-normal:240ms;
+  --motion-page:285ms;
+}
+
+/* Keep scrolling native/compositor driven. No JS scroll hijacking. */
+.content,.renderDetails,.queueCards,.assetList,.visualEditor,.simplePage,.settingsPage{
+  scroll-behavior:smooth;
+  overscroll-behavior:contain;
+  scrollbar-gutter:stable;
+  -webkit-overflow-scrolling:touch;
+}
+
+/* Premium slim scrollbar without heavy blur/backdrop filters. */
+*{scrollbar-width:thin;scrollbar-color:#5a55a8 transparent}
+::-webkit-scrollbar{width:8px;height:8px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{
+  min-height:38px;
+  border:2px solid transparent;
+  border-radius:999px;
+  background:linear-gradient(180deg,#3dbcf6 0%,#6d5fff 52%,#bf489f 100%) padding-box;
+  box-shadow:inset 0 0 0 1px rgba(255,255,255,.035);
+}
+::-webkit-scrollbar-thumb:hover{background:linear-gradient(180deg,#58c8fb 0%,#8170ff 52%,#dc55ae 100%) padding-box}
+
+/* Route change: only opacity + transform, so WebKit can keep it on the compositor. */
+.pageScene{
+  min-height:100%;
+  height:100%;
+  transform:translateZ(0);
+  backface-visibility:hidden;
+  transform-origin:50% 32%;
+  animation:endlumePageIn var(--motion-page) var(--motion-ease) both;
+}
+@keyframes endlumePageIn{
+  from{opacity:.18;transform:translate3d(0,8px,0) scale(.997)}
+  to{opacity:1;transform:translate3d(0,0,0) scale(1)}
+}
+
+/* Editors/settings feel like part of one continuous app rather than hard cuts. */
+.editorPage{animation:endlumePanelIn 260ms var(--motion-ease) both;transform:translateZ(0);backface-visibility:hidden}
+.settingsCard{animation:endlumePanelIn 230ms var(--motion-ease) both;transform:translateZ(0)}
+.updateNotice{animation:endlumeNoticeIn 260ms var(--motion-ease) both;transform:translateZ(0)}
+details[open]>div{animation:endlumeDetailIn 190ms var(--motion-ease) both}
+@keyframes endlumePanelIn{from{opacity:.25;transform:translate3d(0,6px,0)}to{opacity:1;transform:translate3d(0,0,0)}}
+@keyframes endlumeNoticeIn{from{opacity:0;transform:translate3d(-8px,-4px,0) scale(.985)}to{opacity:1;transform:translate3d(0,0,0) scale(1)}}
+@keyframes endlumeDetailIn{from{opacity:.2;transform:translate3d(0,-3px,0)}to{opacity:1;transform:translate3d(0,0,0)}}
+
+/* Consistent tactile response on every functional button. */
+.appShell button:not(:disabled),.activationScreen button:not(:disabled){
+  -webkit-tap-highlight-color:transparent;
+  transform:translateZ(0);
+  backface-visibility:hidden;
+  transition-property:transform,color,border-color,background-color,box-shadow,opacity,filter;
+  transition-duration:var(--motion-fast);
+  transition-timing-function:var(--motion-soft);
+}
+.appShell button:not(:disabled):active,.activationScreen button:not(:disabled):active{
+  transform:translate3d(0,1px,0) scale(.975);
+  transition-duration:80ms;
+}
+
+/* Small focus motion instead of abrupt outlines. */
+.appShell input,.appShell select{
+  transition:border-color 160ms var(--motion-soft),box-shadow 160ms var(--motion-soft),background-color 160ms var(--motion-soft);
+}
+.appShell input:focus,.appShell select:focus{
+  outline:none;
+  border-color:rgba(111,95,255,.82);
+  box-shadow:0 0 0 3px rgba(104,88,255,.10),0 0 18px rgba(69,181,255,.05);
+}
+
+/* Paint containment on large independent blocks. */
+.modeCard,.renderCard,.featureRow,.settingsCard,.queueCard,.resultCard,.stageCard,.systemCard,.selectedFolders,.outputPicker{
+  contain:layout style paint;
+}
+.sectionBlock{content-visibility:auto;contain-intrinsic-size:auto 220px}
+
+/* During active scrolling remove decorative work that can steal a frame. */
+html.motion-scrolling .topnav button.active::after{animation-play-state:paused;opacity:.28}
+html.motion-scrolling .modeCard,
+html.motion-scrolling .renderCard,
+html.motion-scrolling .featureRow,
+html.motion-scrolling .settingsCard,
+html.motion-scrolling .queueCard,
+html.motion-scrolling .resultCard,
+html.motion-scrolling .stageCard,
+html.motion-scrolling .systemCard{
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.015)!important;
+}
+html.motion-scrolling .modeCard::after{filter:none}
+
+/* Adaptive fallback: if RAF detects sustained sub-48fps interaction, drop only decoration, never functionality. */
+html.motion-lite .topnav button.active::after{display:none}
+html.motion-lite .modeCard::before,
+html.motion-lite .modeCard::after{opacity:0!important;filter:none!important}
+html.motion-lite .liveGpuOverlay{box-shadow:0 0 0 1px rgba(72,192,255,.13)}
+html.motion-lite .bigValue{text-shadow:none;box-shadow:inset 0 1px 0 rgba(255,255,255,.02)}
+
+/* Avoid accidental horizontal bounce while keeping vertical motion fluid. */
+.content,.simplePage,.renderDetails{overflow-x:hidden}
+
+@media (prefers-reduced-motion:reduce){
+  .pageScene,.editorPage,.settingsCard,.updateNotice,details[open]>div{animation:none!important}
+  .appShell button,.activationScreen button,.appShell input,.appShell select{transition:none!important}
+  .content,.renderDetails,.queueCards,.assetList,.visualEditor,.simplePage,.settingsPage{scroll-behavior:auto}
+}

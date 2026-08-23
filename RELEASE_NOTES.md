@@ -9,3 +9,4 @@
 - Большие независимые UI-блоки получили paint/layout containment, а секции проекта используют content-visibility для снижения лишней отрисовки вне экрана.
 - Добавлена отдельная release-проверка motion-архитектуры: passive native scroll, compositor transforms, adaptive fallback, reduced-motion и запрет transition: all в Motion Layer.
 - Сохранены все исправления alpha.8.13: GPU Live Preview Effects/Subscribe, быстрый drag без FFmpeg, исправленный Crossfade CFR и 100-прогонная проверка Loop Mode.
+- Motion Layer спроектирован под стабильную визуальную частоту до 60 FPS на 60-Гц дисплее; если железо/нагрузка не держит её, ENDLUME сначала отключает тяжёлую косметику, а не функциональность.

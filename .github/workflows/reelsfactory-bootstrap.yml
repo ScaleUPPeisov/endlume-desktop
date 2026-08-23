@@ -2,6 +2,8 @@ name: ReelsFactory macOS M1 bootstrap
 on:
   push:
     branches: [reelsfactory-bootstrap]
+  pull_request:
+    branches: [reelsfactory-bootstrap]
   workflow_dispatch:
 
 jobs:

@@ -1,0 +1,9 @@
+{
+  "version": "0.1.0",
+  "status": "verified",
+  "platform": "macos-arm64",
+  "native_smoke_checks": 100,
+  "bundle_id": "ai.reelsfactory.desktop",
+  "source_sha": "c336c4887548766f80976072194695ba14291cbe",
+  "run_id": "32653139407"
+}

@@ -1,0 +1,4 @@
+df6a107c76132de21fea8619e2df2c6e967f240097d91c764f55bc641288adf5  build-artifacts/BUILD_RECEIPT.json
+a9edfb58cfab96984926848a5469083167c6d53d2d5178818a68b0db59bc26d3  build-artifacts/ReelsFactory-0.1.0-aarch64.app.tar.gz
+2f6baaccedca80d4b02d8e7680aead13ef96d75f6aa89de6643a839e1c096ad4  build-artifacts/ReelsFactory-0.1.0-aarch64.app.tar.gz.sig
+c47d49c7b03f197ebdfe38332ca599bf2788ddac50f8a5814d122bfe1f00fb13  build-artifacts/ReelsFactory-0.1.0-aarch64.dmg

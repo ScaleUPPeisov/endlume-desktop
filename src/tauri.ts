@@ -22,6 +22,8 @@ export type SingleAppStatus={
   error?:string;
 };
 
+export type LivePreviewAssetPaths={basePath:string;baseKind:'image'|'video';overlayPath:string};
+
 export const api = {
   chooseRoots: async()=>{
     const result=await open({directory:true,multiple:true,title:'Выберите папку или несколько папок с проектами'});
@@ -46,6 +48,7 @@ export const api = {
   reorderQueue:(ids:string[])=>invoke<void>('reorder_queue',{ids}),
   cancelProject:(id:string)=>invoke<void>('cancel_project',{id}),
   generatePreview:(projectPath:string,timeSec:number,effects:EffectPreset[],subscribes:SubscribePreset[])=>invoke<string>('generate_preview',{projectPath,timeSec,effects,subscribes}),
+  prepareLivePreview:(projectPath:string,overlaySource:string,timeSec:number)=>invoke<LivePreviewAssetPaths>('prepare_live_preview',{projectPath,overlaySource,timeSec}),
   previewUrl:(path?:string)=>path?convertFileSrc(path):'',
   loadLibrary:()=>invoke<LibraryPayload>('load_library'),
   saveLibrary:(payload:LibraryPayload)=>invoke<void>('save_library',{payload}),
@@ -67,7 +70,7 @@ export const api = {
   showInfo:(text:string)=>message(text,{title:'ENDLUME Studio',kind:'info'}),
   checkUpdate:async()=>{
     const update=await check();
-    if(!update)return {none:true,current:'1.0.0-alpha.8.12',channel:'alpha',signedUpdater:true};
+    if(!update)return {none:true,current:'1.0.0-alpha.8.13',channel:'alpha',signedUpdater:true};
     let downloaded=0,total=0;
     return {
       version:update.version,

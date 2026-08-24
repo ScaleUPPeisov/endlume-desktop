@@ -33,6 +33,18 @@ banner(){
   echo
 }
 
+repair_and_remove(){
+  local p="$1"
+  [[ -e "$p" ]] || return 0
+  /bin/rm -rf "$p" >/dev/null 2>&1 && return 0
+  echo "Исправляю права старого локального build-кэша: $p"
+  sudo /usr/bin/chflags -R nouchg "$p" >/dev/null 2>&1 || true
+  sudo /usr/bin/chown -R "$(id -un)":staff "$p" >/dev/null 2>&1 || true
+  sudo /bin/chmod -RN "$p" >/dev/null 2>&1 || true
+  sudo /bin/chmod -R u+rwX "$p" >/dev/null 2>&1 || true
+  sudo /bin/rm -rf "$p" || fail "Не удалось очистить старый build-кэш: $p"
+}
+
 banner
 
 echo "1/10  Проверяю Mac…"
@@ -85,6 +97,11 @@ else
 fi
 cd "$SRC"
 
+# src-tauri/binaries and target are intentionally gitignored. A previous sudo/local build
+# can leave them owned by root or with ACL/immutable flags. Clean them before copying tools.
+repair_and_remove "$SRC/src-tauri/binaries"
+repair_and_remove "$SRC/src-tauri/target"
+
 VERSION="$(node -p "require('./package.json').version")"
 echo "Собираю ENDLUME Studio $VERSION"
 
@@ -92,13 +109,15 @@ echo "4/10  Устанавливаю frontend-зависимости…"
 npm install --no-audit --no-fund
 
 echo "5/10  Готовлю FFmpeg/FFprobe внутри приложения…"
-mkdir -p src-tauri/binaries
-cp "$(command -v ffmpeg)" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
-cp "$(command -v ffprobe)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
-chmod +x src-tauri/binaries/*
+BIN_DIR="$SRC/src-tauri/binaries"
+FFMPEG="$BIN_DIR/ffmpeg-aarch64-apple-darwin"
+FFPROBE="$BIN_DIR/ffprobe-aarch64-apple-darwin"
+mkdir -p "$BIN_DIR"
+/usr/bin/install -m 755 "$(command -v ffmpeg)" "$FFMPEG"
+/usr/bin/install -m 755 "$(command -v ffprobe)" "$FFPROBE"
+[[ -x "$FFMPEG" ]] || fail "FFmpeg не удалось встроить в приложение."
+[[ -x "$FFPROBE" ]] || fail "FFprobe не удалось встроить в приложение."
 
-FFMPEG="src-tauri/binaries/ffmpeg-aarch64-apple-darwin"
-FFPROBE="src-tauri/binaries/ffprobe-aarch64-apple-darwin"
 "$FFMPEG" -hide_banner -encoders > /tmp/endlume-local-encoders.txt
 grep -q 'h264_videotoolbox' /tmp/endlume-local-encoders.txt || fail "В FFmpeg отсутствует Apple VideoToolbox."
 grep -q 'libx264' /tmp/endlume-local-encoders.txt || fail "В FFmpeg отсутствует libx264 fallback."

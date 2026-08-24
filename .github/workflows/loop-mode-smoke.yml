@@ -1,13 +1,17 @@
 name: ENDLUME Loop Mode 100x smoke
 
+# Manual diagnostic only. The production updater workflow already runs the
+# Loop Mode regression suite, so running this again on every release push
+# only duplicated macOS minutes and sent duplicate failure emails.
 on:
-  push:
-    branches: [release]
   workflow_dispatch:
+
+concurrency:
+  group: endlume-loop-mode-manual
+  cancel-in-progress: true
 
 jobs:
   loop-mode-100x:
-    if: github.event_name == 'workflow_dispatch' || startsWith(github.event.head_commit.message, 'release:')
     runs-on: macos-15
     steps:
       - name: Checkout ENDLUME

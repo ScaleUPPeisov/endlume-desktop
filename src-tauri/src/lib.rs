@@ -4,6 +4,7 @@ mod persistence;
 mod render;
 mod preview;
 mod live_preview;
+mod assets;
 mod license;
 mod benchmark;
 mod queue;
@@ -26,7 +27,7 @@ pub fn run(){
     .invoke_handler(tauri::generate_handler![
       scan::scan_root,
       queue::enqueue_projects,queue::queue_snapshot,queue::reorder_queue,queue::cancel_project,queue::resume_recovery,
-      preview::generate_preview,live_preview::prepare_live_preview,
+      preview::generate_preview,live_preview::prepare_live_preview,assets::import_library_asset,
       persistence::load_library,persistence::save_library,persistence::load_recovery,persistence::dismiss_recovery,
       benchmark::benchmark_engine,
       license::activate_license,license::license_status,

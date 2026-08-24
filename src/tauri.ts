@@ -30,7 +30,7 @@ async function withTimeout<T>(promise:Promise<T>,ms:number,label:string):Promise
   finally{if(timer!==undefined)window.clearTimeout(timer)}
 }
 
-async function importManagedAsset(source:string,kind:string){
+async function importManagedAsset(source:string,kind:'effects'|'subscribe'|'ambient'){
   return invoke<string>('import_library_asset',{source,kind});
 }
 
@@ -44,10 +44,10 @@ export const api = {
     const result=await open({directory:true,multiple:false,title:'Папка для готовых видео'});
     return typeof result==='string'?result:null;
   },
-  chooseVideo: async()=>{
-    const result=await open({directory:false,multiple:false,title:'Выберите видео',filters:[{name:'Video',extensions:['mp4','mov','m4v','mkv','webm','avi','wmv','flv','ts','mts','m2ts','mpg','mpeg','vob','3gp']} ]});
+  chooseVideo: async(kind:'effects'|'subscribe'='effects')=>{
+    const result=await open({directory:false,multiple:false,title:kind==='subscribe'?'Выберите Subscribe-видео':'Выберите видео эффекта',filters:[{name:'Video',extensions:['mp4','mov','m4v','mkv','webm','avi','wmv','flv','ts','mts','m2ts','mpg','mpeg','vob','3gp']} ]});
     if(typeof result!=='string')return null;
-    return importManagedAsset(result,'effects');
+    return importManagedAsset(result,kind);
   },
   chooseAmbient: async()=>{
     const result=await open({directory:false,multiple:false,title:'Выберите ambient-аудио',filters:[{name:'Audio',extensions:['mp3','wav','m4a','aac','flac','ogg','opus']} ]});

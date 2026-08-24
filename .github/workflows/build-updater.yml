@@ -1,19 +1,17 @@
 name: ENDLUME macOS updater build
 
+# Manual fallback only.
+# ENDLUME macOS development now builds locally on the owner's Mac to avoid
+# burning GitHub-hosted macOS minutes and sending repeated failure emails.
 on:
-  push:
-    branches: [release]
-    paths:
-      - 'RELEASE_TRIGGER.md'
   workflow_dispatch:
 
 concurrency:
-  group: endlume-macos-release
+  group: endlume-macos-release-manual
   cancel-in-progress: true
 
 jobs:
   build-macos-arm64:
-    if: github.event_name == 'workflow_dispatch' || startsWith(github.event.head_commit.message, 'release:')
     runs-on: macos-15
     permissions:
       contents: write
@@ -80,29 +78,10 @@ jobs:
           cp "$(command -v ffprobe)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
           chmod +x src-tauri/binaries/*
 
-      - name: Validate bundled FFmpeg encoders
-        shell: bash
-        run: |
-          set -euo pipefail
-          FFMPEG="src-tauri/binaries/ffmpeg-aarch64-apple-darwin"
-          "$FFMPEG" -hide_banner -encoders > /tmp/endlume-encoders.txt
-          grep -q 'h264_videotoolbox' /tmp/endlume-encoders.txt
-          grep -q 'hevc_videotoolbox' /tmp/endlume-encoders.txt
-          grep -q 'libx264' /tmp/endlume-encoders.txt
-          "$FFMPEG" -hide_banner -loglevel error -f lavfi -i 'testsrc2=size=640x360:rate=30' -frames:v 15 -an -c:v libx264 -pix_fmt yuv420p -y /tmp/endlume-libx264.mp4
-          test -s /tmp/endlume-libx264.mp4
-          echo 'Verified bundled FFmpeg: h264_videotoolbox • hevc_videotoolbox • libx264'
-
       - name: Apply production render fixes
         run: |
           python3 scripts/apply-render-loop-fix.py
           python3 scripts/apply-render-hotfix-8-17.py
-          grep -Fq 'refresh_project_paths(&mut resolved_job)' src-tauri/src/render.rs
-          grep -Fq 'job.effects.iter().filter(|e|e.enabled)' src-tauri/src/render.rs
-          grep -Fq 'job.subscribes.iter().filter(|s|s.effect.enabled)' src-tauri/src/render.rs
-          grep -Fq 'match cache::prepare(app,e,job.settings.fps).await' src-tauri/src/render.rs
-          grep -Fq 'match cache::prepare(app,&s.effect,job.settings.fps).await' src-tauri/src/render.rs
-          grep -Fq 'aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo' src-tauri/src/render.rs
 
       - name: Validate loop modes and normal project
         shell: bash
@@ -110,7 +89,7 @@ jobs:
           chmod +x scripts/validate-loop-modes.sh
           scripts/validate-loop-modes.sh src-tauri/binaries/ffmpeg-aarch64-apple-darwin src-tauri/binaries/ffprobe-aarch64-apple-darwin
 
-      - name: Validate motion and project layout UI
+      - name: Validate motion UI
         run: node scripts/validate-motion-ui.mjs
 
       - name: Frontend check
@@ -124,98 +103,3 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
         run: npx tauri build --target aarch64-apple-darwin --bundles app
-
-      - name: Validate one-app updater identity
-        shell: bash
-        run: |
-          set -euo pipefail
-          VERSION="$(node -p "require('./package.json').version")"
-          CONFIG_VERSION="$(python3 -c 'import json; print(json.load(open("src-tauri/tauri.conf.json"))["version"])')"
-          CARGO_VERSION="$(python3 - <<'PY'
-          import re
-          s=open('src-tauri/Cargo.toml').read()
-          print(re.search(r'^version\s*=\s*"([^"]+)"',s,re.M).group(1))
-          PY
-          )"
-          test "$VERSION" = "$CONFIG_VERSION"
-          test "$VERSION" = "$CARGO_VERSION"
-          BUNDLE_DIR="src-tauri/target/aarch64-apple-darwin/release/bundle/macos"
-          TAR="$(find "$BUNDLE_DIR" -maxdepth 1 -type f -name '*.app.tar.gz' -print -quit)"
-          test -f "$TAR"
-          TMP="$(mktemp -d)"
-          tar -xzf "$TAR" -C "$TMP"
-          APP_COUNT="$(find "$TMP" -maxdepth 1 -type d -name '*.app' -print | wc -l | tr -d ' ')"
-          test "$APP_COUNT" -eq 1
-          APP="$(find "$TMP" -maxdepth 1 -type d -name '*.app' -print -quit)"
-          test -n "$APP"
-          test "$(basename "$APP")" = "ENDLUME Studio.app"
-          BUNDLE_ID="$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$APP/Contents/Info.plist")"
-          APP_VERSION="$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist")"
-          test "$BUNDLE_ID" = "studio.endlume.desktop"
-          test "$APP_VERSION" = "$VERSION"
-          test -f "$APP/Contents/Resources/icon.icns"
-          echo "Verified: one ENDLUME Studio.app • $BUNDLE_ID • $APP_VERSION"
-
-      - name: Prepare release metadata
-        shell: bash
-        run: |
-          set -euo pipefail
-          VERSION="$(python3 -c 'import json; print(json.load(open("src-tauri/tauri.conf.json"))["version"])')"
-          BUNDLE_DIR="src-tauri/target/aarch64-apple-darwin/release/bundle/macos"
-          TAR="$(find "$BUNDLE_DIR" -maxdepth 1 -type f -name '*.app.tar.gz' -print -quit)"
-          SIG="$TAR.sig"
-          test -f "$TAR"
-          test -f "$SIG"
-          mkdir -p updater-release
-          cp "$TAR" "$SIG" updater-release/
-          SIG_CONTENT="$(cat "$SIG")"
-          ARTIFACT="$(basename "$TAR")"
-          NOTES="$(cat RELEASE_NOTES.md 2>/dev/null || echo 'ENDLUME update')"
-          python3 - "$VERSION" "$ARTIFACT" "$SIG_CONTENT" "$NOTES" <<'PY'
-          import json,sys,datetime
-          version,artifact,signature,notes=sys.argv[1:]
-          data={
-            'version':version,
-            'pub_date':datetime.datetime.now(datetime.timezone.utc).isoformat().replace('+00:00','Z'),
-            'target':'darwin',
-            'arch':'aarch64',
-            'artifact':artifact,
-            'signature':signature,
-            'notes':notes,
-          }
-          open('updater-release/release.json','w').write(json.dumps(data,ensure_ascii=False,indent=2)+'\n')
-          PY
-
-      - name: Upload signed updater artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ENDLUME-macOS-aarch64-updater
-          path: updater-release/*
-          if-no-files-found: error
-          retention-days: 30
-
-      - name: Persist verified build receipt
-        shell: bash
-        run: |
-          set -euo pipefail
-          VERSION="$(node -p "require('./package.json').version")"
-          cat > ENDLUME_BUILD_RECEIPT.json <<JSON
-          {
-            "version": "$VERSION",
-            "run_id": $GITHUB_RUN_ID,
-            "source_sha": "$GITHUB_SHA",
-            "status": "verified",
-            "loop_smoke_checks": 100,
-            "normal_project_regression": true,
-            "overlay_fault_isolation": true,
-            "motion_ui_checks": 16,
-            "platform": "macos-arm64"
-          }
-          JSON
-          git config user.name "ENDLUME Release Bot"
-          git config user.email "actions@users.noreply.github.com"
-          git add src-tauri/src/render.rs ENDLUME_BUILD_RECEIPT.json
-          if ! git diff --cached --quiet; then
-            git commit -m "ci: persist verified $VERSION build receipt [skip ci]"
-            git push origin HEAD:release
-          fi

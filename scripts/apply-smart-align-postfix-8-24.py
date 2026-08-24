@@ -30,4 +30,41 @@ if "shiftKey?.02" in text or "*100))}%" in text:
     raise SystemExit("Smart Align validation failed: invalid generated TypeScript remains")
 
 p.write_text(text, encoding="utf-8")
+
+# Keep Settings → Updates history complete through the current local release.
+history_path = Path("src/components/ReleaseHistory.tsx")
+if history_path.exists():
+    history = history_path.read_text(encoding="utf-8").replace("current:true,", "")
+    if "1.0.0-alpha.8.24" not in history:
+        marker = "const releases:Release[]=[\n"
+        entries = """  {version:'1.0.0-alpha.8.24',date:'25.08.2026',current:true,title:'Smart Align: автоцентр, магнитные направляющие и точные временные метки',items:[
+    'Новые Effects и Subscribe стартуют по центру кадра; кнопка «АВТОЦЕНТР» возвращает выбранный overlay точно в середину.',
+    'Добавлены магнитные привязки к центру, краям и Safe Area. Shift + drag временно отключает магнит для полностью ручной подгонки.',
+    'В Preview постоянно видны центр, границы 0/100 и безопасная зона; при snap появляется динамическая cyan/pink направляющая.',
+    'Добавлены точные X / Y / SIZE в процентах, кнопки выравнивания и управление стрелками; ⌘0 мгновенно центрирует overlay.',
+    'Timeline теперь явно показывает Начало / Середину / Конец / Длительность эффекта, а Subscribe — первое, второе, последнее появление и интервал.',
+    'Smart Align использует ту же нормализованную x/y/scale геометрию, что и финальный FFmpeg render, поэтому Preview и экспорт не должны расходиться.'
+  ]},
+  {version:'1.0.0-alpha.8.23',date:'24.08.2026',title:'Validated Render Gate',items:[
+    'Локальная сборка прошла TypeScript, production frontend, Rust, 100/100 Loop Mode и полный render regression gate.',
+    'Проверяется смешанный MP3, Unicode/французские имена, обычный PNG+MP3 проект, chromakey, aspect preservation и permission recovery.'
+  ]},
+  {version:'1.0.0-alpha.8.22',date:'24.08.2026',title:'React 19 Live Preview Fix',items:[
+    'Исправлена совместимость useRef с React 19 в LiveCompositePreview.',
+    'Сохранены aspect-safe Effects и Render Permission Recovery.'
+  ]},
+  {version:'1.0.0-alpha.8.21',date:'24.08.2026',title:'Aspect-safe Effects + Render Permission Recovery',items:[
+    'Live Preview читает реальные пропорции исходного overlay и не должен превращать круг в овал.',
+    'Render workspace перенесён во внутренний writable cache ENDLUME, добавлен fallback для папки результата.'
+  ]},
+  {version:'1.0.0-alpha.8.20',date:'24.08.2026',title:'Первый aspect-safe render pass',items:[
+    'Effects начали масштабироваться с сохранением aspect ratio через FFmpeg scale width:-2.',
+    'Добавлена диагностика Permission denied для FFmpeg и папки результата.'
+  ]},
+"""
+        if marker not in history:
+            raise SystemExit("Release history marker not found")
+        history = history.replace(marker, marker + entries, 1)
+    history_path.write_text(history, encoding="utf-8")
+
 print("ENDLUME alpha.8.24 Smart Align post-check passed")

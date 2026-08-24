@@ -63,18 +63,30 @@ AUDIO_OUT="$TMP/normal-project-audio.m4a"
 test -s "$AUDIO_OUT"
 "$FFPROBE" -v error -select_streams a:0 -show_entries stream=sample_rate,channels -of csv=p=0 "$AUDIO_OUT" | grep -q '48000,2'
 
-# End-to-end normal project: one PNG + the mixed MP3 cycle must create a valid MP4 with video and audio.
 NORMAL_OUT="$TMP/Новая папка — Ready Videos.mp4"
 "$FFMPEG" -hide_banner -loglevel error -loop 1 -framerate 30 -i "$IMG" -i "$AUDIO_OUT" -t 2.0 -map 0:v:0 -map 1:a:0 -vf 'scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,fps=30,setsar=1' -c:v libx264 -preset ultrafast -tune stillimage -crf 18 -pix_fmt yuv420p -c:a copy -movflags +faststart -y "$NORMAL_OUT"
 test -s "$NORMAL_OUT"
 "$FFPROBE" -v error -select_streams v:0 -show_entries stream=codec_type -of default=nw=1:nk=1 "$NORMAL_OUT" | grep -q video
 "$FFPROBE" -v error -select_streams a:0 -show_entries stream=codec_type -of default=nw=1:nk=1 "$NORMAL_OUT" | grep -q audio
 
-# Source-level safety gates that must be present in the actual Rust pipeline after patching.
+# Chromakey fidelity: green background becomes alpha, visible red subject remains a valid overlay.
+KEY_SRC="$TMP/chroma-source.mp4"
+KEY_CACHE="$TMP/chroma-cache.mov"
+KEY_FINAL="$TMP/chroma-final.mp4"
+"$FFMPEG" -hide_banner -loglevel error -f lavfi -i 'color=c=0x00ff00:size=320x180:rate=30,drawbox=x=70:y=35:w=180:h=110:color=0xff3355:t=fill' -t 1 -an -c:v libx264 -preset ultrafast -pix_fmt yuv420p -y "$KEY_SRC"
+"$FFMPEG" -hide_banner -loglevel error -i "$KEY_SRC" -vf 'fps=30,format=rgba,colorkey=0x00ff00:0.10:0.06,format=argb' -an -c:v qtrle -pix_fmt argb -y "$KEY_CACHE"
+check "$KEY_CACHE"
+"$FFMPEG" -hide_banner -loglevel error -loop 1 -i "$IMG" -stream_loop -1 -i "$KEY_CACHE" -filter_complex '[0:v]scale=640:360,fps=30,setsar=1[b];[1:v]scale=320:180[fx];[b][fx]overlay=x=160:y=90:shortest=1[outv]' -map '[outv]' -t 1 -an -c:v libx264 -preset ultrafast -pix_fmt yuv420p -y "$KEY_FINAL"
+check "$KEY_FINAL"
+
 grep -Fq 'job.effects.iter().filter(|e|e.enabled)' src-tauri/src/render.rs
 grep -Fq 'job.subscribes.iter().filter(|s|s.effect.enabled)' src-tauri/src/render.rs
 grep -Fq 'match cache::prepare(app,e,job.settings.fps).await' src-tauri/src/render.rs
 grep -Fq 'match cache::prepare(app,&s.effect,job.settings.fps).await' src-tauri/src/render.rs
 grep -Fq 'refresh_project_paths(&mut resolved_job)' src-tauri/src/render.rs
+grep -Fq 'colorkey={}:{}:{}' src-tauri/src/render.rs
+grep -Fq 'attempt==1{choose_encoder' src-tauri/src/render.rs
+grep -Fq 'effects-v3-fidelity' src-tauri/src/cache.rs
+grep -Fq 'colorkey=' src-tauri/src/cache.rs
 
-echo 'ENDLUME normal project regression: Unicode filenames + mixed MP3 layouts + one-image final MP4 + stale-path recovery + disabled/broken overlay isolation passed.'
+echo 'ENDLUME regressions passed: normal folder + audio normalization + stale paths + overlay isolation + RGB colorkey fidelity + software encoder retry.'

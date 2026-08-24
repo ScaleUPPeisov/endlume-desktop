@@ -52,7 +52,7 @@ replace_once(
 replace_once(
     render,
     "let started=chrono::Utc::now().timestamp_millis();let timer=Instant::now();let mut last_error=String::new();let out_dir=PathBuf::from(&job.settings.output_dir);std::fs::create_dir_all(&out_dir).map_err(|e|e.to_string())?;let out=unique_output(&out_dir,&job.project.name);",
-    "let started=chrono::Utc::now().timestamp_millis();let timer=Instant::now();let mut last_error=String::new();let requested_out_dir=PathBuf::from(&job.settings.output_dir);let (out_dir,output_fallback)=resolve_output_dir(app,&requested_out_dir)?;if output_fallback{let _=app.emit(\"render-output-fallback\",json!({\"id\":job.project.id,\"requested\":requested_out_dir,\"actual\":out_dir}));}let out=unique_output(&out_dir,&job.project.name);",
+    "let started=chrono::Utc::now().timestamp_millis();let timer=Instant::now();let mut last_error=String::new();let requested_out_dir=PathBuf::from(&job.settings.output_dir);let (out_dir,output_fallback)=resolve_output_dir(app,&requested_out_dir)?;if output_fallback{let _=app.emit(\"render-output-fallback\",json!({\"id\":job.project.id,\"requested\":requested_out_dir.to_string_lossy().into_owned(),\"actual\":out_dir.to_string_lossy().into_owned()}));}let out=unique_output(&out_dir,&job.project.name);",
     "Output permission recovery",
 )
 replace_once(
@@ -61,5 +61,11 @@ replace_once(
     "let work_root=app.path().app_cache_dir().map_err(|e|e.to_string())?.join(\"render-work\");std::fs::create_dir_all(&work_root).map_err(|e|format!(\"Не удалось создать рабочий кэш ENDLUME: {e}\"))?;let work=work_root.join(format!(\"{}-{}-{}\",safe_name(&job.project.id),attempt,started));if work.exists(){std::fs::remove_dir_all(&work).map_err(|e|format!(\"Не удалось очистить старый render-work '{}': {e}\",work.display()))?;}std::fs::create_dir_all(&work).map_err(|e|format!(\"Не удалось создать render-work '{}': {e}\",work.display()))?;",
     "Owned render workspace",
 )
+
+settings = Path("src/pages/SettingsPage.tsx")
+if settings.exists():
+    text = settings.read_text(encoding="utf-8")
+    if "1.0.0-alpha.8.19" in text:
+        settings.write_text(text.replace("1.0.0-alpha.8.19", "1.0.0-alpha.8.20"), encoding="utf-8")
 
 print("ENDLUME alpha.8.20 aspect/permission hotfix applied")

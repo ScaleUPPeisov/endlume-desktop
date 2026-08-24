@@ -97,8 +97,6 @@ else
 fi
 cd "$SRC"
 
-# src-tauri/binaries and target are intentionally gitignored. A previous sudo/local build
-# can leave them owned by root or with ACL/immutable flags. Clean them before copying tools.
 repair_and_remove "$SRC/src-tauri/binaries"
 repair_and_remove "$SRC/src-tauri/target"
 
@@ -133,6 +131,9 @@ grep -Fq 'job.subscribes.iter().filter(|s|s.effect.enabled)' src-tauri/src/rende
 grep -Fq 'aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo' src-tauri/src/render.rs || fail "Не применилось исправление MP3-аудио."
 grep -Fq "api.chooseVideo('subscribe')" src/pages/Editors.tsx || fail "Не применился managed import Subscribe."
 grep -Fq "api.chooseVideo('effects')" src/pages/Editors.tsx || fail "Не применился managed import Effects."
+
+echo "6.5/10 Быстрая проверка TypeScript до долгих тестов…"
+npx tsc --noEmit
 
 echo "7/10  Проверяю реальные сценарии рендера…"
 chmod +x scripts/validate-loop-modes.sh

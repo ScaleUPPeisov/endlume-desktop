@@ -46,7 +46,7 @@ replace_once(
 replace_once(
     render,
     "let (mut rx,child)=app.shell().sidecar(\"ffmpeg\").map_err(|e|e.to_string())?.args(args).spawn().map_err(|e|e.to_string())?;",
-    "let cmd_preview=args.join(\" \ \");let (mut rx,child)=app.shell().sidecar(\"ffmpeg\").map_err(|e|format!(\"{stage}: встроенный FFmpeg недоступен: {e}\"))?.args(args).spawn().map_err(|e|format!(\"{stage}: FFmpeg не запустился: {e}. Команда: {cmd_preview}\"))?;",
+    "let cmd_preview=args.join(\" \" );let (mut rx,child)=app.shell().sidecar(\"ffmpeg\").map_err(|e|format!(\"{stage}: встроенный FFmpeg недоступен: {e}\"))?.args(args).spawn().map_err(|e|format!(\"{stage}: FFmpeg не запустился: {e}. Команда: {cmd_preview}\"))?;",
     "FFmpeg spawn diagnostics",
 )
 replace_once(

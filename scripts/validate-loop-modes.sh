@@ -6,7 +6,7 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
 SRC="$TMP/source.mp4"
-IMG="$TMP/image.png"
+IMG="$TMP/ChatGPT Image 27 июн. 2026 г., 23_38_49.png"
 "$FFMPEG" -hide_banner -loglevel error -f lavfi -i 'testsrc2=size=96x54:rate=20' -frames:v 6 -an -c:v libx264 -preset ultrafast -pix_fmt yuv420p -y "$SRC"
 "$FFMPEG" -hide_banner -loglevel error -f lavfi -i 'color=c=0x314765:size=96x54' -frames:v 1 -y "$IMG"
 
@@ -49,7 +49,7 @@ done
 
 echo 'ENDLUME loop modes: 100/100 smoke checks passed (25 × Image, Crossfade, Ping-pong, Original).'
 
-# Regression for a normal ENDLUME folder: Unicode filenames + mixed MP3 sample rates/channel layouts.
+# Regression matching an ordinary user folder: Unicode/French filenames + mixed MP3 sample rates/layouts.
 A0="$TMP/__Quais, minuit humide__.mp3"
 A1="$TMP/“Neon Wet Rose”.mp3"
 A2="$TMP/Après l’amour.mp3"
@@ -63,7 +63,15 @@ AUDIO_OUT="$TMP/normal-project-audio.m4a"
 test -s "$AUDIO_OUT"
 "$FFPROBE" -v error -select_streams a:0 -show_entries stream=sample_rate,channels -of csv=p=0 "$AUDIO_OUT" | grep -q '48000,2'
 
+# End-to-end normal project: one PNG + the mixed MP3 cycle must create a valid MP4 with video and audio.
+NORMAL_OUT="$TMP/Новая папка — Ready Videos.mp4"
+"$FFMPEG" -hide_banner -loglevel error -loop 1 -framerate 30 -i "$IMG" -i "$AUDIO_OUT" -t 2.0 -map 0:v:0 -map 1:a:0 -vf 'scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,fps=30,setsar=1' -c:v libx264 -preset ultrafast -tune stillimage -crf 18 -pix_fmt yuv420p -c:a copy -movflags +faststart -y "$NORMAL_OUT"
+test -s "$NORMAL_OUT"
+"$FFPROBE" -v error -select_streams v:0 -show_entries stream=codec_type -of default=nw=1:nk=1 "$NORMAL_OUT" | grep -q video
+"$FFPROBE" -v error -select_streams a:0 -show_entries stream=codec_type -of default=nw=1:nk=1 "$NORMAL_OUT" | grep -q audio
+
 grep -Fq 'job.effects.iter().filter(|e|e.enabled)' src-tauri/src/render.rs
 grep -Fq 'job.subscribes.iter().filter(|s|s.effect.enabled)' src-tauri/src/render.rs
+grep -Fq 'refresh_project_paths(&mut resolved_job)' src-tauri/src/render.rs
 
-echo 'ENDLUME normal project regression: Unicode filenames + mixed MP3 layouts + disabled overlay isolation passed.'
+echo 'ENDLUME normal project regression: Unicode filenames + mixed MP3 layouts + one-image final MP4 + stale-path recovery + disabled overlay isolation passed.'

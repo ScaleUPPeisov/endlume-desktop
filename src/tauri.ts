@@ -24,6 +24,16 @@ export type SingleAppStatus={
 
 export type LivePreviewAssetPaths={basePath:string;baseKind:'image'|'video';overlayPath:string};
 
+async function withTimeout<T>(promise:Promise<T>,ms:number,label:string):Promise<T>{
+  let timer:number|undefined;
+  try{return await Promise.race([promise,new Promise<T>((_,reject)=>{timer=window.setTimeout(()=>reject(new Error(`${label}: превышено время ожидания ${Math.round(ms/1000)} сек`)),ms)})]);}
+  finally{if(timer!==undefined)window.clearTimeout(timer)}
+}
+
+async function importManagedAsset(source:string,kind:string){
+  return invoke<string>('import_library_asset',{source,kind});
+}
+
 export const api = {
   chooseRoots: async()=>{
     const result=await open({directory:true,multiple:true,title:'Выберите папку или несколько папок с проектами'});
@@ -36,11 +46,13 @@ export const api = {
   },
   chooseVideo: async()=>{
     const result=await open({directory:false,multiple:false,title:'Выберите видео',filters:[{name:'Video',extensions:['mp4','mov','m4v','mkv','webm','avi','wmv','flv','ts','mts','m2ts','mpg','mpeg','vob','3gp']} ]});
-    return typeof result==='string'?result:null;
+    if(typeof result!=='string')return null;
+    return importManagedAsset(result,'effects');
   },
   chooseAmbient: async()=>{
     const result=await open({directory:false,multiple:false,title:'Выберите ambient-аудио',filters:[{name:'Audio',extensions:['mp3','wav','m4a','aac','flac','ogg','opus']} ]});
-    return typeof result==='string'?result:null;
+    if(typeof result!=='string')return null;
+    return importManagedAsset(result,'ambient');
   },
   scanRoot:(path:string)=>invoke<ProjectScanItem[]>('scan_root',{path}),
   enqueue:(projects:ProjectScanItem[],settings:RenderSettings,effects:EffectPreset[],subscribes:SubscribePreset[],ambient?:string)=>invoke<void>('enqueue_projects',{projects,settings,effects,subscribes,ambient}),
@@ -69,8 +81,8 @@ export const api = {
   showError:(text:string)=>message(text,{title:'ENDLUME Studio',kind:'error'}),
   showInfo:(text:string)=>message(text,{title:'ENDLUME Studio',kind:'info'}),
   checkUpdate:async()=>{
-    const update=await check();
-    if(!update)return {none:true,current:'1.0.0-alpha.8.14',channel:'alpha',signedUpdater:true};
+    const update=await withTimeout(check(),12000,'Проверка обновлений');
+    if(!update)return {none:true,current:'1.0.0-alpha.8.15',channel:'alpha',signedUpdater:true};
     let downloaded=0,total=0;
     return {
       version:update.version,
@@ -79,13 +91,8 @@ export const api = {
       current:update.currentVersion,
       install:async(onProgress?:(percent:number)=>void)=>{
         const guard=await invoke<SingleAppStatus>('cleanup_duplicate_apps',{aggressive:true}).catch(()=>null);
-        if(guard?.supported&&guard.canonicalInstall===false){
-          await invoke('normalize_current_app_name');
-          return;
-        }
-        if(guard?.failed?.length){
-          throw new Error(`Не удалось удалить старые копии ENDLUME: ${guard.failed.map(x=>x.path).join(', ')}`);
-        }
+        if(guard?.supported&&guard.canonicalInstall===false){await invoke('normalize_current_app_name');return;}
+        if(guard?.failed?.length){throw new Error(`Не удалось удалить старые копии ENDLUME: ${guard.failed.map(x=>x.path).join(', ')}`);}
         await update.downloadAndInstall((event:any)=>{
           if(event.event==='Started'){total=Number(event.data?.contentLength||0);downloaded=0;onProgress?.(0)}
           else if(event.event==='Progress'){downloaded+=Number(event.data?.chunkLength||0);if(total>0)onProgress?.(Math.min(100,downloaded/total*100))}

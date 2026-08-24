@@ -62,10 +62,10 @@ replace_once(
     "Owned render workspace",
 )
 
-settings = Path("src/pages/SettingsPage.tsx")
-if settings.exists():
-    text = settings.read_text(encoding="utf-8")
-    if "1.0.0-alpha.8.19" in text:
-        settings.write_text(text.replace("1.0.0-alpha.8.19", "1.0.0-alpha.8.20"), encoding="utf-8")
+for ui_file in [Path("src/pages/SettingsPage.tsx"), Path("src/tauri.ts")]:
+    if ui_file.exists():
+        text = ui_file.read_text(encoding="utf-8")
+        if "1.0.0-alpha.8.19" in text:
+            ui_file.write_text(text.replace("1.0.0-alpha.8.19", "1.0.0-alpha.8.20"), encoding="utf-8")
 
 print("ENDLUME alpha.8.20 aspect/permission hotfix applied")

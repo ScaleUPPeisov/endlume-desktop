@@ -3,7 +3,16 @@ import React from 'react';
 type Release={version:string;date:string;current?:boolean;title:string;items:string[]};
 
 const releases:Release[]=[
-  {version:'1.0.0-alpha.8.18',date:'24.08.2026',current:true,title:'Render Recovery: обычные папки, managed overlays и updater timeout',items:[
+  {version:'1.0.0-alpha.8.19',date:'24.08.2026',current:true,title:'Chromakey Fidelity + Render Recovery',items:[
+    'Chromakey переведён на RGB colorkey: видимые пиксели Effects/Subscribe сохраняют исходный цвет без прежней глобальной saturation/despill коррекции.',
+    'В Live Preview добавлена «ПИПЕТКА / КИСТЬ»: можно кликнуть или провести по фону overlay-видео и взять реальный цвет chromakey из исходного кадра.',
+    'Старые пресеты с Similarity/Blend около 0.9–1.0 автоматически приводятся к безопасным значениям и получают новый fidelity-cache.',
+    'Вторая попытка рендера теперь принудительно переключается с hardware encoder на libx264/libx265 software fallback.',
+    'Финальный stream-copy mux получил безопасную генерацию timestamp без повторного кодирования видео или музыки.',
+    'FFmpeg-ошибки теперь сохраняют название конкретного этапа, чтобы следующая ошибка была диагностируема, а не скрыта общим сообщением.',
+    'Локальный release-gate дополнен отдельным green-screen/colorkey smoke-test и проверкой software encoder retry.'
+  ]},
+  {version:'1.0.0-alpha.8.18',date:'24.08.2026',title:'Render Recovery: обычные папки, managed overlays и updater timeout',items:[
     'Обычный проект «1 PNG + MP3» теперь входит в обязательный end-to-end release regression и должен собрать валидный MP4 с видео и аудио до публикации обновления.',
     'MP3 с разными sample rate, mono/stereo и Unicode/французскими именами нормализуются перед acrossfade к 48 kHz / stereo / fltp.',
     'Если сохранённые пути PNG/MP3 устарели после обновления или перемещения папки, ENDLUME повторно сканирует саму папку проекта и восстанавливает актуальные пути перед рендером.',

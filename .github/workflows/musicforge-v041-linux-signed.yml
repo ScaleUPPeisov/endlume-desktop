@@ -1,0 +1,126 @@
+name: Build MusicForge AI v0.4.1 Safe on Linux
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/musicforge-v041-linux-signed.yml'
+
+jobs:
+  build-sign-darwin-arm64:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rebuild v0.4.1 Safe source
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat musicforge-v02/chunks/*.txt > /tmp/v02.b64
+          python3 - <<'PY'
+          import base64, hashlib, pathlib, gzip
+          data=base64.b64decode(pathlib.Path('/tmp/v02.b64').read_text().strip(), validate=True)
+          assert hashlib.sha256(data).hexdigest()=='8a9dc8c16a06c14419a65df74c9307e472cff70eaba1ae89dc0b221742e69f7b'
+          pathlib.Path('/tmp/v02.zip').write_bytes(data)
+          for src,dst in [
+              ('musicforge-v03/patch.gz.b64','/tmp/v03.patch'),
+              ('musicforge-v031/patch.gz.b64','/tmp/v031.patch'),
+              ('musicforge-v04/patch.gz.b64','/tmp/v04.patch'),
+              ('musicforge-v041-safe/patch.gz.b64','/tmp/v041.patch')]:
+              text=''.join(pathlib.Path(src).read_text().split())
+              raw=base64.b64decode(text + '=' * ((4-len(text)%4)%4), validate=False)
+              pathlib.Path(dst).write_bytes(gzip.decompress(raw))
+          PY
+          unzip -q /tmp/v02.zip
+          cd musicforge-ai
+          patch -p1 --forward --batch < /tmp/v03.patch
+          patch -p1 --forward --batch < /tmp/v031.patch
+          patch -p1 --forward --batch < /tmp/v04.patch
+          patch -p1 --forward --batch < /tmp/v041.patch
+          grep -q '"version": "0.4.1"' package.json
+          grep -q "ACESTEP_NO_INIT: 'true'" main.js
+          grep -q "ACESTEP_INIT_LLM: 'false'" main.js
+          ! grep -q 'engineBootPromise = startEngine' main.js
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Validate JavaScript and Safe Mode
+        working-directory: musicforge-ai
+        run: |
+          set -euo pipefail
+          node --check main.js
+          node --check preload.js
+          node --check renderer/app.js
+          python3 - <<'PY'
+          import pathlib
+          main=pathlib.Path('main.js').read_text()
+          assert "ACESTEP_NO_INIT: 'true'" in main
+          assert "ACESTEP_INIT_LLM: 'false'" in main
+          boot=main.split("app.whenReady().then",1)[1].split("app.on('before-quit'",1)[0]
+          assert 'startEngine()' not in boot
+          assert "stopEngine('auto')" in main
+          assert "thinking = false" in main
+          print('Safe Mode source checks passed')
+          PY
+
+      - name: Install dependencies
+        working-directory: musicforge-ai
+        run: npm install --no-audit --no-fund
+
+      - name: Package macOS ARM64 bundle on Linux
+        working-directory: musicforge-ai
+        run: |
+          set -euo pipefail
+          npm run package:mac
+          APP='dist/MusicForge AI-darwin-arm64/MusicForge AI.app'
+          test -x "$APP/Contents/MacOS/MusicForge AI"
+          file "$APP/Contents/MacOS/MusicForge AI" | tee /tmp/file-main.txt
+          grep -q 'Mach-O 64-bit arm64' /tmp/file-main.txt
+          file "$APP/Contents/Frameworks/Electron Framework.framework/Versions/A/Electron Framework" | tee /tmp/file-framework.txt
+          grep -q 'Mach-O 64-bit arm64' /tmp/file-framework.txt
+
+      - name: Ad-hoc sign complete app bundle with rcodesign
+        uses: indygreg/apple-code-sign-action@v1
+        with:
+          input_path: 'musicforge-ai/dist/MusicForge AI-darwin-arm64/MusicForge AI.app'
+          output_path: 'musicforge-ai/dist-signed/MusicForge AI.app'
+
+      - name: Verify signed bundle structure
+        run: |
+          set -euo pipefail
+          APP='musicforge-ai/dist-signed/MusicForge AI.app'
+          test -d "$APP"
+          test -x "$APP/Contents/MacOS/MusicForge AI"
+          test -f "$APP/Contents/Resources/app.asar"
+          file "$APP/Contents/MacOS/MusicForge AI" | grep -q 'Mach-O 64-bit arm64'
+          find "$APP" -type l | head -20
+
+      - name: Create symlink-safe release ZIP
+        run: |
+          set -euo pipefail
+          cd musicforge-ai/dist-signed
+          zip -qry -y '../MusicForge-AI-v0.4.1-Mac-M1-SIGNED.zip' 'MusicForge AI.app'
+          cd ..
+          unzip -t 'MusicForge-AI-v0.4.1-Mac-M1-SIGNED.zip'
+          sha256sum 'MusicForge-AI-v0.4.1-Mac-M1-SIGNED.zip'
+          python3 - <<'PY'
+          import zipfile, stat
+          z=zipfile.ZipFile('MusicForge-AI-v0.4.1-Mac-M1-SIGNED.zip')
+          target='MusicForge AI.app/Contents/MacOS/MusicForge AI'
+          i=z.getinfo(target)
+          mode=(i.external_attr >> 16) & 0xffff
+          assert mode & stat.S_IXUSR, oct(mode)
+          links=[x for x in z.infolist() if stat.S_ISLNK((x.external_attr>>16)&0xffff)]
+          assert links, 'framework symlinks were not preserved'
+          print('Executable mode:', oct(mode), 'symlinks:', len(links))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MusicForge-AI-v0.4.1-Mac-M1-SIGNED
+          path: musicforge-ai/MusicForge-AI-v0.4.1-Mac-M1-SIGNED.zip
+          retention-days: 14

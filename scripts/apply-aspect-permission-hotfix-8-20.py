@@ -65,8 +65,8 @@ replace_once(
 for ui_file in [Path("src/pages/SettingsPage.tsx"), Path("src/tauri.ts")]:
     if ui_file.exists():
         text = ui_file.read_text(encoding="utf-8")
-        text = text.replace("1.0.0-alpha.8.19", "1.0.0-alpha.8.21")
-        text = text.replace("1.0.0-alpha.8.20", "1.0.0-alpha.8.21")
+        for old_version in ["1.0.0-alpha.8.19", "1.0.0-alpha.8.20", "1.0.0-alpha.8.21"]:
+            text = text.replace(old_version, "1.0.0-alpha.8.22")
         ui_file.write_text(text, encoding="utf-8")
 
-print("ENDLUME alpha.8.21 aspect/permission/version hotfix applied")
+print("ENDLUME alpha.8.22 aspect/permission/version hotfix applied")

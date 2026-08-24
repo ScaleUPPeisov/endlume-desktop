@@ -94,6 +94,8 @@ jobs:
           grep -Fq 'refresh_project_paths(&mut resolved_job)' src-tauri/src/render.rs
           grep -Fq 'job.effects.iter().filter(|e|e.enabled)' src-tauri/src/render.rs
           grep -Fq 'job.subscribes.iter().filter(|s|s.effect.enabled)' src-tauri/src/render.rs
+          grep -Fq 'match cache::prepare(app,e,job.settings.fps).await' src-tauri/src/render.rs
+          grep -Fq 'match cache::prepare(app,&s.effect,job.settings.fps).await' src-tauri/src/render.rs
           grep -Fq 'aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo' src-tauri/src/render.rs
 
       - name: Validate loop modes and normal project
@@ -199,6 +201,7 @@ jobs:
             "status": "verified",
             "loop_smoke_checks": 100,
             "normal_project_regression": true,
+            "overlay_fault_isolation": true,
             "motion_ui_checks": 16,
             "platform": "macos-arm64"
           }

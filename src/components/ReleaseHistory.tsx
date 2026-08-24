@@ -3,103 +3,91 @@ import React from 'react';
 type Release={version:string;date:string;current?:boolean;title:string;items:string[]};
 
 const releases:Release[]=[
-  {version:'1.0.0-alpha.8.17',date:'24.08.2026',current:true,title:'Hotfix: обычный рендер, Effects/Subscribe и зависание обновлений',items:[
-    'Исправлена причина, по которой выключенные старые Effects/Subscribe могли ломать обычный рендер: отключённые пресеты больше вообще не трогают source-файлы и render-cache.',
-    'Если включённый старый overlay-файл действительно удалён, ENDLUME пропускает только этот overlay с предупреждением, а не роняет весь проект.',
-    'Новые Effects, Subscribe и ambient после выбора копируются во внутреннюю библиотеку ENDLUME. Исходный файл можно переместить или удалить — сохранённый пресет продолжит работать.',
-    'Аудиовходы перед crossfade принудительно нормализуются к 48 kHz / stereo / fltp. Это закрывает ошибки на обычных папках, где MP3 имеют разные sample rate или mono/stereo.',
-    'В release-тест добавлен обычный проект с Unicode-именами файлов, французскими символами и MP3 с разными параметрами.',
-    'Кнопка «Проверить и обновить» больше не может висеть на «ПРОВЕРЯЮ…» бесконечно: установлен сетевой таймаут 12 секунд.'
+  {version:'1.0.0-alpha.8.18',date:'24.08.2026',current:true,title:'Render Recovery: обычные папки, managed overlays и updater timeout',items:[
+    'Обычный проект «1 PNG + MP3» теперь входит в обязательный end-to-end release regression и должен собрать валидный MP4 с видео и аудио до публикации обновления.',
+    'MP3 с разными sample rate, mono/stereo и Unicode/французскими именами нормализуются перед acrossfade к 48 kHz / stereo / fltp.',
+    'Если сохранённые пути PNG/MP3 устарели после обновления или перемещения папки, ENDLUME повторно сканирует саму папку проекта и восстанавливает актуальные пути перед рендером.',
+    'Выключенные Effects/Subscribe не обращаются к source-файлам. Включённый overlay с потерянным файлом пропускается с предупреждением и больше не валит основной рендер.',
+    'Новые Effects, Subscribe и ambient копируются во внутреннюю managed-библиотеку ENDLUME и не зависят от Downloads/Desktop после импорта.',
+    'Проверка обновлений ограничена 12 секундами и больше не должна навсегда оставлять кнопку в состоянии «ПРОВЕРЯЮ…».',
+    'Перед созданием подписанного updater release pipeline принудительно применяет render hotfix, 100 Loop Mode smoke-checks, normal-folder regression, Motion/UI checks и Rust/Frontend checks.'
+  ]},
+  {version:'1.0.0-alpha.8.17',date:'24.08.2026',title:'Hotfix: обычный рендер, Effects/Subscribe и зависание обновлений',items:[
+    'Подготовлены исправления stale overlay, mixed-MP3 и updater timeout.',
+    'Добавлена managed-библиотека для Effects, Subscribe и ambient.',
+    'Добавлено самовосстановление путей проекта перед рендером.'
+  ]},
+  {version:'1.0.0-alpha.8.16',date:'23.08.2026',title:'Fixed footer и безопасные route-анимации',items:[
+    'Нижняя панель «Добавить в очередь» снова закреплена к viewport и не перекрывает параметры после прокрутки.',
+    'Корневой route-wrapper больше не использует transform/filter/perspective, которые ломали position: fixed в macOS WKWebView.',
+    'Переходы страниц сохранены через лёгкую opacity-анимацию; нативная прокрутка macOS и GPU Live Preview сохранены.',
+    'Добавлены 16 обязательных motion/layout проверок release pipeline.'
+  ]},
+  {version:'1.0.0-alpha.8.15',date:'23.08.2026',title:'Нативная плавная прокрутка macOS',items:[
+    'Убраны тяжёлые JS wheel/scroll перехваты и per-frame governor из обычной прокрутки.',
+    'Скролл оставлен нативному WKWebView/macOS для максимально стабильного ощущения.',
+    'Правый scrollbar скрыт, рабочая область очищена от лишнего визуального шума.'
   ]},
   {version:'1.0.0-alpha.8.14',date:'23.08.2026',title:'Motion Engine: плавная прокрутка и переходы',items:[
-    'Добавлен отдельный ENDLUME Motion Layer: переходы между Проектом, Рендером, Библиотекой и Настройками выполняются через compositor-friendly opacity + transform без тяжёлых layout-анимаций.',
-    'Прокрутка остаётся нативной для macOS WebView и не перехватывается JavaScript: smooth scroll, overscroll containment, стабильный scrollbar gutter и новый тонкий cyan/violet/pink scrollbar.',
-    'Кнопки по всему приложению получили единый короткий press/hover motion, а карточки Настроек, редакторы и раскрытие истории обновлений больше не появляются резким скачком.',
-    'Во время активной прокрутки ENDLUME временно приостанавливает декоративные блики и тяжёлые тени, чтобы кадры тратились на сам скролл, а не на косметику.',
-    'Добавлен адаптивный FPS governor: requestAnimationFrame оценивает фактическую частоту кадров во время взаимодействия. При устойчивой просадке ниже примерно 48 FPS отключается только тяжёлая декорация; функциональность не меняется.',
-    'В release pipeline добавлена отдельная проверка motion-архитектуры: нативный passive scroll, compositor transforms, reduced-motion fallback и отсутствие transition: all.'
+    'Добавлен Motion Layer для плавных переходов между разделами и hover/press-анимаций.',
+    'Прокрутка и переходы оптимизированы под compositor-friendly свойства.',
+    'Добавлены release-проверки motion-архитектуры.'
   ]},
   {version:'1.0.0-alpha.8.13',date:'23.08.2026',title:'GPU Live Preview, LoopForge-полировка и проверка Loop Mode',items:[
-    'Effects и Subscribe переведены на GPU Live Preview: базовый кадр остаётся на экране, а chromakey/luma/screen композятся в WebGL без тяжёлого FFmpeg при каждом движении.',
-    'Положение и размер двигаются вместе с реальным эффектом на частоте дисплея. Во время drag/resize React-state и FFmpeg не участвуют; состояние сохраняется после отпускания мыши.',
-    'Для первого открытия создаются короткие VideoToolbox proxy в кэше ENDLUME; следующие открытия используют готовый proxy и не дают чёрный экран между изменениями.',
-    'Режимы зацикливания проходят отдельный 100-прогонный FFmpeg smoke-test в release pipeline: Image, Crossfade, Ping-pong и Без обработки.',
-    'Карточки Loop Mode, числовые значения, пресеты, ползунки и служебные кнопки дополнительно приведены к компактному dark-glass / cyan-violet-pink стилю LoopForge.',
-    'Принудительное уменьшение 2-часового файла до 400–500 МБ не добавлялось: такой фиксированный размер нельзя гарантировать одновременно с требованием «строго без потери качества».'
+    'Effects и Subscribe переведены на GPU Live Preview без FFmpeg на каждом движении.',
+    'Положение и размер двигаются вместе с реальным эффектом на частоте дисплея.',
+    'Loop Mode проходит 100 FFmpeg smoke-тестов: Image, Crossfade, Ping-pong и Без обработки.',
+    'Карточки, значения, пресеты и ползунки приведены к компактному dark-glass стилю.'
   ]},
   {version:'1.0.0-alpha.8.12',date:'15.08.2026',title:'Компактная neon-навигация',items:[
-    'Проект, Рендер, Библиотека и Настройки стали компактнее и аккуратнее.',
-    'Активная вкладка получила cyan/violet/pink подсветку, тонкий градиентный контур и движущийся световой блик.',
-    'Неактивные кнопки уменьшены; hover получил лёгкую подсветку без лишнего визуального шума.',
-    'Логика переходов и остальной функционал не менялись.'
+    'Проект, Рендер, Библиотека и Настройки стали компактнее.',
+    'Активная вкладка получила cyan/violet/pink подсветку и тонкий градиентный контур.'
   ]},
   {version:'1.0.0-alpha.8.11',date:'15.08.2026',title:'Полная история релизов и нормализация имени',items:[
-    'История обновлений показывает сохранённые alpha-релизы от 8.1 до текущей версии.',
-    'Каноническое имя macOS-приложения закреплено как ENDLUME Studio.app.',
-    'Старые имена и backup-копии переносятся/очищаются через Single App Guard.',
-    'Сохранена исправленная диагностика Fast Engine.'
+    'История обновлений вынесена в Настройки → Обновления.',
+    'Каноническое имя macOS-приложения закреплено как ENDLUME Studio.app.'
   ]},
   {version:'1.0.0-alpha.8.10',date:'15.08.2026',title:'Fast Engine benchmark без ложных результатов',items:[
-    'Benchmark не может показывать кодировщик выбранным, если реальный encode-test не прошёл.',
-    'Проверяются h264_videotoolbox, hevc_videotoolbox и libx264.',
-    'Для каждого отказавшего движка показывается реальная причина FFmpeg.',
-    'Нулевой Effects cache поясняется как нормальное состояние до первого использования.'
+    'Benchmark выбирает кодировщик только после реального encode-test.',
+    'Проверяются h264_videotoolbox, hevc_videotoolbox и libx264.'
   ]},
   {version:'1.0.0-alpha.8.9',date:'15.08.2026',title:'Одна установка и постоянные уведомления',items:[
     'Канонический путь на Mac: /Applications/ENDLUME Studio.app.',
-    'Перед и после обновления Single App Guard удаляет старые дубликаты с тем же bundle ID.',
-    'Проверка обновлений запускается при старте, при возврате в окно и каждые 5 минут.',
-    'Добавлено отложенное напоминание об обновлении.'
+    'Single App Guard удаляет старые дубликаты с тем же bundle ID.'
   ]},
   {version:'1.0.0-alpha.8.8',date:'15.08.2026',title:'История обновлений и нормальное имя приложения',items:[
-    'Добавлена история alpha-релизов в Настройки → Обновления.',
-    'ENDLUME приводит старые имена app-bundle к ENDLUME Studio.app.',
-    'Single App Guard проверяет копии, bundle ID и имя текущего приложения.'
+    'Добавлена история alpha-релизов.',
+    'ENDLUME приводит старые имена app-bundle к ENDLUME Studio.app.'
   ]},
   {version:'1.0.0-alpha.8.7',date:'15.08.2026',title:'Single App Guard и плавный редактор',items:[
     'Single App Guard оставляет одну актуальную ENDLUME.',
-    'Tauri Updater обновляет текущий app-bundle in-place.',
-    'Drag/resize Effects/Subscribe вынесены из React-state на requestAnimationFrame.',
-    'Сохранены VideoToolbox Preview, overlay-cache, ВКЛ/ВЫКЛ/удаление и SSD-телеметрия.'
+    'Drag/resize Effects/Subscribe вынесены из React-state на requestAnimationFrame.'
   ]},
   {version:'1.0.0-alpha.8.6',date:'14.08.2026',title:'Effects, Live Preview и ускорение overlay',items:[
     'Новая macOS-иконка ENDLUME.',
-    'Subscribe, Effects и ambient получили отдельные ВКЛ/ВЫКЛ.',
-    'Subscribe можно удалить из редактора.',
+    'Subscribe, Effects и ambient получили ВКЛ/ВЫКЛ.',
     'Preview переведён на Apple VideoToolbox 60 FPS proxy 960×540.',
-    'Chromakey/luma cache заранее уменьшает overlay-клипы до рабочего размера.',
-    'Render Center показывает реальный SSD: использовано / свободно / всего.'
+    'Render Center показывает реальный SSD.'
   ]},
   {version:'1.0.0-alpha.8.5',date:'13.08.2026',title:'Уведомление об обновлении',items:[
-    'Карточка нового обновления не перекрывает рабочий экран.',
     'Добавлены Обновить и Обновить позже.',
-    'Прогресс скачивания/установки показывается в приложении.',
-    'После установки ENDLUME автоматически перезапускается.'
+    'Прогресс скачивания/установки показывается внутри приложения.'
   ]},
   {version:'1.0.0-alpha.8.4',date:'13.08.2026',title:'Подписанный встроенный Updater',items:[
     'Добавлен подписанный ENDLUME Updater.',
-    'Обновление устанавливается внутри приложения и показывает версию/дату/изменения.',
-    'Пакеты проверяются криптографической подписью.',
-    'После этой версии Terminal для обновления не требуется.'
+    'Update-пакеты проверяются криптографической подписью.'
   ]},
   {version:'1.0.0-alpha.8.3',date:'13.08.2026',title:'Smart Size и быстрый статичный master',items:[
     'Smart Size использует короткий 8–12-секундный master.',
-    'Первые секунды защищены отдельным high-quality I-frame.',
-    'Для статичной картинки используется короткий libx264 master, затем stream-copy.',
-    'Нижняя панель проекта закреплена у нижней границы окна.'
+    'Для статичной картинки применяется короткий master, затем stream-copy.'
   ]},
   {version:'1.0.0-alpha.8.2',date:'13.08.2026',title:'Render Center, таймеры и Static Master',items:[
     'Таймеры Прошло/Осталось идут непрерывно.',
-    'Кнопки Render Center приведены к DARK-дизайну ENDLUME/LoopForge.',
-    'Открыть видео/папку переведены на нативные команды macOS.',
-    'Добавлен Static Master Engine и AudioToolbox AAC 320 кбит/с / 48 kHz stereo.',
-    'Smart Size ориентировался примерно на 1.0–1.2 ГБ для двух часов статичного 4K-контента.'
+    'Добавлены Static Master Engine и AudioToolbox AAC.'
   ]},
   {version:'1.0.0-alpha.8.1',date:'13.08.2026',title:'Standalone macOS и первый Fast Engine',items:[
-    'Добавлена standalone .app-сборка: Terminal после установки не нужен.',
-    'Добавлены Smart Size и Fast Engine для Apple Silicon M1+.',
-    'CPU/RAM перестали очищаться между событиями прогресса.',
-    'UI/UX перенесён на Tauri 2 + Rust в стиле LoopForge.'
+    'Добавлена standalone .app-сборка без Terminal после установки.',
+    'Добавлены Smart Size и Fast Engine для Apple Silicon M1+.'
   ]}
 ];
 

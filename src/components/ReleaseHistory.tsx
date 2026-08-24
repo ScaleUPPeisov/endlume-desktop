@@ -3,7 +3,15 @@ import React from 'react';
 type Release={version:string;date:string;current?:boolean;title:string;items:string[]};
 
 const releases:Release[]=[
-  {version:'1.0.0-alpha.8.14',date:'23.08.2026',current:true,title:'Motion Engine: плавная прокрутка и переходы',items:[
+  {version:'1.0.0-alpha.8.17',date:'24.08.2026',current:true,title:'Hotfix: обычный рендер, Effects/Subscribe и зависание обновлений',items:[
+    'Исправлена причина, по которой выключенные старые Effects/Subscribe могли ломать обычный рендер: отключённые пресеты больше вообще не трогают source-файлы и render-cache.',
+    'Если включённый старый overlay-файл действительно удалён, ENDLUME пропускает только этот overlay с предупреждением, а не роняет весь проект.',
+    'Новые Effects, Subscribe и ambient после выбора копируются во внутреннюю библиотеку ENDLUME. Исходный файл можно переместить или удалить — сохранённый пресет продолжит работать.',
+    'Аудиовходы перед crossfade принудительно нормализуются к 48 kHz / stereo / fltp. Это закрывает ошибки на обычных папках, где MP3 имеют разные sample rate или mono/stereo.',
+    'В release-тест добавлен обычный проект с Unicode-именами файлов, французскими символами и MP3 с разными параметрами.',
+    'Кнопка «Проверить и обновить» больше не может висеть на «ПРОВЕРЯЮ…» бесконечно: установлен сетевой таймаут 12 секунд.'
+  ]},
+  {version:'1.0.0-alpha.8.14',date:'23.08.2026',title:'Motion Engine: плавная прокрутка и переходы',items:[
     'Добавлен отдельный ENDLUME Motion Layer: переходы между Проектом, Рендером, Библиотекой и Настройками выполняются через compositor-friendly opacity + transform без тяжёлых layout-анимаций.',
     'Прокрутка остаётся нативной для macOS WebView и не перехватывается JavaScript: smooth scroll, overscroll containment, стабильный scrollbar gutter и новый тонкий cyan/violet/pink scrollbar.',
     'Кнопки по всему приложению получили единый короткий press/hover motion, а карточки Настроек, редакторы и раскрытие истории обновлений больше не появляются резким скачком.',

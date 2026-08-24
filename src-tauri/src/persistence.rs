@@ -35,11 +35,11 @@ fn migrate_item(app:&AppHandle,item:&mut Value,kind:&str)->bool{
       _=>false,
     }
   }else{
-    let mut changed=false;
-    if obj.get("enabled").and_then(Value::as_bool).unwrap_or(false){obj.insert("enabled".into(),json!(false));changed=true;}
-    if obj.get("cacheReady").and_then(Value::as_bool).unwrap_or(false){obj.insert("cacheReady".into(),json!(false));changed=true;}
-    if obj.get("cacheKey").map(|v|!v.is_null()).unwrap_or(false){obj.insert("cacheKey".into(),Value::Null);changed=true;}
-    changed
+    obj.insert("source".into(),json!(""));
+    obj.insert("enabled".into(),json!(false));
+    obj.insert("cacheReady".into(),json!(false));
+    obj.insert("cacheKey".into(),Value::Null);
+    true
   }
 }
 

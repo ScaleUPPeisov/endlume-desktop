@@ -13,11 +13,11 @@ if old_crossfade in text:
 elif new_crossfade not in text:
     raise SystemExit("Expected crossfade render source was not found; refusing to patch an unknown render pipeline")
 
-# 2) A disabled Effects/Subscribe preset MUST NOT touch its source file or cache.
-# Old library entries can point to moved/deleted files; disabled features must never break a normal render.
+# 2) Disabled or broken Effects/Subscribe MUST NOT break the base render.
+# Missing sources and cache/chromakey preparation failures are isolated to that overlay.
 old_overlays = '''  for e in &job.effects{fx.push(cache::prepare(app,e,job.settings.fps).await?)}
   for s in &job.subscribes{let mut p=s.clone();p.effect=cache::prepare(app,&s.effect,job.settings.fps).await?;subs.push(p)}'''
-new_overlays = '''  for e in job.effects.iter().filter(|e|e.enabled){
+intermediate_overlays = '''  for e in job.effects.iter().filter(|e|e.enabled){
     if !Path::new(&e.source).is_file(){let _=app.emit("overlay-warning",json!({"id":job.project.id,"kind":"effect","name":e.name,"message":"Файл эффекта не найден — эффект пропущен"}));continue}
     fx.push(cache::prepare(app,e,job.settings.fps).await?)
   }
@@ -25,8 +25,28 @@ new_overlays = '''  for e in job.effects.iter().filter(|e|e.enabled){
     if !Path::new(&s.effect.source).is_file(){let _=app.emit("overlay-warning",json!({"id":job.project.id,"kind":"subscribe","name":s.effect.name,"message":"Файл Subscribe не найден — кнопка пропущена"}));continue}
     let mut p=s.clone();p.effect=cache::prepare(app,&s.effect,job.settings.fps).await?;subs.push(p)
   }'''
+new_overlays = '''  for e in job.effects.iter().filter(|e|e.enabled){
+    if e.source.trim().is_empty(){continue}
+    if !Path::new(&e.source).is_file(){let _=app.emit("overlay-warning",json!({"id":job.project.id,"kind":"effect","name":e.name,"message":"Файл эффекта не найден — эффект пропущен"}));continue}
+    match cache::prepare(app,e,job.settings.fps).await{
+      Ok(v)=>fx.push(v),
+      Err(err)=>{let _=app.emit("overlay-warning",json!({"id":job.project.id,"kind":"effect","name":e.name,"message":format!("Эффект пропущен: {err}")}));}
+    }
+  }
+  for s in job.subscribes.iter().filter(|s|s.effect.enabled){
+    if s.effect.source.trim().is_empty(){continue}
+    if !Path::new(&s.effect.source).is_file(){let _=app.emit("overlay-warning",json!({"id":job.project.id,"kind":"subscribe","name":s.effect.name,"message":"Файл Subscribe не найден — кнопка пропущена"}));continue}
+    let mut p=s.clone();
+    match cache::prepare(app,&s.effect,job.settings.fps).await{
+      Ok(v)=>{p.effect=v;subs.push(p)},
+      Err(err)=>{let _=app.emit("overlay-warning",json!({"id":job.project.id,"kind":"subscribe","name":s.effect.name,"message":format!("Subscribe пропущен: {err}")}));}
+    }
+  }'''
 if old_overlays in text:
     text = text.replace(old_overlays, new_overlays, 1)
+    changed = True
+elif intermediate_overlays in text:
+    text = text.replace(intermediate_overlays, new_overlays, 1)
     changed = True
 elif new_overlays not in text:
     raise SystemExit("Expected overlay preparation source was not found")

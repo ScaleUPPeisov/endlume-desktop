@@ -7,4 +7,5 @@ import './project-polish.css';
 import './motion-polish.css';
 import './motion-interactions.css';
 import './chroma-fidelity.css';
+import './smart-align.css';
 createRoot(document.getElementById('root')!).render(<React.StrictMode><App/></React.StrictMode>);

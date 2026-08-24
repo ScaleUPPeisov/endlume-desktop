@@ -4,7 +4,8 @@
 - Если включённый старый Effects/Subscribe действительно ссылается на удалённый файл, ENDLUME пропускает только этот overlay с предупреждением и продолжает рендер основного видео.
 - Исправлен импорт Effects, Subscribe и ambient. После выбора файл копируется во внутреннюю библиотеку ENDLUME в Application Data; пресет больше не зависит от исходного расположения файла в Downloads/Desktop/другой папке.
 - Исправлена совместимость музыкальных папок с разными MP3: перед acrossfade каждый трек приводится к 48 kHz, stereo и единому sample format fltp. Mono/stereo и 32/44.1/48 kHz больше не должны ломать filter graph.
+- Добавлено самовосстановление путей проекта: если после обновления/перемещения папки сохранённые пути к PNG/MP3 устарели, ENDLUME перед рендером повторно читает выбранную папку и подхватывает актуальные файлы.
 - В обязательный macOS release smoke-test добавлен обычный проект с Unicode/французскими именами файлов и MP3 с разными sample rate/channel layout. Сборка блокируется, если такой проект снова перестанет собираться.
 - Исправлено зависание кнопки «ПРОВЕРЯЮ…» в Настройки → Обновления. Проверка updater теперь имеет жёсткий таймаут 12 секунд и всегда возвращает управление интерфейсу.
 - Сохраняются исправления alpha.8.16: viewport-fixed нижняя панель проекта, безопасная route-анимация без transform на корневом wrapper, нативная плавная прокрутка macOS, GPU Live Preview, Crossfade CFR fix и 100 Loop Mode smoke-прогонов.
-- Critical hotfix release build: managed library assets, normal-folder MP3 regression and stale-overlay isolation are mandatory before publication.
+- Critical hotfix release build: managed library assets, normal-folder MP3 regression, stale-path recovery and stale-overlay isolation are mandatory before publication.

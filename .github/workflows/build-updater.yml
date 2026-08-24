@@ -87,10 +87,16 @@ jobs:
           test -s /tmp/endlume-libx264.mp4
           echo 'Verified bundled FFmpeg: h264_videotoolbox • hevc_videotoolbox • libx264'
 
-      - name: Apply production Crossfade CFR fix
-        run: python3 scripts/apply-render-loop-fix.py
+      - name: Apply production render fixes
+        run: |
+          python3 scripts/apply-render-loop-fix.py
+          python3 scripts/apply-render-hotfix-8-17.py
+          grep -Fq 'refresh_project_paths(&mut resolved_job)' src-tauri/src/render.rs
+          grep -Fq 'job.effects.iter().filter(|e|e.enabled)' src-tauri/src/render.rs
+          grep -Fq 'job.subscribes.iter().filter(|s|s.effect.enabled)' src-tauri/src/render.rs
+          grep -Fq 'aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo' src-tauri/src/render.rs
 
-      - name: Validate loop modes 100 times
+      - name: Validate loop modes and normal project
         shell: bash
         run: |
           chmod +x scripts/validate-loop-modes.sh
@@ -192,6 +198,7 @@ jobs:
             "source_sha": "$GITHUB_SHA",
             "status": "verified",
             "loop_smoke_checks": 100,
+            "normal_project_regression": true,
             "motion_ui_checks": 16,
             "platform": "macos-arm64"
           }

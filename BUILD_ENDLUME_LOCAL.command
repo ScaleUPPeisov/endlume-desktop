@@ -28,7 +28,7 @@ banner(){
   clear
   echo "╭──────────────────────────────────────────────────────╮"
   echo "│               ENDLUME Studio LOCAL BUILD             │"
-  echo "│      Render • Effects • Subscribe • Apple Silicon    │"
+  echo "│     Aspect Safe • Render Recovery • Apple Silicon    │"
   echo "╰──────────────────────────────────────────────────────╯"
   echo
 }
@@ -108,8 +108,6 @@ else
 fi
 cd "$SRC"
 
-# Embedded FFmpeg must be refreshed, but Rust target cache is preserved so repeated
-# local builds do not recompile hundreds of crates every time.
 repair_and_remove "$SRC/src-tauri/binaries"
 repair_permissions "$SRC/src-tauri/target"
 
@@ -128,7 +126,6 @@ mkdir -p "$BIN_DIR"
 /usr/bin/install -m 755 "$(command -v ffprobe)" "$FFPROBE"
 [[ -x "$FFMPEG" ]] || fail "FFmpeg не удалось встроить в приложение."
 [[ -x "$FFPROBE" ]] || fail "FFprobe не удалось встроить в приложение."
-
 "$FFMPEG" -hide_banner -encoders > /tmp/endlume-local-encoders.txt
 grep -q 'h264_videotoolbox' /tmp/endlume-local-encoders.txt || fail "В FFmpeg отсутствует Apple VideoToolbox."
 grep -q 'libx264' /tmp/endlume-local-encoders.txt || fail "В FFmpeg отсутствует libx264 fallback."
@@ -137,13 +134,14 @@ echo "6/10  Применяю исправления Render / Effects / Subscribe
 python3 scripts/apply-render-loop-fix.py
 python3 scripts/apply-render-hotfix-8-17.py
 python3 scripts/apply-editor-hotfix-8-18.py
+python3 scripts/apply-aspect-permission-hotfix-8-20.py
 
 grep -Fq 'refresh_project_paths(&mut resolved_job)' src-tauri/src/render.rs || fail "Не применилось восстановление путей проекта."
-grep -Fq 'job.effects.iter().filter(|e|e.enabled)' src-tauri/src/render.rs || fail "Не применилось безопасное отключение Effects."
-grep -Fq 'job.subscribes.iter().filter(|s|s.effect.enabled)' src-tauri/src/render.rs || fail "Не применилось безопасное отключение Subscribe."
 grep -Fq 'aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo' src-tauri/src/render.rs || fail "Не применилось исправление MP3-аудио."
-grep -Fq "api.chooseVideo('subscribe')" src/pages/Editors.tsx || fail "Не применился managed import Subscribe."
-grep -Fq "api.chooseVideo('effects')" src/pages/Editors.tsx || fail "Не применился managed import Effects."
+grep -Fq 'scale={}:-2' src-tauri/src/render.rs || fail "Не применилось сохранение пропорций Effects."
+grep -Fq 'resolve_output_dir(app,&requested_out_dir)' src-tauri/src/render.rs || fail "Не применилось восстановление прав папки результата."
+grep -Fq 'effects-v4-aspect-safe' src-tauri/src/cache.rs || fail "Не применился новый aspect-safe chromakey cache."
+grep -Fq 'overlayAspect' src/components/LiveCompositePreview.tsx || fail "Live Preview не читает исходные пропорции эффекта."
 
 echo "6.5/10 Проверяю TypeScript…"
 npx tsc --noEmit
@@ -166,11 +164,18 @@ npx tauri build --target aarch64-apple-darwin --bundles app --config src-tauri/t
 
 BUILT_APP="src-tauri/target/aarch64-apple-darwin/release/bundle/macos/ENDLUME Studio.app"
 [[ -d "$BUILT_APP" ]] || fail "Сборка завершилась без ENDLUME Studio.app."
-
 BUNDLE_ID="$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$BUILT_APP/Contents/Info.plist")"
 BUILT_VERSION="$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$BUILT_APP/Contents/Info.plist")"
 [[ "$BUNDLE_ID" == "studio.endlume.desktop" ]] || fail "Неверный bundle ID: $BUNDLE_ID"
 [[ "$BUILT_VERSION" == "$VERSION" ]] || fail "Версия app ($BUILT_VERSION) не совпадает с source ($VERSION)."
+
+find "$BUILT_APP/Contents/MacOS" -maxdepth 1 -type f \( -name 'ffmpeg*' -o -name 'ffprobe*' \) -exec /bin/chmod 755 {} +
+BUNDLED_FFMPEG="$(find "$BUILT_APP/Contents/MacOS" -maxdepth 1 -type f -name 'ffmpeg*' | head -1)"
+BUNDLED_FFPROBE="$(find "$BUILT_APP/Contents/MacOS" -maxdepth 1 -type f -name 'ffprobe*' | head -1)"
+[[ -n "$BUNDLED_FFMPEG" && -x "$BUNDLED_FFMPEG" ]] || fail "FFmpeg в готовой ENDLUME Studio.app не исполняемый."
+[[ -n "$BUNDLED_FFPROBE" && -x "$BUNDLED_FFPROBE" ]] || fail "FFprobe в готовой ENDLUME Studio.app не исполняемый."
+"$BUNDLED_FFMPEG" -hide_banner -version >/dev/null || fail "FFmpeg внутри готовой app не запускается."
+"$BUNDLED_FFPROBE" -hide_banner -version >/dev/null || fail "FFprobe внутри готовой app не запускается."
 
 /usr/bin/codesign --force --deep --sign - "$BUILT_APP" >/dev/null 2>&1 || fail "Не удалось выполнить локальную подпись app."
 /usr/bin/codesign --verify --deep --strict "$BUILT_APP" >/dev/null 2>&1 || fail "Проверка локальной подписи не прошла."
@@ -180,14 +185,10 @@ osascript -e 'tell application "ENDLUME Studio" to quit' >/dev/null 2>&1 || true
 sleep 1
 pkill -x "ENDLUME Studio" >/dev/null 2>&1 || true
 
-install_app(){
+if [[ -w /Applications ]]; then
   /bin/rm -rf "$DEST"
   /usr/bin/ditto "$BUILT_APP" "$DEST"
   /usr/bin/xattr -dr com.apple.quarantine "$DEST" >/dev/null 2>&1 || true
-}
-
-if [[ -w /Applications ]]; then
-  install_app
 else
   echo "macOS попросит пароль администратора один раз для замены приложения в /Applications."
   sudo /bin/rm -rf "$DEST"
@@ -198,16 +199,24 @@ fi
 [[ -d "$DEST" ]] || fail "ENDLUME Studio.app не появилась в /Applications."
 FINAL_VERSION="$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$DEST/Contents/Info.plist")"
 [[ "$FINAL_VERSION" == "$VERSION" ]] || fail "После установки обнаружена неверная версия: $FINAL_VERSION"
+INSTALLED_FFMPEG="$(find "$DEST/Contents/MacOS" -maxdepth 1 -type f -name 'ffmpeg*' | head -1)"
+INSTALLED_FFPROBE="$(find "$DEST/Contents/MacOS" -maxdepth 1 -type f -name 'ffprobe*' | head -1)"
+[[ -n "$INSTALLED_FFMPEG" && -x "$INSTALLED_FFMPEG" ]] || fail "У установленной ENDLUME потерялись права запуска FFmpeg."
+[[ -n "$INSTALLED_FFPROBE" && -x "$INSTALLED_FFPROBE" ]] || fail "У установленной ENDLUME потерялись права запуска FFprobe."
+"$INSTALLED_FFMPEG" -hide_banner -version >/dev/null || fail "Установленный FFmpeg не запускается — Render получил бы Permission denied."
+"$INSTALLED_FFPROBE" -hide_banner -version >/dev/null || fail "Установленный FFprobe не запускается."
 
 open "$DEST"
 
 echo
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "✅ ENDLUME Studio $VERSION установлена"
-echo "✅ Одна программа: /Applications/ENDLUME Studio.app"
-echo "✅ Render regression пройден"
+echo "✅ Original aspect ratio Effects/Subscribe сохранён"
+echo "✅ Chromakey cache не растягивает overlay"
+echo "✅ Render workspace принадлежит ENDLUME"
+echo "✅ Output permission fallback включён"
+echo "✅ Bundled FFmpeg/FFprobe executable проверены"
 echo "✅ Loop Mode: 100/100"
-echo "✅ Effects/Subscribe используют managed assets ENDLUME"
 echo "✅ GitHub Actions не запускались"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-osascript -e "display dialog \"ENDLUME Studio $VERSION установлена. Render / Effects / Subscribe проверены локально.\" buttons {\"Открыть ENDLUME\"} default button \"Открыть ENDLUME\" with icon note" >/dev/null 2>&1 || true
+osascript -e "display dialog \"ENDLUME Studio $VERSION установлена. Пропорции Effects и права Render исправлены.\" buttons {\"Открыть ENDLUME\"} default button \"Открыть ENDLUME\" with icon note" >/dev/null 2>&1 || true

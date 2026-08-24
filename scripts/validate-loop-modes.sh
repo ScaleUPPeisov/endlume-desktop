@@ -70,8 +70,11 @@ test -s "$NORMAL_OUT"
 "$FFPROBE" -v error -select_streams v:0 -show_entries stream=codec_type -of default=nw=1:nk=1 "$NORMAL_OUT" | grep -q video
 "$FFPROBE" -v error -select_streams a:0 -show_entries stream=codec_type -of default=nw=1:nk=1 "$NORMAL_OUT" | grep -q audio
 
+# Source-level safety gates that must be present in the actual Rust pipeline after patching.
 grep -Fq 'job.effects.iter().filter(|e|e.enabled)' src-tauri/src/render.rs
 grep -Fq 'job.subscribes.iter().filter(|s|s.effect.enabled)' src-tauri/src/render.rs
+grep -Fq 'match cache::prepare(app,e,job.settings.fps).await' src-tauri/src/render.rs
+grep -Fq 'match cache::prepare(app,&s.effect,job.settings.fps).await' src-tauri/src/render.rs
 grep -Fq 'refresh_project_paths(&mut resolved_job)' src-tauri/src/render.rs
 
-echo 'ENDLUME normal project regression: Unicode filenames + mixed MP3 layouts + one-image final MP4 + stale-path recovery + disabled overlay isolation passed.'
+echo 'ENDLUME normal project regression: Unicode filenames + mixed MP3 layouts + one-image final MP4 + stale-path recovery + disabled/broken overlay isolation passed.'

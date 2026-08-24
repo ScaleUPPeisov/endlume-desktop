@@ -46,10 +46,10 @@ fn migrate_item(app:&AppHandle,item:&mut Value,kind:&str)->bool{
   // WebGL preview also boosted saturation. Those values erase most of the overlay.
   // Bring only obviously broken legacy presets back to conservative defaults.
   if obj.get("mode").and_then(Value::as_str)==Some("chromakey"){
-    let sim=obj.get("similarity").and_then(Value::as_f64).unwrap_or(.10);
-    let blend=obj.get("blend").and_then(Value::as_f64).unwrap_or(.06);
-    if sim>.60{obj.insert("similarity".into(),json!(0.10));changed=true;}
-    if blend>.35{obj.insert("blend".into(),json!(0.06));changed=true;}
+    let sim=obj.get("similarity").and_then(Value::as_f64).unwrap_or(0.10);
+    let blend=obj.get("blend").and_then(Value::as_f64).unwrap_or(0.06);
+    if sim>0.60{obj.insert("similarity".into(),json!(0.10));changed=true;}
+    if blend>0.35{obj.insert("blend".into(),json!(0.06));changed=true;}
     if obj.get("saturation").and_then(Value::as_f64).unwrap_or(1.0)!=1.0{obj.insert("saturation".into(),json!(1.0));changed=true;}
     if obj.get("despill").and_then(Value::as_f64).unwrap_or(0.0)!=0.0{obj.insert("despill".into(),json!(0.0));changed=true;}
     if changed{obj.insert("cacheReady".into(),json!(false));obj.insert("cacheKey".into(),Value::Null);}

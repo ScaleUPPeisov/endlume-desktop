@@ -9,6 +9,18 @@ text = text.replace(
     "Math.max(0,((safeEnd-start)/Math.max(1,total))*100)}%",
 )
 
+# The Smart Align generator is intentionally re-run by npm/Tauri. Keep the helper single-instance.
+lines = text.splitlines()
+seen_time_helper = False
+clean_lines = []
+for line in lines:
+    if line.startswith("function fmtEditorTime("):
+        if seen_time_helper:
+            continue
+        seen_time_helper = True
+    clean_lines.append(line)
+text = "\n".join(clean_lines) + "\n"
+
 # Hard fail before TypeScript if the generated editor is incomplete.
 required = [
     "smartAlignToolbar",
@@ -26,6 +38,8 @@ for marker in required:
     if marker not in targets:
         raise SystemExit(f"Smart Align validation failed: missing {marker}")
 
+if text.count("function fmtEditorTime(") != 1:
+    raise SystemExit("Smart Align validation failed: duplicate timing helper")
 if "shiftKey?.02" in text or "*100))}%" in text:
     raise SystemExit("Smart Align validation failed: invalid generated TypeScript remains")
 

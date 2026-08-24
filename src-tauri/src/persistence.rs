@@ -1,6 +1,6 @@
-use crate::model::QueueJob;
+use crate::{assets,model::QueueJob};
 use serde_json::{json,Value};
-use std::{fs,path::PathBuf};
+use std::{fs,path::{Path,PathBuf}};
 use tauri::{AppHandle,Manager};
 
 fn dir(app:&AppHandle)->anyhow::Result<PathBuf>{
@@ -20,21 +20,57 @@ pub fn write_value(app:&AppHandle,name:&str,v:&Value)->anyhow::Result<()>{
   let path=dir(app)?.join(name);
   let tmp=path.with_extension("tmp");
   fs::write(&tmp,serde_json::to_vec_pretty(v)?)?;
-  // Windows does not reliably replace an existing destination with rename().
-  // Remove the old tiny JSON only after the new temp file is fully written.
   if path.exists(){let _=fs::remove_file(&path);}
   fs::rename(tmp,path)?;
   Ok(())
 }
 
-#[tauri::command]
-pub fn load_library(app:AppHandle)->Value{
-  let v=read_value(&app,"library.json");
-  if v.is_object() && !v.as_object().unwrap().is_empty(){v}else{json!({"effects":[],"subscribes":[],"ambient":null})}
+fn migrate_item(app:&AppHandle,item:&mut Value,kind:&str)->bool{
+  let Some(obj)=item.as_object_mut() else{return false};
+  let source=obj.get("source").and_then(Value::as_str).unwrap_or("").to_string();
+  if source.trim().is_empty(){return false}
+  if Path::new(&source).is_file(){
+    match assets::ensure_managed_asset(app,&source,kind){
+      Ok(managed) if managed!=source=>{obj.insert("source".into(),json!(managed));obj.insert("cacheReady".into(),json!(false));obj.insert("cacheKey".into(),Value::Null);true},
+      _=>false,
+    }
+  }else{
+    let mut changed=false;
+    if obj.get("enabled").and_then(Value::as_bool).unwrap_or(false){obj.insert("enabled".into(),json!(false));changed=true;}
+    if obj.get("cacheReady").and_then(Value::as_bool).unwrap_or(false){obj.insert("cacheReady".into(),json!(false));changed=true;}
+    if obj.get("cacheKey").map(|v|!v.is_null()).unwrap_or(false){obj.insert("cacheKey".into(),Value::Null);changed=true;}
+    changed
+  }
+}
+
+fn migrate_library(app:&AppHandle,v:&mut Value)->bool{
+  let Some(obj)=v.as_object_mut() else{return false};
+  let mut changed=false;
+  if let Some(items)=obj.get_mut("effects").and_then(Value::as_array_mut){for item in items{changed|=migrate_item(app,item,"effects");}}
+  if let Some(items)=obj.get_mut("subscribes").and_then(Value::as_array_mut){for item in items{changed|=migrate_item(app,item,"subscribe");}}
+  if let Some(ambient)=obj.get("ambient").and_then(Value::as_str).map(str::to_string){
+    if !ambient.trim().is_empty(){
+      if Path::new(&ambient).is_file(){
+        if let Ok(managed)=assets::ensure_managed_asset(app,&ambient,"ambient"){
+          if managed!=ambient{obj.insert("ambient".into(),json!(managed));changed=true;}
+        }
+      }else{obj.insert("ambient".into(),Value::Null);changed=true;}
+    }
+  }
+  changed
 }
 
 #[tauri::command]
-pub fn save_library(app:AppHandle,payload:Value)->Result<(),String>{
+pub fn load_library(app:AppHandle)->Value{
+  let mut v=read_value(&app,"library.json");
+  if !v.is_object()||v.as_object().map(|x|x.is_empty()).unwrap_or(true){return json!({"effects":[],"subscribes":[],"ambient":null})}
+  if migrate_library(&app,&mut v){let _=write_value(&app,"library.json",&v);}
+  v
+}
+
+#[tauri::command]
+pub fn save_library(app:AppHandle,mut payload:Value)->Result<(),String>{
+  let _=migrate_library(&app,&mut payload);
   write_value(&app,"library.json",&payload).map_err(|e|e.to_string())
 }
 

@@ -3,7 +3,13 @@ name: ENDLUME macOS updater build
 on:
   push:
     branches: [release]
+    paths:
+      - 'RELEASE_TRIGGER.md'
   workflow_dispatch:
+
+concurrency:
+  group: endlume-macos-release
+  cancel-in-progress: true
 
 jobs:
   build-macos-arm64:
@@ -188,7 +194,7 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: Persist verified source fix and build receipt
+      - name: Persist verified build receipt
         shell: bash
         run: |
           set -euo pipefail
@@ -212,29 +218,4 @@ jobs:
           if ! git diff --cached --quiet; then
             git commit -m "ci: persist verified $VERSION build receipt [skip ci]"
             git push origin HEAD:release
-          fi
-
-      - name: Persist release diagnostics
-        if: always()
-        shell: bash
-        env:
-          JOB_STATUS: ${{ job.status }}
-        run: |
-          set -euo pipefail
-          VERSION="$(node -p "require('./package.json').version 2>/dev/null || echo unknown")"
-          cat > ENDLUME_CI_STATUS.json <<JSON
-          {
-            "version": "$VERSION",
-            "run_id": $GITHUB_RUN_ID,
-            "source_sha": "$GITHUB_SHA",
-            "status": "$JOB_STATUS",
-            "platform": "macos-arm64"
-          }
-          JSON
-          git config user.name "ENDLUME Release Bot"
-          git config user.email "actions@users.noreply.github.com"
-          git add ENDLUME_CI_STATUS.json
-          if ! git diff --cached --quiet; then
-            git commit -m "ci: record $VERSION $JOB_STATUS [skip ci]"
-            git push origin HEAD:release || true
           fi

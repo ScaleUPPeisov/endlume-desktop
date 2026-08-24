@@ -48,3 +48,22 @@ for n in {1..25}; do
 done
 
 echo 'ENDLUME loop modes: 100/100 smoke checks passed (25 × Image, Crossfade, Ping-pong, Original).'
+
+# Regression for a normal ENDLUME folder: Unicode filenames + mixed MP3 sample rates/channel layouts.
+A0="$TMP/__Quais, minuit humide__.mp3"
+A1="$TMP/“Neon Wet Rose”.mp3"
+A2="$TMP/Après l’amour.mp3"
+A3="$TMP/Autoroute Lavender.mp3"
+"$FFMPEG" -hide_banner -loglevel error -f lavfi -i 'sine=frequency=310:duration=0.8:sample_rate=44100' -ac 1 -c:a libmp3lame -b:a 128k -y "$A0"
+"$FFMPEG" -hide_banner -loglevel error -f lavfi -i 'sine=frequency=420:duration=0.8:sample_rate=48000' -ac 2 -c:a libmp3lame -b:a 192k -y "$A1"
+"$FFMPEG" -hide_banner -loglevel error -f lavfi -i 'sine=frequency=530:duration=0.8:sample_rate=32000' -ac 1 -c:a libmp3lame -b:a 160k -y "$A2"
+"$FFMPEG" -hide_banner -loglevel error -f lavfi -i 'sine=frequency=640:duration=0.8:sample_rate=44100' -ac 2 -c:a libmp3lame -b:a 224k -y "$A3"
+AUDIO_OUT="$TMP/normal-project-audio.m4a"
+"$FFMPEG" -hide_banner -loglevel error -i "$A0" -i "$A1" -i "$A2" -i "$A3" -filter_complex '[0:a]aresample=48000,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,asetpts=N/SR/TB[a0];[1:a]aresample=48000,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,asetpts=N/SR/TB[a1];[2:a]aresample=48000,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,asetpts=N/SR/TB[a2];[3:a]aresample=48000,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,asetpts=N/SR/TB[a3];[a0][a1]acrossfade=d=0.10:c1=tri:c2=tri[x1];[x1][a2]acrossfade=d=0.10:c1=tri:c2=tri[x2];[x2][a3]acrossfade=d=0.10:c1=tri:c2=tri[x3];[x3]alimiter=limit=0.97[outa]' -map '[outa]' -c:a aac -b:a 320k -ar 48000 -ac 2 -y "$AUDIO_OUT"
+test -s "$AUDIO_OUT"
+"$FFPROBE" -v error -select_streams a:0 -show_entries stream=sample_rate,channels -of csv=p=0 "$AUDIO_OUT" | grep -q '48000,2'
+
+grep -Fq 'job.effects.iter().filter(|e|e.enabled)' src-tauri/src/render.rs
+grep -Fq 'job.subscribes.iter().filter(|s|s.effect.enabled)' src-tauri/src/render.rs
+
+echo 'ENDLUME normal project regression: Unicode filenames + mixed MP3 layouts + disabled overlay isolation passed.'

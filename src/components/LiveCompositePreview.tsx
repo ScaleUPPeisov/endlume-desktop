@@ -18,7 +18,7 @@ function hexRgb(hex:string){const raw=hex.replace('#','').trim();const v=Number.
 function rgbHex(r:number,g:number,b:number){return `#${[r,g,b].map(v=>Math.max(0,Math.min(255,Math.round(v))).toString(16).padStart(2,'0')).join('')}`}
 
 export function LiveCompositePreview({assets,effect,busy,overlayRef,overlayStyle,onDragStart,onResizeStart,onPickColor}:Props){
-  const canvasRef=useRef<HTMLCanvasElement>(null),videoRef=useRef<HTMLVideoElement>(null),rafRef=useRef<number|undefined>(undefined),effectRef=useRef(effect),brushRaf=useRef<number|undefined>(undefined),lastBrushPoint=useRef<{x:number;y:number}>(),brushDown=useRef(false);
+  const canvasRef=useRef<HTMLCanvasElement>(null),videoRef=useRef<HTMLVideoElement>(null),rafRef=useRef<number|undefined>(undefined),effectRef=useRef(effect),brushRaf=useRef<number|undefined>(undefined),lastBrushPoint=useRef<{x:number;y:number}|undefined>(undefined),brushDown=useRef(false);
   const [picker,setPicker]=useState(false),[overlayAspect,setOverlayAspect]=useState<number>(1);
   effectRef.current=effect;
 

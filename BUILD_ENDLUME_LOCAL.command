@@ -106,11 +106,14 @@ grep -q 'libx264' /tmp/endlume-local-encoders.txt || fail "В FFmpeg отсут�
 echo "6/10  Применяю исправления Render / Effects / Subscribe…"
 python3 scripts/apply-render-loop-fix.py
 python3 scripts/apply-render-hotfix-8-17.py
+python3 scripts/apply-editor-hotfix-8-18.py
 
 grep -Fq 'refresh_project_paths(&mut resolved_job)' src-tauri/src/render.rs || fail "Не применилось восстановление путей проекта."
 grep -Fq 'job.effects.iter().filter(|e|e.enabled)' src-tauri/src/render.rs || fail "Не применилось безопасное отключение Effects."
 grep -Fq 'job.subscribes.iter().filter(|s|s.effect.enabled)' src-tauri/src/render.rs || fail "Не применилось безопасное отключение Subscribe."
 grep -Fq 'aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo' src-tauri/src/render.rs || fail "Не применилось исправление MP3-аудио."
+grep -Fq "api.chooseVideo('subscribe')" src/pages/Editors.tsx || fail "Не применился managed import Subscribe."
+grep -Fq "api.chooseVideo('effects')" src/pages/Editors.tsx || fail "Не применился managed import Effects."
 
 echo "7/10  Проверяю реальные сценарии рендера…"
 chmod +x scripts/validate-loop-modes.sh
@@ -132,7 +135,6 @@ BUILT_VERSION="$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$
 [[ "$BUNDLE_ID" == "studio.endlume.desktop" ]] || fail "Неверный bundle ID: $BUNDLE_ID"
 [[ "$BUILT_VERSION" == "$VERSION" ]] || fail "Версия app ($BUILT_VERSION) не совпадает с source ($VERSION)."
 
-# Local ad-hoc signing is enough for an app compiled on this Mac and avoids updater signing secrets.
 /usr/bin/codesign --force --deep --sign - "$BUILT_APP" >/dev/null 2>&1 || fail "Не удалось выполнить локальную подпись app."
 /usr/bin/codesign --verify --deep --strict "$BUILT_APP" >/dev/null 2>&1 || fail "Проверка локальной подписи не прошла."
 

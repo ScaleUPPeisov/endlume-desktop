@@ -1,7 +1,7 @@
 {
   "name": "endlume-studio",
   "private": true,
-  "version": "1.0.0-alpha.8.17",
+  "version": "1.0.0-alpha.8.18",
   "type": "module",
   "scripts": {
     "dev": "python3 scripts/apply-render-loop-fix.py && python3 scripts/apply-render-hotfix-8-17.py && vite",

@@ -45,6 +45,17 @@ repair_and_remove(){
   sudo /bin/rm -rf "$p" || fail "Не удалось очистить старый build-кэш: $p"
 }
 
+repair_permissions(){
+  local p="$1"
+  [[ -e "$p" ]] || return 0
+  if [[ -w "$p" ]]; then return 0; fi
+  echo "Исправляю права build-кэша без удаления: $p"
+  sudo /usr/bin/chflags -R nouchg "$p" >/dev/null 2>&1 || true
+  sudo /usr/bin/chown -R "$(id -un)":staff "$p" >/dev/null 2>&1 || true
+  sudo /bin/chmod -RN "$p" >/dev/null 2>&1 || true
+  sudo /bin/chmod -R u+rwX "$p" >/dev/null 2>&1 || true
+}
+
 banner
 
 echo "1/10  Проверяю Mac…"
@@ -97,8 +108,10 @@ else
 fi
 cd "$SRC"
 
+# Embedded FFmpeg must be refreshed, but Rust target cache is preserved so repeated
+# local builds do not recompile hundreds of crates every time.
 repair_and_remove "$SRC/src-tauri/binaries"
-repair_and_remove "$SRC/src-tauri/target"
+repair_permissions "$SRC/src-tauri/target"
 
 VERSION="$(node -p "require('./package.json').version")"
 echo "Собираю ENDLUME Studio $VERSION"
@@ -132,17 +145,21 @@ grep -Fq 'aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo' sr
 grep -Fq "api.chooseVideo('subscribe')" src/pages/Editors.tsx || fail "Не применился managed import Subscribe."
 grep -Fq "api.chooseVideo('effects')" src/pages/Editors.tsx || fail "Не применился managed import Effects."
 
-echo "6.5/10 Быстрая проверка TypeScript до долгих тестов…"
+echo "6.5/10 Проверяю TypeScript…"
 npx tsc --noEmit
+
+echo "6.6/10 Проверяю production frontend…"
+npm run build
+
+echo "6.7/10 Проверяю Rust ДО долгих FFmpeg-тестов…"
+cargo check --manifest-path src-tauri/Cargo.toml --target aarch64-apple-darwin
 
 echo "7/10  Проверяю реальные сценарии рендера…"
 chmod +x scripts/validate-loop-modes.sh
 scripts/validate-loop-modes.sh "$FFMPEG" "$FFPROBE"
 node scripts/validate-motion-ui.mjs
 
-echo "8/10  Проверяю React + Rust…"
-npm run build
-cargo check --manifest-path src-tauri/Cargo.toml --target aarch64-apple-darwin
+echo "8/10  Frontend + Rust + Render regression пройдены."
 
 echo "9/10  Собираю ENDLUME Studio.app локально…"
 npx tauri build --target aarch64-apple-darwin --bundles app --config src-tauri/tauri.local.conf.json

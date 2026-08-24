@@ -74,7 +74,11 @@ for marker in required:
 
 if text.count("function fmtEditorTime(") != 1:
     raise SystemExit("Smart Align validation failed: timing helper must exist exactly once")
-if "shiftKey?." in text or "*100))}%" in text:
+
+# Only reject the exact broken WIDTH expression from the old generator.
+# Do not search for generic '*100))}%' because the valid pct() helper contains that sequence.
+broken_width = "width:`${Math.max(0,((safeEnd-start)/Math.max(1,total))*100))}%`"
+if "shiftKey?." in text or broken_width in text:
     raise SystemExit("Smart Align validation failed: malformed generated TypeScript remains")
 
 p.write_text(text, encoding="utf-8")

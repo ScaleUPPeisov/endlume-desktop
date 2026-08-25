@@ -46,14 +46,18 @@ pass 'mismatched audio fallback is ALAC, not AAC'
 REF="$TMP/ref.mkv"; HEVC="$TMP/fidelity.mp4"; HEVC_FINAL="$TMP/fidelity-mp3.mp4"
 "$FFMPEG" -hide_banner -loglevel error -f lavfi -i 'testsrc2=size=640x360:rate=30' -t 1.5 -an -c:v ffv1 -pix_fmt yuv420p -y "$REF"
 if "$FFMPEG" -hide_banner -loglevel error -i "$REF" -an -c:v hevc_videotoolbox -realtime 1 -prio_speed 1 -power_efficient 0 -q:v 95 -g 300 -tag:v hvc1 -pix_fmt yuv420p -y "$HEVC"; then
-  SSIM="$($FFMPEG -hide_banner -i "$HEVC" -i "$REF" -lavfi '[0:v][1:v]ssim' -f null - 2>&1 | sed -n 's/.*All:\([0-9.]*\).*/\1/p' | tail -1)"
-  [[ -n "$SSIM" ]] || fail 'could not read HEVC SSIM'
+  # VideoToolbox/HEVC can reorder decoded timestamps because of B-frames. A raw
+  # timestamp-based SSIM comparison pairs the wrong frames and produces a false
+  # ~0.97 score even when decoded frame content is much closer. Rebuild PTS from
+  # frame number on both inputs before comparing pixels.
+  SSIM="$($FFMPEG -hide_banner -i "$HEVC" -i "$REF" -lavfi '[0:v]setpts=N/(30*TB)[enc];[1:v]setpts=N/(30*TB)[ref];[enc][ref]ssim' -f null - 2>&1 | sed -n 's/.*All:\([0-9.]*\).*/\1/p' | tail -1)"
+  [[ -n "$SSIM" ]] || fail 'could not read normalized HEVC SSIM'
   python3 - "$SSIM" <<'PY'
 import sys
 v=float(sys.argv[1])
 if v < 0.985:
-    raise SystemExit(f'FAIL: fidelity HEVC SSIM too low: {v}')
-print(f'PASS: fidelity HEVC SSIM {v:.6f}')
+    raise SystemExit(f'FAIL: fidelity HEVC normalized SSIM too low: {v}')
+print(f'PASS: fidelity HEVC normalized SSIM {v:.6f}')
 PY
   "$FFMPEG" -hide_banner -loglevel error -stream_loop -1 -i "$HEVC" -stream_loop -1 -i "$CYCLE" -t 1.2 -map 0:v:0 -map 1:a:0 -c:v copy -c:a copy -tag:v hvc1 -movflags +faststart -y "$HEVC_FINAL"
   HVCODEC="$($FFPROBE -v error -select_streams v:0 -show_entries stream=codec_name -of default=nw=1:nk=1 "$HEVC_FINAL")"

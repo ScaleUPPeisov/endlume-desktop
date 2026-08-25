@@ -91,11 +91,13 @@ mkdir -p "$BIN_DIR"
 grep -q 'h264_videotoolbox' /tmp/endlume-825-encoders.txt || fail "Нет Apple VideoToolbox."
 grep -q 'libx264' /tmp/endlume-825-encoders.txt || fail "Нет libx264 fallback."
 
-echo "6/10  Применяю Render Stability 8.25…"
+echo "6/10  Применяю Render / Effects / Subscribe Stability 8.25…"
 python3 scripts/apply-render-stability-8-25.py
+python3 scripts/apply-release-ui-8-25.py
 grep -Fq 'fn render_work_dir(' src-tauri/src/render.rs || fail "Render workspace fix не применился."
 grep -Fq 'software_encoder(&job.settings)' src-tauri/src/render.rs || fail "Software fallback не применился."
 grep -Fq "chooseVideo('subscribe')" src/pages/Editors.tsx || fail "Subscribe managed-import fix отсутствует."
+grep -Fq 'useRef<globalThis.PointerEvent | undefined>(undefined)' src/pages/Editors.tsx || fail "React 19 pointer ref fix отсутствует."
 grep -Fq '"build": "tsc && vite build"' package.json || fail "Build снова мутирует исходники."
 
 echo "6.5/10 Проверяю TypeScript…"
@@ -154,7 +156,6 @@ INSTALLED_FFPROBE="$(find "$DEST/Contents/MacOS" -maxdepth 1 -type f -name 'ffpr
 "$INSTALLED_FFMPEG" -hide_banner -version >/dev/null
 "$INSTALLED_FFPROBE" -hide_banner -version >/dev/null
 
-# Старые временные render-work можно безопасно удалить после успешной установки.
 rm -rf "$HOME/Library/Caches/studio.endlume.desktop/render-work" >/dev/null 2>&1 || true
 open "$DEST"
 

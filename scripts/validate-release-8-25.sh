@@ -51,7 +51,7 @@ SUBDIM="$($FFPROBE -v error -select_streams v:0 -show_entries stream=width,heigh
 [[ "$FXDIM" == "180x180" ]] || { echo "FAIL: effect aspect changed: $FXDIM"; exit 1; }
 [[ "$SUBDIM" == "240x120" ]] || { echo "FAIL: subscribe aspect changed: $SUBDIM"; exit 1; }
 COMPOSITE="$TMP/composite.mp4"
-"$FFMPEG" -hide_banner -loglevel error -loop 1 -framerate 30 -i "$IMG" -stream_loop -1 -i "$FXCACHE" -stream_loop -1 -i "$SUBCACHE" -filter_complex '[0:v]scale=640:360,fps=30,setsar=1[b0];[1:v]scale=220:-2:flags=lanczos[fx];[b0][fx]overlay=x=max(0,min(W-w,W*0.5-w/2)):y=max(0,min(H-h,H*0.5-h/2)):shortest=1:eof_action=repeat[b1];[2:v]scale=180:-2:flags=lanczos[sub];[b1][sub]overlay=x=max(0,min(W-w,W*0.5-w/2)):y=max(0,min(H-h,H*0.82-h/2)):shortest=1:eof_action=repeat[outv]' -map '[outv]' -t 1 -an -c:v libx264 -preset ultrafast -pix_fmt yuv420p -y "$COMPOSITE"
+"$FFMPEG" -hide_banner -loglevel error -loop 1 -framerate 30 -i "$IMG" -stream_loop -1 -i "$FXCACHE" -stream_loop -1 -i "$SUBCACHE" -filter_complex "[0:v]scale=640:360,fps=30,setsar=1[b0];[1:v]scale=220:-2:flags=lanczos[fx];[b0][fx]overlay=x='max(0,min(W-w,W*0.5-w/2))':y='max(0,min(H-h,H*0.5-h/2))':shortest=1:eof_action=repeat[b1];[2:v]scale=180:-2:flags=lanczos[sub];[b1][sub]overlay=x='max(0,min(W-w,W*0.5-w/2))':y='max(0,min(H-h,H*0.82-h/2))':shortest=1:eof_action=repeat[outv]" -map '[outv]' -t 1 -an -c:v libx264 -preset ultrafast -pix_fmt yuv420p -y "$COMPOSITE"
 check_video "$COMPOSITE"
 echo 'PASS: Effects + Subscribe aspect-safe composition'
 
@@ -67,6 +67,7 @@ assert_contains 'software_encoder(&job.settings)' src-tauri/src/render.rs 'real 
 assert_contains 'Effect '\''{}'\'' пропущен' src-tauri/src/render.rs 'broken Effect does not kill render'
 assert_contains 'Subscribe '\''{}'\'' пропущен' src-tauri/src/render.rs 'broken Subscribe does not kill render'
 assert_contains 'scale={}:-2:flags=lanczos' src-tauri/src/render.rs 'render keeps overlay aspect'
+assert_contains "overlay=x='{x}':y='{y}'" src-tauri/src/render.rs 'render quotes FFmpeg overlay expressions'
 assert_contains 'aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo' src-tauri/src/render.rs 'audio normalized before crossfade'
 assert_contains "chooseVideo('subscribe')" src/pages/Editors.tsx 'Subscribe imports into managed subscribe library'
 assert_contains 'x: 0.5' src/pages/Editors.tsx 'new overlays auto-center'

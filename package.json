@@ -1,7 +1,7 @@
 {
   "name": "endlume-studio",
   "private": true,
-  "version": "1.0.0-alpha.8.25",
+  "version": "1.0.0-alpha.8.26",
   "type": "module",
   "scripts": {
     "dev": "vite",

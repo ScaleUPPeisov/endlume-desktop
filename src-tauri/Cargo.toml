@@ -1,6 +1,6 @@
 [package]
 name = "endlume"
-version = "1.0.0-alpha.8.24"
+version = "1.0.0-alpha.8.25"
 description = "ENDLUME Studio"
 authors = ["ENDLUME Studio"]
 edition = "2021"

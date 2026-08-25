@@ -60,12 +60,12 @@ pub async fn generate_preview(app:AppHandle,project_path:String,time_sec:f64,eff
   let mut args:Vec<String>=vec!["-hide_banner","-loglevel","error"].into_iter().map(String::from).collect();
   if is_image(src){args.extend(vec!["-loop","1","-framerate","60","-i",src.to_string_lossy().as_ref()].into_iter().map(String::from));}else{args.extend(vec!["-stream_loop","-1","-ss",&local_time.max(0.0).to_string(),"-i",src.to_string_lossy().as_ref()].into_iter().map(String::from));}
   let enabled_fx:Vec<EffectPreset>=effects.into_iter().filter(ready_overlay).collect();
-  let enabled_sub:Vec<SubscribePreset>=subscribes.into_iter().filter(|s|ready_overlay(s)).collect();
+  let enabled_sub:Vec<SubscribePreset>=subscribes.into_iter().filter(|s|ready_overlay(&s.effect)).collect();
   for e in &enabled_fx{args.extend(vec!["-stream_loop","-1","-ss",&e.preview_frame_time.max(0.0).to_string(),"-i",e.source.as_str()].into_iter().map(String::from));}
-  for s in &enabled_sub{args.extend(vec!["-stream_loop","-1","-ss",&s.preview_frame_time.max(0.0).to_string(),"-i",s.source.as_str()].into_iter().map(String::from));}
+  for s in &enabled_sub{args.extend(vec!["-stream_loop","-1","-ss",&s.effect.preview_frame_time.max(0.0).to_string(),"-i",s.effect.source.as_str()].into_iter().map(String::from));}
   let (w,h)=(960u32,540u32);let mut graph=format!("[0:v]scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,fps=60,setsar=1[b0]");let mut base="b0".to_string();let mut idx=1usize;
   for e in &enabled_fx{overlay_effect(&mut graph,&mut base,idx,e,w,h);idx+=1;}
-  for s in &enabled_sub{overlay_effect(&mut graph,&mut base,idx,s,w,h);idx+=1;}
+  for s in &enabled_sub{overlay_effect(&mut graph,&mut base,idx,&s.effect,w,h);idx+=1;}
   graph.push_str(&format!(";[{base}]format=yuv420p[outv]"));
   args.extend(vec!["-filter_complex",&graph,"-map","[outv]","-t","2.2","-an"].into_iter().map(String::from));
   #[cfg(target_os="macos")]
@@ -76,7 +76,11 @@ pub async fn generate_preview(app:AppHandle,project_path:String,time_sec:f64,eff
   if let Err(hw)=run_preview(&app,args.clone()).await{
     #[cfg(target_os="macos")]
     {
-      let mut fallback=args;let codec_pos=fallback.iter().position(|v|v=="-c:v");if let Some(pos)=codec_pos{fallback.splice(pos..(pos+8).min(fallback.len()),vec!["-c:v".into(),"libx264".into(),"-preset".into(),"ultrafast".into(),"-crf".into(),"18".into(),"-pix_fmt".into(),"yuv420p".into()]);}
+      let mut fallback=args;
+      if let Some(pos)=fallback.iter().position(|v|v=="-c:v"){
+        let end=(pos+8).min(fallback.len());
+        fallback.splice(pos..end,vec!["-c:v".into(),"libx264".into(),"-preset".into(),"ultrafast".into(),"-crf".into(),"18".into(),"-pix_fmt".into(),"yuv420p".into()]);
+      }
       let _=std::fs::remove_file(&out);run_preview(&app,fallback).await.map_err(|sw|format!("VideoToolbox preview: {hw}; libx264 fallback: {sw}"))?;
     }
     #[cfg(not(target_os="macos"))]

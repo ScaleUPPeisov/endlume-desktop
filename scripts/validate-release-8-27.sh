@@ -43,7 +43,7 @@ LCODEC="$($FFPROBE -v error -select_streams a:0 -show_entries stream=codec_name 
 [[ "$LCODEC" == "alac" ]] || fail "lossless fallback codec is $LCODEC, expected alac"
 pass 'mismatched audio fallback is ALAC, not AAC'
 
-REF="$TMP/ref.mkv"; HEVC="$TMP/fidelity.mp4"
+REF="$TMP/ref.mkv"; HEVC="$TMP/fidelity.mp4"; HEVC_FINAL="$TMP/fidelity-mp3.mp4"
 "$FFMPEG" -hide_banner -loglevel error -f lavfi -i 'testsrc2=size=640x360:rate=30' -t 1.5 -an -c:v ffv1 -pix_fmt yuv420p -y "$REF"
 if "$FFMPEG" -hide_banner -loglevel error -i "$REF" -an -c:v hevc_videotoolbox -realtime 1 -prio_speed 1 -power_efficient 0 -q:v 95 -g 300 -tag:v hvc1 -pix_fmt yuv420p -y "$HEVC"; then
   SSIM="$($FFMPEG -hide_banner -i "$HEVC" -i "$REF" -lavfi '[0:v][1:v]ssim' -f null - 2>&1 | sed -n 's/.*All:\([0-9.]*\).*/\1/p' | tail -1)"
@@ -55,6 +55,11 @@ if v < 0.985:
     raise SystemExit(f'FAIL: fidelity HEVC SSIM too low: {v}')
 print(f'PASS: fidelity HEVC SSIM {v:.6f}')
 PY
+  "$FFMPEG" -hide_banner -loglevel error -stream_loop -1 -i "$HEVC" -stream_loop -1 -i "$CYCLE" -t 1.2 -map 0:v:0 -map 1:a:0 -c:v copy -c:a copy -tag:v hvc1 -movflags +faststart -y "$HEVC_FINAL"
+  HVCODEC="$($FFPROBE -v error -select_streams v:0 -show_entries stream=codec_name -of default=nw=1:nk=1 "$HEVC_FINAL")"
+  HACODEC="$($FFPROBE -v error -select_streams a:0 -show_entries stream=codec_name -of default=nw=1:nk=1 "$HEVC_FINAL")"
+  [[ "$HVCODEC" == "hevc" && "$HACODEC" == "mp3" ]] || fail "HEVC+MP3 final mux invalid: video=$HVCODEC audio=$HACODEC"
+  pass 'HEVC hvc1 + original MP3 final mux works'
 else
   fail 'hevc_videotoolbox q95 fidelity smoke encode failed'
 fi

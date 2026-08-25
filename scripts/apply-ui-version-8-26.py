@@ -1,12 +1,12 @@
 from pathlib import Path
+import re
 
 version = '1.0.0-alpha.8.26'
 date = '25.08.2026'
 
+# Settings page labels.
 settings = Path('src/pages/SettingsPage.tsx')
 text = settings.read_text(encoding='utf-8')
-# SettingsPage still contains old hard-coded alpha labels from earlier releases.
-import re
 text = re.sub(r'ENDLUME Studio 1\.0\.0-alpha\.8\.\d+', f'ENDLUME Studio {version}', text)
 text = re.sub(r"update\.current\|\|'1\.0\.0-alpha\.8\.\d+'", f"update.current||'{version}'", text)
 text = re.sub(r'<b>1\.0\.0-alpha\.8\.\d+</b>', f'<b>{version}</b>', text)
@@ -14,9 +14,16 @@ text = re.sub(r'<b>\d{2}\.\d{2}\.2026</b>', f'<b>{date}</b>', text, count=1)
 text = text.replace('Для текущего локального режима рекомендуем обновлять ENDLUME через локальный builder на Mac. Online updater можно оставить как резервный канал.', 'Smart Repeat автоматически ускоряет проекты «1 изображение + музыка + Effects/Subscribe». Локальный builder проверяет этот режим перед установкой.')
 settings.write_text(text, encoding='utf-8')
 
+# Updater/current-version fallback used by the frontend bridge.
+tauri_bridge = Path('src/tauri.ts')
+bridge = tauri_bridge.read_text(encoding='utf-8')
+bridge = re.sub(r'1\.0\.0-alpha\.8\.\d+', version, bridge)
+tauri_bridge.write_text(bridge, encoding='utf-8')
+
 history = Path('src/components/ReleaseHistory.tsx')
 h = history.read_text(encoding='utf-8')
-h = h.replace("current:true,", "current:false,", 1)
+# There must be only one current release.
+h = h.replace('current:true,', 'current:false,')
 entry = """  {version:'1.0.0-alpha.8.26',date:'25.08.2026',current:true,title:'Smart Repeat: 2 часа около 700–1000 МБ и быстрый финальный mux',items:[
     'Smart Size теперь работает не только для чистой картинки, но и для проекта «1 изображение + Effects + Subscribe».',
     'Для 2 часов целевой бюджет видео: 520 кбит/с для 1080p, 600 кбит/с для 1440p и 700 кбит/с для 4K; вместе с AAC 320 кбит/с это примерно 700–1000 МБ.',
@@ -28,10 +35,16 @@ entry = """  {version:'1.0.0-alpha.8.26',date:'25.08.2026',current:true,title:'S
   ]},
 """
 marker = 'const releases:Release[]=[\n'
-if entry not in h:
+if "version:'1.0.0-alpha.8.26'" not in h:
     if marker not in h:
         raise SystemExit('8.26 UI: ReleaseHistory marker not found')
     h = h.replace(marker, marker + entry, 1)
+else:
+    h = h.replace("{version:'1.0.0-alpha.8.26',date:'25.08.2026',current:false", "{version:'1.0.0-alpha.8.26',date:'25.08.2026',current:true", 1)
 history.write_text(h, encoding='utf-8')
 
+for path in [settings, tauri_bridge, history]:
+    value = path.read_text(encoding='utf-8')
+    if path != history and version not in value:
+        raise SystemExit(f'8.26 UI: version missing in {path}')
 print('ENDLUME alpha.8.26 UI/version history applied')

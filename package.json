@@ -1,11 +1,12 @@
 {
   "name": "endlume-studio",
   "private": true,
-  "version": "1.0.0-alpha.8.24",
+  "version": "1.0.0-alpha.8.25",
   "type": "module",
   "scripts": {
-    "dev": "python3 scripts/apply-render-loop-fix.py && python3 scripts/apply-render-hotfix-8-17.py && python3 scripts/apply-editor-hotfix-8-18.py && python3 scripts/apply-aspect-permission-hotfix-8-20.py && python3 scripts/apply-smart-align-hotfix-8-24.py && python3 scripts/apply-smart-align-postfix-8-24.py && vite",
-    "build": "python3 scripts/apply-render-loop-fix.py && python3 scripts/apply-render-hotfix-8-17.py && python3 scripts/apply-editor-hotfix-8-18.py && python3 scripts/apply-aspect-permission-hotfix-8-20.py && python3 scripts/apply-smart-align-hotfix-8-24.py && python3 scripts/apply-smart-align-postfix-8-24.py && tsc && vite build",
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "check": "tsc --noEmit",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build"

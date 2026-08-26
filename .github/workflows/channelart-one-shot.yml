@@ -1,8 +1,8 @@
 name: ChannelArt Factory silent M1 validation
 
 on:
-  schedule:
-    - cron: '*/5 * * * *'
+  pull_request:
+    types: [opened, synchronize, reopened]
   workflow_dispatch:
 
 permissions:

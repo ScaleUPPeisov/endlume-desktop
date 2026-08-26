@@ -1,0 +1,1 @@
+trigger installer build 2026-08-26

@@ -132,7 +132,7 @@ SMOKE="$(mktemp -d)"
 "$BUNDLED_FFMPEG" -hide_banner -loglevel error -f lavfi -i 'color=c=0x182038:size=640x360:rate=30' -t 1 -an -c:v libx265 -preset ultrafast -crf 22 -tag:v hvc1 -pix_fmt yuv420p -y "$SMOKE/v.mp4"
 "$BUNDLED_FFMPEG" -hide_banner -loglevel error -f lavfi -i 'sine=frequency=440:sample_rate=44100' -t 1 -ac 2 -c:a libmp3lame -b:a 320k -y "$SMOKE/a.mp3"
 "$BUNDLED_FFMPEG" -hide_banner -loglevel error -i "$SMOKE/v.mp4" -i "$SMOKE/a.mp3" -map 0:v:0 -map 1:a:0 -c:v copy -c:a copy -movflags +faststart -y "$SMOKE/final.mov"
-"$BUNDLED_FFMPEG" -hide_banner -loglevel error -i "$SMOKE/final.mov" -map 0:a:0 -t .5 -f null -
+"$BUNDLED_FFMPEG" -hide_banner -loglevel error -i "$SMOKE/final.mov" -map 0:a:0 -t 0.5 -f null -
 [[ "$("$BUNDLED_FFPROBE" -v error -select_streams a:0 -show_entries stream=codec_name -of default=nw=1:nk=1 "$SMOKE/final.mov")" == "mp3" ]] || fail "Собранная .app не сохраняет MP3."
 rm -rf "$SMOKE"
 

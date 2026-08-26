@@ -1,0 +1,6 @@
+{
+  "version": "1.0.0-alpha.8.32",
+  "date": "26.08.2026",
+  "builder": "BUILD_ENDLUME_832_LOCAL.command",
+  "notes": "Исправлена очередь: второй и следующие проекты больше не исчезают из Рендера. Добавлены уникальные job ID и синхронизация с backend queue. Обновления теперь запускаются внутри ENDLUME Studio без Terminal и без GitHub Actions. Сохранены live-stage Render Center, lossless crossfade, Noise 1/2, Effects/Subscribe и Hybrid Fidelity."
+}

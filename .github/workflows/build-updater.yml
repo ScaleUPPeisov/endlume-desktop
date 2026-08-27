@@ -1,105 +1,95 @@
-name: ENDLUME macOS updater build
+name: ENDLUME Remote Update Release
 
-# Manual fallback only.
-# ENDLUME macOS development now builds locally on the owner's Mac to avoid
-# burning GitHub-hosted macOS minutes and sending repeated failure emails.
 on:
+  push:
+    branches: [release]
+    paths-ignore:
+      - 'README.md'
+      - 'updates/*.md'
   workflow_dispatch:
 
 concurrency:
-  group: endlume-macos-release-manual
+  group: endlume-remote-release
   cancel-in-progress: true
+
+permissions:
+  contents: write
 
 jobs:
   build-macos-arm64:
     runs-on: macos-15
-    permissions:
-      contents: write
-
     steps:
-      - name: Checkout ENDLUME
-        uses: actions/checkout@v7
-
-      - name: Verify ARM64 runner
-        run: |
-          uname -m
-          test "$(uname -m)" = "arm64"
-
-      - name: Setup Node
-        uses: actions/setup-node@v6
+      - name: Checkout release channel
+        uses: actions/checkout@v4
         with:
-          node-version: '22'
+          ref: release
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-apple-darwin
-
-      - name: Rust cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: './src-tauri -> target'
-
-      - name: Install frontend dependencies
-        run: npm install --no-audit --no-fund
-
-      - name: Generate clean ENDLUME macOS icon
+      - name: Read update manifest
+        id: manifest
         shell: bash
         run: |
           set -euo pipefail
-          test -f app-icon-v2.svg
-          brew list librsvg >/dev/null 2>&1 || brew install librsvg
-          rsvg-convert -w 1024 -h 1024 app-icon-v2.svg > app-icon.png
-          ICONSET="src-tauri/icons/ENDLUME.iconset"
-          rm -rf "$ICONSET"
-          mkdir -p "$ICONSET"
-          sips -z 16 16 app-icon.png --out "$ICONSET/icon_16x16.png" >/dev/null
-          sips -z 32 32 app-icon.png --out "$ICONSET/icon_16x16@2x.png" >/dev/null
-          sips -z 32 32 app-icon.png --out "$ICONSET/icon_32x32.png" >/dev/null
-          sips -z 64 64 app-icon.png --out "$ICONSET/icon_32x32@2x.png" >/dev/null
-          sips -z 128 128 app-icon.png --out "$ICONSET/icon_128x128.png" >/dev/null
-          sips -z 256 256 app-icon.png --out "$ICONSET/icon_128x128@2x.png" >/dev/null
-          sips -z 256 256 app-icon.png --out "$ICONSET/icon_256x256.png" >/dev/null
-          sips -z 512 512 app-icon.png --out "$ICONSET/icon_256x256@2x.png" >/dev/null
-          sips -z 512 512 app-icon.png --out "$ICONSET/icon_512x512.png" >/dev/null
-          sips -z 1024 1024 app-icon.png --out "$ICONSET/icon_512x512@2x.png" >/dev/null
-          iconutil -c icns "$ICONSET" -o src-tauri/icons/icon.icns
-          cp "$ICONSET/icon_32x32.png" src-tauri/icons/32x32.png
-          cp "$ICONSET/icon_128x128.png" src-tauri/icons/128x128.png
-          cp "$ICONSET/icon_128x128@2x.png" src-tauri/icons/128x128@2x.png
+          VERSION="$(/usr/bin/python3 -c 'import json;print(json.load(open("updates/latest.json"))["version"])')"
+          BUILDER="$(/usr/bin/python3 -c 'import json;print(json.load(open("updates/latest.json"))["builder"])')"
+          TAG="$(/usr/bin/python3 -c 'import json;print(json.load(open("updates/latest.json"))["releaseTag"])')"
+          ASSET="$(/usr/bin/python3 -c 'import json;print(json.load(open("updates/latest.json"))["asset"])')"
+          CHECKSUM="$(/usr/bin/python3 -c 'import json;print(json.load(open("updates/latest.json"))["checksumAsset"])')"
+          test -n "$VERSION"; test -f "$BUILDER"; test -n "$TAG"; test -n "$ASSET"; test -n "$CHECKSUM"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "builder=$BUILDER" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "asset=$ASSET" >> "$GITHUB_OUTPUT"
+          echo "checksum=$CHECKSUM" >> "$GITHUB_OUTPUT"
 
-      - name: Prepare FFmpeg sidecars
-        shell: bash
-        run: |
-          set -euo pipefail
-          brew list ffmpeg >/dev/null 2>&1 || brew install ffmpeg
-          mkdir -p src-tauri/binaries
-          cp "$(command -v ffmpeg)" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
-          cp "$(command -v ffprobe)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
-          chmod +x src-tauri/binaries/*
-
-      - name: Apply production render fixes
-        run: |
-          python3 scripts/apply-render-loop-fix.py
-          python3 scripts/apply-render-hotfix-8-17.py
-
-      - name: Validate loop modes and normal project
-        shell: bash
-        run: |
-          chmod +x scripts/validate-loop-modes.sh
-          scripts/validate-loop-modes.sh src-tauri/binaries/ffmpeg-aarch64-apple-darwin src-tauri/binaries/ffprobe-aarch64-apple-darwin
-
-      - name: Validate motion UI
-        run: node scripts/validate-motion-ui.mjs
-
-      - name: Frontend check
-        run: npm run build
-
-      - name: Rust check
-        run: cargo check --manifest-path src-tauri/Cargo.toml --target aarch64-apple-darwin
-
-      - name: Build signed updater artifact
+      - name: Build tested ENDLUME package on macOS
         env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
-        run: npx tauri build --target aarch64-apple-darwin --bundles app
+          GH_TOKEN: ${{ github.token }}
+          ENDLUME_CI_ARTIFACT_DIR: ${{ github.workspace }}/release-out
+          ENDLUME_CI_ASSET_NAME: ${{ steps.manifest.outputs.asset }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x "${{ steps.manifest.outputs.builder }}"
+          /bin/bash "${{ steps.manifest.outputs.builder }}"
+          test -s "release-out/${{ steps.manifest.outputs.asset }}"
+          test -s "release-out/${{ steps.manifest.outputs.checksum }}"
+
+      - name: Verify package before publishing
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd release-out
+          /usr/bin/shasum -a 256 -c "${{ steps.manifest.outputs.checksum }}"
+          TMP="$(mktemp -d)"
+          /usr/bin/ditto -x -k "${{ steps.manifest.outputs.asset }}" "$TMP"
+          APP="$(find "$TMP" -maxdepth 4 -type d -name 'ENDLUME Studio.app' -print -quit)"
+          test -n "$APP"
+          test "$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$APP/Contents/Info.plist")" = "studio.endlume.desktop"
+          test "$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist")" = "${{ steps.manifest.outputs.version }}"
+          /usr/bin/codesign --verify --deep --strict "$APP"
+          rm -rf "$TMP"
+
+      - name: Publish private GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.manifest.outputs.tag }}"
+          VERSION="${{ steps.manifest.outputs.version }}"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            :
+          else
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "ENDLUME Studio $VERSION" --notes "Automated tested macOS ARM64 update package for ENDLUME Remote Update Center."
+          fi
+          gh release upload "$TAG" \
+            "release-out/${{ steps.manifest.outputs.asset }}" \
+            "release-out/${{ steps.manifest.outputs.checksum }}" \
+            --repo "$GITHUB_REPOSITORY" --clobber
+
+      - name: Upload CI copy
+        uses: actions/upload-artifact@v4
+        with:
+          name: ENDLUME-${{ steps.manifest.outputs.version }}-macos-arm64
+          path: release-out/*
+          if-no-files-found: error

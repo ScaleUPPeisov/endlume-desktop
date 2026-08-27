@@ -79,23 +79,25 @@ export const api = {
   showError:(text:string)=>message(text,{title:'ENDLUME Studio',kind:'error'}),
   showInfo:(text:string)=>message(text,{title:'ENDLUME Studio',kind:'info'}),
   checkUpdate:async()=>{
-    const info:any=await withTimeout(invoke('local_update_check'),12000,'Проверка обновлений');
-    if(!info?.available)return {none:true,current:info?.current||'1.0.0-alpha.8.32',channel:'alpha',background:true,message:info?.message};
+    type Info={supported:boolean;available:boolean;current:string;version?:string;notes?:string;date?:string;reason?:string};
+    type Status={state:string;stage?:string;progress:number;message?:string;logPath?:string};
+    const info=await withTimeout(invoke<Info>('local_update_check'),15000,'Проверка обновлений');
+    if(!info.supported){return {none:true,current:info.current,channel:'private-local',warning:info.reason};}
+    if(!info.available||!info.version)return {none:true,current:info.current,channel:'private-local'};
     return {
-      version:info.version,
-      current:info.current,
-      body:'Обновление ENDLUME установится в фоне. Terminal не открывается.',
-      install:async(onProgress?:(percent:number)=>void)=>{
-        const started:any=await invoke('local_update_install',{version:info.version});
-        onProgress?.(2);
+      version:info.version,date:info.date,body:info.notes||'',current:info.current,channel:'private-local',
+      install:async(onProgress?:(percent:number,stage?:string)=>void)=>{
+        await invoke<Status>('local_update_start');
+        onProgress?.(1,'Подготавливаю обновление');
         for(;;){
-          await new Promise(r=>setTimeout(r,1200));
-          const status:any=await invoke('local_update_status',{pid:started.pid});
-          onProgress?.(Number(status.progress||0));
-          if(status.failed)throw new Error(status.error||`Обновление остановлено: ${status.stage}`);
-          if(status.done){onProgress?.(100);return;}
+          await new Promise(r=>window.setTimeout(r,900));
+          const st=await invoke<Status>('local_update_status');
+          onProgress?.(st.progress||0,st.stage||undefined);
+          if(st.state==='failed')throw new Error(st.message||`Обновление остановлено. Лог: ${st.logPath||'ENDLUME update.log'}`);
+          if(st.state==='success'){onProgress?.(100,'Обновление установлено');return;}
         }
       }
     };
-  }
+  },
+  updateStatus:()=>invoke<{state:string;stage?:string;progress:number;message?:string;logPath?:string}>('local_update_status')
 };

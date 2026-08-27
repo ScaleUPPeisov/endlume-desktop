@@ -88,5 +88,4 @@ chmod +x "$PATCHED"
 
 # The real builder performs TypeScript, Rust, audio, size, motion, 100/100
 # preview and built-app smoke gates before atomically replacing /Applications.
-trap - EXIT
-exec "$PATCHED"
+/bin/bash "$PATCHED"

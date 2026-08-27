@@ -45,9 +45,11 @@ import sys
 src=Path(sys.argv[1]).read_text(encoding='utf-8')
 
 # Hard preflight: do not even start npm/Rust if the base builder lost one of the
-# migration repairs already discovered on the user's M1.
+# migration/build-environment repairs already discovered on the user's M1.
 if 'repair-speed-workdir-8-33.py' not in src:
     raise SystemExit('8.35 builder: 8.33 workdir compatibility repair missing in base builder')
+if 'assert_no_tauri_appledouble' not in src or 'export COPYFILE_DISABLE=1' not in src:
+    raise SystemExit('8.35 builder: external-drive AppleDouble build shield missing in base builder')
 
 # The 8.34 wrapper itself generates the real builder. Extend that generation
 # deterministically instead of replaying another independent migration chain.
@@ -95,9 +97,12 @@ chmod +x "$PATCHED"
 /bin/bash -n "$PATCHED" || fail "внутренний builder не прошёл shell syntax gate"
 grep -Fq 'repair-speed-workdir-8-33.py' "$PATCHED" || fail "в сформированном builder потерян 8.33 workdir repair"
 grep -Fq 'repair-strict-store-8-35.py' "$PATCHED" || fail "в сформированном builder потерян Zustand migration repair"
+grep -Fq 'assert_no_tauri_appledouble' "$PATCHED" || fail "в сформированном builder потерян AppleDouble build shield"
+grep -Fq 'export COPYFILE_DISABLE=1' "$PATCHED" || fail "в сформированном builder потерян COPYFILE_DISABLE"
 if grep -Fq 'repair-regression-validators-8-35.py' "$PATCHED"; then fail "obsolete validator repair unexpectedly present"; fi
 
 echo "✅ Compatibility preflight: 8.26/8.32/8.33 + persisted settings защищены"
+echo "✅ External-drive shield: AppleDouble ._* удаляются до Rust/Tauri"
 echo "✅ Legacy validators already 8.35-aware — дополнительный repair не нужен"
 echo "✅ 8.35 builder сформирован: TypeScript + Rust + Preview 100/100 + 4K SSIM + M1 speed gate"
 /bin/bash "$PATCHED"

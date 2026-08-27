@@ -23,7 +23,7 @@ grep -Fq '"-bufsize","4M"' "$RUST" || fail '4M VBV buffer missing'
 grep -Fq "width:1920,height:1080,fps:30,codec:'h265'" "$STORE" || fail 'UI defaults are not 1080p/30/HEVC'
 grep -Fq 'version:4,migrate:' "$STORE" || fail 'persisted settings migration v4 missing'
 grep -Fq '1080P FULL HD' "$PROJECT" || fail '1080p UI option missing'
-grep -Fq '"version": "1.0.0-alpha.8.36"' "$PKG" || fail 'package version is not 8.36'
+if grep -Eq '"version": "1\.0\.0-alpha\.8\.(36|37)"' "$PKG"; then :; else fail 'package version is not 8.36/8.37'; fi
 pass '1080p Fidelity Lock wiring + original MP3 path are present'
 
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
@@ -42,7 +42,7 @@ import time
 print(time.time())
 PY
 )"
-DIM="$($FFPROBE -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0:s=x "$TMP/static.mp4")"
+DIM="$("$FFPROBE" -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0:s=x "$TMP/static.mp4")"
 [[ "$DIM" == "1920x1080" ]] || fail "encoded dimensions are $DIM instead of 1920x1080"
 pass 'encoded master is exactly 1920x1080'
 
@@ -66,14 +66,13 @@ if sec > 30:
     raise SystemExit(f'FAIL: short master is too slow for <=1 minute target: {sec:.2f}s')
 PY
 
-# Busy overlay budget smoke.
 "$FFMPEG" -hide_banner -loglevel error -f lavfi -i 'testsrc2=size=640x360:rate=30' -t 12 -c:v libx264 -preset ultrafast -y "$TMP/fx.mp4"
 "$FFMPEG" -hide_banner -loglevel error -loop 1 -framerate 30 -i "$TMP/base.png" -stream_loop -1 -i "$TMP/fx.mp4" \
   -filter_complex '[0:v]setsar=1[b];[1:v]scale=640:360[fx];[b][fx]overlay=x=50:y=600:shortest=1:eof_action=repeat,format=yuv420p[v]' \
   -map '[v]' -t 12 -an -c:v libx265 -preset ultrafast -crf 18 -maxrate 500k -bufsize 4M \
   -x265-params 'keyint=360:min-keyint=360:scenecut=0:open-gop=0:aq-mode=3:aq-strength=1.0:vbv-init=1.0' \
   -tag:v hvc1 -pix_fmt yuv420p -y "$TMP/motion.mp4"
-VBR="$($FFPROBE -v error -show_entries format=bit_rate -of default=nw=1:nk=1 "$TMP/motion.mp4")"
+VBR="$("$FFPROBE" -v error -show_entries format=bit_rate -of default=nw=1:nk=1 "$TMP/motion.mp4")"
 python3 - "$VBR" <<'PY'
 import sys
 v=int(sys.argv[1])

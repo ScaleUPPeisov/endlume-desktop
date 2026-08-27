@@ -1,6 +1,6 @@
 {
-  "version": "1.0.0-alpha.8.32",
-  "date": "26.08.2026",
-  "builder": "BUILD_ENDLUME_832_LOCAL.command",
-  "notes": "Исправлена очередь: второй и следующие проекты больше не исчезают из Рендера. Добавлены уникальные job ID и синхронизация с backend queue. Обновления теперь запускаются внутри ENDLUME Studio без Terminal и без GitHub Actions. Сохранены live-stage Render Center, lossless crossfade, Noise 1/2, Effects/Subscribe и Hybrid Fidelity."
+  "version": "1.0.0-alpha.8.33",
+  "date": "27.08.2026",
+  "builder": "BUILD_ENDLUME_833_LOCAL.command",
+  "notes": "SSD Fast Fidelity + Effects/Subscribe Fix. Исправлена ошибка Invalid PNG signature 0x516070020000 на внешних дисках: служебные macOS AppleDouble ._* больше не попадают в проекты и Live Preview. Тяжёлый render-work теперь создаётся на выбранном диске результата, поэтому при выводе на TOSHIBA SSD внутренний диск Mac не забивается промежуточными файлами. Для 1 изображения + Effects + Subscribe включён аппаратный HEVC VideoToolbox с libx265 quality fallback, переиспользование повторяющихся Subscribe-композитов и прямой concat final mux. Effects/Subscribe Smart Fidelity берутся из исходников без гигантского qtrle cache. Noise 1/2 полностью удалены. MP3 bitstream-copy, lossless ALAC crossfade, очередь и обновления внутри приложения сохранены."
 }

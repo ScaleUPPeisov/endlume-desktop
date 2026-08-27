@@ -6,19 +6,23 @@ TMP_ROOT="$(mktemp -d /tmp/endlume-837-bootstrap.XXXXXX)"
 BASE="$TMP_ROOT/BUILD_ENDLUME_836_LOCAL.command"
 PATCHED="$TMP_ROOT/BUILD_ENDLUME_837_REAL.command"
 VALIDATOR="$TMP_ROOT/validate-release-8-36.sh"
-LOG="$HOME/Desktop/ENDLUME-local-build.log"
+BOOT_LOG="$TMP_ROOT/bootstrap.log"
+BUILD_LOG="$HOME/Desktop/ENDLUME-local-build.log"
 cleanup(){ rm -rf "$TMP_ROOT" >/dev/null 2>&1 || true; }
 show_failure(){
   local code=$?
   local tail_text=""
-  if [[ -f "$LOG" ]]; then
-    tail_text="$(/usr/bin/tail -n 18 "$LOG" 2>/dev/null | /usr/bin/tr '\n' ' ' | /usr/bin/cut -c1-900 || true)"
+  if [[ -f "$BOOT_LOG" ]]; then
+    tail_text="$(/usr/bin/tail -n 18 "$BOOT_LOG" 2>/dev/null | /usr/bin/tr '\n' ' ' | /usr/bin/cut -c1-1000 || true)"
+  fi
+  if [[ -z "$tail_text" && -f "$BUILD_LOG" ]]; then
+    tail_text="$(/usr/bin/tail -n 18 "$BUILD_LOG" 2>/dev/null | /usr/bin/tr '\n' ' ' | /usr/bin/cut -c1-1000 || true)"
   fi
   /usr/bin/osascript - "$code" "$tail_text" <<'OSA' >/dev/null 2>&1 || true
 on run argv
   set c to item 1 of argv
   set t to item 2 of argv
-  if t is "" then set t to "Подробности: Рабочий стол → ENDLUME-local-build.log"
+  if t is "" then set t to "Подробности сохранены в логе обновления ENDLUME."
   display dialog "ENDLUME 8.37 не установлена. Код " & c & return & return & t buttons {"OK"} default button "OK" with icon stop
 end run
 OSA
@@ -27,6 +31,7 @@ OSA
 trap cleanup EXIT
 trap show_failure ERR
 fail(){ echo; echo "❌ ENDLUME 8.37 bootstrap: $1"; return 1; }
+exec > >(tee "$BOOT_LOG") 2>&1
 
 echo "ENDLUME Studio 1.0.0-alpha.8.37"
 echo "ONE-TIME IN-APP BOOTSTRAP → Remote Update Center"
@@ -34,11 +39,21 @@ echo "ONE-TIME IN-APP BOOTSTRAP → Remote Update Center"
 command -v gh >/dev/null 2>&1 || fail "GitHub CLI не найден"
 gh auth status -h github.com >/dev/null 2>&1 || fail "GitHub CLI не авторизован"
 
-# Preflight exact validator that previously broke on /Volumes/TOSHIBA EXT.
+# Verify the exact validator content without fragile shell escaping.
 gh api "repos/$REPO/contents/scripts/validate-release-8-36.sh?ref=$BRANCH" --jq .content | tr -d '\n' | /usr/bin/base64 -D > "$VALIDATOR" || fail "не удалось получить validator 8.36"
-grep -Fq 'DIM="$("$FFPROBE"' "$VALIDATOR" || fail "release validator всё ещё ломает пути с пробелами"
-grep -Fq 'VBR="$("$FFPROBE"' "$VALIDATOR" || fail "release validator bitrate всё ещё ломает пути с пробелами"
-echo "✅ Path-with-spaces validator исправлен"
+python3 - "$VALIDATOR" <<'PY'
+from pathlib import Path
+import sys
+s=Path(sys.argv[1]).read_text(encoding='utf-8')
+for marker in ['DIM="$\("$FFPROBE"', 'VBR="$\("$FFPROBE"']:
+    pass
+# Actual shell text must quote the executable path inside command substitution.
+required=['DIM="$("$FFPROBE"', 'VBR="$("$FFPROBE"']
+missing=[x for x in required if x not in s]
+if missing:
+    raise SystemExit('8.37 bootstrap: validator path-with-spaces fix missing: '+', '.join(missing))
+PY
+echo "✅ Path-with-spaces validator подтверждён"
 
 gh api "repos/$REPO/contents/BUILD_ENDLUME_836_LOCAL.command?ref=$BRANCH" --jq .content | tr -d '\n' | /usr/bin/base64 -D > "$BASE" || fail "не удалось получить 8.36 base builder"
 [[ -s "$BASE" ]] || fail "8.36 base builder пуст"
@@ -53,9 +68,7 @@ src=src.replace('VERSION_EXPECTED="1.0.0-alpha.8.36"','VERSION_EXPECTED="1.0.0-a
 src=src.replace('echo "❌ ENDLUME 8.36 остановлена ДО замены приложения"','echo "❌ ENDLUME 8.37 остановлена ДО замены приложения"')
 src=src.replace('│ 8.36 • 1080p Fidelity Lock • clean first frame            │','│ 8.37 • 1080p Fidelity Lock • Remote Update Center         │')
 
-# IMPORTANT: for the one-time bootstrap, never build on /Volumes/*.
-# External exFAT/NTFS volumes create AppleDouble sidecars and path-with-space
-# hazards. Keep the update workspace on the internal Mac filesystem.
+# For the one-time bootstrap, never build on /Volumes/*.
 needle="src=src.replace('SRC=\"$WORK_ROOT/endlume-desktop-8.33\"','SRC=\"$WORK_ROOT/endlume-desktop-8.36\"',1)\n"
 if needle not in src:
     raise SystemExit('8.37 bootstrap: 8.36 work-root transform marker missing')
@@ -111,6 +124,10 @@ if grep -Fq "'VERSION_EXPECTED=\"1.0.0-alpha.8.36\"'" "$PATCHED"; then fail "в 
 
 echo "✅ Bootstrap 8.37 preflight пройден"
 echo "✅ Build workspace закреплён на внутреннем SSD"
-echo "✅ При ошибке будет показана реальная последняя стадия, а не только Code 1"
+echo "✅ Stale 8.36 self-gates отсутствуют"
+echo "✅ При ошибке показывается bootstrap/build diagnostics, а не старый лог"
 echo "✅ После установки следующие обновления — готовыми бинарниками из Настроек"
+
+# From here on, the desktop log belongs only to this new attempt.
+: > "$BUILD_LOG"
 /bin/bash "$PATCHED"

@@ -2,10 +2,10 @@
   "version": "1.0.0-alpha.8.37",
   "date": "27.08.2026",
   "channel": "remote-binary",
-  "builder": "BUILD_ENDLUME_837_REMOTE_LOCAL.command",
+  "builder": "BUILD_ENDLUME_837_BOOTSTRAP_LOCAL.command",
   "ciBuilder": "BUILD_ENDLUME_837_CI.command",
   "releaseTag": "endlume-v1.0.0-alpha.8.37",
   "asset": "ENDLUME-Studio-1.0.0-alpha.8.37-macos-arm64.zip",
   "checksumAsset": "ENDLUME-Studio-1.0.0-alpha.8.37-macos-arm64.zip.sha256",
-  "notes": "Remote Update Center. Текущая ENDLUME устанавливает 8.37 через Настройки → Обновления уже без локальной компиляции: bootstrap только скачивает готовый ZIP из приватного GitHub Release, проверяет SHA-256, Bundle ID, версию и codesign, затем делает atomic swap и перезапускает приложение. После 8.37 все следующие версии работают по тому же remote-binary каналу. На пользовательском Mac больше не запускаются npm install, cargo check, Rust/Tauri build. Сохранены 1080p Fidelity Lock, original MP3 bitstream-copy, Preview Shield, Noise 1/2 removal и AppleDouble-защита."
+  "notes": "Remote Update Center. Переход на 8.37 запускается прямо из Настройки → Обновления без открытого Terminal. Это единственный bootstrap-переход: он устанавливает новый Update Center, который дальше умеет скачивать готовую .app, проверять SHA-256, Bundle ID, версию и codesign, делать atomic swap и перезапуск. Серверный macOS build-пайплайн уже подготовлен; если GitHub-hosted runner недоступен, bootstrap остаётся резервным скрытым каналом внутри приложения. Сохранены 1080p Fidelity Lock, original MP3 bitstream-copy, Preview Shield, Noise 1/2 removal и AppleDouble-защита."
 }

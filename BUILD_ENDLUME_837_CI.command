@@ -20,17 +20,16 @@ python3 - "$BASE" "$PATCHED" <<'PY'
 from pathlib import Path
 import sys
 src=Path(sys.argv[1]).read_text(encoding='utf-8')
-src=src.replace('VERSION_EXPECTED="1.0.0-alpha.8.36"','VERSION_EXPECTED="1.0.0-alpha.8.37"',1)
-src=src.replace('echo "❌ ENDLUME 8.36 остановлена ДО замены приложения"','echo "❌ ENDLUME 8.37 остановлена ДО замены приложения"',1)
-src=src.replace('│ 8.36 • 1080p Fidelity Lock • clean first frame            │','│ 8.37 • 1080p Fidelity Lock • Remote Update Center         │',1)
+src=src.replace('VERSION_EXPECTED="1.0.0-alpha.8.36"','VERSION_EXPECTED="1.0.0-alpha.8.37"')
+src=src.replace('echo "❌ ENDLUME 8.36 остановлена ДО замены приложения"','echo "❌ ENDLUME 8.37 остановлена ДО замены приложения"')
+src=src.replace('│ 8.36 • 1080p Fidelity Lock • clean first frame            │','│ 8.37 • 1080p Fidelity Lock • Remote Update Center         │')
 
 apply_marker='python3 scripts/apply-version-8-36.py\n'
 addition='''python3 -m py_compile scripts/apply-remote-updater-8-37.py scripts/apply-version-8-37.py
 python3 scripts/apply-remote-updater-8-37.py
 python3 scripts/apply-version-8-37.py
 '''
-if apply_marker not in src:
-    raise SystemExit('8.37 CI: apply-version-8-36 marker missing')
+if apply_marker not in src: raise SystemExit('8.37 CI: apply-version-8-36 marker missing')
 src=src.replace(apply_marker,apply_marker+addition,1)
 
 old_stage='''chmod +x scripts/validate-release-8-36.sh
@@ -42,8 +41,7 @@ scripts/validate-release-8-36.sh "$FFMPEG" "$FFPROBE"
 scripts/validate-release-8-37.sh
 node scripts/validate-motion-ui.mjs
 '''
-if old_stage not in src:
-    raise SystemExit('8.37 CI: validator marker missing')
+if old_stage not in src: raise SystemExit('8.37 CI: validator marker missing')
 src=src.replace(old_stage,new_stage,1)
 
 stage10='stage "10/10 Устанавливаю обновление" 96\n'
@@ -57,17 +55,18 @@ ci='''if [[ -n "${ENDLUME_CI_ARTIFACT_DIR:-}" ]]; then
   exit 0
 fi
 '''
-if stage10 not in src:
-    raise SystemExit('8.37 CI: stage10 marker missing')
+if stage10 not in src: raise SystemExit('8.37 CI: stage10 marker missing')
 src=src.replace(stage10,ci+stage10,1)
 
 for marker in ['apply-remote-updater-8-37.py','validate-release-8-37.sh','VERSION_EXPECTED="1.0.0-alpha.8.37"','ENDLUME_CI_ARTIFACT_DIR','assert_no_tauri_appledouble']:
-    if marker not in src:
-        raise SystemExit(f'8.37 CI incomplete: {marker}')
+    if marker not in src: raise SystemExit(f'8.37 CI incomplete: {marker}')
+if "'VERSION_EXPECTED=\"1.0.0-alpha.8.36\"'" in src:
+    raise SystemExit('8.37 CI: stale 8.36 required self-gate survived')
 Path(sys.argv[2]).write_text(src,encoding='utf-8')
 PY
 chmod +x "$PATCHED"
 /bin/bash -n "$PATCHED" || fail "generated CI builder syntax failed"
 grep -Fq 'VERSION_EXPECTED="1.0.0-alpha.8.37"' "$PATCHED" || fail "8.37 version gate missing"
 grep -Fq 'ENDLUME_CI_ARTIFACT_DIR' "$PATCHED" || fail "CI artifact mode missing"
+if grep -Fq "'VERSION_EXPECTED=\"1.0.0-alpha.8.36\"'" "$PATCHED"; then fail "stale 8.36 self-gate survived"; fi
 /bin/bash "$PATCHED"

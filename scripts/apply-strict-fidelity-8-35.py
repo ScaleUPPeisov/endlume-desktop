@@ -16,7 +16,7 @@ r=p.read_text(encoding='utf-8')
 
 # 1) One long GOP per short master. The previous 2-second GOP inserted a large
 # 4K I-frame every two seconds, wasting bits and causing visible mosquito noise
-# under the 760k budget. 30fps also gives twice the bits/frame vs persisted 60fps.
+# under the old budget. 30fps also gives twice the bits/frame vs persisted 60fps.
 pat=r'''fn hybrid_master_seconds\(_s:&RenderSettings\)->f64\{.*?\n\}\n\nasync fn choose_hybrid_encoder'''
 replacement=r'''fn hybrid_master_seconds(_s:&RenderSettings)->f64{12.0}
 
@@ -28,7 +28,7 @@ async fn hybrid_master_seconds_for_job(app:&AppHandle,job:&QueueJob)->f64{
   d.clamp(12.0,60.0)
 }
 
-fn hybrid_video_kbps(s:&RenderSettings)->u64{match s.width{0..=1920=>620,1921..=2560=>700,_=>780}}
+fn hybrid_video_kbps(s:&RenderSettings)->u64{match s.width{0..=1920=>600,1921..=2560=>680,_=>740}}
 
 fn hybrid_fidelity_args(s:&RenderSettings,encoder:&str,duration:f64)->Vec<String>{
   // A repeated master needs only one I-frame for its complete cycle. This lets
@@ -85,7 +85,7 @@ must('Strict Fidelity: исходную музыку нельзя сохрани
 # Guard against regression to the noisy 2-second GOP.
 must('let g=(s.fps.max(1)*2).to_string();' not in r,'old 2-second GOP still active')
 must('"-bufsize","64M"' in r,'large keyframe buffer missing')
-must('hybrid_video_kbps(s:&RenderSettings)->u64{match s.width{0..=1920=>620,1921..=2560=>700,_=>780}}' in r,'strict 2h bitrate budget missing')
+must('hybrid_video_kbps(s:&RenderSettings)->u64{match s.width{0..=1920=>600,1921..=2560=>680,_=>740}}' in r,'strict 2h bitrate budget missing')
 p.write_text(r,encoding='utf-8')
 
 # 4) New installations start in the same profile. Existing persisted v2 settings

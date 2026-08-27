@@ -39,7 +39,6 @@ echo "ONE-TIME IN-APP BOOTSTRAP → Remote Update Center"
 command -v gh >/dev/null 2>&1 || fail "GitHub CLI не найден"
 gh auth status -h github.com >/dev/null 2>&1 || fail "GitHub CLI не авторизован"
 
-# Verify the exact validator content without fragile grep escaping.
 gh api "repos/$REPO/contents/scripts/validate-release-8-36.sh?ref=$BRANCH" --jq .content | tr -d '\n' | /usr/bin/base64 -D > "$VALIDATOR" || fail "не удалось получить validator 8.36"
 python3 - "$VALIDATOR" <<'PY'
 from pathlib import Path
@@ -59,13 +58,10 @@ python3 - "$BASE" "$PATCHED" <<'PY'
 from pathlib import Path
 import sys
 src=Path(sys.argv[1]).read_text(encoding='utf-8')
-
-# Replace all final-version self-gates.
 src=src.replace('VERSION_EXPECTED="1.0.0-alpha.8.36"','VERSION_EXPECTED="1.0.0-alpha.8.37"')
 src=src.replace('echo "❌ ENDLUME 8.36 остановлена ДО замены приложения"','echo "❌ ENDLUME 8.37 остановлена ДО замены приложения"')
 src=src.replace('│ 8.36 • 1080p Fidelity Lock • clean first frame            │','│ 8.37 • 1080p Fidelity Lock • Remote Update Center         │')
 
-# For the one-time bootstrap, never build on /Volumes/*.
 needle="src=src.replace('SRC=\"$WORK_ROOT/endlume-desktop-8.33\"','SRC=\"$WORK_ROOT/endlume-desktop-8.36\"',1)\n"
 if needle not in src:
     raise SystemExit('8.37 bootstrap: 8.36 work-root transform marker missing')
@@ -73,7 +69,8 @@ internal="src=src.replace('WORK_ROOT=\"$(choose_work_root)\"','WORK_ROOT=\"$HOME
 src=src.replace(needle,needle+internal,1)
 
 apply_marker='python3 scripts/apply-version-8-36.py\n'
-addition='''python3 -m py_compile scripts/apply-remote-updater-8-37.py scripts/apply-version-8-37.py
+addition='''python3 -m py_compile scripts/repair-settings-updater-8-37.py scripts/apply-remote-updater-8-37.py scripts/apply-version-8-37.py
+python3 scripts/repair-settings-updater-8-37.py
 python3 scripts/apply-remote-updater-8-37.py
 python3 scripts/apply-version-8-37.py
 '''
@@ -96,6 +93,7 @@ src=src.replace(old_stage,new_stage,1)
 
 required=[
     'VERSION_EXPECTED="1.0.0-alpha.8.37"',
+    'repair-settings-updater-8-37.py',
     'apply-remote-updater-8-37.py',
     'apply-version-8-37.py',
     'validate-release-8-37.sh',
@@ -114,6 +112,7 @@ PY
 chmod +x "$PATCHED"
 /bin/bash -n "$PATCHED" || fail "generated bootstrap syntax failed"
 grep -Fq 'VERSION_EXPECTED="1.0.0-alpha.8.37"' "$PATCHED" || fail "8.37 final version gate missing"
+grep -Fq 'repair-settings-updater-8-37.py' "$PATCHED" || fail "Settings migration bridge missing"
 grep -Fq 'apply-remote-updater-8-37.py' "$PATCHED" || fail "Remote Update Center patch missing"
 grep -Fq 'validate-release-8-37.sh' "$PATCHED" || fail "8.37 acceptance gate missing"
 grep -Fq 'WORK_ROOT="$HOME/.endlume-local-builder"' "$PATCHED" || fail "bootstrap всё ещё может выбрать внешний диск"
@@ -121,10 +120,8 @@ if grep -Fq "'VERSION_EXPECTED=\"1.0.0-alpha.8.36\"'" "$PATCHED"; then fail "в 
 
 echo "✅ Bootstrap 8.37 preflight пройден"
 echo "✅ Build workspace закреплён на внутреннем SSD"
+echo "✅ Settings updater migration bridge встроен"
 echo "✅ Stale 8.36 self-gates отсутствуют"
-echo "✅ При ошибке показывается bootstrap/build diagnostics, а не старый лог"
 echo "✅ После установки следующие обновления — готовыми бинарниками из Настроек"
-
-# From here on, the desktop log belongs only to this new attempt.
 : > "$BUILD_LOG"
 /bin/bash "$PATCHED"

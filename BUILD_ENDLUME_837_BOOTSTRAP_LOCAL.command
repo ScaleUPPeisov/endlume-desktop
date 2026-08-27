@@ -39,15 +39,12 @@ echo "ONE-TIME IN-APP BOOTSTRAP → Remote Update Center"
 command -v gh >/dev/null 2>&1 || fail "GitHub CLI не найден"
 gh auth status -h github.com >/dev/null 2>&1 || fail "GitHub CLI не авторизован"
 
-# Verify the exact validator content without fragile shell escaping.
+# Verify the exact validator content without fragile grep escaping.
 gh api "repos/$REPO/contents/scripts/validate-release-8-36.sh?ref=$BRANCH" --jq .content | tr -d '\n' | /usr/bin/base64 -D > "$VALIDATOR" || fail "не удалось получить validator 8.36"
 python3 - "$VALIDATOR" <<'PY'
 from pathlib import Path
 import sys
 s=Path(sys.argv[1]).read_text(encoding='utf-8')
-for marker in ['DIM="$\("$FFPROBE"', 'VBR="$\("$FFPROBE"']:
-    pass
-# Actual shell text must quote the executable path inside command substitution.
 required=['DIM="$("$FFPROBE"', 'VBR="$("$FFPROBE"']
 missing=[x for x in required if x not in s]
 if missing:

@@ -50,4 +50,29 @@ for old,new in replacements.items():
 
 p.write_text(text,encoding='utf-8')
 py_compile.compile(str(p),doraise=True)
+
+# The release branch can already contain the modern private-local updater bridge
+# while the historical 8.32 migration is replayed by the local builder. The old
+# migration expects checkUpdate to be the final object property and otherwise
+# fails with "8.32: checkUpdate end missing". Normalize only that bridge to a
+# tiny legacy-compatible placeholder; apply-queue-updater-8-32.py then restores
+# the exact modern checkUpdate + updateStatus implementation in the same build.
+bridge=Path('src/tauri.ts')
+if bridge.is_file():
+    b=bridge.read_text(encoding='utf-8')
+    modern=("local_update_check" in b and "updateStatus:()=>invoke<" in b and "  checkUpdate:async()=>{" in b)
+    if modern:
+        start=b.find('  checkUpdate:async()=>{')
+        obj_end=b.rfind('\n};')
+        if start<0 or obj_end<start:
+            raise SystemExit('ENDLUME: modern updater bridge normalization failed')
+        placeholder="""  checkUpdate:async()=>{\n    return {none:true,current:'1.0.0-alpha.8.31',channel:'migration-placeholder'};\n  }\n"""
+        b=b[:start]+placeholder+b[obj_end:]
+        bridge.write_text(b,encoding='utf-8')
+        print('ENDLUME: modern updater bridge normalized for deterministic 8.32 migration')
+
+q=Path('scripts/apply-queue-updater-8-32.py')
+if q.is_file():
+    py_compile.compile(str(q),doraise=True)
+
 print('ENDLUME: Hybrid Fidelity patcher normalized, CRF22 budget active, Python syntax OK')

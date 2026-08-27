@@ -16,11 +16,26 @@ PKG=package.json
 
 for f in "$SCAN" "$LIVE" "$RUST" "$MODEL" "$PROJECT" "$TYPES" "$STORE" "$PKG"; do test -f "$f" || fail "missing $f"; done
 
-grep -Fq 'fn is_macos_sidecar' "$SCAN" || fail 'scan AppleDouble filter missing'
-grep -Fq 'is_macos_sidecar(&p)' "$SCAN" || fail 'scan still accepts ._* files'
-grep -Fq 'fn is_macos_sidecar' "$LIVE" || fail 'Live Preview AppleDouble filter missing'
-grep -Fq '!is_macos_sidecar(p)&&is_media(p)' "$LIVE" || fail 'Live Preview first_media still accepts ._* files'
-pass 'AppleDouble ._* files are excluded from project scan and Live Preview'
+# 8.33 filtered AppleDouble by filename. 8.34 supersedes that path with
+# rejected_macos_input(), which also checks the AppleDouble magic signature.
+grep -Fq 'fn is_macos_sidecar' "$SCAN" || fail 'scan AppleDouble filename filter missing'
+if grep -Fq 'rejected_macos_input(&p)' "$SCAN"; then
+  grep -Fq '0x00051607' "$SCAN" || fail '8.34 scan magic-signature guard missing'
+elif grep -Fq 'is_macos_sidecar(&p)' "$SCAN"; then
+  :
+else
+  fail 'scan still accepts ._* files'
+fi
+
+grep -Fq 'fn is_macos_sidecar' "$LIVE" || fail 'Live Preview AppleDouble filename filter missing'
+if grep -Fq '!rejected_macos_input(p)&&is_media(p)' "$LIVE"; then
+  grep -Fq '0x00051607' "$LIVE" || fail '8.34 Live Preview magic-signature guard missing'
+elif grep -Fq '!is_macos_sidecar(p)&&is_media(p)' "$LIVE"; then
+  :
+else
+  fail 'Live Preview first_media still accepts ._* files'
+fi
+pass 'AppleDouble files are excluded; 8.34 magic-signature shield accepted when present'
 
 ! grep -Fq 'Шум 1' "$PROJECT" || fail 'Noise 1 UI still present'
 ! grep -Fq 'Шум 2' "$PROJECT" || fail 'Noise 2 UI still present'
@@ -59,7 +74,15 @@ grep -Fq 'audio-original-clean.mp3' "$RUST" || fail 'exact MP3 path lost'
 grep -Fq '"-c:a","alac"' "$RUST" || fail 'ALAC lossless fallback lost'
 pass 'audio fidelity and real crossfade paths remain present'
 
-grep -Fq '"version": "1.0.0-alpha.8.33"' "$PKG" || fail 'package version is not 8.33'
+# This regression gate may run after 8.34 hardening has already bumped the
+# package version. Accept both the native 8.33 stage and the superseding 8.34.
+if grep -Fq '"version": "1.0.0-alpha.8.33"' "$PKG"; then
+  pass 'package version is 8.33 for native regression stage'
+elif grep -Fq '"version": "1.0.0-alpha.8.34"' "$PKG"; then
+  pass 'package version is 8.34; running backward 8.33 regression gate after hardening'
+else
+  fail 'package version is neither 8.33 nor 8.34'
+fi
 
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 

@@ -30,7 +30,7 @@ jobs:
         run: |
           set -euo pipefail
           VERSION="$(/usr/bin/python3 -c 'import json;print(json.load(open("updates/latest.json"))["version"])')"
-          BUILDER="$(/usr/bin/python3 -c 'import json;print(json.load(open("updates/latest.json"))["builder"])')"
+          BUILDER="$(/usr/bin/python3 -c 'import json;print(json.load(open("updates/latest.json"))["ciBuilder"])')"
           TAG="$(/usr/bin/python3 -c 'import json;print(json.load(open("updates/latest.json"))["releaseTag"])')"
           ASSET="$(/usr/bin/python3 -c 'import json;print(json.load(open("updates/latest.json"))["asset"])')"
           CHECKSUM="$(/usr/bin/python3 -c 'import json;print(json.load(open("updates/latest.json"))["checksumAsset"])')"

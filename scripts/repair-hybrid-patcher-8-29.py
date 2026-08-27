@@ -66,8 +66,12 @@ if bridge.is_file():
         obj_end=b.rfind('\n};')
         if start<0 or obj_end<start:
             raise SystemExit('ENDLUME: modern updater bridge normalization failed')
-        placeholder="""  checkUpdate:async()=>{\n    return {none:true,current:'1.0.0-alpha.8.31',channel:'migration-placeholder'};\n  }\n"""
+        placeholder="""  checkUpdate:async()=>{
+    return {none:true,current:'1.0.0-alpha.8.31',channel:'migration-placeholder'};
+  }"""
         b=b[:start]+placeholder+b[obj_end:]
+        if '\n  }\n};' not in b[start:]:
+            raise SystemExit('ENDLUME: legacy updater end marker was not normalized')
         bridge.write_text(b,encoding='utf-8')
         print('ENDLUME: modern updater bridge normalized for deterministic 8.32 migration')
 

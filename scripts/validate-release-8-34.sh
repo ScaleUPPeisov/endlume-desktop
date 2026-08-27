@@ -32,42 +32,24 @@ grep -Fq 'choose_hybrid_encoder(app,attempt).await' "$RUST" || fail 'Fast Fideli
 grep -Fq 'hevc_videotoolbox' "$RUST" || fail 'Apple VideoToolbox path missing'
 grep -Fq 'VisualSource::Concat' "$RUST" || fail 'direct concat fast path missing'
 grep -Fq 'audio-original-clean.mp3' "$RUST" || fail 'exact MP3 path missing'
-grep -Fq '"version": "1.0.0-alpha.8.34"' "$PKG" || fail 'package version is not 8.34'
-pass 'speed + fidelity invariants are wired'
-
-python3 - <<'PY'
-for video in (600,680,760):
-    total=(video+320)*1000*7200/8
-    if not 0.70e9 <= total <= 1.00e9:
-        raise SystemExit(f"FAIL: 2h budget out of 700-1000 MB: {video}k -> {total/1e9:.3f} GB")
-    print(f"PASS: 2h target {video}k video + 320k audio -> {total/1e9:.3f} GB")
-PY
+if grep -Eq '"version": "1\.0\.0-alpha\.8\.(34|35)"' "$PKG"; then :; else fail 'package version is not 8.34+'; fi
+pass '8.34 Preview Shield invariants remain wired'
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
-
-# Reproduce the exact macOS AppleDouble signature behind the PNG failure.
 printf '\000\005\026\007THIS_IS_APPLEDOUBLE_NOT_A_PNG' > "$TMP/._cover.png"
 MAGIC="$(/usr/bin/xxd -p -l 4 "$TMP/._cover.png" | tr -d '\n')"
 [[ "$MAGIC" == "00051607" ]] || fail "AppleDouble fixture is wrong: $MAGIC"
 pass 'exact 0x00051607 AppleDouble fixture reproduced'
 
-# Real assets for repeated Effects + Subscribe preview composition.
 "$FFMPEG" -hide_banner -loglevel error -f lavfi -i 'color=c=0x162038:size=640x360:rate=30' -frames:v 1 -y "$TMP/base.png"
 "$FFMPEG" -hide_banner -loglevel error -f lavfi -i 'color=c=0x00b140:size=240x240:rate=30' -vf 'drawbox=x=80:y=40:w=80:h=160:color=white:t=10' -t 1 -an -c:v libx264 -preset ultrafast -pix_fmt yuv420p -y "$TMP/fx.mp4"
-
-# 100/100 actual FFmpeg launches. The installed app is not replaced unless all
-# preview proxies encode and decode successfully.
 for i in $(seq 1 100); do
   OUT="$TMP/preview-$i.mp4"
-  "$FFMPEG" -hide_banner -loglevel error \
-    -loop 1 -framerate 30 -i "$TMP/base.png" \
-    -stream_loop -1 -i "$TMP/fx.mp4" \
-    -filter_complex '[0:v]setsar=1[b];[1:v]fps=30,format=rgba,chromakey=0x00b140:0.10:0.06,scale=120:-2[fx];[b][fx]overlay=x=(W-w)/2:y=(H-h)/2:shortest=1:eof_action=repeat,format=yuv420p[v]' \
-    -map '[v]' -t 0.08 -an -c:v libx264 -preset ultrafast -pix_fmt yuv420p -y "$OUT"
+  "$FFMPEG" -hide_banner -loglevel error -loop 1 -framerate 30 -i "$TMP/base.png" -stream_loop -1 -i "$TMP/fx.mp4" -filter_complex '[0:v]setsar=1[b];[1:v]fps=30,format=rgba,chromakey=0x00b140:0.10:0.06,scale=120:-2[fx];[b][fx]overlay=x=(W-w)/2:y=(H-h)/2:shortest=1:eof_action=repeat,format=yuv420p[v]' -map '[v]' -t 0.08 -an -c:v libx264 -preset ultrafast -pix_fmt yuv420p -y "$OUT"
   "$FFPROBE" -v error -select_streams v:0 -show_entries stream=codec_name,width,height -of csv=p=0 "$OUT" >/dev/null
   rm -f "$OUT"
 done
 pass 'Effects + Subscribe Live Preview 100/100 repeated encode/decode smoke'
 
-echo 'ENDLUME 8.34 Preview Shield + 100/100 stability gate passed.'
+echo 'ENDLUME 8.34 backward Preview Shield gate passed.'

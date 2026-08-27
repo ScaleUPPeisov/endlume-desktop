@@ -6,9 +6,27 @@ TMP_ROOT="$(mktemp -d /tmp/endlume-837-bootstrap.XXXXXX)"
 BASE="$TMP_ROOT/BUILD_ENDLUME_836_LOCAL.command"
 PATCHED="$TMP_ROOT/BUILD_ENDLUME_837_REAL.command"
 VALIDATOR="$TMP_ROOT/validate-release-8-36.sh"
+LOG="$HOME/Desktop/ENDLUME-local-build.log"
 cleanup(){ rm -rf "$TMP_ROOT" >/dev/null 2>&1 || true; }
+show_failure(){
+  local code=$?
+  local tail_text=""
+  if [[ -f "$LOG" ]]; then
+    tail_text="$(/usr/bin/tail -n 18 "$LOG" 2>/dev/null | /usr/bin/tr '\n' ' ' | /usr/bin/cut -c1-900 || true)"
+  fi
+  /usr/bin/osascript - "$code" "$tail_text" <<'OSA' >/dev/null 2>&1 || true
+on run argv
+  set c to item 1 of argv
+  set t to item 2 of argv
+  if t is "" then set t to "Подробности: Рабочий стол → ENDLUME-local-build.log"
+  display dialog "ENDLUME 8.37 не установлена. Код " & c & return & return & t buttons {"OK"} default button "OK" with icon stop
+end run
+OSA
+  exit "$code"
+}
 trap cleanup EXIT
-fail(){ echo; echo "❌ ENDLUME 8.37 bootstrap: $1"; exit 1; }
+trap show_failure ERR
+fail(){ echo; echo "❌ ENDLUME 8.37 bootstrap: $1"; return 1; }
 
 echo "ENDLUME Studio 1.0.0-alpha.8.37"
 echo "ONE-TIME IN-APP BOOTSTRAP → Remote Update Center"
@@ -30,12 +48,19 @@ from pathlib import Path
 import sys
 src=Path(sys.argv[1]).read_text(encoding='utf-8')
 
-# IMPORTANT: replace ALL 8.36 final-version self-gates in the wrapper, not only
-# the first occurrence. Previous bootstrap changed the generated version but
-# left the wrapper's own required[] check at 8.36, causing instant Code 1.
+# Replace all final-version self-gates.
 src=src.replace('VERSION_EXPECTED="1.0.0-alpha.8.36"','VERSION_EXPECTED="1.0.0-alpha.8.37"')
 src=src.replace('echo "❌ ENDLUME 8.36 остановлена ДО замены приложения"','echo "❌ ENDLUME 8.37 остановлена ДО замены приложения"')
 src=src.replace('│ 8.36 • 1080p Fidelity Lock • clean first frame            │','│ 8.37 • 1080p Fidelity Lock • Remote Update Center         │')
+
+# IMPORTANT: for the one-time bootstrap, never build on /Volumes/*.
+# External exFAT/NTFS volumes create AppleDouble sidecars and path-with-space
+# hazards. Keep the update workspace on the internal Mac filesystem.
+needle="src=src.replace('SRC=\"$WORK_ROOT/endlume-desktop-8.33\"','SRC=\"$WORK_ROOT/endlume-desktop-8.36\"',1)\n"
+if needle not in src:
+    raise SystemExit('8.37 bootstrap: 8.36 work-root transform marker missing')
+internal="src=src.replace('WORK_ROOT=\"$(choose_work_root)\"','WORK_ROOT=\"$HOME/.endlume-local-builder\"',1)\n"
+src=src.replace(needle,needle+internal,1)
 
 apply_marker='python3 scripts/apply-version-8-36.py\n'
 addition='''python3 -m py_compile scripts/apply-remote-updater-8-37.py scripts/apply-version-8-37.py
@@ -66,11 +91,11 @@ required=[
     'validate-release-8-37.sh',
     'assert_no_tauri_appledouble',
     'apply-fidelity-1080p-8-36.py',
+    'WORK_ROOT="$HOME/.endlume-local-builder"',
 ]
 for marker in required:
     if marker not in src:
         raise SystemExit(f'8.37 bootstrap incomplete: {marker}')
-# The stale self-gate that caused the user's repeated Code 1 must be gone.
 if "'VERSION_EXPECTED=\"1.0.0-alpha.8.36\"'" in src:
     raise SystemExit('8.37 bootstrap: stale 8.36 required self-gate survived')
 Path(sys.argv[2]).write_text(src,encoding='utf-8')
@@ -81,8 +106,11 @@ chmod +x "$PATCHED"
 grep -Fq 'VERSION_EXPECTED="1.0.0-alpha.8.37"' "$PATCHED" || fail "8.37 final version gate missing"
 grep -Fq 'apply-remote-updater-8-37.py' "$PATCHED" || fail "Remote Update Center patch missing"
 grep -Fq 'validate-release-8-37.sh' "$PATCHED" || fail "8.37 acceptance gate missing"
+grep -Fq 'WORK_ROOT="$HOME/.endlume-local-builder"' "$PATCHED" || fail "bootstrap всё ещё может выбрать внешний диск"
 if grep -Fq "'VERSION_EXPECTED=\"1.0.0-alpha.8.36\"'" "$PATCHED"; then fail "в bootstrap осталась старая 8.36 self-check"; fi
-echo "✅ Bootstrap 8.37 проверен до запуска тяжёлой сборки"
-echo "✅ Stale 8.36 self-gate удалён — повторный Code 1 по этой причине невозможен"
+
+echo "✅ Bootstrap 8.37 preflight пройден"
+echo "✅ Build workspace закреплён на внутреннем SSD"
+echo "✅ При ошибке будет показана реальная последняя стадия, а не только Code 1"
 echo "✅ После установки следующие обновления — готовыми бинарниками из Настроек"
 /bin/bash "$PATCHED"

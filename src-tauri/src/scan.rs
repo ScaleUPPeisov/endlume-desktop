@@ -7,7 +7,7 @@ const IMAGE:&[&str]=&["jpg","jpeg","png","webp","bmp","tif","tiff","heic","avif"
 const VIDEO:&[&str]=&["mp4","mov","m4v","mkv","webm","avi","wmv","flv","ts","mts","m2ts","mpg","mpeg","vob","3gp"];
 const AUDIO:&[&str]=&["mp3","wav","m4a","aac","flac","ogg","opus","aiff","aif","alac"];
 fn ext(p:&Path)->String{p.extension().and_then(|x|x.to_str()).unwrap_or("").to_ascii_lowercase()}
-fn hidden_sidecar(p:&Path)->bool{let n=p.file_name().and_then(|x|x.to_str()).unwrap_or("");n.starts_with("._")||n.starts_with('.')}
+fn is_macos_sidecar(p:&Path)->bool{let n=p.file_name().and_then(|x|x.to_str()).unwrap_or("");n==".DS_Store"||n.starts_with("._")||n.starts_with(".Spotlight-")||n.starts_with(".Trashes")||n.starts_with('.')}
 fn natural_key(p:&PathBuf)->(u64,String){
  let s=p.file_name().and_then(|x|x.to_str()).unwrap_or("").to_lowercase();
  let digits=s.chars().skip_while(|c|!c.is_ascii_digit()).take_while(|c|c.is_ascii_digit()).collect::<String>();
@@ -28,7 +28,7 @@ pub async fn scan_root(path:String)->Result<Vec<ProjectScanItem>,String>{
  for e in WalkDir::new(&root).follow_links(false).into_iter().filter_map(Result::ok).filter(|e|e.file_type().is_dir()){
    let dir=e.path();let mut media=Vec::new();let mut audio=Vec::new();
    if let Ok(rd)=std::fs::read_dir(dir){
-     for f in rd.flatten(){let p=f.path();if !p.is_file()||hidden_sidecar(&p){continue}let x=ext(&p);if IMAGE.contains(&x.as_str())||VIDEO.contains(&x.as_str()){media.push(p)}else if AUDIO.contains(&x.as_str()){audio.push(p)}}
+     for f in rd.flatten(){let p=f.path();if !p.is_file()||is_macos_sidecar(&p){continue}let x=ext(&p);if IMAGE.contains(&x.as_str())||VIDEO.contains(&x.as_str()){media.push(p)}else if AUDIO.contains(&x.as_str()){audio.push(p)}}
    }
    if media.is_empty()&&audio.is_empty(){continue}
    media.sort_by_key(natural_key);audio.sort_by_key(natural_key);

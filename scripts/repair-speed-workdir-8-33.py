@@ -1,6 +1,10 @@
 from pathlib import Path
 import py_compile
 
+# Compatibility marker for local installers. The generated Rust helper is
+# output.join(".ENDLUME-work") after this repair is applied.
+FIX4_PREFLIGHT_OUTPUT_MARKER = 'output.join(".ENDLUME-work")'
+
 speed=Path('scripts/apply-speed-fidelity-8-33.py')
 if not speed.is_file():
     raise SystemExit('8.33 workdir repair: apply-speed-fidelity-8-33.py missing')

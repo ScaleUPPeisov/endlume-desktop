@@ -114,7 +114,7 @@ BUILDER={builder:?}
 cat > "$STATE" <<'JSON'
 {{"state":"running","stage":"Запускаю проверку и сборку","progress":3.0,"message":null,"logPath":null}}
 JSON
-/bin/bash "$BUILDER" > "$LOG" 2>&1
+ENDLUME_IN_APP_UPDATE=1 /bin/bash "$BUILDER" > "$LOG" 2>&1
 CODE=$?
 if [ $CODE -eq 0 ]; then
   cat > "$STATE" <<'JSON'

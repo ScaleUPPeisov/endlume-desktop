@@ -1,6 +1,6 @@
 {
-  "version": "1.0.0-alpha.8.34",
+  "version": "1.0.0-alpha.8.35",
   "date": "27.08.2026",
-  "builder": "BUILD_ENDLUME_834_LOCAL.command",
-  "notes": "Preview Shield + 100/100 Stability Gate. Effects и Subscribe теперь защищены от macOS AppleDouble/resource-fork не только по имени ._*, но и по сигнатуре файла 0x00051607/0x00051600; Live Preview cache обновлён до v6, а импорт Effects/Subscribe блокирует служебные файлы до копирования. Noise 1/2 полностью удалены. Возвращена прежняя прозрачная ENDLUME infinity-иконка без чёрной квадратной подложки. Сохранён Fast Fidelity: Apple HEVC VideoToolbox first, libx265 quality fallback, короткий master, reuse Subscribe и direct concat. Целевой профиль: 1 изображение + 10–15 треков + 2 часа, 700–1000 МБ при типичном MP3 320 кбит/с; original MP3 bitstream-copy и lossless ALAC crossfade сохранены. Перед установкой выполняется 100/100 Effects+Subscribe preview smoke; при любом сбое текущая версия приложения не заменяется."
+  "builder": "BUILD_ENDLUME_835_LOCAL.command",
+  "notes": "Strict Fidelity. Для проекта 1 изображение + музыка ENDLUME автоматически использует максимум 30 FPS, длинный GOP на полный short-master и увеличенный 64 MB VideoToolbox buffer, чтобы убрать рябь/москитные артефакты на исходном 4K-кадре без раздувания файла. 4K video budget 740 кбит/с + типичный оригинальный MP3 320 кбит/с дают расчётный payload около 0.954 GB за 2 часа. Crossfade/LUFS/ambient в Strict Fidelity one-image профиле отключаются только на время рендера: музыка остаётся точным MP3 bitstream-copy без повторного lossy-кодирования и без ALAC-раздувания. Старые сохранённые 4K60/crossfade=3 настройки мигрируют в 4K/HEVC/30 FPS/crossfade off. Перед установкой выполняются TypeScript, Rust, Preview Shield 100/100, 4K SSIM clean-frame и M1 VideoToolbox speed gates; текущая ENDLUME заменяется только после полного прохождения проверок."
 }

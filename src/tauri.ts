@@ -1,7 +1,5 @@
 import { invoke, convertFileSrc } from '@tauri-apps/api/core';
 import { open, message } from '@tauri-apps/plugin-dialog';
-import { check } from '@tauri-apps/plugin-updater';
-import { relaunch } from '@tauri-apps/plugin-process';
 import type { BenchmarkResult, EffectPreset, LibraryPayload, LicenseStatus, ProjectScanItem, RecoveryPayload, RenderSettings, SubscribePreset } from './types';
 
 export type SingleAppStatus={
@@ -81,26 +79,22 @@ export const api = {
   showError:(text:string)=>message(text,{title:'ENDLUME Studio',kind:'error'}),
   showInfo:(text:string)=>message(text,{title:'ENDLUME Studio',kind:'info'}),
   checkUpdate:async()=>{
-    const update=await withTimeout(check(),12000,'Проверка обновлений');
-    if(!update)return {none:true,current:'1.0.0-alpha.8.19',channel:'alpha',signedUpdater:true};
-    let downloaded=0,total=0;
+    const info:any=await withTimeout(invoke('local_update_check'),12000,'Проверка обновлений');
+    if(!info?.available)return {none:true,current:info?.current||'1.0.0-alpha.8.32',channel:'alpha',background:true,message:info?.message};
     return {
-      version:update.version,
-      date:update.date,
-      body:update.body||'',
-      current:update.currentVersion,
+      version:info.version,
+      current:info.current,
+      body:'Обновление ENDLUME установится в фоне. Terminal не открывается.',
       install:async(onProgress?:(percent:number)=>void)=>{
-        const guard=await invoke<SingleAppStatus>('cleanup_duplicate_apps',{aggressive:true}).catch(()=>null);
-        if(guard?.supported&&guard.canonicalInstall===false){await invoke('normalize_current_app_name');return;}
-        if(guard?.failed?.length){throw new Error(`Не удалось удалить старые копии ENDLUME: ${guard.failed.map(x=>x.path).join(', ')}`);}
-        await update.downloadAndInstall((event:any)=>{
-          if(event.event==='Started'){total=Number(event.data?.contentLength||0);downloaded=0;onProgress?.(0)}
-          else if(event.event==='Progress'){downloaded+=Number(event.data?.chunkLength||0);if(total>0)onProgress?.(Math.min(100,downloaded/total*100))}
-          else if(event.event==='Finished'){onProgress?.(100)}
-        });
-        const after=await invoke<SingleAppStatus>('cleanup_duplicate_apps',{aggressive:true}).catch(()=>null);
-        if(after?.failed?.length)console.warn('ENDLUME duplicate cleanup after update',after.failed);
-        await relaunch();
+        const started:any=await invoke('local_update_install',{version:info.version});
+        onProgress?.(2);
+        for(;;){
+          await new Promise(r=>setTimeout(r,1200));
+          const status:any=await invoke('local_update_status',{pid:started.pid});
+          onProgress?.(Number(status.progress||0));
+          if(status.failed)throw new Error(status.error||`Обновление остановлено: ${status.stage}`);
+          if(status.done){onProgress?.(100);return;}
+        }
       }
     };
   }

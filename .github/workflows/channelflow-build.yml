@@ -1,0 +1,136 @@
+name: ChannelFlow macOS build
+
+on:
+  push:
+    branches: [channelflow-v0.1]
+  workflow_dispatch:
+
+jobs:
+  build-macos-arm64:
+    runs-on: macos-15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Restore ChannelFlow source
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf .channelflow-build
+          mkdir .channelflow-build
+          base64 --decode ChannelFlow/source.tar.gz.b64 > /tmp/channelflow-source.tar.gz
+          tar -xzf /tmp/channelflow-source.tar.gz -C .channelflow-build
+
+      - name: Verify ARM64 runner
+        run: |
+          uname -m
+          test "$(uname -m)" = "arm64"
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: './.channelflow-build/src-tauri -> target'
+
+      - name: Generate ChannelFlow icons
+        working-directory: .channelflow-build
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p src-tauri/icons src-tauri/icons/icon.iconset
+          python3 - <<'PY'
+          import struct,zlib,math,os
+          def png(path,n):
+              raw=bytearray()
+              for y in range(n):
+                  raw.append(0)
+                  for x in range(n):
+                      u=x/(n-1);v=y/(n-1)
+                      r=int(10+38*u);g=int(31+180*(1-v)*u);b=int(55+180*(1-v));a=255
+                      cx=(x-n*.5)/(n*.5);cy=(y-n*.5)/(n*.5)
+                      if cx*cx+cy*cy>0.86: r,g,b=6,17,29
+                      raw += bytes((r,g,b,a))
+              def chunk(t,d):
+                  return struct.pack('>I',len(d))+t+d+struct.pack('>I',zlib.crc32(t+d)&0xffffffff)
+              data=b'\x89PNG\r\n\x1a\n'+chunk(b'IHDR',struct.pack('>IIBBBBB',n,n,8,6,0,0,0))+chunk(b'IDAT',zlib.compress(bytes(raw),9))+chunk(b'IEND',b'')
+              open(path,'wb').write(data)
+          os.makedirs('src-tauri/icons',exist_ok=True)
+          for n,name in [(32,'32x32.png'),(128,'128x128.png'),(256,'128x128@2x.png'),(1024,'icon-1024.png')]:png('src-tauri/icons/'+name,n)
+          PY
+          sips -z 16 16 src-tauri/icons/icon-1024.png --out src-tauri/icons/icon.iconset/icon_16x16.png >/dev/null
+          sips -z 32 32 src-tauri/icons/icon-1024.png --out src-tauri/icons/icon.iconset/icon_16x16@2x.png >/dev/null
+          sips -z 32 32 src-tauri/icons/icon-1024.png --out src-tauri/icons/icon.iconset/icon_32x32.png >/dev/null
+          sips -z 64 64 src-tauri/icons/icon-1024.png --out src-tauri/icons/icon.iconset/icon_32x32@2x.png >/dev/null
+          sips -z 128 128 src-tauri/icons/icon-1024.png --out src-tauri/icons/icon.iconset/icon_128x128.png >/dev/null
+          sips -z 256 256 src-tauri/icons/icon-1024.png --out src-tauri/icons/icon.iconset/icon_128x128@2x.png >/dev/null
+          sips -z 256 256 src-tauri/icons/icon-1024.png --out src-tauri/icons/icon.iconset/icon_256x256.png >/dev/null
+          sips -z 512 512 src-tauri/icons/icon-1024.png --out src-tauri/icons/icon.iconset/icon_256x256@2x.png >/dev/null
+          sips -z 512 512 src-tauri/icons/icon-1024.png --out src-tauri/icons/icon.iconset/icon_512x512.png >/dev/null
+          cp src-tauri/icons/icon-1024.png src-tauri/icons/icon.iconset/icon_512x512@2x.png
+          iconutil -c icns src-tauri/icons/icon.iconset -o src-tauri/icons/icon.icns
+
+      - name: Install frontend dependencies
+        working-directory: .channelflow-build
+        run: npm install --no-audit --no-fund
+
+      - name: Unit tests
+        working-directory: .channelflow-build
+        run: npm run test
+
+      - name: Frontend build check
+        working-directory: .channelflow-build
+        run: npm run build
+
+      - name: Rust check
+        working-directory: .channelflow-build
+        run: cargo check --manifest-path src-tauri/Cargo.toml --target aarch64-apple-darwin
+
+      - name: Build ChannelFlow DMG and signed updater
+        working-directory: .channelflow-build
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
+        run: npx tauri build --target aarch64-apple-darwin --bundles app,dmg
+
+      - name: Collect release files
+        working-directory: .channelflow-build
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="$(python3 -c 'import json;print(json.load(open("src-tauri/tauri.conf.json"))["version"])')"
+          BUNDLE="src-tauri/target/aarch64-apple-darwin/release/bundle"
+          mkdir -p release-files
+          find "$BUNDLE" -type f \( -name '*.dmg' -o -name '*.app.tar.gz' -o -name '*.app.tar.gz.sig' \) -exec cp {} release-files/ \;
+          TAR="$(find release-files -maxdepth 1 -type f -name '*.app.tar.gz' -print -quit)"
+          SIG="$TAR.sig"
+          test -f "$TAR"
+          test -f "$SIG"
+          ARTIFACT="$(basename "$TAR")"
+          SIG_CONTENT="$(cat "$SIG")"
+          NOTES="$(cat RELEASE_NOTES.md)"
+          python3 - "$VERSION" "$ARTIFACT" "$SIG_CONTENT" "$NOTES" <<'PY'
+          import json,sys,datetime
+          version,artifact,signature,notes=sys.argv[1:]
+          data={'version':version,'pub_date':datetime.datetime.now(datetime.timezone.utc).isoformat().replace('+00:00','Z'),'target':'darwin','arch':'aarch64','artifact':artifact,'signature':signature,'notes':notes}
+          open('release-files/release.json','w').write(json.dumps(data,ensure_ascii=False,indent=2)+'\n')
+          PY
+          ls -lah release-files
+
+      - name: Upload ChannelFlow build
+        uses: actions/upload-artifact@v4
+        with:
+          name: ChannelFlow-macOS-aarch64-v0.2.0
+          path: .channelflow-build/release-files/*
+          if-no-files-found: error
+          retention-days: 30

@@ -12,6 +12,26 @@ import { LibraryPage } from './LibraryPage';
 import { SettingsPage } from './SettingsPage';
 import { EditorRouter } from './Editors';
 
+function syncQueueSnapshot(snapshot:any){
+  const active=snapshot?.active;
+  const pending=Array.isArray(snapshot?.pending)?snapshot.pending:[];
+  useApp.setState(state=>{
+    const next=[...state.projects];
+    const upsert=(job:any,status:'rendering'|'queued')=>{
+      const project=job?.project;
+      if(!project?.id)return;
+      let idx=next.findIndex(x=>x.id===project.id);
+      if(idx<0)idx=next.findIndex(x=>x.path===project.path&&!['done','error'].includes(x.status));
+      const old=idx>=0?next[idx]:undefined;
+      const merged:any={...project,...old,status,progress:old?.progress||0,stage:old?.stage||(status==='rendering'?'Запускаю рендер':'Ожидает в очереди'),elapsedSec:old?.elapsedSec||0};
+      if(idx>=0)next[idx]=merged;else next.push(merged);
+    };
+    if(active)upsert(active,'rendering');
+    pending.forEach((job:any)=>upsert(job,'queued'));
+    return {projects:next};
+  });
+}
+
 function compactPayload<T extends Record<string,any>>(value:T):Partial<T>{
   return Object.fromEntries(Object.entries(value||{}).filter(([,v])=>v!==null&&v!==undefined)) as Partial<T>;
 }
@@ -30,6 +50,7 @@ export function App(){
     api.license().then(setLicense).catch(()=>setLicense({valid:false}));
     api.loadLibrary().then(setLibrary).catch(()=>setLibrary({effects:[],subscribes:[]}));
     api.loadRecovery().then(r=>{if(r?.interrupted)setRecovery(r)}).catch(()=>{});
+    api.queueSnapshot().then(syncQueueSnapshot).catch(()=>{});
 
     const checkForUpdate=async(force=false)=>{
       if(disposed||checkingUpdate.current)return;
@@ -49,8 +70,6 @@ export function App(){
       updateInterval=window.setInterval(()=>checkForUpdate(false),5*60*1000);
     };
 
-    // Hard invariant on macOS: updates are allowed only from /Applications/ENDLUME Studio.app.
-    // If an older build/renamed copy is running, move it to the canonical path and relaunch first.
     api.cleanupDuplicateApps(false).then(async status=>{
       if(disposed)return;
       if(status.supported&&status.canonicalInstall===false&&status.currentPath&&!status.currentPath.startsWith('/Volumes/')){
@@ -66,6 +85,7 @@ export function App(){
     window.addEventListener('focus',onFocus);document.addEventListener('visibilitychange',onVisibility);
 
     const off:Promise<()=>void>[]=[];
+    off.push(listen<any>('queue-changed',e=>syncQueueSnapshot(e.payload)));
     off.push(listen<any>('render-progress',e=>patchProject(e.payload.id,compactPayload(e.payload))));
     off.push(listen<any>('render-done',e=>patchProject(e.payload.id,compactPayload(e.payload))));
     off.push(listen<any>('render-error',e=>patchProject(e.payload.id,compactPayload(e.payload))));
@@ -98,7 +118,7 @@ function UpdateNotice({update,onLater}:{update:any;onLater:()=>void}){
     <div className="updateNoticeGlow"/>
     <div className="updateNoticeHead"><span className="updateNoticeDot"/><div><b>Вышло новое обновление</b><small>ENDLUME {update.version}{update.date?` • ${formatUpdateDate(update.date)}`:''}</small></div></div>
     <p>{shortUpdateText(update.body)}</p>
-    {progress!==null&&<div className="updateNoticeProgress"><i style={{width:`${progress}%`}}/><span>{progress<100?`Скачиваю ${progress.toFixed(0)}%`:'Устанавливаю…'}</span></div>}
+    {progress!==null&&<div className="updateNoticeProgress"><i style={{width:`${progress}%`}}/><span>{progress<100?`Обновляю ${progress.toFixed(0)}%`:'Перезапускаю…'}</span></div>}
     {error&&<div className="updateNoticeError">{error}</div>}
     <div className="updateNoticeActions">
       <button className="later" disabled={installing} onClick={onLater}>НАПОМНИТЬ ЧЕРЕЗ ЧАС</button>

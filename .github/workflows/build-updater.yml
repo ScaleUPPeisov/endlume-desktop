@@ -29,11 +29,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          VERSION="$(/usr/bin/python3 -c 'import json;print(json.load(open("updates/latest.json"))["version"])')"
-          BUILDER="$(/usr/bin/python3 -c 'import json;print(json.load(open("updates/latest.json"))["ciBuilder"])')"
-          TAG="$(/usr/bin/python3 -c 'import json;print(json.load(open("updates/latest.json"))["releaseTag"])')"
-          ASSET="$(/usr/bin/python3 -c 'import json;print(json.load(open("updates/latest.json"))["asset"])')"
-          CHECKSUM="$(/usr/bin/python3 -c 'import json;print(json.load(open("updates/latest.json"))["checksumAsset"])')"
+          PY="$(command -v python3)"
+          test -x "$PY"
+          VERSION="$($PY -c 'import json;print(json.load(open("updates/latest.json"))["version"])')"
+          BUILDER="$($PY -c 'import json;print(json.load(open("updates/latest.json"))["ciBuilder"])')"
+          TAG="$($PY -c 'import json;print(json.load(open("updates/latest.json"))["releaseTag"])')"
+          ASSET="$($PY -c 'import json;print(json.load(open("updates/latest.json"))["asset"])')"
+          CHECKSUM="$($PY -c 'import json;print(json.load(open("updates/latest.json"))["checksumAsset"])')"
           test -n "$VERSION"; test -f "$BUILDER"; test -n "$TAG"; test -n "$ASSET"; test -n "$CHECKSUM"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "builder=$BUILDER" >> "$GITHUB_OUTPUT"

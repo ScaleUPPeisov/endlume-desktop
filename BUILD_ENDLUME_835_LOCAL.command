@@ -44,6 +44,11 @@ from pathlib import Path
 import sys
 src=Path(sys.argv[1]).read_text(encoding='utf-8')
 
+# Hard preflight: do not even start npm/Rust if the base builder lost one of the
+# migration repairs already discovered on the user's M1.
+if 'repair-speed-workdir-8-33.py' not in src:
+    raise SystemExit('8.35 builder: 8.33 workdir compatibility repair missing in base builder')
+
 # The 8.34 wrapper itself generates the real builder. Extend that generation
 # deterministically instead of replaying another independent migration chain.
 src=src.replace('ENDLUME Studio 1.0.0-alpha.8.34','ENDLUME Studio 1.0.0-alpha.8.35')
@@ -58,11 +63,12 @@ old_add="""addition='''python3 -m py_compile scripts/apply-stability-8-34.py scr
 python3 scripts/apply-stability-8-34.py
 python3 scripts/apply-version-8-34.py
 '''"""
-new_add="""addition='''python3 -m py_compile scripts/apply-stability-8-34.py scripts/apply-version-8-34.py scripts/apply-strict-fidelity-8-35.py scripts/apply-version-8-35.py
+new_add="""addition='''python3 -m py_compile scripts/apply-stability-8-34.py scripts/apply-version-8-34.py scripts/apply-strict-fidelity-8-35.py scripts/apply-version-8-35.py scripts/repair-regression-validators-8-35.py
 python3 scripts/apply-stability-8-34.py
 python3 scripts/apply-version-8-34.py
 python3 scripts/apply-strict-fidelity-8-35.py
 python3 scripts/apply-version-8-35.py
+python3 scripts/repair-regression-validators-8-35.py
 '''"""
 if old_add not in src:
     raise SystemExit('8.35 builder: 8.34 apply block missing')
@@ -87,6 +93,9 @@ PY
 
 chmod +x "$PATCHED"
 /bin/bash -n "$PATCHED" || fail "внутренний builder не прошёл shell syntax gate"
+grep -Fq 'repair-speed-workdir-8-33.py' "$PATCHED" || fail "в сформированном builder потерян 8.33 workdir repair"
+grep -Fq 'repair-regression-validators-8-35.py' "$PATCHED" || fail "в сформированном builder потерян validator compatibility repair"
 
+echo "✅ Compatibility preflight: 8.26/8.32/8.33 + validator replay защищены"
 echo "✅ 8.35 builder сформирован: TypeScript + Rust + Preview 100/100 + 4K SSIM + M1 speed gate"
 /bin/bash "$PATCHED"

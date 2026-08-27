@@ -7,7 +7,7 @@ on:
 
 jobs:
   build-macos-arm64:
-    runs-on: macos-14
+    runs-on: macos-latest
     permissions:
       contents: read
     steps:
@@ -22,6 +22,9 @@ jobs:
           mkdir .channelflow-build
           base64 --decode ChannelFlow/source.tar.gz.b64 > /tmp/channelflow-source.tar.gz
           tar -xzf /tmp/channelflow-source.tar.gz -C .channelflow-build
+
+      - name: Show runner architecture
+        run: uname -m
 
       - name: Setup Node
         uses: actions/setup-node@v6
@@ -45,7 +48,7 @@ jobs:
           set -euo pipefail
           mkdir -p src-tauri/icons src-tauri/icons/icon.iconset
           python3 - <<'PYICON'
-          import struct,zlib,os
+          import struct,zlib
           def png(path,n):
               raw=bytearray()
               for y in range(n):

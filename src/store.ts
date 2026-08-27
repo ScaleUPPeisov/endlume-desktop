@@ -20,6 +20,7 @@ interface State {
   setProjects:(p:RenderProject[])=>void;
   setDraftProjects:(p:RenderProject[])=>void;
   appendProjects:(p:RenderProject[])=>void;
+  syncQueueProjects:(p:RenderProject[])=>void;
   patchProject:(id:string,p:Partial<RenderProject>)=>void;
   removeProject:(id:string)=>void;
   clearFinished:()=>void;
@@ -45,7 +46,14 @@ export const useApp=create<State>()(persist((set)=>({
   openEditor:(editor)=>set({editor}),
   setProjects:(projects)=>set({projects}),
   setDraftProjects:(draftProjects)=>set({draftProjects}),
-  appendProjects:(v)=>set(s=>({projects:[...s.projects,...v.filter(n=>!s.projects.some(p=>p.path===n.path&&p.status!=='done'))]})),
+  appendProjects:(v)=>set(s=>{const known=new Set(s.projects.map(p=>p.id));return {projects:[...s.projects,...v.filter(n=>!known.has(n.id))]}}),
+  syncQueueProjects:(incoming)=>set(s=>{
+    const incomingIds=new Set(incoming.map(p=>p.id));
+    const oldById=new Map(s.projects.map(p=>[p.id,p]));
+    const terminal=s.projects.filter(p=>['done','error'].includes(p.status)&&!incomingIds.has(p.id));
+    const live=incoming.map(p=>{const old=oldById.get(p.id);if(!old)return p;return {...old,...p,progress:p.status==='rendering'?Math.max(old.progress||0,p.progress||0):p.progress,stage:p.status==='rendering'&&old.stage?old.stage:p.stage,elapsedSec:p.status==='rendering'?Math.max(old.elapsedSec||0,p.elapsedSec||0):p.elapsedSec}});
+    return {projects:[...terminal,...live]};
+  }),
   patchProject:(id,patch)=>set(s=>({projects:s.projects.map(p=>p.id===id?{...p,...patch}:p)})),
   removeProject:(id)=>set(s=>({projects:s.projects.filter(p=>p.id!==id)})),
   clearFinished:()=>set(s=>({projects:s.projects.filter(p=>!['done','error'].includes(p.status))})),
@@ -57,4 +65,4 @@ export const useApp=create<State>()(persist((set)=>({
   setLibraryLoaded:(libraryLoaded)=>set({libraryLoaded}),
   patchSettings:(patch)=>set(s=>({settings:{...s.settings,...patch}})),
   setLastRoot:(lastRoot)=>set({lastRoot})
-}),{name:'endlume-1-ui',partialize:(s)=>({settings:s.settings,lastRoot:s.lastRoot})}));
+}),{name:'endlume-1-ui',version:2,partialize:(s)=>({settings:s.settings,lastRoot:s.lastRoot,projects:s.projects})}));

@@ -14,11 +14,17 @@ text = re.sub(r'<b>\d{2}\.\d{2}\.2026</b>', f'<b>{date}</b>', text, count=1)
 text = text.replace('Для текущего локального режима рекомендуем обновлять ENDLUME через локальный builder на Mac. Online updater можно оставить как резервный канал.', 'Smart Repeat автоматически ускоряет проекты «1 изображение + музыка + Effects/Subscribe». Локальный builder проверяет этот режим перед установкой.')
 settings.write_text(text, encoding='utf-8')
 
-# Updater/current-version fallback used by the frontend bridge.
+# Historical compatibility migration only.
+# Newer ENDLUME releases intentionally no longer keep a hard-coded frontend
+# version fallback in src/tauri.ts: the current version comes from the native
+# updater/runtime. Therefore this migration must be idempotent and must NOT
+# fail when tauri.ts contains no 1.0.0-alpha.8.x literal.
 tauri_bridge = Path('src/tauri.ts')
 bridge = tauri_bridge.read_text(encoding='utf-8')
-bridge = re.sub(r'1\.0\.0-alpha\.8\.\d+', version, bridge)
-tauri_bridge.write_text(bridge, encoding='utf-8')
+had_bridge_version = bool(re.search(r'1\.0\.0-alpha\.8\.\d+', bridge))
+if had_bridge_version:
+    bridge = re.sub(r'1\.0\.0-alpha\.8\.\d+', version, bridge)
+    tauri_bridge.write_text(bridge, encoding='utf-8')
 
 history = Path('src/components/ReleaseHistory.tsx')
 h = history.read_text(encoding='utf-8')
@@ -43,8 +49,14 @@ else:
     h = h.replace("{version:'1.0.0-alpha.8.26',date:'25.08.2026',current:false", "{version:'1.0.0-alpha.8.26',date:'25.08.2026',current:true", 1)
 history.write_text(h, encoding='utf-8')
 
-for path in [settings, tauri_bridge, history]:
-    value = path.read_text(encoding='utf-8')
-    if path != history and version not in value:
-        raise SystemExit(f'8.26 UI: version missing in {path}')
-print('ENDLUME alpha.8.26 UI/version history applied')
+# Settings and release history are the only required outputs of this legacy
+# migration. tauri.ts is optional by design on the modern updater bridge.
+if version not in settings.read_text(encoding='utf-8'):
+    raise SystemExit('8.26 UI: version missing in src/pages/SettingsPage.tsx')
+if version not in history.read_text(encoding='utf-8'):
+    raise SystemExit('8.26 UI: release history missing')
+
+if had_bridge_version:
+    print('ENDLUME alpha.8.26 UI/version history applied (legacy bridge version updated)')
+else:
+    print('ENDLUME alpha.8.26 UI/version history applied (modern bridge: no hard-coded version required)')

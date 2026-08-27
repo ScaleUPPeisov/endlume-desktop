@@ -16,7 +16,7 @@ echo "ONE-TIME IN-APP BOOTSTRAP → Remote Update Center"
 command -v gh >/dev/null 2>&1 || fail "GitHub CLI не найден"
 gh auth status -h github.com >/dev/null 2>&1 || fail "GitHub CLI не авторизован"
 
-# Preflight the exact validator that previously broke on /Volumes/TOSHIBA EXT.
+# Preflight exact validator that previously broke on /Volumes/TOSHIBA EXT.
 gh api "repos/$REPO/contents/scripts/validate-release-8-36.sh?ref=$BRANCH" --jq .content | tr -d '\n' | /usr/bin/base64 -D > "$VALIDATOR" || fail "не удалось получить validator 8.36"
 grep -Fq 'DIM="$("$FFPROBE"' "$VALIDATOR" || fail "release validator всё ещё ломает пути с пробелами"
 grep -Fq 'VBR="$("$FFPROBE"' "$VALIDATOR" || fail "release validator bitrate всё ещё ломает пути с пробелами"
@@ -30,11 +30,12 @@ from pathlib import Path
 import sys
 src=Path(sys.argv[1]).read_text(encoding='utf-8')
 
-# Keep the proven 8.36 chain, but make the final package 8.37 and inject the
-# Remote Update Center only after 8.36 Fidelity Lock has been applied.
-src=src.replace('VERSION_EXPECTED="1.0.0-alpha.8.36"','VERSION_EXPECTED="1.0.0-alpha.8.37"',1)
-src=src.replace('echo "❌ ENDLUME 8.36 остановлена ДО замены приложения"','echo "❌ ENDLUME 8.37 остановлена ДО замены приложения"',1)
-src=src.replace('│ 8.36 • 1080p Fidelity Lock • clean first frame            │','│ 8.37 • 1080p Fidelity Lock • Remote Update Center         │',1)
+# IMPORTANT: replace ALL 8.36 final-version self-gates in the wrapper, not only
+# the first occurrence. Previous bootstrap changed the generated version but
+# left the wrapper's own required[] check at 8.36, causing instant Code 1.
+src=src.replace('VERSION_EXPECTED="1.0.0-alpha.8.36"','VERSION_EXPECTED="1.0.0-alpha.8.37"')
+src=src.replace('echo "❌ ENDLUME 8.36 остановлена ДО замены приложения"','echo "❌ ENDLUME 8.37 остановлена ДО замены приложения"')
+src=src.replace('│ 8.36 • 1080p Fidelity Lock • clean first frame            │','│ 8.37 • 1080p Fidelity Lock • Remote Update Center         │')
 
 apply_marker='python3 scripts/apply-version-8-36.py\n'
 addition='''python3 -m py_compile scripts/apply-remote-updater-8-37.py scripts/apply-version-8-37.py
@@ -69,6 +70,9 @@ required=[
 for marker in required:
     if marker not in src:
         raise SystemExit(f'8.37 bootstrap incomplete: {marker}')
+# The stale self-gate that caused the user's repeated Code 1 must be gone.
+if "'VERSION_EXPECTED=\"1.0.0-alpha.8.36\"'" in src:
+    raise SystemExit('8.37 bootstrap: stale 8.36 required self-gate survived')
 Path(sys.argv[2]).write_text(src,encoding='utf-8')
 PY
 
@@ -77,6 +81,8 @@ chmod +x "$PATCHED"
 grep -Fq 'VERSION_EXPECTED="1.0.0-alpha.8.37"' "$PATCHED" || fail "8.37 final version gate missing"
 grep -Fq 'apply-remote-updater-8-37.py' "$PATCHED" || fail "Remote Update Center patch missing"
 grep -Fq 'validate-release-8-37.sh' "$PATCHED" || fail "8.37 acceptance gate missing"
+if grep -Fq "'VERSION_EXPECTED=\"1.0.0-alpha.8.36\"'" "$PATCHED"; then fail "в bootstrap осталась старая 8.36 self-check"; fi
 echo "✅ Bootstrap 8.37 проверен до запуска тяжёлой сборки"
+echo "✅ Stale 8.36 self-gate удалён — повторный Code 1 по этой причине невозможен"
 echo "✅ После установки следующие обновления — готовыми бинарниками из Настроек"
 /bin/bash "$PATCHED"

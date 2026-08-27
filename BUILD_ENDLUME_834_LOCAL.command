@@ -53,6 +53,18 @@ src=src.replace('echo "❌ ENDLUME 8.33 остановлена ДО замены
 src=src.replace('SRC="$WORK_ROOT/endlume-desktop-8.33"','SRC="$WORK_ROOT/endlume-desktop-8.34"',1)
 src=src.replace('│ 8.33 • SSD workdir • Fast Fidelity • Preview repair       │','│ 8.34 • Preview Shield • Fast Fidelity • 100/100 gate      │',1)
 
+# The historical 8.33 patch is replayed after 8.25 already installed its own
+# render_work_dir(app,...) helper. Normalize that helper first; otherwise the
+# old patch falsely exits with "render workspace was not moved to output drive".
+work_marker='python3 scripts/apply-speed-fidelity-8-33.py\n'
+work_repair='''python3 -m py_compile scripts/repair-speed-workdir-8-33.py
+python3 scripts/repair-speed-workdir-8-33.py
+'''
+if work_marker not in src:
+    raise SystemExit('8.34 installer: 8.33 speed patch marker missing')
+if 'python3 scripts/repair-speed-workdir-8-33.py\n' not in src:
+    src=src.replace(work_marker,work_repair+work_marker,1)
+
 apply_marker='python3 scripts/apply-version-8-33.py\n'
 addition='''python3 -m py_compile scripts/apply-stability-8-34.py scripts/apply-version-8-34.py
 python3 scripts/apply-stability-8-34.py

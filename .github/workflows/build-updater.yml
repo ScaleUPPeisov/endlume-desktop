@@ -17,12 +17,22 @@ permissions:
 
 jobs:
   build-macos-arm64:
-    runs-on: macos-15
+    runs-on: macos-14
     steps:
       - name: Checkout release channel
         uses: actions/checkout@v4
         with:
           ref: release
+
+      - name: Runner diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          uname -a
+          uname -m
+          sw_vers
+          command -v python3
+          command -v gh
 
       - name: Read update manifest
         id: manifest
@@ -82,7 +92,7 @@ jobs:
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             :
           else
-            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "ENDLUME Studio $VERSION" --notes "Automated tested macOS ARM64 update package for ENDLUME Remote Update Center."
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "ENDLUME Studio $VERSION" --notes "Automated tested macOS update package for ENDLUME Remote Update Center."
           fi
           gh release upload "$TAG" \
             "release-out/${{ steps.manifest.outputs.asset }}" \

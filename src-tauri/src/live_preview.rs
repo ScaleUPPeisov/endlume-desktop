@@ -13,15 +13,15 @@ const VIDEO:&[&str]=&["mp4","mov","m4v","mkv","webm","avi","wmv","flv","ts","mts
 pub struct LivePreviewAssets{base_path:String,base_kind:String,overlay_path:String}
 
 fn ext(p:&Path)->String{p.extension().and_then(|x|x.to_str()).unwrap_or("").to_ascii_lowercase()}
+fn is_macos_sidecar(p:&Path)->bool{let n=p.file_name().and_then(|x|x.to_str()).unwrap_or("");n==".DS_Store"||n.starts_with("._")||n.starts_with(".Spotlight-")||n.starts_with(".Trashes")||n.starts_with('.')}
 fn is_image(p:&Path)->bool{IMAGE.contains(&ext(p).as_str())}
 fn is_media(p:&Path)->bool{is_image(p)||VIDEO.contains(&ext(p).as_str())}
 fn natural_name(p:&Path)->String{p.file_name().and_then(|x|x.to_str()).unwrap_or("").to_lowercase()}
-fn hidden_sidecar(p:&Path)->bool{let n=p.file_name().and_then(|x|x.to_str()).unwrap_or("");n.starts_with("._")||n.starts_with('.')}
-fn ready_file(p:&Path)->bool{!hidden_sidecar(p)&&fs::metadata(p).map(|m|m.is_file()&&m.len()>1024).unwrap_or(false)}
+fn ready_file(p:&Path)->bool{!is_macos_sidecar(p)&&fs::metadata(p).map(|m|m.is_file()&&m.len()>1024).unwrap_or(false)}
 
 fn cache_dir(app:&AppHandle)->Result<PathBuf,String>{let dir=app.path().app_cache_dir().map_err(|e|e.to_string())?.join("live-preview-v5");fs::create_dir_all(&dir).map_err(|e|e.to_string())?;Ok(dir)}
 fn fingerprint(path:&Path,seek:f64,kind:&str)->String{let meta=fs::metadata(path).ok();let size=meta.as_ref().map(|m|m.len()).unwrap_or(0);let modified=meta.as_ref().and_then(|m|m.modified().ok()).and_then(|t|t.duration_since(UNIX_EPOCH).ok()).map(|d|d.as_secs()).unwrap_or(0);let mut h=Sha256::new();h.update(format!("{}|{}|{}|{:.2}|{}",path.to_string_lossy(),size,modified,seek,kind));hex::encode(h.finalize())[..24].to_string()}
-fn first_media(project:&Path)->Option<PathBuf>{let mut files=WalkDir::new(project).max_depth(3).into_iter().filter_map(Result::ok).map(|e|e.into_path()).filter(|p|ready_file(p)&&is_media(p)).collect::<Vec<_>>();files.sort_by(|a,b|natural_name(a).cmp(&natural_name(b)));files.into_iter().next()}
+fn first_media(project:&Path)->Option<PathBuf>{let mut files=WalkDir::new(project).max_depth(3).into_iter().filter_map(Result::ok).map(|e|e.into_path()).filter(|p|p.is_file()&&!is_macos_sidecar(p)&&is_media(p)&&ready_file(p)).collect::<Vec<_>>();files.sort_by(|a,b|natural_name(a).cmp(&natural_name(b)));files.into_iter().next()}
 
 async fn run(app:&AppHandle,args:Vec<String>)->Result<(),String>{let out=app.shell().sidecar("ffmpeg").map_err(|e|e.to_string())?.args(args).output().await.map_err(|e|e.to_string())?;if out.status.success(){Ok(())}else{Err(String::from_utf8_lossy(&out.stderr).trim().to_string())}}
 
@@ -72,7 +72,7 @@ async fn make_overlay(app:&AppHandle,src:&Path,seek:f64,out:&Path)->Result<(),St
 #[tauri::command]
 pub async fn prepare_live_preview(app:AppHandle,project_path:String,overlay_source:String,time_sec:f64)->Result<LivePreviewAssets,String>{
   let project=PathBuf::from(project_path);if !project.is_dir(){return Err("Сначала выберите папку проекта".into())}
-  let overlay=PathBuf::from(overlay_source);if !overlay.is_file(){return Err("Не найден файл Effects/Subscribe".into())}
+  let overlay=PathBuf::from(overlay_source);if !overlay.is_file(){return Err("Не найден файл Effects/Subscribe".into())}if is_macos_sidecar(&overlay){return Err("Выбран служебный файл macOS (._*), а не настоящий Effects/Subscribe файл".into())}
   let base=first_media(&project).ok_or("В проекте нет корректного изображения или видео")?;let dir=cache_dir(&app)?;
   let base_key=fingerprint(&base,time_sec,"base");let overlay_key=fingerprint(&overlay,time_sec,"overlay");
   let base_out=if is_image(&base){dir.join(format!("base-{base_key}.jpg"))}else{dir.join(format!("base-{base_key}.mp4"))};let overlay_out=dir.join(format!("overlay-{overlay_key}.mp4"));

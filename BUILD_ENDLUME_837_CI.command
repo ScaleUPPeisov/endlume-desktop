@@ -25,7 +25,8 @@ src=src.replace('echo "❌ ENDLUME 8.36 остановлена ДО замены
 src=src.replace('│ 8.36 • 1080p Fidelity Lock • clean first frame            │','│ 8.37 • 1080p Fidelity Lock • Remote Update Center         │')
 
 apply_marker='python3 scripts/apply-version-8-36.py\n'
-addition='''python3 -m py_compile scripts/apply-remote-updater-8-37.py scripts/apply-version-8-37.py
+addition='''python3 -m py_compile scripts/repair-settings-updater-8-37.py scripts/apply-remote-updater-8-37.py scripts/apply-version-8-37.py
+python3 scripts/repair-settings-updater-8-37.py
 python3 scripts/apply-remote-updater-8-37.py
 python3 scripts/apply-version-8-37.py
 '''
@@ -58,7 +59,7 @@ fi
 if stage10 not in src: raise SystemExit('8.37 CI: stage10 marker missing')
 src=src.replace(stage10,ci+stage10,1)
 
-for marker in ['apply-remote-updater-8-37.py','validate-release-8-37.sh','VERSION_EXPECTED="1.0.0-alpha.8.37"','ENDLUME_CI_ARTIFACT_DIR','assert_no_tauri_appledouble']:
+for marker in ['repair-settings-updater-8-37.py','apply-remote-updater-8-37.py','validate-release-8-37.sh','VERSION_EXPECTED="1.0.0-alpha.8.37"','ENDLUME_CI_ARTIFACT_DIR','assert_no_tauri_appledouble']:
     if marker not in src: raise SystemExit(f'8.37 CI incomplete: {marker}')
 if "'VERSION_EXPECTED=\"1.0.0-alpha.8.36\"'" in src:
     raise SystemExit('8.37 CI: stale 8.36 required self-gate survived')
@@ -66,6 +67,7 @@ Path(sys.argv[2]).write_text(src,encoding='utf-8')
 PY
 chmod +x "$PATCHED"
 /bin/bash -n "$PATCHED" || fail "generated CI builder syntax failed"
+grep -Fq 'repair-settings-updater-8-37.py' "$PATCHED" || fail "Settings migration bridge missing"
 grep -Fq 'VERSION_EXPECTED="1.0.0-alpha.8.37"' "$PATCHED" || fail "8.37 version gate missing"
 grep -Fq 'ENDLUME_CI_ARTIFACT_DIR' "$PATCHED" || fail "CI artifact mode missing"
 if grep -Fq "'VERSION_EXPECTED=\"1.0.0-alpha.8.36\"'" "$PATCHED"; then fail "stale 8.36 self-gate survived"; fi

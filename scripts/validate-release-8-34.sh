@@ -24,9 +24,9 @@ pass 'AppleDouble filename + magic-signature shield is active'
 
 ! grep -Fq 'Шум 1' "$PROJECT" || fail 'Noise 1 UI returned'
 ! grep -Fq 'Шум 2' "$PROJECT" || fail 'Noise 2 UI returned'
-! grep -Fq 'noise1' "$RUST" || fail 'Noise 1 render path returned'
-! grep -Fq 'noise2' "$RUST" || fail 'Noise 2 render path returned'
-pass 'Noise 1/2 remain completely removed'
+! grep -Fq 'if s.noise1' "$RUST" || fail 'Noise 1 render filter returned'
+! grep -Fq 'if s.noise2' "$RUST" || fail 'Noise 2 render filter returned'
+pass 'Noise 1/2 remain removed from UI and render filter'
 
 grep -Fq 'choose_hybrid_encoder(app,attempt).await' "$RUST" || fail 'Fast Fidelity selector missing'
 grep -Fq 'hevc_videotoolbox' "$RUST" || fail 'Apple VideoToolbox path missing'

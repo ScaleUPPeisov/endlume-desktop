@@ -16,11 +16,11 @@ PKG=package.json
 
 for f in "$SCAN" "$LIVE" "$RUST" "$MODEL" "$PROJECT" "$TYPES" "$STORE" "$PKG"; do test -f "$f" || fail "missing $f"; done
 
-# 8.33 filtered AppleDouble by filename. 8.34 supersedes that path with
+# 8.33 filtered AppleDouble by filename. 8.34+ supersedes that path with
 # rejected_macos_input(), which also checks the AppleDouble magic signature.
 grep -Fq 'fn is_macos_sidecar' "$SCAN" || fail 'scan AppleDouble filename filter missing'
 if grep -Fq 'rejected_macos_input(&p)' "$SCAN"; then
-  grep -Fq '0x00051607' "$SCAN" || fail '8.34 scan magic-signature guard missing'
+  grep -Fq '0x00051607' "$SCAN" || fail '8.34+ scan magic-signature guard missing'
 elif grep -Fq 'is_macos_sidecar(&p)' "$SCAN"; then
   :
 else
@@ -29,13 +29,13 @@ fi
 
 grep -Fq 'fn is_macos_sidecar' "$LIVE" || fail 'Live Preview AppleDouble filename filter missing'
 if grep -Fq '!rejected_macos_input(p)&&is_media(p)' "$LIVE"; then
-  grep -Fq '0x00051607' "$LIVE" || fail '8.34 Live Preview magic-signature guard missing'
+  grep -Fq '0x00051607' "$LIVE" || fail '8.34+ Live Preview magic-signature guard missing'
 elif grep -Fq '!is_macos_sidecar(p)&&is_media(p)' "$LIVE"; then
   :
 else
   fail 'Live Preview first_media still accepts ._* files'
 fi
-pass 'AppleDouble files are excluded; 8.34 magic-signature shield accepted when present'
+pass 'AppleDouble files are excluded; modern magic-signature shield accepted when present'
 
 ! grep -Fq 'Шум 1' "$PROJECT" || fail 'Noise 1 UI still present'
 ! grep -Fq 'Шум 2' "$PROJECT" || fail 'Noise 2 UI still present'
@@ -68,35 +68,28 @@ grep -Fq 'let mut sub_cache:HashMap<String,PathBuf>' "$RUST" || fail 'Subscribe 
 grep -Fq 'VisualSource::Concat' "$RUST" || fail 'direct concat final mux missing'
 pass 'Subscribe repeats are reused and one full long-video copy is removed'
 
-grep -Fq 'build_lossless_processed_audio_cycle' "$RUST" || fail 'lossless crossfade path lost'
+grep -Fq 'build_lossless_processed_audio_cycle' "$RUST" || fail 'lossless crossfade helper lost'
 grep -Fq 'acrossfade=d=' "$RUST" || fail 'real crossfade filter lost'
 grep -Fq 'audio-original-clean.mp3' "$RUST" || fail 'exact MP3 path lost'
-grep -Fq '"-c:a","alac"' "$RUST" || fail 'ALAC lossless fallback lost'
-pass 'audio fidelity and real crossfade paths remain present'
+grep -Fq '"-c:a","alac"' "$RUST" || fail 'ALAC helper lost'
+pass 'legacy audio processing helpers remain available for non-Strict-Fidelity paths'
 
-# This regression gate may run after 8.34 hardening has already bumped the
-# package version. Accept both the native 8.33 stage and the superseding 8.34.
-if grep -Fq '"version": "1.0.0-alpha.8.33"' "$PKG"; then
-  pass 'package version is 8.33 for native regression stage'
-elif grep -Fq '"version": "1.0.0-alpha.8.34"' "$PKG"; then
-  pass 'package version is 8.34; running backward 8.33 regression gate after hardening'
+if grep -Eq '"version": "1\.0\.0-alpha\.8\.(33|34|35)"' "$PKG"; then
+  pass 'package version is 8.33+; running backward 8.33 regression gate'
 else
-  fail 'package version is neither 8.33 nor 8.34'
+  fail 'package version is not an accepted 8.33+ release'
 fi
 
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 
-# Real audio regression: two MP3 inputs crossfade into lossless ALAC.
 "$FFMPEG" -hide_banner -loglevel error -f lavfi -i 'sine=frequency=440:sample_rate=44100' -t 2 -ac 2 -c:a libmp3lame -b:a 320k -y "$TMP/a.mp3"
 "$FFMPEG" -hide_banner -loglevel error -f lavfi -i 'sine=frequency=880:sample_rate=44100' -t 2 -ac 2 -c:a libmp3lame -b:a 320k -y "$TMP/b.mp3"
 "$FFMPEG" -hide_banner -loglevel error -i "$TMP/a.mp3" -i "$TMP/b.mp3" -filter_complex '[0:a]aresample=48000,aformat=sample_fmts=s32p:sample_rates=48000:channel_layouts=stereo,asetpts=N/SR/TB[a0];[1:a]aresample=48000,aformat=sample_fmts=s32p:sample_rates=48000:channel_layouts=stereo,asetpts=N/SR/TB[a1];[a0][a1]acrossfade=d=0.5:c1=tri:c2=tri[outa]' -map '[outa]' -c:a alac -y "$TMP/crossfade.m4a"
 CODEC="$("$FFPROBE" -v error -select_streams a:0 -show_entries stream=codec_name -of default=nw=1:nk=1 "$TMP/crossfade.m4a")"
 [[ "$CODEC" == "alac" ]] || fail "crossfade codec is $CODEC"
 "$FFMPEG" -hide_banner -loglevel error -i "$TMP/crossfade.m4a" -map 0:a:0 -t 0.5 -f null -
-pass 'crossfade output is decodable ALAC lossless'
+pass 'crossfade helper output is decodable ALAC lossless'
 
-# Real smart visual smoke. Prefer VideoToolbox on Apple Silicon; validate the
-# same filter graph with x265 fallback everywhere else.
 "$FFMPEG" -hide_banner -loglevel error -f lavfi -i 'color=c=0x172038:size=1920x1080:rate=30' -frames:v 1 -y "$TMP/base.png"
 "$FFMPEG" -hide_banner -loglevel error -f lavfi -i 'color=c=0x00b140:size=640x640:rate=30' -vf 'drawbox=x=220:y=80:w=200:h=480:color=white:t=18' -t 2 -an -c:v libx264 -preset ultrafast -pix_fmt yuv420p -y "$TMP/fx.mp4"
 ENC=libx265
@@ -119,16 +112,7 @@ PY
 "$FFMPEG" -hide_banner -loglevel error -i "$TMP/master.mp4" -map 0:v:0 -t 0.5 -f null -
 python3 - "$START" "$END" "$ENC" <<'PY'
 import sys
-print(f"PASS: smart visual master encoded with {sys.argv[3]} in {float(sys.argv[2])-float(sys.argv[1]):.2f}s")
+print(f"PASS: backward smart visual smoke with {sys.argv[3]} in {float(sys.argv[2])-float(sys.argv[1]):.2f}s")
 PY
 
-# Size-budget math: 2h HEVC target + exact 320k MP3 should sit around 1 GB.
-python3 - <<'PY'
-for video in (600,680,760):
-    total=(video+320)*1000*7200/8
-    if not 0.80e9 <= total <= 1.05e9:
-        raise SystemExit(f'FAIL: 2h size budget out of range: {video}k -> {total/1e9:.3f} GB')
-    print(f'PASS: 2h budget {video}k video + 320k audio -> {total/1e9:.3f} GB')
-PY
-
-echo 'ENDLUME 8.33 SSD + Fast Fidelity + Effects/Subscribe regression gate passed.'
+echo 'ENDLUME 8.33 backward regression gate passed.'

@@ -53,6 +53,68 @@ src=src.replace('echo "❌ ENDLUME 8.33 остановлена ДО замены
 src=src.replace('SRC="$WORK_ROOT/endlume-desktop-8.33"','SRC="$WORK_ROOT/endlume-desktop-8.34"',1)
 src=src.replace('│ 8.33 • SSD workdir • Fast Fidelity • Preview repair       │','│ 8.34 • Preview Shield • Fast Fidelity • 100/100 gate      │',1)
 
+# External FAT/exFAT volumes can make macOS AppleDouble files (._*) while Git,
+# npm and Tauri touch metadata. Tauri treats capabilities/*.json as manifests,
+# so capabilities/._default.json crashes the Rust build as invalid UTF-8.
+# Disable copyfile metadata where supported and sanitize source manifests before
+# every Rust/Tauri stage. This is build-workspace hygiene only; user media is
+# never traversed or modified.
+top_marker='set -Eeuo pipefail\n\nAPP_NAME='
+if top_marker in src:
+    src=src.replace(top_marker,'set -Eeuo pipefail\nexport COPYFILE_DISABLE=1\nexport COPY_EXTENDED_ATTRIBUTES_DISABLE=1\n\nAPP_NAME=',1)
+elif 'export COPYFILE_DISABLE=1' not in src:
+    raise SystemExit('8.34 installer: final builder top marker missing')
+
+shield_marker='# Prefer the writable external volume with the most free space.'
+shield='''sanitize_build_appledouble(){
+  [[ -d "${SRC:-}" ]] || return 0
+  /usr/bin/find "$SRC" \\
+    \\( -path "$SRC/.git" -o -path "$SRC/node_modules" -o -path "$SRC/src-tauri/target" \\) -prune -o \\
+    -type f -name '._*' -exec /bin/rm -f {} + 2>/dev/null || true
+  for d in "$SRC/src-tauri/capabilities" "$SRC/src-tauri/icons" "$SRC/src-tauri/binaries"; do
+    [[ -d "$d" ]] || continue
+    /usr/bin/find "$d" -type f -name '._*' -exec /bin/rm -f {} + 2>/dev/null || true
+  done
+}
+assert_no_tauri_appledouble(){
+  sanitize_build_appledouble
+  local bad=""
+  if [[ -d "$SRC/src-tauri/capabilities" ]]; then
+    bad="$(/usr/bin/find "$SRC/src-tauri/capabilities" -type f -name '._*' -print -quit 2>/dev/null || true)"
+  fi
+  [[ -z "$bad" ]] || fail "AppleDouble build sidecar остался в Tauri capabilities: $bad"
+}
+
+'''
+if 'sanitize_build_appledouble(){' not in src:
+    if shield_marker not in src:
+        raise SystemExit('8.34 installer: build-workspace shield marker missing')
+    src=src.replace(shield_marker,shield+shield_marker,1)
+
+clone_marker='gh repo clone "$REPO" "$SRC" -- --branch "$BRANCH" --single-branch\ncd "$SRC"\n'
+if clone_marker in src and 'cd "$SRC"\nsanitize_build_appledouble\n' not in src:
+    src=src.replace(clone_marker,clone_marker+'sanitize_build_appledouble\n',1)
+
+npm_marker='npm install --no-audit --no-fund\n'
+if npm_marker in src and 'npm install --no-audit --no-fund\nsanitize_build_appledouble\n' not in src:
+    src=src.replace(npm_marker,npm_marker+'sanitize_build_appledouble\n',1)
+
+cargo_marker='stage "6.7/10 Проверяю Rust" 50\ncargo check --manifest-path src-tauri/Cargo.toml --target aarch64-apple-darwin\n'
+if cargo_marker in src:
+    src=src.replace(cargo_marker,'stage "6.7/10 Проверяю Rust" 50\nassert_no_tauri_appledouble\ncargo check --manifest-path src-tauri/Cargo.toml --target aarch64-apple-darwin\n',1)
+elif 'assert_no_tauri_appledouble\ncargo check --manifest-path src-tauri/Cargo.toml' not in src:
+    raise SystemExit('8.34 installer: cargo AppleDouble shield marker missing')
+
+build_marker='stage "9/10 Собираю ENDLUME Studio.app" 80\nnpx tauri build --target aarch64-apple-darwin --bundles app --config src-tauri/tauri.local.conf.json\n'
+if build_marker in src:
+    src=src.replace(build_marker,'stage "9/10 Собираю ENDLUME Studio.app" 80\nassert_no_tauri_appledouble\nnpx tauri build --target aarch64-apple-darwin --bundles app --config src-tauri/tauri.local.conf.json\n',1)
+elif 'assert_no_tauri_appledouble\nnpx tauri build --target aarch64-apple-darwin' not in src:
+    raise SystemExit('8.34 installer: Tauri build AppleDouble shield marker missing')
+
+built_marker='[[ -d "$BUILT_APP" ]] || fail "Tauri не создал .app"\n'
+if built_marker in src and '[[ -d "$BUILT_APP" ]] || fail "Tauri не создал .app"\n/usr/bin/find "$BUILT_APP" -type f -name \'._*\'' not in src:
+    src=src.replace(built_marker,built_marker+"/usr/bin/find \"$BUILT_APP\" -type f -name '._*' -exec /bin/rm -f {} + 2>/dev/null || true\n",1)
+
 # The historical 8.33 patch is replayed after 8.25 already installed its own
 # render_work_dir(app,...) helper. Normalize that helper first; otherwise the
 # old patch falsely exits with "render workspace was not moved to output drive".
@@ -89,14 +151,27 @@ src=src.replace(cache_marker,cache_marker+'/bin/rm -rf "$HOME/Library/Caches/stu
 # Completion text for this release.
 src=src.replace('echo "✅ AppleDouble ._* больше не ломает Effects/Subscribe Preview"',
 '''echo "✅ Effects/Subscribe: AppleDouble блокируется по имени И по сигнатуре"
+echo "✅ Build workspace: AppleDouble ._* удаляются перед Rust/Tauri"
 echo "✅ Live Preview v6: старый повреждённый cache не переиспользуется"
 echo "✅ Effects+Subscribe stability smoke: 100/100"''',1)
+
+required=[
+  'sanitize_build_appledouble(){',
+  'assert_no_tauri_appledouble',
+  'assert_no_tauri_appledouble\ncargo check --manifest-path src-tauri/Cargo.toml',
+  'assert_no_tauri_appledouble\nnpx tauri build --target aarch64-apple-darwin',
+  'export COPYFILE_DISABLE=1',
+]
+for marker in required:
+    if marker not in src:
+        raise SystemExit(f'8.34 installer: AppleDouble build shield incomplete: {marker}')
 
 Path(sys.argv[2]).write_text(src,encoding='utf-8')
 PY
 
 chmod +x "$PATCHED"
 /bin/bash -n "$PATCHED" || fail "внутренний builder не прошёл syntax gate"
+grep -Fq 'assert_no_tauri_appledouble' "$PATCHED" || fail "AppleDouble build-workspace shield потерян"
 
 # The real builder performs TypeScript, Rust, audio, size, motion, 100/100
 # preview and built-app smoke gates before atomically replacing /Applications.

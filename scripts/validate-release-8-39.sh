@@ -58,15 +58,16 @@ pass 'chromakey despill is matched across Render / cache / Live Preview'
 
 grep -Fq 'Kirill Peisov' "$SETTINGS" || fail 'creator missing from About'
 grep -Fq 'peisov.business@gmail.com' "$SETTINGS" || fail 'creator email missing from About'
+grep -Fq 'remote_release_ready' "$UPD" || fail 'hybrid updater remote binary probe missing'
+grep -Fq 'launch_remote' "$UPD" || fail 'hybrid updater remote install path missing'
+grep -Fq 'launch_local' "$UPD" || fail 'hybrid updater local fallback missing'
+grep -Fq 'valid_builder' "$UPD" || fail 'hybrid updater builder safety guard missing'
 grep -Fq 'release download' "$UPD" || fail 'Remote Update Center prebuilt download missing'
-grep -Fq 'm.channel!="remote-binary"' "$UPD" || fail 'Remote Update Center channel guard missing'
 grep -Eq '"version": "1\.0\.0-alpha\.8\.39"' "$PKG" || fail 'package version is not 8.39'
-pass 'About owner info + in-app remote updater are preserved'
+pass 'About owner info + hybrid in-app updater are preserved'
 
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 
-# Real Full-HD 60 FPS short-master smoke. This is the expensive part ENDLUME
-# actually encodes; the long two-hour result remains stream-copy based.
 "$FFMPEG" -hide_banner -loglevel error -f lavfi -i 'testsrc2=size=1920x1080:rate=60' -frames:v 1 -y "$TMP/base.png"
 START="$(python3 - <<'PY'
 import time
@@ -95,19 +96,16 @@ if sec>25:
     raise SystemExit(f'FAIL: short-master encode too slow: {sec:.2f}s')
 PY
 
-# Cover/crop smoke on portrait input: output must still be exact 16:9.
 "$FFMPEG" -hide_banner -loglevel error -f lavfi -i 'testsrc2=size=720x1280:rate=1' -frames:v 1 \
   -vf 'scale=1920:1080:force_original_aspect_ratio=increase:flags=lanczos+accurate_rnd,crop=1920:1080:(iw-ow)/2:(ih-oh)/2,setsar=1' -y "$TMP/portrait.png"
 PDIM="$("$FFPROBE" -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0:s=x "$TMP/portrait.png")"
 [[ "$PDIM" == '1920x1080' ]] || fail "portrait cover/crop dimensions: $PDIM"
 pass 'portrait input fills 1920x1080 without pad/black bars'
 
-# Chroma/despill filter must execute, not only exist in source.
 "$FFMPEG" -hide_banner -loglevel error -f lavfi -i 'color=c=0x00ff00:size=320x180:rate=60' -frames:v 2 \
   -vf 'format=rgba,colorkey=0x00ff00:0.10:0.06,despill=type=green:mix=0.35:expand=0.20,format=yuv420p' -f null -
 pass 'FFmpeg chroma + despill pipeline executes'
 
-# Real crossfade smoke: no detectable silence at the join.
 "$FFMPEG" -hide_banner -loglevel error -f lavfi -i 'sine=frequency=440:sample_rate=48000:duration=4' -ac 2 -c:a libmp3lame -b:a 320k -y "$TMP/a.mp3"
 "$FFMPEG" -hide_banner -loglevel error -f lavfi -i 'sine=frequency=733:sample_rate=48000:duration=4' -ac 2 -c:a libmp3lame -b:a 320k -y "$TMP/b.mp3"
 "$FFMPEG" -hide_banner -loglevel error -i "$TMP/a.mp3" -i "$TMP/b.mp3" \
@@ -117,7 +115,6 @@ pass 'FFmpeg chroma + despill pipeline executes'
 if grep -q 'silence_duration' "$TMP/silence.log"; then cat "$TMP/silence.log"; fail 'detectable silence exists in crossfade join'; fi
 pass 'crossfade smoke contains no >=150ms silent interruption'
 
-# Hard size budget from the maximum allowed 8.39 video/audio rates.
 python3 - <<'PY'
 seconds=2*3600+2*60+3
 video=700_000
@@ -128,4 +125,4 @@ if payload>970_000_000:
     raise SystemExit(f'FAIL: projected payload too large: {payload}')
 PY
 
-echo 'ENDLUME 8.39 targeted 60FPS/stability/audio/chroma gate passed.'
+echo 'ENDLUME 8.39 targeted 60FPS/stability/audio/chroma/hybrid-updater gate passed.'

@@ -1,0 +1,11 @@
+{
+  "version": "1.0.0-alpha.8.39",
+  "date": "30.08.2026",
+  "channel": "remote-binary",
+  "builder": "BUILD_ENDLUME_839_CI.command",
+  "ciBuilder": "BUILD_ENDLUME_839_CI.command",
+  "releaseTag": "endlume-v1.0.0-alpha.8.39",
+  "asset": "ENDLUME-Studio-1.0.0-alpha.8.39-macos-arm64.zip",
+  "checksumAsset": "ENDLUME-Studio-1.0.0-alpha.8.39-macos-arm64.zip.sha256",
+  "notes": "Точечный релиз без изменения дизайна и рабочего 8.38 fast-render pipeline. Исправлено: реальный 60 FPS для one-image и Effects/эквалайзера; снят старый принудительный 30 FPS clamp; разгружен macOS UI после больших очередей — завершённые jobs больше не перезаписываются в localStorage на каждом progress event, progress пакетируется; восстановлен 3-секундный crossfade и непрерывная HQ 320 kbit/s аудиодорожка без секундных пауз, при crossfade=0 сохранён exact MP3 copy; chromakey получил реальный despill в Render и Live Preview; в О программе добавлены Kirill Peisov и peisov.business@gmail.com. Строго сохранены: 1920×1080 YouTube Fill без чёрных полос, short-master/stream-copy архитектура, быстрый финальный mux, целевой размер до 1 GB, Effects/Subscribe, текущий дизайн и Remote Update Center."
+}

@@ -2,45 +2,30 @@
 set -Eeuo pipefail
 REPO="ScaleUPPeisov/endlume-desktop"
 BRANCH="release"
+BUILDER_NAME="BUILD_ENDLUME_839_LOCAL.command"
 TMP="$(mktemp -d /tmp/endlume-839-hybrid.XXXXXX)"
-BASE="$TMP/base.command"
-PATCHED="$TMP/hybrid.command"
+BUILDER="$TMP/$BUILDER_NAME"
 cleanup(){ rm -rf "$TMP" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
-fail(){ echo "❌ ENDLUME 8.39 HYBRID: $1"; exit 1; }
+fail(){ echo; echo "❌ ENDLUME 8.39 HYBRID: $1"; exit 1; }
 
+echo "@@ENDLUME_STAGE|Hybrid Update Center: получаю канонический 8.39 installer"
+echo "@@ENDLUME_PROGRESS|2"
 [[ "$(uname -s)" == "Darwin" && "$(uname -m)" == "arm64" ]] || fail "нужен Apple Silicon Mac"
 command -v gh >/dev/null 2>&1 || fail "GitHub CLI не найден"
 gh auth status -h github.com >/dev/null 2>&1 || fail "GitHub CLI не авторизован"
 
-gh api "repos/$REPO/contents/BUILD_ENDLUME_839_CI.command?ref=$BRANCH" --jq .content | tr -d '\n' | /usr/bin/base64 -D > "$BASE" || fail "не удалось получить 8.39 canonical builder"
-[[ -s "$BASE" ]] || fail "canonical builder пуст"
+gh api "repos/$REPO/contents/$BUILDER_NAME?ref=$BRANCH" --jq .content | tr -d '\n' | /usr/bin/base64 -D > "$BUILDER" || fail "не удалось получить canonical local builder"
+[[ -s "$BUILDER" ]] || fail "canonical local builder пуст"
+chmod +x "$BUILDER"
+/bin/bash -n "$BUILDER" || fail "canonical local builder syntax failed"
+grep -Fq 'stage "10/10 Устанавливаю обновление" 96' "$BUILDER" || fail "stage10 safety preflight missing"
+grep -Fq 'apply-hybrid-updater-8-39.py' "$BUILDER" || fail "Hybrid Update Center patch missing"
+grep -Fq 'validate-release-8-39.sh' "$BUILDER" || fail "8.39 acceptance gate missing"
+if grep -Fq 'ENDLUME_CI_ARTIFACT_DIR' "$BUILDER"; then fail "получен CI builder вместо local installer"; fi
 
-python3 - "$BASE" "$PATCHED" <<'PY'
-from pathlib import Path
-import sys
-src=Path(sys.argv[1]).read_text(encoding='utf-8')
-old='scripts/apply-performance-fidelity-8-39.py scripts/apply-version-8-39.py'
-new='scripts/apply-performance-fidelity-8-39.py scripts/apply-hybrid-updater-8-39.py scripts/apply-version-8-39.py'
-if old not in src and 'scripts/apply-hybrid-updater-8-39.py' not in src:
-    raise SystemExit('8.39 hybrid: py_compile marker missing')
-src=src.replace(old,new,1)
-old_apply='python3 scripts/apply-performance-fidelity-8-39.py\npython3 scripts/apply-version-8-39.py\n'
-new_apply='python3 scripts/apply-performance-fidelity-8-39.py\npython3 scripts/apply-hybrid-updater-8-39.py\npython3 scripts/apply-version-8-39.py\n'
-if old_apply not in src and 'python3 scripts/apply-hybrid-updater-8-39.py' not in src:
-    raise SystemExit('8.39 hybrid: apply marker missing')
-src=src.replace(old_apply,new_apply,1)
-needle=" 'apply-performance-fidelity-8-39.py',\n"
-if needle in src and " 'apply-hybrid-updater-8-39.py',\n" not in src:
-    src=src.replace(needle,needle+" 'apply-hybrid-updater-8-39.py',\n",1)
-Path(sys.argv[2]).write_text(src,encoding='utf-8')
-PY
-
-chmod +x "$PATCHED"
-/bin/bash -n "$PATCHED" || fail "generated hybrid builder syntax failed"
-grep -Fq 'python3 scripts/apply-hybrid-updater-8-39.py' "$PATCHED" || fail "hybrid updater patch не подключён"
-grep -Fq 'validate-release-8-39.sh' "$PATCHED" || fail "8.39 regression gate missing"
-
-echo "@@ENDLUME_STAGE|Hybrid Update Center: готовлю проверенную сборку"
+echo "✅ 8.39 bridge FIXED: CI stage10 patching полностью удалён"
+echo "✅ Канонический local installer содержит настоящий stage 10"
+echo "@@ENDLUME_STAGE|Запускаю проверенную сборку 8.39"
 echo "@@ENDLUME_PROGRESS|3"
-/bin/bash "$PATCHED"
+ENDLUME_IN_APP_UPDATE=1 /bin/bash "$BUILDER"

@@ -3,9 +3,8 @@ name: ENDLUME Remote Update Release
 on:
   push:
     branches: [release]
-    paths-ignore:
-      - 'README.md'
-      - 'updates/*.md'
+    paths:
+      - 'updates/release-candidate.json'
   workflow_dispatch:
 
 concurrency:
@@ -29,23 +28,24 @@ jobs:
         run: |
           set -euo pipefail
           uname -a
-          uname -m
+          test "$(uname -m)" = "arm64"
           sw_vers
           command -v python3
           command -v gh
 
-      - name: Read update manifest
+      - name: Read release candidate
         id: manifest
         shell: bash
         run: |
           set -euo pipefail
           PY="$(command -v python3)"
-          test -x "$PY"
-          VERSION="$($PY -c 'import json;print(json.load(open("updates/latest.json"))["version"])')"
-          BUILDER="$($PY -c 'import json;print(json.load(open("updates/latest.json"))["ciBuilder"])')"
-          TAG="$($PY -c 'import json;print(json.load(open("updates/latest.json"))["releaseTag"])')"
-          ASSET="$($PY -c 'import json;print(json.load(open("updates/latest.json"))["asset"])')"
-          CHECKSUM="$($PY -c 'import json;print(json.load(open("updates/latest.json"))["checksumAsset"])')"
+          MANIFEST="updates/release-candidate.json"
+          test -x "$PY"; test -s "$MANIFEST"
+          VERSION="$($PY -c 'import json;print(json.load(open("updates/release-candidate.json"))["version"])')"
+          BUILDER="$($PY -c 'import json;print(json.load(open("updates/release-candidate.json"))["ciBuilder"])')"
+          TAG="$($PY -c 'import json;print(json.load(open("updates/release-candidate.json"))["releaseTag"])')"
+          ASSET="$($PY -c 'import json;print(json.load(open("updates/release-candidate.json"))["asset"])')"
+          CHECKSUM="$($PY -c 'import json;print(json.load(open("updates/release-candidate.json"))["checksumAsset"])')"
           test -n "$VERSION"; test -f "$BUILDER"; test -n "$TAG"; test -n "$ASSET"; test -n "$CHECKSUM"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "builder=$BUILDER" >> "$GITHUB_OUTPUT"
@@ -92,12 +92,25 @@ jobs:
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             :
           else
-            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "ENDLUME Studio $VERSION" --notes "Automated tested macOS update package for ENDLUME Remote Update Center."
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "ENDLUME Studio $VERSION" --notes "Tested macOS update package for ENDLUME Remote Update Center."
           fi
           gh release upload "$TAG" \
             "release-out/${{ steps.manifest.outputs.asset }}" \
             "release-out/${{ steps.manifest.outputs.checksum }}" \
             --repo "$GITHUB_REPOSITORY" --clobber
+
+      - name: Promote candidate to in-app latest only after success
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp updates/release-candidate.json updates/latest.json
+          git config user.name "ENDLUME Release Bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add updates/latest.json
+          if ! git diff --cached --quiet; then
+            git commit -m "Promote ENDLUME ${{ steps.manifest.outputs.version }} to in-app latest"
+            git push origin HEAD:release
+          fi
 
       - name: Upload CI copy
         uses: actions/upload-artifact@v4

@@ -27,7 +27,8 @@ BUILDER="$(python3 -c 'import json;print(json.load(open("updates/github/build-re
 NOTES="$(python3 -c 'import json;print(json.load(open("updates/github/build-request.json")).get("notes",""))')"
 [[ -f "$BUILDER" ]] || { echo "Builder missing: $BUILDER" >&2; exit 1; }
 
-export TAURI_SIGNING_PRIVATE_KEY="$KEY"
+unset TAURI_SIGNING_PRIVATE_KEY || true
+export TAURI_SIGNING_PRIVATE_KEY_PATH="$KEY"
 export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
 export ENDLUME_RELEASE_ARTIFACT_DIR="$ART"
 export ENDLUME_RELEASE_PLATFORM="darwin-aarch64"
@@ -44,7 +45,7 @@ SIG="$(tr -d '\r\n' < "$SIG_FILE")"
 
 FIXED="$ART/ENDLUME-macos-aarch64.app.tar.gz"
 FIXED_SIG="$FIXED.sig"
-cp "$ASSET" "$FIXED"
+if [[ "$ASSET" != "$FIXED" ]]; then cp "$ASSET" "$FIXED"; fi
 printf '%s\n' "$SIG" > "$FIXED_SIG"
 ASSET_URL="https://github.com/$HOST_REPO/releases/download/$TAG/$(basename "$FIXED")"
 

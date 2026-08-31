@@ -1,6 +1,6 @@
 {
   "enabled": true,
-  "generation": 5,
+  "generation": 6,
   "app": "endlume",
   "channel": "stable",
   "version": "1.0.0-alpha.8.41",

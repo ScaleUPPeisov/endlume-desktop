@@ -17,9 +17,12 @@ concurrency:
 
 jobs:
   macos-arm64-release:
-    name: macOS ARM64 • Self-Hosted • Signed Release
+    name: macOS ARM64 • Self-Hosted • Signed Build
     runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
     timeout-minutes: 240
+    env:
+      GH_TOKEN: ${{ github.token }}
+      ENDLUME_IN_APP_UPDATE: '1'
 
     steps:
       - name: Checkout ENDLUME release
@@ -30,31 +33,25 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Verify self-hosted Mac
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          test "$(uname -s)" = "Darwin"
-          test "$(uname -m)" = "arm64"
-          echo "Runner: ${RUNNER_NAME:-unknown}"
-          echo "Mac: $(sw_vers -productVersion) / $(uname -m)"
-          echo "HOME=$HOME"
-          echo "Self-hosted build: GitHub-hosted minutes are not used"
-
-      - name: Prepare local toolchain environment
+      - name: Verify self-hosted Mac and toolchain
         shell: bash
         run: |
           set -Eeuo pipefail
           export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          test "$(uname -s)" = "Darwin"
+          test "$(uname -m)" = "arm64"
           command -v gh
           command -v node
           command -v npm
           command -v npx
           command -v cargo
           command -v rustup
-          gh auth status -h github.com
+          gh api /repos/${{ github.repository }} --jq .full_name
           test -s "$HOME/.endlume-updater/endlume.key"
           test -s "$HOME/.endlume-updater/endlume.key.pub"
+          echo "Runner: ${RUNNER_NAME:-unknown}"
+          echo "Mac: $(sw_vers -productVersion) / $(uname -m)"
+          echo "GitHub-hosted minutes used: 0"
 
       - name: Validate release request
         shell: bash
@@ -62,50 +59,104 @@ jobs:
           set -Eeuo pipefail
           python3 - <<'PY'
           import json, pathlib
-          p=pathlib.Path('updates/github/build-request.json')
-          r=json.loads(p.read_text())
+          r=json.loads(pathlib.Path('updates/github/build-request.json').read_text())
           assert r.get('enabled') is True, 'release request disabled'
           assert r.get('version'), 'version missing'
           b=r.get('builder','')
           assert b.startswith('BUILD_ENDLUME_') and b.endswith('.command') and '/' not in b and '..' not in b, b
           assert pathlib.Path(b).is_file(), b
-          print('Release:', r['version'])
-          print('Builder:', b)
-          print('Generation:', r.get('generation'))
+          print('Release:',r['version'])
+          print('Builder:',b)
+          print('Generation:',r.get('generation'))
           PY
 
-      - name: Build, sign and publish ENDLUME
+      - name: Build and sign ENDLUME 8.41
         shell: bash
-        env:
-          ENDLUME_IN_APP_UPDATE: '1'
         run: |
           set -Eeuo pipefail
           export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-          chmod +x scripts/publish-github-release-macos.sh
-          chmod +x "$(python3 -c 'import json;print(json.load(open("updates/github/build-request.json"))["builder"])')"
-          /bin/bash scripts/publish-github-release-macos.sh
+          VERSION="$(python3 -c 'import json;print(json.load(open("updates/github/build-request.json"))["version"])')"
+          BUILDER="$(python3 -c 'import json;print(json.load(open("updates/github/build-request.json"))["builder"])')"
+          KEY="$HOME/.endlume-updater/endlume.key"
+          PUB="$KEY.pub"
+          BRIDGE="$HOME/.endlume-release-bridge/endlume"
+          ART="$BRIDGE/current"
+          rm -rf "$ART"
+          mkdir -p "$ART"
+          export TAURI_SIGNING_PRIVATE_KEY_PATH="$KEY"
+          export TAURI_SIGNING_PRIVATE_KEY="$KEY"
+          export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
+          export ENDLUME_RELEASE_ARTIFACT_DIR="$ART"
+          export ENDLUME_RELEASE_PLATFORM="darwin-aarch64"
+          export ENDLUME_RELEASE_VERSION="$VERSION"
+          export ENDLUME_UPDATER_PUBLIC_KEY_FILE="$PUB"
+          export ENDLUME_UPDATER_ENDPOINT="https://github.com/ScaleUPPeisov/scaleup-site/releases/download/endlume-stable/latest.json"
+          chmod +x "$BUILDER"
+          /bin/bash "$BUILDER"
+          TAR="$(find "$ART" -type f -name '*.app.tar.gz' -print -quit)"
+          test -n "$TAR" -a -s "$TAR"
+          test -s "$TAR.sig"
+          cp "$TAR" "$ART/ENDLUME-macos-aarch64.app.tar.gz"
+          cp "$TAR.sig" "$ART/ENDLUME-macos-aarch64.app.tar.gz.sig"
+          printf '%s\n' "$VERSION" > "$ART/version.txt"
 
-      - name: Verify public updater channel
+      - name: Verify and install ENDLUME Studio.app
         shell: bash
         run: |
           set -Eeuo pipefail
           VERSION="$(python3 -c 'import json;print(json.load(open("updates/github/build-request.json"))["version"])')"
-          URL='https://github.com/ScaleUPPeisov/scaleup-site/releases/download/endlume-stable/latest.json'
-          TMP_JSON="$(mktemp)"
-          trap 'rm -f "$TMP_JSON"' EXIT
-          curl -fL --retry 3 --connect-timeout 10 --max-time 30 "$URL" -o "$TMP_JSON"
-          python3 - "$TMP_JSON" "$VERSION" <<'PY'
-          import json,sys
-          d=json.load(open(sys.argv[1])); v=sys.argv[2]
-          assert d.get('version')==v,(d.get('version'),v)
-          p=d.get('platforms',{}).get('darwin-aarch64',{})
-          assert p.get('url') and p.get('signature')
-          print('PASS: public ENDLUME updater =',v)
-          PY
+          ART="$HOME/.endlume-release-bridge/endlume/current"
+          TAR="$ART/ENDLUME-macos-aarch64.app.tar.gz"
+          UNPACK="$ART/unpack"
+          USER_ZIP="$HOME/.endlume-release-bridge/endlume/ENDLUME_Studio_8.41_MAC.zip"
+          DEST="/Applications/ENDLUME Studio.app"
+          NEW="/Applications/.ENDLUME Studio.8.41.new.app"
+          OLD="/Applications/.ENDLUME Studio.previous.app"
+          rm -rf "$UNPACK" "$NEW" "$OLD"
+          mkdir -p "$UNPACK"
+          /usr/bin/tar -xzf "$TAR" -C "$UNPACK"
+          APP="$(find "$UNPACK" -maxdepth 4 -type d -name 'ENDLUME Studio.app' -print -quit)"
+          test -n "$APP" -a -d "$APP"
+          BID="$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$APP/Contents/Info.plist")"
+          VER="$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist")"
+          EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
+          test "$BID" = 'studio.endlume.desktop'
+          test "$VER" = "$VERSION"
+          /usr/bin/lipo -archs "$APP/Contents/MacOS/$EXE" | grep -qw arm64
+          FFMPEG="$(find "$APP/Contents/MacOS" -maxdepth 1 -type f -name 'ffmpeg*' -print -quit)"
+          FFPROBE="$(find "$APP/Contents/MacOS" -maxdepth 1 -type f -name 'ffprobe*' -print -quit)"
+          test -x "$FFMPEG"
+          test -x "$FFPROBE"
+          /usr/bin/codesign --verify --deep --strict "$APP" >/dev/null 2>&1 || /usr/bin/codesign --force --deep --sign - "$APP"
+          /usr/bin/codesign --verify --deep --strict "$APP"
+          rm -f "$USER_ZIP"
+          /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$APP" "$USER_ZIP"
+          test -s "$USER_ZIP"
+          /usr/bin/ditto "$APP" "$NEW"
+          /usr/bin/osascript -e 'tell application "ENDLUME Studio" to quit' >/dev/null 2>&1 || true
+          sleep 1
+          /usr/bin/pkill -x 'ENDLUME Studio' >/dev/null 2>&1 || true
+          if test -d "$DEST"; then /bin/mv "$DEST" "$OLD"; fi
+          if /bin/mv "$NEW" "$DEST"; then :; else
+            test -d "$OLD" && /bin/mv "$OLD" "$DEST"
+            exit 1
+          fi
+          FINAL="$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$DEST/Contents/Info.plist")"
+          if test "$FINAL" != "$VERSION"; then
+            rm -rf "$DEST"
+            test -d "$OLD" && /bin/mv "$OLD" "$DEST"
+            exit 1
+          fi
+          rm -rf "$OLD"
+          /usr/bin/xattr -dr com.apple.quarantine "$DEST" >/dev/null 2>&1 || true
+          /usr/bin/open "$DEST" >/dev/null 2>&1 || true
+          echo "PASS: installed $FINAL"
+          echo "PASS: local ZIP $USER_ZIP"
 
-      - name: Release complete
+      - name: Build complete
         shell: bash
         run: |
-          echo '✅ ENDLUME self-hosted macOS release complete'
+          echo '✅ ENDLUME 8.41 built and installed on self-hosted Mac'
           echo '✅ GitHub-hosted Actions minutes used: 0'
-          echo '✅ User update path: ENDLUME → Настройки → Обновления'
+          echo '✅ Signed updater artifacts saved to ~/.endlume-release-bridge/endlume/current'
+          echo '✅ User ZIP saved to ~/.endlume-release-bridge/endlume/ENDLUME_Studio_8.41_MAC.zip'

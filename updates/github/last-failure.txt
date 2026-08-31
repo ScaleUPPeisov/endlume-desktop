@@ -1,0 +1,158 @@
+ENDLUME 8.41 ONLINE BUILD FAILURE
+exit_code=1
+time=2026-08-31 19:34:06 +0700
+builder=BUILD_ENDLUME_841_ONLINE.command
+---- last 220 lines ----
+ENDLUME Studio 1.0.0-alpha.8.41 • SIGNED ONLINE UPDATE
+ONLY requested 1-10 fixes • 8.40 native updater • no manual install
+
+ENDLUME Studio 1.0.0-alpha.8.40 • CLEAN DRAG&DROP MAC
+Proven 8.38 base • native internet updater • no 8.39 migration chain
+
+✅ PRECHECK: validate 8.38 runs exactly once and before 8.40 migration
+✅ PRECHECK: no validate 8.38 after version=8.40
+✅ PRECHECK: validate 8.40 + version-neutral baseline run after updater/version migration
+✅ PRECHECK: 8.39 migration chain absent
+✅ CLEAN 8.40 preflight passed
+✅ Historical 8.38 validator cannot run after version 8.40
+✅ Version-neutral final render baseline wired
+✅ 8.39 migration chain completely excluded
+✅ Native signed updater wired
+✅ Final .app/ZIP integrity gates wired
+✅ PRECHECK 8.41: historical gates ordered correctly
+✅ PRECHECK 8.41: 8.39 chain absent
+✅ PRECHECK 8.41: 8.41 patch/version/gate ordered correctly
+✅ PRECHECK 8.41: signed updater artifacts enabled
+✅ PRECHECK 8.41: no /Applications install / dragdrop stage
+✅ ENDLUME 8.41 ONLINE preflight passed
+✅ Only requested 1–10 patch will be applied after proven 8.40 updater bootstrap
+✅ Proven 500k speed/size budget is guarded by validate-release-8-41.sh
+✅ No manual installer will be produced
+tee: ~/Desktop/ENDLUME-local-build.log: Operation not permitted
+╭────────────────────────────────────────────────────────────╮
+│                 ENDLUME Studio LOCAL BUILD                 │
+│ 8.41 • TRUE 60 FPS • STABILITY • GAPLESS • CHROMA        │
+╰────────────────────────────────────────────────────────────╯
+Build workspace: ~/.endlume-local-builder
+@@ENDLUME_STAGE|1/10 Проверяю Mac и освобождаю старый cache
+@@ENDLUME_PROGRESS|3
+
+1/10 Проверяю Mac и освобождаю старый cache
+@@ENDLUME_STAGE|2/10 Проверяю инструменты
+@@ENDLUME_PROGRESS|7
+
+2/10 Проверяю инструменты
+info: component rust-std is up to date
+@@ENDLUME_STAGE|3/10 Получаю чистые исходники
+@@ENDLUME_PROGRESS|12
+
+3/10 Получаю чистые исходники
+Cloning into '~/.endlume-local-builder/endlume-desktop-8.40-bootstrap'...
+@@ENDLUME_STAGE|4/10 Устанавливаю frontend-зависимости
+@@ENDLUME_PROGRESS|18
+
+4/10 Устанавливаю frontend-зависимости
+
+added 77 packages in 9s
+@@ENDLUME_STAGE|5/10 Встраиваю FFmpeg и FFprobe
+@@ENDLUME_PROGRESS|24
+
+5/10 Встраиваю FFmpeg и FFprobe
+@@ENDLUME_STAGE|6/10 Применяю проверенный стек исправлений
+@@ENDLUME_PROGRESS|31
+
+6/10 Применяю проверенный стек исправлений
+ENDLUME: modern updater bridge normalized for deterministic 8.32 migration
+ENDLUME: Hybrid Fidelity patcher normalized, CRF22 budget active, Python syntax OK
+ENDLUME alpha.8.25 render stability patch applied
+ENDLUME alpha.8.25 UI/version patch applied
+ENDLUME alpha.8.26 Smart Repeat patch applied
+ENDLUME alpha.8.26 UI/version history applied (legacy bridge version updated)
+ENDLUME alpha.8.27 Original Fidelity patch applied
+ENDLUME alpha.8.27 UI/version patch applied
+ENDLUME alpha.8.28 Hybrid Fidelity + exact MP3 MOV patch applied
+ENDLUME alpha.8.28 UI/version patch applied
+ENDLUME alpha.8.30 version/UI sync applied
+ENDLUME alpha.8.31 runtime UX/crossfade/noise patch applied
+ENDLUME alpha.8.31 version/UI sync applied
+ENDLUME alpha.8.32 queue visibility + in-app updater patch applied
+ENDLUME alpha.8.32 version synced
+PASS: frontend queue store keeps repeated jobs and persists projects
+PASS: same folder can be enqueued repeatedly with unique job IDs
+PASS: render page is synchronized with backend active/pending queue
+PASS: frontend updater uses private local update engine
+PASS: hidden updater runs without Terminal and exposes live stages
+PASS: 8.32 UI/version wiring is present
+ENDLUME 8.32 queue + in-app updater gate passed.
+ENDLUME: 8.33 output-drive workspace migration normalized against 8.25 helper
+ENDLUME alpha.8.33 SSD/Fast Fidelity/AppleDouble/Noise removal patch applied
+ENDLUME original brand icon restored: src-tauri/icons/icon.png
+ENDLUME alpha.8.33 version + original icon synced
+ENDLUME alpha.8.34 stability hardening applied
+ENDLUME original brand icon restored: src-tauri/icons/icon.png
+ENDLUME alpha.8.34 version + previous icon synced
+ENDLUME alpha.8.35 Strict Fidelity speed/size/image/audio patch applied
+ENDLUME alpha.8.35 version/history synced
+ENDLUME: 8.35 persisted settings migration typing hardened
+PASS: AppleDouble files are excluded; modern magic-signature shield accepted when present
+PASS: Noise 1/2 removed from UI, settings and renderer
+PASS: heavy render workspace follows selected output disk
+PASS: Smart Fidelity reads original Effects/Subscribe directly
+PASS: hardware-first short-master path and quality fallback are wired
+PASS: Subscribe repeats are reused and one full long-video copy is removed
+PASS: legacy audio processing helpers remain available for non-Strict-Fidelity paths
+PASS: package version is 8.33+; running backward 8.33 regression gate
+PASS: crossfade helper output is decodable ALAC lossless
+PASS: backward smart visual smoke with hevc_videotoolbox in 8.07s
+ENDLUME 8.33 backward regression gate passed.
+PASS: AppleDouble filename + magic-signature shield is active
+PASS: Noise 1/2 remain removed from UI and render filter
+PASS: 8.34 Preview Shield invariants remain wired
+PASS: exact 0x00051607 AppleDouble fixture reproduced
+PASS: Effects + Subscribe Live Preview 100/100 repeated encode/decode smoke
+ENDLUME 8.34 backward Preview Shield gate passed.
+ENDLUME alpha.8.36 1080p Fidelity Lock applied
+ENDLUME alpha.8.36 version/history synced
+PASS: 1080p Fidelity Lock wiring + original MP3 path are present
+PASS: encoded master is exactly 1920x1080
+PASS: first-frame SSIM = 0.999206
+PASS: 12s 1080p x265 master encoded in 16.46s
+PASS: busy-overlay master bitrate = 670.5 kbit/s
+PASS: projected 2:02:03 payload with 320k MP3 = 906.6 MB
+ENDLUME 8.36 exact-1080p image-quality/size/speed gate passed.
+ENDLUME 8.37 Settings updater bridge normalized
+ENDLUME alpha.8.37 remote binary updater applied
+ENDLUME alpha.8.37 version/history synced
+PASS: backend downloads and atomically installs a prebuilt release
+PASS: Settings Update Center is wired for remote binary updates
+ENDLUME 8.37 Remote Update Center gate passed.
+ENDLUME alpha.8.38 YouTube Fill 16:9 / No Black Bars applied
+ENDLUME alpha.8.38 version/history synced
+PASS: runtime is exact 1920x1080 cover/crop with no pad
+PASS: square edge YAVG = 253.0, 253.0, 253.0, 253.0
+PASS: portrait edge YAVG = 253.0, 253.0, 253.0, 253.0
+PASS: ultrawide edge YAVG = 253.0, 253.0, 253.0, 253.0
+PASS: square, portrait and ultrawide sources fill the full 16:9 frame without generated black bars
+ENDLUME 8.38 YouTube Fill 16:9 / No Black Bars gate passed.
+ENDLUME 8.40 native signed GitHub updater normalized; obsolete UI self-trigger removed
+ENDLUME alpha.8.40 updater-bootstrap version/history/About synced
+✅ ENDLUME 8.40 native updater + two-step Update Center gate passed
+ENDLUME alpha.8.41 targeted 1-10 patch applied; unrelated features untouched
+ENDLUME alpha.8.41 version/history synced
+PASS: 60 FPS enabled while 8.36 speed/size/1080p budget stays unchanged
+PASS: audio crossfade/gapless path + existing visual xfade transition preserved
+8.41 validation failed: projects are still persisted to localStorage
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+❌ ENDLUME 8.40 bootstrap остановлен
+Этап: 6/10 Применяю проверенный стек исправлений
+Строка 173: scripts/validate-release-8-41.sh "$FFMPEG" "$FFPROBE"
+Лог: ~/Desktop/ENDLUME-local-build.log
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+❌ ENDLUME 8.40 bootstrap остановлен
+Этап: init
+Строка 58: tee "$LOG"
+Лог: ~/Desktop/ENDLUME-local-build.log
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

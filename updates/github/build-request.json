@@ -1,10 +1,10 @@
 {
   "enabled": false,
-  "generation": 2,
+  "generation": 3,
   "app": "endlume",
   "channel": "stable",
   "version": "1.0.0-alpha.8.40",
-  "builder": "BUILD_ENDLUME_840_GITHUB.command",
-  "notes": "Native signed Tauri updater via static GitHub Release. Preserves ENDLUME 8.39 60 FPS, 1920x1080 Fill, fast render, crossfade/no-gap and chroma despill.",
+  "builder": "BUILD_ENDLUME_840_DRAGDROP_MAC.command",
+  "notes": "Clean updater bootstrap on proven 8.38 base. Background publishing stays disabled until the drag-drop 8.40 app is installed.",
   "platforms": ["darwin-aarch64"]
 }

@@ -18,9 +18,12 @@ gh auth status -h github.com >/dev/null 2>&1 || { echo 'gh not authenticated' >&
 python3 - "$REQ" <<'PY'
 import json,sys,os
 r=json.load(open(sys.argv[1]))
-if not r.get('enabled'): raise SystemExit('release request disabled')
+forced=os.environ.get('ENDLUME_FORCE_RELEASE')=='1'
+if not r.get('enabled') and not forced:
+    raise SystemExit('release request disabled')
 b=os.path.basename(str(r.get('builder','')))
 if b!=r.get('builder') or not b.startswith('BUILD_ENDLUME_') or not b.endswith('.command'): raise SystemExit('unsafe builder')
+print('release mode: FORCE foreground' if forced else 'release mode: background agent')
 PY
 VERSION="$(python3 -c 'import json;print(json.load(open("updates/github/build-request.json"))["version"])')"
 BUILDER="$(python3 -c 'import json;print(json.load(open("updates/github/build-request.json"))["builder"])')"

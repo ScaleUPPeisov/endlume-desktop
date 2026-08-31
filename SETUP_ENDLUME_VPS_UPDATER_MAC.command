@@ -1,6 +1,9 @@
 #!/bin/bash
 set -Eeuo pipefail
 
+# Bootstrap compatibility marker: PRIVATE VPS UPDATE SERVER
+# The downloaded launcher checks this exact marker before executing the live setup.
+
 REPO="ScaleUPPeisov/endlume-desktop"
 BRANCH="release"
 VPS_HOST="188.94.191.240"

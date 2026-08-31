@@ -29,13 +29,20 @@ pass 'core UI handlers preserved'
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 FILTER='scale=1920:1080:force_original_aspect_ratio=increase:flags=lanczos+accurate_rnd,crop=1920:1080:(iw-ow)/2:(ih-oh)/2,setsar=1'
 edge_avg(){
-  local file="$1" crop="$2"
+  local file="$1"
+  local crop="$2"
   "$FFPROBE" -v error -f lavfi -i "movie=$file,$crop,signalstats" -show_entries frame_tags=lavfi.signalstats.YAVG -of default=nw=1:nk=1 | head -1
 }
 check_frame(){
-  local name="$1" size="$2" out="$TMP/$name.png"
+  local name="$1"
+  local size="$2"
+  local out="$TMP/$name.png"
   "$FFMPEG" -hide_banner -loglevel error -f lavfi -i "color=c=white:s=$size:r=1" -vf "$FILTER" -frames:v 1 -y "$out"
-  local dim left right top bottom
+  local dim
+  local left
+  local right
+  local top
+  local bottom
   dim="$("$FFPROBE" -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0:s=x "$out")"
   [[ "$dim" == "1920x1080" ]] || fail "$name output is $dim instead of 1920x1080"
   left="$(edge_avg "$out" 'crop=64:ih:0:0')"; right="$(edge_avg "$out" 'crop=64:ih:iw-64:0')"

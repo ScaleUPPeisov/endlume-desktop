@@ -30,35 +30,53 @@ if 'fn cfr_output_args(' not in r:
     helper='''fn cfr_output_args(s:&RenderSettings)->Vec<String>{\n  let fps=if s.fps>=50{60}else{30};\n  vec!["-fps_mode".into(),"cfr".into(),"-r".into(),fps.to_string(),"-video_track_timescale".into(),"60000".into()]\n}\n\n'''
     r=r.replace(marker,helper+marker,1)
 
-# Smart still master(s).
+# Historical/general Smart still encode path.
 r=r.replace(
     'args.extend(static_smart_encoder_args(s));\n  args.extend(vec!["-progress"',
     'args.extend(static_smart_encoder_args(s));\n  args.extend(cfr_output_args(s));\n  args.extend(vec!["-progress"',
     1,
 )
-# Inline image/non-image source clip encode.
+# Generic source clip path.
 r=r.replace(
     'if is_image(media){args.extend(static_smart_encoder_args(s));}else{args.extend(encoder_args(encoder,s,false));}args.extend(vec!["-progress"',
     'if is_image(media){args.extend(static_smart_encoder_args(s));}else{args.extend(encoder_args(encoder,s,false));}args.extend(cfr_output_args(s));args.extend(vec!["-progress"',
     1,
 )
-# Effects / Subscribe encoded variants. Replace every exact effective pattern.
+# Generic Effects / Subscribe paths still present for non-smart projects.
 r=r.replace(
     'args.extend(encoder_args(encoder,&job.settings,false));args.extend(vec!["-progress"',
     'args.extend(encoder_args(encoder,&job.settings,false));args.extend(cfr_output_args(&job.settings));args.extend(vec!["-progress"',
 )
 
+# ACTUAL dominant one-image Hybrid Fidelity path introduced in 8.28/8.36.
+smart_variant_old='''  if smart{args.extend(hybrid_fidelity_args(&job.settings));}else{args.extend(encoder_args(encoder,&job.settings,false));}\n  args.extend(vec!["-progress"'''
+smart_variant_new='''  if smart{args.extend(hybrid_fidelity_args(&job.settings));}else{args.extend(encoder_args(encoder,&job.settings,false));}\n  args.extend(cfr_output_args(&job.settings));\n  args.extend(vec!["-progress"'''
+if smart_variant_old in r:
+    r=r.replace(smart_variant_old,smart_variant_new,1)
+
+smart_sub_old='''if smart_repeat_project(job){args.extend(hybrid_fidelity_args(&job.settings));}else{args.extend(encoder_args(encoder,&job.settings,false));}args.extend(vec!["-progress"'''
+smart_sub_new='''if smart_repeat_project(job){args.extend(hybrid_fidelity_args(&job.settings));}else{args.extend(encoder_args(encoder,&job.settings,false));}args.extend(cfr_output_args(&job.settings));args.extend(vec!["-progress"'''
+if smart_sub_old in r:
+    r=r.replace(smart_sub_old,smart_sub_new,1)
+
 must('fn cfr_output_args(' in r,'CFR helper missing')
-must(r.count('cfr_output_args(')>=4,'not all encoded video stages are CFR guarded')
+must('Hybrid Fidelity: собираю короткий master' in r,'dominant Hybrid Fidelity short-master path missing')
+must('hybrid_fidelity_args(&job.settings)' in r,'Hybrid Fidelity encoder path missing')
+must(r.count('cfr_output_args(')>=4,'not all active encoded video stages are CFR guarded')
 must('fps={},setsar=1' in r,'base filter no longer derives FPS from RenderSettings')
 
-# Final stream-copy mux must use a stable 60k video track timescale. This does NOT
-# re-encode the two-hour file and therefore does not alter the speed/size budget.
-final_mux_old='"-c:v","copy","-c:a","copy","-progress","pipe:1"'
-final_mux_new='"-c:v","copy","-c:a","copy","-video_track_timescale","60000","-progress","pipe:1"'
-if final_mux_old in r:
-    r=r.replace(final_mux_old,final_mux_new,1)
-must(final_mux_new in r,'final stream-copy mux timescale guard missing')
+# Final stream-copy mux keeps the encoded CFR timeline and uses a stable timescale.
+# Do not re-encode the two-hour output.
+final_mux_plain='"-c:v","copy","-c:a","copy","-progress","pipe:1"'
+final_mux_plain_new='"-c:v","copy","-c:a","copy","-video_track_timescale","60000","-progress","pipe:1"'
+final_mux_fast='"-c:v","copy","-c:a","copy","-movflags","+faststart","-progress","pipe:1"'
+final_mux_fast_new='"-c:v","copy","-c:a","copy","-video_track_timescale","60000","-movflags","+faststart","-progress","pipe:1"'
+if final_mux_fast in r:
+    r=r.replace(final_mux_fast,final_mux_fast_new,1)
+elif final_mux_plain in r:
+    r=r.replace(final_mux_plain,final_mux_plain_new,1)
+must('"-c:v","copy","-c:a","copy","-video_track_timescale","60000"' in r,
+     'final stream-copy mux timescale guard missing')
 
 # Replace the old avg_frame_rate-only check with a final-file CFR contract.
 start=r.find('async fn verify_result(')

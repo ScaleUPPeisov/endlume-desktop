@@ -1,0 +1,111 @@
+name: ENDLUME Self-Hosted Release
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [release]
+    paths:
+      - 'updates/github/build-request.json'
+      - '.github/workflows/endlume-self-hosted-release.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-self-hosted-macos-release
+  cancel-in-progress: false
+
+jobs:
+  macos-arm64-release:
+    name: macOS ARM64 • Self-Hosted • Signed Release
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 240
+
+    steps:
+      - name: Checkout ENDLUME release
+        uses: actions/checkout@v4
+        with:
+          ref: release
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify self-hosted Mac
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(uname -s)" = "Darwin"
+          test "$(uname -m)" = "arm64"
+          echo "Runner: ${RUNNER_NAME:-unknown}"
+          echo "Mac: $(sw_vers -productVersion) / $(uname -m)"
+          echo "HOME=$HOME"
+          echo "Self-hosted build: GitHub-hosted minutes are not used"
+
+      - name: Prepare local toolchain environment
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          command -v gh
+          command -v node
+          command -v npm
+          command -v npx
+          command -v cargo
+          command -v rustup
+          gh auth status -h github.com
+          test -s "$HOME/.endlume-updater/endlume.key"
+          test -s "$HOME/.endlume-updater/endlume.key.pub"
+
+      - name: Validate release request
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import json, pathlib
+          p=pathlib.Path('updates/github/build-request.json')
+          r=json.loads(p.read_text())
+          assert r.get('enabled') is True, 'release request disabled'
+          assert r.get('version'), 'version missing'
+          b=r.get('builder','')
+          assert b.startswith('BUILD_ENDLUME_') and b.endswith('.command') and '/' not in b and '..' not in b, b
+          assert pathlib.Path(b).is_file(), b
+          print('Release:', r['version'])
+          print('Builder:', b)
+          print('Generation:', r.get('generation'))
+          PY
+
+      - name: Build, sign and publish ENDLUME
+        shell: bash
+        env:
+          ENDLUME_IN_APP_UPDATE: '1'
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          chmod +x scripts/publish-github-release-macos.sh
+          chmod +x "$(python3 -c 'import json;print(json.load(open("updates/github/build-request.json"))["builder"])')"
+          /bin/bash scripts/publish-github-release-macos.sh
+
+      - name: Verify public updater channel
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          VERSION="$(python3 -c 'import json;print(json.load(open("updates/github/build-request.json"))["version"])')"
+          URL='https://github.com/ScaleUPPeisov/scaleup-site/releases/download/endlume-stable/latest.json'
+          TMP_JSON="$(mktemp)"
+          trap 'rm -f "$TMP_JSON"' EXIT
+          curl -fL --retry 3 --connect-timeout 10 --max-time 30 "$URL" -o "$TMP_JSON"
+          python3 - "$TMP_JSON" "$VERSION" <<'PY'
+          import json,sys
+          d=json.load(open(sys.argv[1])); v=sys.argv[2]
+          assert d.get('version')==v,(d.get('version'),v)
+          p=d.get('platforms',{}).get('darwin-aarch64',{})
+          assert p.get('url') and p.get('signature')
+          print('PASS: public ENDLUME updater =',v)
+          PY
+
+      - name: Release complete
+        shell: bash
+        run: |
+          echo '✅ ENDLUME self-hosted macOS release complete'
+          echo '✅ GitHub-hosted Actions minutes used: 0'
+          echo '✅ User update path: ENDLUME → Настройки → Обновления'

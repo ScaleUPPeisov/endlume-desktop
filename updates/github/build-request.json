@@ -1,10 +1,10 @@
 {
   "enabled": true,
-  "generation": 13,
+  "generation": 14,
   "app": "endlume",
   "channel": "stable",
   "version": "1.0.0-alpha.8.41",
   "builder": "BUILD_ENDLUME_841_SELFHOSTED.command",
-  "notes": "ENDLUME Studio 8.41: true 60 FPS render/UI/Effects motion, 100+ render stability, gapless audio + audible crossfade, chromakey despill, Kirill Peisov About info. Self-hosted generation 13 replaces only the obsolete 8.40 motion UI gate with the queue-aware 8.41 gate; pinned proven 8.40 base and all unrelated functionality/render budget remain unchanged.",
+  "notes": "ENDLUME Studio 8.41: true 60 FPS render/UI/Effects motion, 100+ render stability, gapless audio + audible crossfade, chromakey despill, Kirill Peisov About info. Self-hosted generation 14 uses the fixed final-Stage-only queue-aware motion validator bridge. Build, verify and automatic /Applications install run on the permanent self-hosted Mac runner; no manual installer required.",
   "platforms": ["darwin-aarch64"]
 }

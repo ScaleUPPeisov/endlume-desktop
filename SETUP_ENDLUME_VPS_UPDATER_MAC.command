@@ -92,7 +92,7 @@ chmod 600 "$CFG"
 echo "5/7 Создаю постоянный Tauri signing key…"
 if [[ ! -s "$TAURI_KEY" || ! -s "$TAURI_PUB" ]]; then
   rm -f "$TAURI_KEY" "$TAURI_PUB"
-  npx --yes @tauri-apps/cli@2.10.1 signer generate -w "$TAURI_KEY" -p '' --ci || fail "Tauri signer generate failed"
+  npx --yes @tauri-apps/cli@2.10.1 signer generate -w "$TAURI_KEY" --ci || fail "Tauri signer generate failed"
 fi
 chmod 600 "$TAURI_KEY"; [[ -s "$TAURI_PUB" ]] || fail "Tauri public key отсутствует"
 PUBLIC_KEY="$(tr -d '\r\n' < "$TAURI_PUB")"

@@ -1,10 +1,10 @@
 {
   "enabled": true,
-  "generation": 4,
+  "generation": 5,
   "app": "endlume",
   "channel": "stable",
   "version": "1.0.0-alpha.8.41",
-  "builder": "BUILD_ENDLUME_841_GITHUB.command",
+  "builder": "BUILD_ENDLUME_841_ONLINE.command",
   "notes": "8.41: true 60 FPS render without changing the proven 500k size/speed budget; 100+ render UI freeze fix; motion-interpolated 60 FPS Effects/Equalizer preview; gapless HQ 320k crossfade audio; preserved visual xfade path; chromakey despill; smoother macOS progress/UI; Kirill Peisov / peisov.business@gmail.com; native signed in-app update.",
   "platforms": ["darwin-aarch64"]
 }

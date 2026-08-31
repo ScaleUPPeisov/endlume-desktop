@@ -5,6 +5,6 @@
   "channel": "stable",
   "version": "1.0.0-alpha.8.41",
   "builder": "BUILD_ENDLUME_841_ONLINE.command",
-  "notes": "8.41: true 60 FPS render without changing the proven 500k size/speed budget; 100+ render UI freeze fix; motion-interpolated 60 FPS Effects/Equalizer preview; gapless HQ 320k crossfade audio; preserved visual xfade path; chromakey despill; smoother macOS progress/UI; Kirill Peisov / peisov.business@gmail.com; native signed in-app update.",
+  "notes": "ENDLUME Studio 8.41: true 60 FPS render/UI/Effects motion, 100+ render stability, gapless audio + audible crossfade, chromakey despill, Kirill Peisov About info. Preserve proven render speed/size budget and all unrelated functionality.",
   "platforms": ["darwin-aarch64"]
 }

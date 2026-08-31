@@ -5,9 +5,17 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 REQ="updates/cloudflare/build-request.json"
 BUCKET="endlume-private-updates"
-KEY="$HOME/.endlume-updater/endlume.key"
+KEYDIR="$HOME/.endlume-updater"
+KEY="$KEYDIR/endlume.key"
+TOKEN_FILE="$KEYDIR/cloudflare-api-token.txt"
+ACCOUNT_FILE="$KEYDIR/cloudflare-account-id.txt"
 ART="${RUNNER_TEMP:-/tmp}/endlume-release-${GITHUB_RUN_ID:-local}-mac"
 rm -rf "$ART"; mkdir -p "$ART"
+
+[[ -s "$TOKEN_FILE" ]] || { echo "Cloudflare API token missing: $TOKEN_FILE" >&2; exit 1; }
+[[ -s "$ACCOUNT_FILE" ]] || { echo "Cloudflare account ID missing: $ACCOUNT_FILE" >&2; exit 1; }
+export CLOUDFLARE_API_TOKEN="$(tr -d '\r\n' < "$TOKEN_FILE")"
+export CLOUDFLARE_ACCOUNT_ID="$(tr -d '\r\n' < "$ACCOUNT_FILE")"
 
 python3 - "$REQ" <<'PY' >/tmp/endlume-request-check.txt
 import json,sys,os
@@ -31,7 +39,7 @@ PY
 
 [[ -f "$BUILDER" ]] || { echo "Builder missing: $BUILDER" >&2; exit 1; }
 [[ -s "$KEY" ]] || { echo "Updater signing key missing: $KEY" >&2; exit 1; }
-chmod 600 "$KEY" || true
+chmod 600 "$KEY" "$TOKEN_FILE" "$ACCOUNT_FILE" || true
 
 export TAURI_SIGNING_PRIVATE_KEY="$KEY"
 export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
@@ -41,8 +49,8 @@ export ENDLUME_RELEASE_VERSION="$VERSION"
 
 /bin/bash "$BUILDER"
 
-ASSET="$(find "$ART" -maxdepth 3 -type f -name '*.app.tar.gz' -print -quit)"
-[[ -n "$ASSET" && -f "$ASSET" ]] || { echo "No macOS updater .app.tar.gz in $ART" >&2; find "$ART" -maxdepth 3 -type f -print; exit 1; }
+ASSET="$(find "$ART" -maxdepth 4 -type f -name '*.app.tar.gz' -print -quit)"
+[[ -n "$ASSET" && -f "$ASSET" ]] || { echo "No macOS updater .app.tar.gz in $ART" >&2; find "$ART" -maxdepth 4 -type f -print; exit 1; }
 SIG_FILE="$ASSET.sig"
 [[ -s "$SIG_FILE" ]] || { echo "Missing updater signature: $SIG_FILE" >&2; exit 1; }
 SIG="$(cat "$SIG_FILE")"

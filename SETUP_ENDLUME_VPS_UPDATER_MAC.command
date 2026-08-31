@@ -107,3 +107,15 @@ echo "✅ Запускаю основной setup; IP/user/port повторно
 echo
 
 printf '%s\n%s\n%s\n' "$VPS_HOST" "$VPS_USER" "$VPS_PORT" | /bin/bash "$CORE"
+
+# If the user temporarily enabled root password login only for bootstrap,
+# remove that override after the ENDLUME deploy key is installed and verified.
+DEPLOY_KEY="$HOME/.endlume-updater/vps_deploy_ed25519"
+if [[ -s "$DEPLOY_KEY" ]]; then
+  echo
+  echo "8/8 Закрываю временный root password SSH bootstrap…"
+  ssh -i "$DEPLOY_KEY" -p "$VPS_PORT" -o BatchMode=yes -o StrictHostKeyChecking=yes "$VPS_USER@$VPS_HOST" \
+    "if [ -f /etc/ssh/sshd_config.d/00-endlume-bootstrap.conf ]; then rm -f /etc/ssh/sshd_config.d/00-endlume-bootstrap.conf; /usr/sbin/sshd -t && systemctl restart ssh; fi" \
+    || fail "ENDLUME настроен, но не удалось удалить временный SSH password bootstrap"
+  echo "✅ Временный root password SSH доступ отключён; ENDLUME использует SSH key"
+fi

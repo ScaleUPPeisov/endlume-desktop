@@ -30,7 +30,7 @@ grep -Fq 'force_original_aspect_ratio=increase' "$R" || fail '16:9 Fill scale mi
 grep -Fq 'crop={}:{}:(iw-ow)/2:(ih-oh)/2' "$R" || fail '16:9 Fill crop missing'
 pass '60 FPS enabled while 8.36 speed/size/1080p budget stays unchanged'
 
-# 4 + 7: real crossfade and continuous audio timeline.
+# 4 + 7: real audio crossfade, continuous timeline and preserved video xfade path.
 if grep -Fq 'resolved_job.settings.crossfade_sec=0.0;' "$R"; then fail 'crossfade is still disabled by Strict Fidelity'; fi
 grep -Fq 'acrossfade=d={cf}:c1=tri:c2=tri' "$R" || fail 'audio acrossfade missing'
 grep -Fq 'audio-crossfade-gapless.m4a' "$R" || fail 'HQ crossfade cycle missing'
@@ -38,7 +38,8 @@ grep -Fq 'materialize_continuous_audio' "$R" || fail 'continuous audio materiali
 grep -Fq '"-fflags","+genpts"' "$R" || fail 'generated audio timestamps missing'
 grep -Fq '"-avoid_negative_ts","make_zero"' "$R" || fail 'audio timestamp zeroing missing'
 grep -Fq 'audio_encoder_args(&audio_encoder)' "$R" || fail 'HQ platform audio encoder not used'
-pass 'crossfade + continuous timestamp-normalized HQ audio wired'
+grep -Fq 'xfade=transition=fade:duration={cf}' "$R" || fail 'existing visual xfade transition path missing'
+pass 'audio crossfade/gapless path + existing visual xfade transition preserved'
 
 # 2 + 6: 100+ project history must not block WKWebView/localStorage.
 grep -Fq 'version:6,migrate:' "$S" || fail 'Zustand v6 cleanup migration missing'

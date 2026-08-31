@@ -9,26 +9,56 @@ helper="""fn chroma_despill_type(hex:&str)->&'static str{
   \"green\"
 }
 """
-color_marker='fn color_ffmpeg(hex:&str)->String{format!("0x{}",hex.trim().trim_start_matches(\'#\').trim_start_matches("0x"))}\n'
+
+# Insert helper by function boundary, not by an exact historical whole-line literal.
 if 'fn chroma_despill_type(' not in r:
-    if color_marker not in r:
-        raise SystemExit('8.39 chroma repair: color_ffmpeg marker missing')
-    r=r.replace(color_marker,color_marker+helper,1)
+    lines=r.splitlines(keepends=True)
+    inserted=False
+    out=[]
+    for line in lines:
+        out.append(line)
+        if not inserted and line.lstrip().startswith('fn color_ffmpeg('):
+            out.append(helper)
+            inserted=True
+    if not inserted:
+        raise SystemExit('8.39 chroma repair: color_ffmpeg function not found')
+    r=''.join(out)
 
-old='else{format!("[{idx}:v]fps={},format=rgba,chromakey={}:{}:{}",s.fps,color_ffmpeg(&e.key_color),e.similarity.max(0.00001),e.blend)}'
-new='else{format!("[{idx}:v]fps={},format=rgba,chromakey={}:{}:{},despill=type={}:mix={}:expand=0.20",s.fps,color_ffmpeg(&e.key_color),e.similarity.max(0.00001),e.blend,chroma_despill_type(&e.key_color),e.despill.clamp(0.0,1.0))}'
-if old in r:
-    r=r.replace(old,new,1)
-else:
-    old2='format!("[{idx}:v]fps={},format=rgba,chromakey={}:{}:{}",s.fps,color_ffmpeg(&e.key_color),e.similarity.max(0.00001),e.blend)'
-    new2='format!("[{idx}:v]fps={},format=rgba,chromakey={}:{}:{},despill=type={}:mix={}:expand=0.20",s.fps,color_ffmpeg(&e.key_color),e.similarity.max(0.00001),e.blend,chroma_despill_type(&e.key_color),e.despill.clamp(0.0,1.0))'
-    if old2 in r:
-        r=r.replace(old2,new2,1)
+# Normalize the actual direct-render chromakey format structurally. Previous
+# releases may wrap this expression in different else/if formatting, so never
+# match the entire historical line.
+lines=r.splitlines(keepends=True)
+found=0
+changed=0
+out=[]
+for line in lines:
+    if 'chromakey=' in line and 'color_ffmpeg(&e.key_color)' in line:
+        found+=1
+        if 'despill=type=' not in line:
+            if 'chromakey={}:{}:{}' not in line:
+                raise SystemExit('8.39 chroma repair: chromakey placeholders changed unexpectedly')
+            line=line.replace(
+                'chromakey={}:{}:{}',
+                'chromakey={}:{}:{},despill=type={}:mix={}:expand=0.20',
+                1,
+            )
+            needle='e.blend)'
+            replacement='e.blend,chroma_despill_type(&e.key_color),e.despill.clamp(0.0,1.0))'
+            if needle not in line:
+                raise SystemExit('8.39 chroma repair: chromakey blend argument not found')
+            line=line.replace(needle,replacement,1)
+            changed+=1
+    out.append(line)
+r=''.join(out)
 
+if found < 1:
+    raise SystemExit('8.39 chroma repair: no direct-render chromakey expression found')
 if 'despill=type={}:mix={}:expand=0.20' not in r:
-    raise SystemExit('8.39 chroma repair: render chromakey fragment still not normalized')
+    raise SystemExit('8.39 chroma repair: despill filter missing after normalization')
+if 'chroma_despill_type(&e.key_color),e.despill.clamp(0.0,1.0)' not in r:
+    raise SystemExit('8.39 chroma repair: despill arguments missing after normalization')
 if 'fn chroma_despill_type(' not in r:
     raise SystemExit('8.39 chroma repair: helper missing')
 
 p.write_text(r,encoding='utf-8')
-print('ENDLUME: 8.39 render chroma marker normalized')
+print(f'ENDLUME: 8.39 render chroma normalized; expressions={found}, changed={changed}')

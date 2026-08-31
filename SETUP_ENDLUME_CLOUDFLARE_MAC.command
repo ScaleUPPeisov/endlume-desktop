@@ -35,23 +35,23 @@ done
 cd "$TMP/worker"
 npm install --no-audit --no-fund
 
-echo "2/6 Авторизую Cloudflare…"
+echo "2/6 Авторизую Cloudflare и создаю приватный bucket…"
 if ! npx wrangler whoami >/dev/null 2>&1; then
   echo "Сейчас откроется браузер Cloudflare. Войди или создай аккаунт и разреши Wrangler."
   npx wrangler login || fail "Cloudflare login не завершён"
 fi
 npx wrangler r2 bucket create "$BUCKET" >/dev/null 2>&1 || true
+
+echo "3/6 Деплою приватный R2 Update API…"
+DEPLOY_LOG="$TMP/wrangler-deploy.log"
+npx wrangler deploy 2>&1 | tee "$DEPLOY_LOG" || fail "первичный Worker deploy завершился ошибкой"
+WORKER_URL="$(grep -Eo 'https://[A-Za-z0-9._-]+\.workers\.dev' "$DEPLOY_LOG" | tail -1 || true)"
+[[ -n "$WORKER_URL" ]] || fail "не удалось определить workers.dev URL из вывода Wrangler"
 if [[ ! -s "$HMAC_FILE" ]]; then
   /usr/bin/openssl rand -hex 32 > "$HMAC_FILE"
   chmod 600 "$HMAC_FILE"
 fi
 cat "$HMAC_FILE" | npx wrangler secret put DOWNLOAD_HMAC_SECRET >/dev/null || fail "не удалось установить Worker secret"
-
-echo "3/6 Деплою приватный R2 Update API…"
-DEPLOY_LOG="$TMP/wrangler-deploy.log"
-npx wrangler deploy 2>&1 | tee "$DEPLOY_LOG" || fail "Worker deploy завершился ошибкой"
-WORKER_URL="$(grep -Eo 'https://[A-Za-z0-9._-]+\.workers\.dev' "$DEPLOY_LOG" | tail -1 || true)"
-[[ -n "$WORKER_URL" ]] || fail "не удалось определить workers.dev URL из вывода Wrangler"
 /usr/bin/curl -fsS "$WORKER_URL/health" >/dev/null || fail "Worker /health недоступен"
 echo "✅ Worker: $WORKER_URL"
 

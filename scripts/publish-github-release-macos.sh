@@ -87,11 +87,12 @@ fi
 gh release upload "$TAG" "$FIXED" "$FIXED_SIG" "$LATEST" --clobber --repo "$HOST_REPO"
 
 # CRITICAL: never report success while the public release is empty/incomplete.
-ASSETS_JSON="$(gh api "/repos/$HOST_REPO/releases/tags/$TAG")"
-python3 - "$VERSION" <<'PY' <<<"$ASSETS_JSON"
+RELEASE_JSON="$ART/release.json"
+gh api "/repos/$HOST_REPO/releases/tags/$TAG" > "$RELEASE_JSON"
+python3 - "$RELEASE_JSON" "$VERSION" <<'PY'
 import json,sys
-version=sys.argv[1]
-d=json.load(sys.stdin)
+path,version=sys.argv[1:]
+d=json.load(open(path))
 names={x.get('name') for x in d.get('assets',[])}
 required={'latest.json','ENDLUME-macos-aarch64.app.tar.gz','ENDLUME-macos-aarch64.app.tar.gz.sig'}
 missing=required-names

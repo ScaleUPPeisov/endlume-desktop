@@ -34,7 +34,6 @@ src=src.replace('SRC="$WORK_ROOT/endlume-desktop-8.33"','SRC="$WORK_ROOT/endlume
 src=src.replace('│ 8.33 • SSD workdir • Fast Fidelity • Preview repair       │','│ 8.40 • STABLE 8.38 BASE • NATIVE INTERNET UPDATER        │',1)
 src=src.replace('WORK_ROOT="$(choose_work_root)"','WORK_ROOT="$HOME/.endlume-local-builder"',1)
 
-# Keep build metadata clean before Tauri parses capabilities/config.
 marker='# Prefer the writable external volume with the most free space.'
 shield='''sanitize_build_appledouble(){
   [[ -d "${SRC:-}" ]] || return 0
@@ -57,12 +56,11 @@ if clone in src:
     src=src.replace(clone,clone+'sanitize_build_appledouble\n',1)
 src=src.replace('npm install --no-audit --no-fund\n','npm install --no-audit --no-fund\nsanitize_build_appledouble\n',1)
 
-# Normalize the proven 8.33 migration first.
 speed='python3 scripts/apply-speed-fidelity-8-33.py\n'
 if speed in src:
     src=src.replace(speed,'python3 -m py_compile scripts/repair-speed-workdir-8-33.py\npython3 scripts/repair-speed-workdir-8-33.py\n'+speed,1)
 
-# IMPORTANT: stop at proven 8.38. Do NOT apply any 8.39 code in this bootstrap.
+# Historical validators run only while the tree is still on their historical version.
 marker='python3 scripts/apply-version-8-33.py\n'
 addition='''python3 -m py_compile scripts/apply-stability-8-34.py scripts/apply-version-8-34.py scripts/apply-strict-fidelity-8-35.py scripts/apply-version-8-35.py scripts/repair-strict-store-8-35.py scripts/apply-fidelity-1080p-8-36.py scripts/apply-version-8-36.py scripts/repair-settings-updater-8-37.py scripts/apply-remote-updater-8-37.py scripts/apply-version-8-37.py scripts/apply-youtube-fill-8-38.py scripts/apply-version-8-38.py scripts/apply-github-updater-8-40.py scripts/apply-version-8-40.py
 python3 scripts/apply-stability-8-34.py
@@ -88,7 +86,7 @@ chmod +x scripts/validate-release-8-38.sh
 scripts/validate-release-8-38.sh "$FFMPEG" "$FFPROBE"
 python3 scripts/apply-github-updater-8-40.py
 python3 scripts/apply-version-8-40.py
-chmod +x scripts/validate-release-8-40.sh
+chmod +x scripts/validate-release-8-40.sh scripts/validate-render-baseline-8-40.sh
 scripts/validate-release-8-40.sh
 '''
 if marker not in src:
@@ -104,10 +102,10 @@ chmod +x scripts/validate-release-8-33.sh
 scripts/validate-release-8-33.sh "$FFMPEG" "$FFPROBE"
 node scripts/validate-motion-ui.mjs
 '''
-new_stage='''stage "7/10 Проверяю proven 8.38 + Native Updater" 58
-chmod +x scripts/validate-release-8-38.sh scripts/validate-release-8-40.sh
-scripts/validate-release-8-38.sh "$FFMPEG" "$FFPROBE"
+new_stage='''stage "7/10 Проверяю ENDLUME 8.40 final regression" 58
+chmod +x scripts/validate-release-8-40.sh scripts/validate-render-baseline-8-40.sh
 scripts/validate-release-8-40.sh
+scripts/validate-render-baseline-8-40.sh "$FFMPEG" "$FFPROBE"
 node scripts/validate-motion-ui.mjs
 '''
 if old_stage not in src:
@@ -118,7 +116,40 @@ build='stage "9/10 Собираю ENDLUME Studio.app" 80\nnpx tauri build --targ
 if build in src:
     src=src.replace(build,'stage "9/10 Собираю ENDLUME Studio.app" 80\nassert_no_tauri_appledouble\nnpx tauri build --target aarch64-apple-darwin --bundles app --config src-tauri/tauri.local.conf.json\n',1)
 
-# Replace the old /Applications installation stage with one drag-and-drop ZIP.
+# Extend the already-built app verification before packaging.
+built='[[ -d "$BUILT_APP" ]] || fail "Tauri не создал .app"\n'
+extra=r'''[[ -d "$BUILT_APP" ]] || fail "Tauri не создал .app"
+APP_BUNDLE_ID="$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$BUILT_APP/Contents/Info.plist")"
+APP_VERSION="$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$BUILT_APP/Contents/Info.plist")"
+APP_EXECUTABLE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$BUILT_APP/Contents/Info.plist")"
+[[ "$APP_BUNDLE_ID" == "studio.endlume.desktop" ]] || fail "Final Bundle ID: $APP_BUNDLE_ID"
+[[ "$APP_VERSION" == "1.0.0-alpha.8.40" ]] || fail "Final app version: $APP_VERSION"
+[[ -x "$BUILT_APP/Contents/MacOS/$APP_EXECUTABLE" ]] || fail "Final app executable missing"
+ARCHS="$(/usr/bin/lipo -archs "$BUILT_APP/Contents/MacOS/$APP_EXECUTABLE" 2>/dev/null || true)"
+[[ " $ARCHS " == *" arm64 "* ]] || fail "Final app is not arm64: $ARCHS"
+FINAL_FFMPEG="$(find "$BUILT_APP/Contents/MacOS" -maxdepth 1 -type f -name 'ffmpeg*' -print -quit)"
+FINAL_FFPROBE="$(find "$BUILT_APP/Contents/MacOS" -maxdepth 1 -type f -name 'ffprobe*' -print -quit)"
+[[ -n "$FINAL_FFMPEG" && -x "$FINAL_FFMPEG" ]] || fail "FFmpeg missing/not executable in final app"
+[[ -n "$FINAL_FFPROBE" && -x "$FINAL_FFPROBE" ]] || fail "FFprobe missing/not executable in final app"
+python3 - <<'PYCHECK'
+import json
+b=json.load(open('updates/github/bootstrap.json'))
+c=json.load(open('src-tauri/tauri.conf.json'))
+u=c.get('plugins',{}).get('updater',{})
+assert u.get('pubkey'), 'final updater pubkey empty'
+assert b.get('pubkey')==u.get('pubkey'), 'final updater pubkey mismatch'
+assert b.get('endpoint') in u.get('endpoints',[]), 'final updater endpoint mismatch'
+PYCHECK
+DIST_JS="$(find dist/assets -maxdepth 1 -type f -name '*.js' -print -quit)"
+[[ -n "$DIST_JS" && -s "$DIST_JS" ]] || fail "production JS missing"
+if grep -Eq 'local_update_(check|start|status)' "$DIST_JS"; then fail "old local updater commands leaked into production JS"; fi
+grep -Fq 'downloadAndInstall' src/tauri.ts || fail "downloadAndInstall missing from updater source"
+grep -Fq 'await relaunch()' src/tauri.ts || fail "relaunch missing from updater source"
+'''
+if built not in src:
+    raise SystemExit('8.40 bootstrap: built app marker missing')
+src=src.replace(built,extra,1)
+
 stage10='stage "10/10 Устанавливаю обновление" 96\n'
 i=src.find(stage10)
 if i<0:
@@ -131,10 +162,20 @@ OUT="$HOME/Desktop/ENDLUME_Studio_8.40_MAC.zip"
 /usr/bin/codesign --verify --deep --strict "$BUILT_APP" >/dev/null 2>&1 || fail "Подпись .app невалидна"
 /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$BUILT_APP" "$OUT"
 [[ -s "$OUT" ]] || fail "ZIP приложения не создан"
+ZIP_LIST="$(/usr/bin/unzip -Z1 "$OUT")"
+[[ "$ZIP_LIST" == ENDLUME\ Studio.app/* ]] || fail "ZIP root is not ENDLUME Studio.app"
+if printf '%s\n' "$ZIP_LIST" | grep -Eq '(^|/)(node_modules|target|\.git)(/|$)|\.command$|\.log$'; then fail "ZIP contains developer/build files"; fi
 echo "@@ENDLUME_PROGRESS|100"
+echo "✅ PASS: Bundle ID studio.endlume.desktop"
+echo "✅ PASS: Version 1.0.0-alpha.8.40"
+echo "✅ PASS: arm64"
+echo "✅ PASS: codesign"
+echo "✅ PASS: FFmpeg + FFprobe embedded/executable"
+echo "✅ PASS: native updater endpoint + pubkey"
+echo "✅ PASS: old local_update_* absent from production JS"
+echo "✅ PASS: ZIP contains only ENDLUME Studio.app"
 echo "✅ ENDLUME Studio 8.40 готова"
 echo "Файл: $OUT"
-echo "Распакуй ZIP и перетащи ENDLUME Studio.app в папку Программы"
 /usr/bin/open -R "$OUT" >/dev/null 2>&1 || true
 '''
 src=src[:i]+package+'\n'
@@ -142,8 +183,11 @@ src=src[:i]+package+'\n'
 required=[
  'VERSION_EXPECTED="1.0.0-alpha.8.40"',
  'apply-youtube-fill-8-38.py',
+ 'scripts/validate-release-8-38.sh "$FFMPEG" "$FFPROBE"',
  'apply-github-updater-8-40.py',
+ 'apply-version-8-40.py',
  'validate-release-8-40.sh',
+ 'validate-render-baseline-8-40.sh',
  'ENDLUME_Studio_8.40_MAC.zip',
  'WORK_ROOT="$HOME/.endlume-local-builder"',
 ]
@@ -156,16 +200,46 @@ PY
 
 chmod +x "$REAL"
 /bin/bash -n "$REAL" || fail "generated bootstrap syntax failed"
+
+# Mandatory ordering preflight before any long generated build starts.
+python3 - "$REAL" <<'PY'
+from pathlib import Path
+import sys
+s=Path(sys.argv[1]).read_text(encoding='utf-8')
+call38='scripts/validate-release-8-38.sh "$FFMPEG" "$FFPROBE"'
+apply_up='python3 scripts/apply-github-updater-8-40.py'
+ver40='python3 scripts/apply-version-8-40.py'
+call40='scripts/validate-release-8-40.sh'
+baseline='scripts/validate-render-baseline-8-40.sh "$FFMPEG" "$FFPROBE"'
+if s.count(call38)!=1: raise SystemExit(f'PRECHECK: expected exactly one historical 8.38 validator call, got {s.count(call38)}')
+p38=s.index(call38); pup=s.index(apply_up); pv=s.index(ver40)
+if not p38 < pup < pv: raise SystemExit('PRECHECK: historical 8.38 validation/order invalid')
+if call38 in s[pv:]: raise SystemExit('PRECHECK: 8.38 validator runs after version 8.40')
+# Find executable call (not chmod occurrence) after version migration.
+p40=s.find('\n'+call40+'\n',pv)
+if p40<0: raise SystemExit('PRECHECK: executable 8.40 validator call missing after version migration')
+pb=s.find('\n'+baseline+'\n',pv)
+if pb<0: raise SystemExit('PRECHECK: version-neutral 8.40 baseline call missing')
+for bad in ['apply-performance-fidelity-8-39.py','repair-render-chroma-8-39.py','apply-hybrid-updater-8-39.py','validate-release-8-39.sh']:
+    if bad in s: raise SystemExit(f'PRECHECK: forbidden 8.39 migration leaked: {bad}')
+print('✅ PRECHECK: validate 8.38 runs exactly once and before 8.40 migration')
+print('✅ PRECHECK: no validate 8.38 after version=8.40')
+print('✅ PRECHECK: validate 8.40 + version-neutral baseline run after updater/version migration')
+print('✅ PRECHECK: 8.39 migration chain absent')
+PY
+
 for bad in apply-performance-fidelity-8-39.py repair-render-chroma-8-39.py apply-hybrid-updater-8-39.py validate-release-8-39.sh; do
   if grep -Fq "$bad" "$REAL"; then fail "8.39 path leaked into clean bootstrap: $bad"; fi
 done
 grep -Fq 'apply-youtube-fill-8-38.py' "$REAL" || fail "8.38 proven base missing"
 grep -Fq 'apply-github-updater-8-40.py' "$REAL" || fail "native updater patch missing"
+grep -Fq 'validate-render-baseline-8-40.sh' "$REAL" || fail "version-neutral baseline missing"
 grep -Fq 'ENDLUME_Studio_8.40_MAC.zip' "$REAL" || fail "drag-drop packaging missing"
 
 echo "✅ CLEAN 8.40 preflight passed"
+echo "✅ Historical 8.38 validator cannot run after version 8.40"
+echo "✅ Version-neutral final render baseline wired"
 echo "✅ 8.39 migration chain completely excluded"
-echo "✅ Proven 8.38 gates retained"
 echo "✅ Native signed updater wired"
-echo "✅ Output is one drag-and-drop Mac app ZIP"
+echo "✅ Final .app/ZIP integrity gates wired"
 /bin/bash "$REAL"

@@ -1,0 +1,14 @@
+{
+  "provider": "github-static-release",
+  "hostRepo": "ScaleUPPeisov/scaleup-site",
+  "tag": "endlume-stable",
+  "endpoint": "https://github.com/ScaleUPPeisov/scaleup-site/releases/download/endlume-stable/latest.json",
+  "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEQzMjJDRDUwNDkxRDM1MDAKUldRQU5SMUpVTTBpMCs2TTF5UjZkS1h3K0N5UUlBb0srYmVtN1lianVCdEY2ZkxuN2FlM1AyQmoK",
+  "actions": false,
+  "releasesMode": "single-static-channel",
+  "platforms": [
+    "darwin-aarch64",
+    "windows-x86_64"
+  ],
+  "updatedAt": "2026-08-31T09:34:58.915042+00:00"
+}

@@ -20,7 +20,9 @@ trap cleanup EXIT
 exec > >(tee "$LOG") 2>&1
 fail(){ echo; echo "❌ $1"; echo "Лог: $LOG"; exit 1; }
 
-echo "ENDLUME • Cloudflare R2 + local Mac Release Agent setup"
+WRANGLER=(npx --yes wrangler@4)
+
+echo "ENDLUME • Cloudflare R2 + local Mac Release Agent setup • FIX4"
 echo
 [[ "$(uname -s)" == "Darwin" && "$(uname -m)" == "arm64" ]] || fail "нужен Apple Silicon Mac"
 command -v gh >/dev/null 2>&1 || fail "GitHub CLI не найден"
@@ -28,16 +30,12 @@ gh auth status -h github.com >/dev/null 2>&1 || fail "GitHub CLI не автор
 mkdir -p "$KEYDIR" "$AGENT_DIR" "$HOME/Library/LaunchAgents"
 chmod 700 "$KEYDIR" "$AGENT_DIR" || true
 
-# ---------------------------------------------------------------------------
-# Homebrew Node repair. The setup executes node/npm, not merely `command -v`.
-# This specifically repairs stale merve -> simdutf dylib links after brew updates.
-# ---------------------------------------------------------------------------
 node_runtime_ok(){
   command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1 && \
   node -e 'process.stdout.write(process.version)' >/dev/null 2>&1 && npm --version >/dev/null 2>&1
 }
 if ! node_runtime_ok; then
-  echo "0/7 Восстанавливаю Homebrew Node runtime…"
+  echo "0/8 Восстанавливаю Homebrew Node runtime…"
   BREW=""
   for p in /opt/homebrew/bin/brew /usr/local/bin/brew; do [[ -x "$p" ]] && BREW="$p" && break; done
   [[ -n "$BREW" ]] || fail "Node/npm повреждены, а Homebrew не найден"
@@ -53,9 +51,8 @@ fi
 node_runtime_ok || fail "Node/npm всё ещё не запускаются после автоматического восстановления"
 echo "✅ Node $(node -v) • npm $(npm -v)"
 
-# Wrangler itself must execute before we touch Cloudflare state.
-echo "1/7 Проверяю Cloudflare CLI и получаю Worker…"
-npx --yes wrangler@4 --version >/dev/null || fail "Wrangler не запускается"
+echo "1/8 Проверяю Cloudflare CLI и получаю Worker…"
+"${WRANGLER[@]}" --version >/dev/null || fail "Wrangler не запускается"
 mkdir -p "$TMP/worker/src"
 for f in infra/cloudflare-update/src/index.js infra/cloudflare-update/wrangler.toml; do
   out="$TMP/worker/${f#infra/cloudflare-update/}"
@@ -64,32 +61,73 @@ for f in infra/cloudflare-update/src/index.js infra/cloudflare-update/wrangler.t
 done
 cd "$TMP/worker"
 
-echo "2/7 Авторизую Cloudflare…"
-if ! npx --yes wrangler@4 whoami >/dev/null 2>&1; then
-  echo "Сейчас откроется браузер Cloudflare. Войди или создай аккаунт и разреши Wrangler."
-  npx --yes wrangler@4 login || fail "Cloudflare login не завершён"
+echo "2/8 Проверяю реальную авторизацию Cloudflare…"
+WHO="$(${WRANGLER[@]} whoami 2>&1 || true)"
+if echo "$WHO" | grep -qiE 'not authenticated|not logged in|please run.*wrangler login'; then
+  echo "Cloudflare ещё не авторизован. Сейчас откроется браузер."
+  "${WRANGLER[@]}" login || fail "Cloudflare login не завершён"
+  WHO="$(${WRANGLER[@]} whoami 2>&1 || true)"
 fi
-npx --yes wrangler@4 whoami || fail "Cloudflare авторизация не подтверждена"
+if echo "$WHO" | grep -qiE 'not authenticated|not logged in|please run.*wrangler login'; then
+  echo "$WHO"
+  fail "Cloudflare по-прежнему не подтверждает авторизацию"
+fi
+if [[ -z "${WHO//[[:space:]]/}" ]]; then fail "Wrangler whoami вернул пустой ответ"; fi
+echo "$WHO"
+echo "✅ Cloudflare авторизация подтверждена"
 
-echo "3/7 Создаю приватный R2 bucket…"
-npx --yes wrangler@4 r2 bucket create "$BUCKET" >/dev/null 2>&1 || true
-# Verify bucket existence; fail here instead of later on Worker deployment.
-npx --yes wrangler@4 r2 bucket list 2>/dev/null | grep -Fq "$BUCKET" || fail "R2 bucket $BUCKET не создан. Проверь, что R2 включён в Cloudflare аккаунте."
+echo "3/8 Проверяю R2 subscription…"
+R2_LIST_FILE="$TMP/r2-list.txt"
+r2_ready(){
+  if "${WRANGLER[@]}" r2 bucket list >"$R2_LIST_FILE" 2>&1; then
+    if ! grep -qiE 'not authenticated|subscription.*required|complete.*checkout|enable.*r2' "$R2_LIST_FILE"; then return 0; fi
+  fi
+  return 1
+}
+if ! r2_ready; then
+  echo
+  echo "Cloudflare аккаунт авторизован, но R2 ещё не подключён."
+  echo "Открываю официальный R2 Overview. Заверши подключение R2/checkout в браузере."
+  echo "После этого ничего в Terminal нажимать не нужно — я сам проверяю каждые 5 секунд."
+  /usr/bin/open 'https://dash.cloudflare.com/?to=/:account/r2/overview' >/dev/null 2>&1 || true
+  READY=0
+  for i in $(seq 1 240); do
+    /bin/sleep 5
+    if r2_ready; then READY=1; break; fi
+    if (( i % 12 == 0 )); then echo "Жду активацию R2… $((i*5)) сек"; fi
+  done
+  [[ "$READY" == "1" ]] || { cat "$R2_LIST_FILE" || true; fail "R2 не активирован за 20 минут"; }
+fi
+echo "✅ R2 доступен"
 
-echo "4/7 Деплою приватный R2 Update API…"
+echo "4/8 Проверяю приватный bucket…"
+R2_LIST="$(cat "$R2_LIST_FILE" 2>/dev/null || true)"
+if ! echo "$R2_LIST" | grep -Fq "$BUCKET"; then
+  "${WRANGLER[@]}" r2 bucket create "$BUCKET" || fail "не удалось создать R2 bucket $BUCKET"
+  "${WRANGLER[@]}" r2 bucket list >"$R2_LIST_FILE" 2>&1 || fail "не удалось проверить список R2 buckets"
+fi
+grep -Fq "$BUCKET" "$R2_LIST_FILE" || fail "R2 bucket $BUCKET отсутствует после создания"
+echo "✅ Private R2 bucket: $BUCKET"
+
+echo "5/8 Деплою приватный R2 Update API…"
 DEPLOY_LOG="$TMP/wrangler-deploy.log"
-npx --yes wrangler@4 deploy 2>&1 | tee "$DEPLOY_LOG" || fail "первичный Worker deploy завершился ошибкой"
+"${WRANGLER[@]}" deploy 2>&1 | tee "$DEPLOY_LOG" || fail "первичный Worker deploy завершился ошибкой"
 WORKER_URL="$(grep -Eo 'https://[A-Za-z0-9._-]+\.workers\.dev' "$DEPLOY_LOG" | tail -1 || true)"
 [[ -n "$WORKER_URL" ]] || fail "не удалось определить workers.dev URL из вывода Wrangler"
 if [[ ! -s "$HMAC_FILE" ]]; then
   /usr/bin/openssl rand -hex 32 > "$HMAC_FILE"
   chmod 600 "$HMAC_FILE"
 fi
-cat "$HMAC_FILE" | npx --yes wrangler@4 secret put DOWNLOAD_HMAC_SECRET >/dev/null || fail "не удалось установить Worker secret"
-/usr/bin/curl -fsS "$WORKER_URL/health" >/dev/null || fail "Worker /health недоступен"
+cat "$HMAC_FILE" | "${WRANGLER[@]}" secret put DOWNLOAD_HMAC_SECRET >/dev/null || fail "не удалось установить Worker secret"
+"${WRANGLER[@]}" deploy >/dev/null || fail "повторный Worker deploy после secret завершился ошибкой"
+for _ in $(seq 1 20); do
+  if /usr/bin/curl -fsS "$WORKER_URL/health" >/dev/null 2>&1; then break; fi
+  /bin/sleep 2
+done
+/usr/bin/curl -fsS "$WORKER_URL/health" >/dev/null || fail "Worker /health недоступен после deploy"
 echo "✅ Worker: $WORKER_URL"
 
-echo "5/7 Создаю постоянный ключ подписи Tauri updater…"
+echo "6/8 Создаю постоянный ключ подписи Tauri updater…"
 if [[ ! -s "$KEY" || ! -s "$PUB" ]]; then
   rm -f "$KEY" "$PUB"
   npx --yes @tauri-apps/cli@2.10.1 signer generate -w "$KEY" -p "" --ci || fail "Tauri signer generate завершился ошибкой"
@@ -99,8 +137,9 @@ fi
 [[ -s "$PUB" ]] || fail "public updater key отсутствует: $PUB"
 PUBLIC_KEY="$(tr -d '\r\n' < "$PUB")"
 [[ ${#PUBLIC_KEY} -gt 40 ]] || fail "public updater key выглядит некорректно"
+echo "✅ Tauri signing key готов"
 
-echo "6/7 Сохраняю безопасный bootstrap в GitHub…"
+echo "7/8 Сохраняю безопасный bootstrap в GitHub…"
 BOOT="$TMP/bootstrap.json"
 python3 - "$BOOT" "$WORKER_URL" "$PUBLIC_KEY" <<'PY'
 import json,sys,datetime
@@ -123,8 +162,9 @@ if sha:p['sha']=sha
 json.dump(p,open(out,'w'))
 PY
 gh api --method PUT "/repos/$REPO/contents/updates/cloudflare/bootstrap.json" --input "$TMP/payload.json" >/dev/null || fail "не удалось сохранить bootstrap.json"
+echo "✅ bootstrap.json сохранён"
 
-echo "7/7 Устанавливаю локальный Release Agent без GitHub Actions…"
+echo "8/8 Устанавливаю локальный Release Agent без GitHub Actions…"
 gh api -H "Accept: application/vnd.github.raw+json" "/repos/$REPO/contents/scripts/endlume-release-agent-macos.sh?ref=$BRANCH" > "$AGENT" || fail "не удалось скачать Release Agent"
 [[ -s "$AGENT" ]] || fail "Release Agent пуст"
 chmod 755 "$AGENT"
@@ -132,23 +172,13 @@ chmod 755 "$AGENT"
 cat > "$PLIST" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key><string>studio.endlume.release-agent</string>
-  <key>ProgramArguments</key>
-  <array><string>/bin/bash</string><string>$AGENT</string></array>
-  <key>RunAtLoad</key><true/>
-  <key>StartInterval</key><integer>60</integer>
-  <key>ProcessType</key><string>Background</string>
-  <key>EnvironmentVariables</key>
-  <dict>
-    <key>HOME</key><string>$HOME</string>
-    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
-  </dict>
-  <key>StandardOutPath</key><string>$AGENT_DIR/launchd.out.log</string>
-  <key>StandardErrorPath</key><string>$AGENT_DIR/launchd.err.log</string>
-</dict>
-</plist>
+<plist version="1.0"><dict>
+<key>Label</key><string>studio.endlume.release-agent</string>
+<key>ProgramArguments</key><array><string>/bin/bash</string><string>$AGENT</string></array>
+<key>RunAtLoad</key><true/><key>StartInterval</key><integer>60</integer><key>ProcessType</key><string>Background</string>
+<key>EnvironmentVariables</key><dict><key>HOME</key><string>$HOME</string><key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string></dict>
+<key>StandardOutPath</key><string>$AGENT_DIR/launchd.out.log</string><key>StandardErrorPath</key><string>$AGENT_DIR/launchd.err.log</string>
+</dict></plist>
 EOF
 /usr/bin/plutil -lint "$PLIST" >/dev/null || fail "LaunchAgent plist некорректен"
 UID_NOW="$(id -u)"

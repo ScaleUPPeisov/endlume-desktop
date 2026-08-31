@@ -96,11 +96,13 @@ jobs:
           TAR="$(find "$ART" -type f -name '*.app.tar.gz' -print -quit)"
           test -n "$TAR" -a -s "$TAR"
           test -s "$TAR.sig"
-          cp "$TAR" "$ART/ENDLUME-macos-aarch64.app.tar.gz"
-          cp "$TAR.sig" "$ART/ENDLUME-macos-aarch64.app.tar.gz.sig"
+          if test "$TAR" != "$ART/ENDLUME-macos-aarch64.app.tar.gz"; then
+            cp "$TAR" "$ART/ENDLUME-macos-aarch64.app.tar.gz"
+            cp "$TAR.sig" "$ART/ENDLUME-macos-aarch64.app.tar.gz.sig"
+          fi
           printf '%s\n' "$VERSION" > "$ART/version.txt"
 
-      - name: Verify and install ENDLUME Studio.app
+      - name: Verify staged ENDLUME Studio.app
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -109,10 +111,7 @@ jobs:
           TAR="$ART/ENDLUME-macos-aarch64.app.tar.gz"
           UNPACK="$ART/unpack"
           USER_ZIP="$HOME/.endlume-release-bridge/endlume/ENDLUME_Studio_${VERSION}_MAC.zip"
-          DEST="/Applications/ENDLUME Studio.app"
-          NEW="/Applications/.ENDLUME Studio.new.app"
-          OLD="/Applications/.ENDLUME Studio.previous.app"
-          rm -rf "$UNPACK" "$NEW" "$OLD"
+          rm -rf "$UNPACK"
           mkdir -p "$UNPACK"
           /usr/bin/tar -xzf "$TAR" -C "$UNPACK"
           APP="$(find "$UNPACK" -maxdepth 4 -type d -name 'ENDLUME Studio.app' -print -quit)"
@@ -132,32 +131,18 @@ jobs:
           rm -f "$USER_ZIP"
           /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$APP" "$USER_ZIP"
           test -s "$USER_ZIP"
-          /usr/bin/ditto "$APP" "$NEW"
-          /usr/bin/osascript -e 'tell application "ENDLUME Studio" to quit' >/dev/null 2>&1 || true
-          sleep 1
-          /usr/bin/pkill -x 'ENDLUME Studio' >/dev/null 2>&1 || true
-          if test -d "$DEST"; then /bin/mv "$DEST" "$OLD"; fi
-          if /bin/mv "$NEW" "$DEST"; then :; else
-            test -d "$OLD" && /bin/mv "$OLD" "$DEST"
-            exit 1
-          fi
-          FINAL="$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$DEST/Contents/Info.plist")"
-          if test "$FINAL" != "$VERSION"; then
-            rm -rf "$DEST"
-            test -d "$OLD" && /bin/mv "$OLD" "$DEST"
-            exit 1
-          fi
-          rm -rf "$OLD"
-          /usr/bin/xattr -dr com.apple.quarantine "$DEST" >/dev/null 2>&1 || true
-          /usr/bin/open "$DEST" >/dev/null 2>&1 || true
-          echo "PASS: installed $FINAL"
-          echo "PASS: local ZIP $USER_ZIP"
+          echo "PASS: staged $VER / $BID / arm64 / codesign"
+          echo "PASS: local emergency ZIP $USER_ZIP"
+          echo "PASS: installed /Applications copy was NOT replaced or launched"
 
       - name: Publish signed updater channel
         shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.ENDLUME_RELEASE_TOKEN }}
         run: |
           set -Eeuo pipefail
           export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          test -n "${GH_TOKEN:-}" || { echo 'ENDLUME_RELEASE_TOKEN repository secret is missing' >&2; exit 1; }
           VERSION="$(python3 -c 'import json;print(json.load(open("updates/github/build-request.json"))["version"])')"
           ART="$HOME/.endlume-release-bridge/endlume/current"
           TAR="$ART/ENDLUME-macos-aarch64.app.tar.gz"
@@ -175,29 +160,30 @@ jobs:
           out,version,url,sig=sys.argv[1:]
           data={
             "version":version,
-            "notes":"ENDLUME Studio signed self-hosted update",
+            "notes":"Online Update System validation",
             "pub_date":datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00","Z"),
             "platforms":{"darwin-aarch64":{"url":url,"signature":sig}}
           }
           json.dump(data,open(out,"w"),ensure_ascii=False,indent=2)
           PY
-          env -u GH_TOKEN -u GITHUB_TOKEN gh auth status -h github.com >/dev/null
-          if ! env -u GH_TOKEN -u GITHUB_TOKEN gh release view "$TAG" --repo "$HOST_REPO" >/dev/null 2>&1; then
-            env -u GH_TOKEN -u GITHUB_TOKEN gh release create "$TAG" --repo "$HOST_REPO" --title "ENDLUME Stable Updates" --notes "Signed updater channel for ENDLUME Studio."
+          gh api "/repos/$HOST_REPO" --jq .full_name >/dev/null
+          if ! gh release view "$TAG" --repo "$HOST_REPO" >/dev/null 2>&1; then
+            gh release create "$TAG" --repo "$HOST_REPO" --title "ENDLUME Stable Updates" --notes "Signed updater channel for ENDLUME Studio."
           fi
-          env -u GH_TOKEN -u GITHUB_TOKEN gh release upload "$TAG" "$TAR" "$SIGFILE" "$LATEST" --clobber --repo "$HOST_REPO"
-          env -u GH_TOKEN -u GITHUB_TOKEN gh api "/repos/$HOST_REPO/releases/tags/$TAG" --jq '.assets[].name' > "$ART/release-assets.txt"
+          gh release upload "$TAG" "$TAR" "$SIGFILE" "$LATEST" --clobber --repo "$HOST_REPO"
+          gh api "/repos/$HOST_REPO/releases/tags/$TAG" --jq '.assets[].name' > "$ART/release-assets.txt"
           grep -Fxq 'latest.json' "$ART/release-assets.txt"
           grep -Fxq 'ENDLUME-macos-aarch64.app.tar.gz' "$ART/release-assets.txt"
           grep -Fxq 'ENDLUME-macos-aarch64.app.tar.gz.sig' "$ART/release-assets.txt"
-          for i in {1..12}; do
+          rm -f "$ART/public-latest.json"
+          for i in {1..18}; do
             if /usr/bin/curl -fsSL --connect-timeout 10 --max-time 30 "https://github.com/$HOST_REPO/releases/download/$TAG/latest.json?run=${GITHUB_RUN_ID:-0}-$i" -o "$ART/public-latest.json"; then
               if python3 - "$ART/public-latest.json" "$VERSION" <<'PY'
           import json,sys
           d=json.load(open(sys.argv[1]))
-          assert d.get("version")==sys.argv[2]
-          p=d.get("platforms",{}).get("darwin-aarch64",{})
-          assert p.get("url") and p.get("signature")
+          assert d.get('version')==sys.argv[2]
+          p=d.get('platforms',{}).get('darwin-aarch64',{})
+          assert p.get('url') and p.get('signature')
           PY
               then break; fi
             fi
@@ -206,17 +192,19 @@ jobs:
           python3 - "$ART/public-latest.json" "$VERSION" <<'PY'
           import json,sys
           d=json.load(open(sys.argv[1]))
-          assert d.get("version")==sys.argv[2]
-          p=d.get("platforms",{}).get("darwin-aarch64",{})
-          assert p.get("url") and p.get("signature")
+          assert d.get('version')==sys.argv[2],d.get('version')
+          p=d.get('platforms',{}).get('darwin-aarch64',{})
+          assert p.get('url') and p.get('signature')
           PY
+          /usr/bin/curl -fsIL --connect-timeout 10 --max-time 30 "$ASSET_URL" >/dev/null
+          /usr/bin/curl -fsIL --connect-timeout 10 --max-time 30 "$ASSET_URL.sig" >/dev/null
           echo "PASS: public updater channel $VERSION"
 
       - name: Build complete
         shell: bash
         run: |
           VERSION="$(python3 -c 'import json;print(json.load(open("updates/github/build-request.json"))["version"])')"
-          echo "✅ ENDLUME $VERSION built, verified and installed on self-hosted Mac"
+          echo "✅ ENDLUME $VERSION built, verified and published on self-hosted Mac"
+          echo '✅ Installed ENDLUME was not touched by the build job'
           echo '✅ GitHub-hosted Actions minutes used: 0'
-          echo '✅ Signed updater published to endlume-stable'
-          echo '✅ Next versions are available from ENDLUME → Настройки → Обновления'
+          echo '✅ Next step: installed ENDLUME checks and installs this signed update itself'

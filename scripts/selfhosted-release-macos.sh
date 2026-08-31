@@ -9,16 +9,26 @@ KEY="$HOME/.endlume-updater/endlume.key"
 ART="${RUNNER_TEMP:-/tmp}/endlume-release-${GITHUB_RUN_ID:-local}-mac"
 rm -rf "$ART"; mkdir -p "$ART"
 
-readarray -t META < <(python3 - "$REQ" <<'PY'
+python3 - "$REQ" <<'PY' >/tmp/endlume-request-check.txt
 import json,sys,os
 r=json.load(open(sys.argv[1]))
 if not r.get('enabled'): raise SystemExit('release request disabled')
 b=os.path.basename(r.get('builder',''))
 if b!=r.get('builder') or not b.startswith('BUILD_ENDLUME_') or not b.endswith('.command'): raise SystemExit('unsafe builder')
-print(r['version']);print(b);print(r.get('notes',''))
 PY
-)
-VERSION="${META[0]}"; BUILDER="${META[1]}"; NOTES="${META[2]:-}"
+VERSION="$(python3 - "$REQ" <<'PY'
+import json,sys;print(json.load(open(sys.argv[1]))['version'])
+PY
+)"
+BUILDER="$(python3 - "$REQ" <<'PY'
+import json,sys;print(json.load(open(sys.argv[1]))['builder'])
+PY
+)"
+NOTES="$(python3 - "$REQ" <<'PY'
+import json,sys;print(json.load(open(sys.argv[1])).get('notes',''))
+PY
+)"
+
 [[ -f "$BUILDER" ]] || { echo "Builder missing: $BUILDER" >&2; exit 1; }
 [[ -s "$KEY" ]] || { echo "Updater signing key missing: $KEY" >&2; exit 1; }
 chmod 600 "$KEY" || true

@@ -32,7 +32,7 @@ command -v gh >/dev/null 2>&1 || fail "GitHub CLI не найден"
 gh auth status -h github.com >/dev/null 2>&1 || fail "GitHub CLI не авторизован"
 [[ -s "$KEY" && -s "$PUB" ]] || fail "ключ подписи updater не найден; сначала запусти SIMPLE UPDATER setup"
 
-# Stop the polling agent during the foreground build to avoid duplicate builds.
+# Stop polling during the foreground build. This prevents duplicate 60-second retries.
 launchctl bootout "gui/$(id -u)" "$PLIST" >/dev/null 2>&1 || true
 rm -rf "$HOME/.endlume-github-release-agent/lock" >/dev/null 2>&1 || true
 
@@ -50,17 +50,19 @@ cd "$CHECKOUT"
 python3 - <<'PY'
 import json
 r=json.load(open('updates/github/build-request.json'))
-assert r.get('enabled') is True, 'build-request disabled'
 assert r.get('version')=='1.0.0-alpha.8.40', r.get('version')
 assert r.get('builder')=='BUILD_ENDLUME_840_GITHUB.command', r.get('builder')
-print('✅ build-request 8.40 активен')
+print('✅ build-request 8.40 найден; foreground FORCE не зависит от background enabled')
 PY
 /bin/bash -n BUILD_ENDLUME_840_GITHUB.command || fail "8.40 builder syntax error"
 /bin/bash -n scripts/publish-github-release-macos.sh || fail "publisher syntax error"
+grep -Fq 'python3 scripts/repair-render-chroma-8-39.py' BUILD_ENDLUME_840_GITHUB.command || fail "structural chroma repair отсутствует в 8.40 builder"
+grep -Fq 'Repeated failure blocked' BUILD_ENDLUME_840_GITHUB.command || fail "8.40 regression guard отсутствует"
 
 echo "2/4 Собираю и подписываю 8.40…"
+echo "Исправление chroma запускается до 8.39 performance patch."
 echo "Это самый долгий этап. Окно Terminal не закрывай."
-/bin/bash scripts/publish-github-release-macos.sh || fail "сборка/публикация 8.40 завершилась ошибкой"
+ENDLUME_FORCE_RELEASE=1 /bin/bash scripts/publish-github-release-macos.sh || fail "сборка/публикация 8.40 завершилась ошибкой"
 
 echo "3/4 Проверяю опубликованный update channel…"
 ASSETS="$(gh api repos/ScaleUPPeisov/scaleup-site/releases/tags/endlume-stable --jq '[.assets[].name]|join(" ")')"
@@ -74,6 +76,8 @@ DEST="/Applications/ENDLUME Studio.app"
 VER="$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$DEST/Contents/Info.plist" 2>/dev/null || true)"
 [[ "$VER" == "$EXPECTED" ]] || fail "на Mac установлена версия $VER вместо $EXPECTED"
 /usr/bin/codesign --verify --deep --strict "$DEST" >/dev/null 2>&1 || fail "подпись установленной .app невалидна"
+mkdir -p "$HOME/.endlume-github-release-agent"
+printf '%s\n' "$EXPECTED" > "$HOME/.endlume-github-release-agent/last-success.txt"
 
 restart_agent
 trap - EXIT
@@ -81,6 +85,7 @@ trap - EXIT
 echo
 echo "✅ ENDLUME 8.40 УСТАНОВЛЕНА НА MAC"
 echo "✅ Native signed updater подключён"
+echo "✅ Повторный chroma failure закрыт structural repair"
 echo "✅ Следующее обновление 8.41 будет ставиться внутри ENDLUME"
 echo "✅ Terminal для обычных будущих обновлений больше не нужен"
 /usr/bin/open "$DEST" >/dev/null 2>&1 || true

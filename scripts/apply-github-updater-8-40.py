@@ -36,7 +36,6 @@ elif "@tauri-apps/api/app" not in s:
 
 start=s.find('  checkUpdate:async()=>{')
 if start<0: raise SystemExit('8.40: checkUpdate API block missing')
-# 8.37 still exposes updateStatus via local_update_status; replace the whole API span.
 end_marker="  updateStatus:()=>invoke<{state:string;stage?:string;progress:number;message?:string;logPath?:string}>('local_update_status')\n"
 end=s.find(end_marker,start)
 if end<0: raise SystemExit('8.40: historical updateStatus marker missing')
@@ -83,7 +82,7 @@ if "check()" not in s or 'downloadAndInstall' not in s or 'relaunch()' not in s 
 p.write_text(s,encoding='utf-8')
 
 # 8.37 already converts Settings to a two-step check/install UI. Keep that
-# structure; only normalize the wording away from the old remote-builder model.
+# structure; only normalize the wording away from obsolete updater models.
 p=Path('src/pages/SettingsPage.tsx')
 ui=p.read_text(encoding='utf-8')
 if 'const checkUpdate=async()=>{' not in ui or 'const installUpdate=async()=>{' not in ui:
@@ -95,22 +94,32 @@ old_notes=[
  '<p className="settingsNote">Для текущего локального режима рекомендуем обновлять ENDLUME через локальный builder на Mac. Online updater можно оставить как резервный канал.</p>',
  '<p className="settingsNote">Обновления собираются на удалённом macOS-сервере. Этот Mac только скачивает проверенную готовую ENDLUME, устанавливает её и перезапускает приложение — без npm, Rust и Terminal.</p>'
 ]
-new_note='<p className="settingsNote">Подписанные обновления ENDLUME проверяются и устанавливаются через интернет внутри приложения. Terminal и локальный builder не используются.</p>'
+new_note='<p className="settingsNote">Подписанные обновления ENDLUME проверяются и устанавливаются через интернет внутри приложения. Terminal и ручная сборка для обновления не нужны.</p>'
 for old in old_notes:
-    if old in ui:
-        ui=ui.replace(old,new_note,1)
-        break
-if new_note not in ui:
-    raise SystemExit('8.40: updater Settings note was not normalized')
+    ui=ui.replace(old,new_note)
 
-# Normalize install wording if an older 8.37 phrase survived.
+# Last-resort normalization for historical wording variants. These replacements
+# intentionally remove only obsolete updater wording, not functional JSX.
+ui=ui.replace('ПРОВЕРИТЬ И ОБНОВИТЬ','ПРОВЕРИТЬ ОБНОВЛЕНИЯ')
+ui=ui.replace('локальный builder','ручная сборка')
+ui=ui.replace('удалённом macOS-сервере','подписанном интернет-канале')
 ui=ui.replace('Обновляется только /Applications/ENDLUME Studio.app. После установки приложение автоматически перезапустится.','Пакет проверяется цифровой подписью. После установки ENDLUME автоматически перезапустится.')
 ui=ui.replace('УСТАНОВИТЬ И ПЕРЕЗАПУСТИТЬ','ОБНОВИТЬ')
+
+if new_note not in ui:
+    # If wording was structurally different, inject the canonical note directly
+    # into the updates card after the version line instead of failing on copy text.
+    marker="{tab==='updates'&&<div className=\"settingsCard\"><h3>Обновления</h3>"
+    mi=ui.find(marker)
+    if mi<0: raise SystemExit('8.40: updates card missing')
+    p_end=ui.find('</p>',mi)
+    if p_end<0: raise SystemExit('8.40: updates version line missing')
+    ui=ui[:p_end+4]+new_note+ui[p_end+4:]
 
 if 'ПРОВЕРИТЬ ОБНОВЛЕНИЯ' not in ui or 'Доступна ENDLUME' not in ui:
     raise SystemExit('8.40: two-step updater UI text incomplete')
 if 'ПРОВЕРИТЬ И ОБНОВИТЬ' in ui or 'локальный builder' in ui or 'удалённом macOS-сервере' in ui:
-    raise SystemExit('8.40: obsolete updater UI text survived')
+    raise SystemExit('8.40: obsolete updater UI text survived after normalization')
 p.write_text(ui,encoding='utf-8')
 
-print('ENDLUME 8.40 native signed GitHub updater normalized over 8.37 two-step Settings UI')
+print('ENDLUME 8.40 native signed GitHub updater normalized; obsolete UI self-trigger removed')

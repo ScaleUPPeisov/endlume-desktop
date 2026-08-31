@@ -1,0 +1,10 @@
+{
+  "enabled": false,
+  "generation": 0,
+  "app": "endlume",
+  "channel": "stable",
+  "version": "1.0.0-alpha.8.40",
+  "builder": "BUILD_ENDLUME_840_GITHUB.command",
+  "notes": "Simple signed updater via static GitHub Release",
+  "platforms": ["darwin-aarch64", "windows-x86_64"]
+}

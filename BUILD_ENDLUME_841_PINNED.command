@@ -12,6 +12,7 @@ fail(){ echo; echo "❌ ENDLUME 8.41 PINNED: $1"; exit 1; }
 
 export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 export PATH HOME COPYFILE_DISABLE=1 COPY_EXTENDED_ATTRIBUTES_DISABLE=1
+export ENDLUME_IN_APP_UPDATE=1
 
 [[ "$(uname -s)" == "Darwin" && "$(uname -m)" == "arm64" ]] || fail "нужен Apple Silicon Mac"
 command -v gh >/dev/null 2>&1 || fail "GitHub CLI missing"
@@ -51,6 +52,8 @@ pin_code=(
     "base_ref="+repr(base)+"\n"
     "if 'BRANCH=\\\"release\\\"' not in s: raise SystemExit('PINNED: REAL branch marker missing')\n"
     "s=s.replace('BRANCH=\\\"release\\\"','BRANCH=\\\"'+base_ref+'\\\"',1)\n"
+    "# LaunchAgent cannot write Desktop without TCC permission. Keep online build logs in app-owned home storage.\n"
+    "s=s.replace('LOG=\\\"$HOME/Desktop/ENDLUME-local-build.log\\\"','LOG=\\\"$HOME/.endlume-updater/ENDLUME-local-build.log\\\"',1)\n"
     "old_clone='gh repo clone \\\"$REPO\\\" \\\"$SRC\\\" -- --branch \\\"$BRANCH\\\" --single-branch\\ncd \\\"$SRC\\\"\\n'\n"
     "new_clone='gh repo clone \\\"$REPO\\\" \\\"$SRC\\\"\\ngit -C \\\"$SRC\\\" checkout --detach \\\"$BRANCH\\\"\\ncd \\\"$SRC\\\"\\n'\n"
     "if old_clone not in s: raise SystemExit('PINNED: REAL clone marker missing')\n"
@@ -78,6 +81,7 @@ chmod +x "$PATCHED"
 grep -Fq "$BASE_REF" "$PATCHED" || fail "base pin missing"
 grep -Fq 'PINNED 8.40 SOURCE' "$PATCHED" || fail "REAL source pin injection missing"
 grep -Fq 'checkout --detach' "$PATCHED" || fail "detached checkout wiring missing"
+grep -Fq '.endlume-updater/ENDLUME-local-build.log' "$PATCHED" || fail "LaunchAgent-safe log path missing"
 grep -Fq 'apply-performance-stability-8-41.py' "$PATCHED" || fail "8.41 patch wiring missing"
 
 # Validate the injected inner Python block syntax before any npm/cargo/Tauri work.
@@ -97,6 +101,7 @@ echo "✅ ENDLUME 8.41 PINNED preflight"
 echo "✅ Base 8.40: $BASE_REF"
 echo "✅ Nested triple-quote generator removed"
 echo "✅ Embedded Python compiled before build"
+echo "✅ LaunchAgent-safe log path enabled"
 echo "✅ Only 8.41 patch/version/gate come from current release"
 echo "✅ Mutable release is NOT used as the application base"
 

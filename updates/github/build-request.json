@@ -1,11 +1,11 @@
 {
   "enabled": true,
-  "generation": 17,
+  "generation": 18,
   "app": "endlume",
   "channel": "stable",
-  "version": "1.0.0-alpha.8.42",
-  "builder": "BUILD_ENDLUME_842_SELFHOSTED.command",
-  "notes": "Online Update System validation. Updater-only release: official Tauri check/downloadAndInstall/relaunch path, runtime getVersion UI, no local_update_* runtime, no automatic app launch/install from the build job. Render/Effects/queue/60 FPS/quality remain 8.41.",
+  "version": "1.0.0-alpha.8.43",
+  "builder": "BUILD_ENDLUME_843_SELFHOSTED.command",
+  "notes": "Real 60 FPS Output Validation. FPS-only release: 30 -> CFR30, 60 -> CFR60, explicit CFR on encoded video stages, final MP4 FFprobe guard checks r_frame_rate + avg_frame_rate + frame/packet rate. Proven 500k speed/size budget, updater, audio, Effects, queue and all unrelated functionality remain unchanged.",
   "platforms": [
     "darwin-aarch64"
   ]

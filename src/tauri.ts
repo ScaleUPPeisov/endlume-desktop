@@ -1,5 +1,8 @@
 import { invoke, convertFileSrc } from '@tauri-apps/api/core';
+import { getVersion } from '@tauri-apps/api/app';
 import { open, message } from '@tauri-apps/plugin-dialog';
+import { check } from '@tauri-apps/plugin-updater';
+import { relaunch } from '@tauri-apps/plugin-process';
 import type { BenchmarkResult, EffectPreset, LibraryPayload, LicenseStatus, ProjectScanItem, RecoveryPayload, RenderSettings, SubscribePreset } from './types';
 
 export type SingleAppStatus={
@@ -78,26 +81,38 @@ export const api = {
   reveal:(p:string)=>invoke<void>('reveal_result_path',{path:p}),
   showError:(text:string)=>message(text,{title:'ENDLUME Studio',kind:'error'}),
   showInfo:(text:string)=>message(text,{title:'ENDLUME Studio',kind:'info'}),
+  appVersion:()=>getVersion(),
   checkUpdate:async()=>{
-    type Info={supported:boolean;available:boolean;current:string;version?:string;notes?:string;date?:string;reason?:string};
-    type Status={state:string;stage?:string;progress:number;message?:string;logPath?:string};
-    const info=await withTimeout(invoke<Info>('local_update_check'),15000,'Проверка обновлений');
-    if(!info.supported){return {none:true,current:info.current,channel:'private-local',warning:info.reason};}
-    if(!info.available||!info.version)return {none:true,current:info.current,channel:'private-local'};
+    const current=await getVersion();
+    const update=await withTimeout(check(),20000,'Проверка обновлений');
+    if(!update)return {none:true,current,channel:'github-signed'};
     return {
-      version:info.version,date:info.date,body:info.notes||'',current:info.current,channel:'private-local',
+      version:update.version,
+      date:update.date||'',
+      body:update.body||'',
+      current,
+      channel:'github-signed',
       install:async(onProgress?:(percent:number,stage?:string)=>void)=>{
-        await invoke<Status>('local_update_start');
-        onProgress?.(1,'Подготавливаю обновление');
-        for(;;){
-          await new Promise(r=>window.setTimeout(r,900));
-          const st=await invoke<Status>('local_update_status');
-          onProgress?.(st.progress||0,st.stage||undefined);
-          if(st.state==='failed')throw new Error(st.message||`Обновление остановлено. Лог: ${st.logPath||'ENDLUME update.log'}`);
-          if(st.state==='success'){onProgress?.(100,'Обновление установлено');return;}
-        }
+        let total=0;
+        let downloaded=0;
+        onProgress?.(1,'Подготавливаю подписанное обновление');
+        await update.downloadAndInstall((event)=>{
+          if(event.event==='Started'){
+            total=event.data.contentLength||0;
+            downloaded=0;
+            onProgress?.(3,'Скачиваю обновление');
+          }else if(event.event==='Progress'){
+            downloaded+=event.data.chunkLength||0;
+            const pct=total>0?Math.min(94,3+Math.round(downloaded/total*91)):25;
+            onProgress?.(pct,'Скачиваю обновление');
+          }else if(event.event==='Finished'){
+            onProgress?.(97,'Устанавливаю обновление');
+          }
+        });
+        onProgress?.(100,'Обновление установлено');
+        await relaunch();
       }
     };
   },
-  updateStatus:()=>invoke<{state:string;stage?:string;progress:number;message?:string;logPath?:string}>('local_update_status')
+  updateStatus:async()=>({state:'native',stage:'Tauri signed updater',progress:0})
 };

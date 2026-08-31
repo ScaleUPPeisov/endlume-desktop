@@ -1,11 +1,11 @@
 {
   "enabled": true,
-  "generation": 18,
+  "generation": 19,
   "app": "endlume",
   "channel": "stable",
   "version": "1.0.0-alpha.8.43",
   "builder": "BUILD_ENDLUME_843_SELFHOSTED.command",
-  "notes": "Real 60 FPS Output Validation. FPS-only release: 30 -> CFR30, 60 -> CFR60, explicit CFR on encoded video stages, final MP4 FFprobe guard checks r_frame_rate + avg_frame_rate + frame/packet rate. Proven 500k speed/size budget, updater, audio, Effects, queue and all unrelated functionality remain unchanged.",
+  "notes": "Real 60 FPS Output Validation. FPS-only release: 30 -> CFR30, 60 -> CFR60, explicit CFR on the actual Hybrid Fidelity short-master plus Effects/Subscribe encode stages, final MP4 FFprobe guard checks r_frame_rate + avg_frame_rate + frame/packet rate. Proven 500k speed/size budget, updater, audio, Effects, queue and all unrelated functionality remain unchanged.",
   "platforms": [
     "darwin-aarch64"
   ]

@@ -44,7 +44,21 @@ pass 'audio crossfade/gapless path + existing visual xfade transition preserved'
 # 2 + 6: 100+ project history must not block WKWebView/localStorage.
 grep -Fq 'version:6,migrate:' "$S" || fail 'Zustand v6 cleanup migration missing'
 grep -Fq 'p.projects=[]' "$S" || fail 'old persisted render history is not discarded'
-if grep -Fq 'projects:s.projects' "$S"; then fail 'projects are still persisted to localStorage'; fi
+# IMPORTANT: do not grep the whole store for "projects:s.projects" because normal
+# state updates such as patchProject legitimately contain that substring. Inspect
+# only the persist partialize expression.
+python3 - "$S" <<'PY' || fail 'projects are still persisted to localStorage'
+from pathlib import Path
+import re,sys
+s=Path(sys.argv[1]).read_text(encoding='utf-8')
+m=re.search(r"partialize:\(s\)=>\(\{([^}]*)\}\)",s,re.S)
+if not m:
+    raise SystemExit('partialize expression missing')
+body=m.group(1)
+if re.search(r'(^|,)\s*projects\s*:',body):
+    raise SystemExit('projects key present in persist partialize')
+print('PASS: persist partialize excludes projects')
+PY
 grep -Fq 'requestAnimationFrame(flushRenderProgress)' "$A" || fail 'render progress is not animation-frame batched'
 if grep -Fq 'window.setTimeout(flushRenderProgress,50)' "$A"; then fail 'old 20fps progress timer returned'; fi
 grep -Fq 'content-visibility:auto!important' src/motion-polish.css || fail 'large queue paint virtualization missing'

@@ -13,13 +13,13 @@ PORT=8443
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
-apt-get install -y ca-certificates curl debian-keyring debian-archive-keyring apt-transport-https python3 ufw || true
+apt-get install -y ca-certificates curl debian-keyring debian-archive-keyring apt-transport-https python3 ufw gnupg openssl
 
 if ! command -v caddy >/dev/null 2>&1; then
-  curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+  rm -f /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+  curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --batch --yes --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
   curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' > /etc/apt/sources.list.d/caddy-stable.list
-  chmod o+r /usr/share/keyrings/caddy-stable-archive-keyring.gpg
-  chmod o+r /etc/apt/sources.list.d/caddy-stable.list
+  chmod o+r /usr/share/keyrings/caddy-stable-archive-keyring.gpg /etc/apt/sources.list.d/caddy-stable.list
   apt-get update -y
   apt-get install -y caddy
 fi
@@ -81,25 +81,24 @@ EOF
 
 systemctl daemon-reload
 systemctl enable --now endlume-update-server
-systemctl enable --now caddy
-systemctl restart caddy
-
 if command -v ufw >/dev/null 2>&1 && ufw status | grep -q '^Status: active'; then
   ufw allow 80/tcp >/dev/null || true
   ufw allow "$PORT"/tcp >/dev/null || true
 fi
+systemctl enable caddy >/dev/null 2>&1 || true
+systemctl restart caddy
 
 for _ in $(seq 1 30); do
-  if curl -kfsS http://127.0.0.1:8788/health >/dev/null 2>&1; then break; fi
+  if curl -fsS http://127.0.0.1:8788/health >/dev/null 2>&1; then break; fi
   sleep 1
 done
-curl -kfsS http://127.0.0.1:8788/health >/dev/null || { journalctl -u endlume-update-server -n 100 --no-pager; exit 1; }
+curl -fsS http://127.0.0.1:8788/health >/dev/null || { journalctl -u endlume-update-server -n 100 --no-pager; exit 1; }
 
 for _ in $(seq 1 90); do
   if curl -fsS "$BASE_URL/health" >/dev/null 2>&1; then break; fi
   sleep 2
 done
-curl -fsS "$BASE_URL/health" >/dev/null || { echo "HTTPS health failed: $BASE_URL/health"; journalctl -u caddy -n 100 --no-pager; exit 1; }
+curl -fsS "$BASE_URL/health" >/dev/null || { echo "HTTPS health failed: $BASE_URL/health"; journalctl -u caddy -n 120 --no-pager; exit 1; }
 
 cat > /root/ENDLUME-UPDATE-SERVER.txt <<EOF
 ENDLUME private updater

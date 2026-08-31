@@ -6,6 +6,9 @@ DATA_DIR=/var/lib/endlume-updates
 ENV_FILE=/etc/endlume-update-server.env
 SERVICE=/etc/systemd/system/endlume-update-server.service
 CADDYFILE=/etc/caddy/Caddyfile
+CLEANUP=/usr/local/sbin/private-update-cleanup
+CLEANUP_SERVICE=/etc/systemd/system/private-update-cleanup.service
+CLEANUP_TIMER=/etc/systemd/system/private-update-cleanup.timer
 PORT=8443
 
 [[ $(id -u) -eq 0 ]] || { echo 'Run as root'; exit 1; }
@@ -24,7 +27,7 @@ if ! command -v caddy >/dev/null 2>&1; then
   apt-get install -y caddy
 fi
 
-mkdir -p "$APP_DIR" "$DATA_DIR/manifests/endlume/stable" "$DATA_DIR/releases/endlume/stable"
+mkdir -p "$APP_DIR" "$DATA_DIR/manifests" "$DATA_DIR/releases"
 install -m 0755 /tmp/endlume-server.py "$APP_DIR/server.py"
 
 PUBLIC_IP="$(curl -4fsS --max-time 10 https://api.ipify.org || true)"
@@ -46,7 +49,7 @@ chmod 600 "$ENV_FILE"
 
 cat > "$SERVICE" <<EOF
 [Unit]
-Description=ENDLUME private update server
+Description=Private application update server
 After=network-online.target
 Wants=network-online.target
 
@@ -79,8 +82,62 @@ https://$HOSTNAME:$PORT {
 }
 EOF
 
+cat > "$CLEANUP" <<'PY'
+#!/usr/bin/env python3
+import json,time
+from pathlib import Path
+ROOT=Path('/var/lib/endlume-updates').resolve()
+MAN=ROOT/'manifests'
+REL=ROOT/'releases'
+keep=set()
+for p in MAN.rglob('*.json') if MAN.exists() else []:
+    try:
+        d=json.loads(p.read_text('utf-8'))
+        k=str(d.get('object_key','')).strip()
+        if k:
+            q=(ROOT/k).resolve()
+            q.relative_to(ROOT)
+            keep.add(q)
+    except Exception:
+        pass
+cutoff=time.time()-24*3600
+if REL.exists():
+    for p in sorted(REL.rglob('*'),reverse=True):
+        try:
+            if p.is_file() and p.resolve() not in keep and p.stat().st_mtime < cutoff:
+                p.unlink()
+            elif p.is_dir() and not any(p.iterdir()):
+                p.rmdir()
+        except Exception:
+            pass
+PY
+chmod 0755 "$CLEANUP"
+
+cat > "$CLEANUP_SERVICE" <<EOF
+[Unit]
+Description=Clean old private updater artifacts
+
+[Service]
+Type=oneshot
+ExecStart=$CLEANUP
+EOF
+
+cat > "$CLEANUP_TIMER" <<'EOF'
+[Unit]
+Description=Hourly cleanup of old private updater artifacts
+
+[Timer]
+OnBootSec=10m
+OnUnitActiveSec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
 systemctl daemon-reload
 systemctl enable --now endlume-update-server
+systemctl enable --now private-update-cleanup.timer
 if command -v ufw >/dev/null 2>&1 && ufw status | grep -q '^Status: active'; then
   ufw allow 80/tcp >/dev/null || true
   ufw allow "$PORT"/tcp >/dev/null || true
@@ -100,14 +157,15 @@ for _ in $(seq 1 90); do
 done
 curl -fsS "$BASE_URL/health" >/dev/null || { echo "HTTPS health failed: $BASE_URL/health"; journalctl -u caddy -n 120 --no-pager; exit 1; }
 
-cat > /root/ENDLUME-UPDATE-SERVER.txt <<EOF
-ENDLUME private updater
+cat > /root/PRIVATE-APP-UPDATE-SERVER.txt <<EOF
+Private updater
 Public IP: $PUBLIC_IP
 Hostname: $HOSTNAME
 Base URL: $BASE_URL
 Data: $DATA_DIR
 Service: endlume-update-server
 HTTPS: Caddy + sslip.io
+Cleanup: hourly, keeps manifest-referenced builds; stale unreferenced files removed after 24h
 EOF
 
 printf '%s\n' "$BASE_URL"

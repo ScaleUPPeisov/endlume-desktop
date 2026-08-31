@@ -1,10 +1,10 @@
 {
   "enabled": true,
-  "generation": 10,
+  "generation": 11,
   "app": "endlume",
   "channel": "stable",
   "version": "1.0.0-alpha.8.41",
   "builder": "BUILD_ENDLUME_841_PINNED.command",
-  "notes": "ENDLUME Studio 8.41: true 60 FPS render/UI/Effects motion, 100+ render stability, gapless audio + audible crossfade, chromakey despill, Kirill Peisov About info. Build is pinned to proven 8.40 base commit 4c1fcc30f5b8ef270484b5c61f8e26120d852b99; unrelated functionality and proven render speed/size budget stay unchanged. Generation 10 fixes false localStorage validator and macOS LaunchAgent Desktop/TCC logging failure.",
+  "notes": "ENDLUME Studio 8.41: true 60 FPS render/UI/Effects motion, 100+ render stability, gapless audio + audible crossfade, chromakey despill, Kirill Peisov About info. Build is pinned to proven 8.40 base commit 4c1fcc30f5b8ef270484b5c61f8e26120d852b99; unrelated functionality and proven render speed/size budget stay unchanged. Generation 11 is the first GitHub self-hosted macOS ARM64 release job; GitHub-hosted minutes are not used.",
   "platforms": ["darwin-aarch64"]
 }

@@ -13,7 +13,7 @@ permissions:
 
 concurrency:
   group: endlume-self-hosted-macos-release
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   macos-arm64-release:

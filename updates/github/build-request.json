@@ -1,10 +1,10 @@
 {
-  "enabled": false,
-  "generation": 0,
+  "enabled": true,
+  "generation": 1,
   "app": "endlume",
   "channel": "stable",
   "version": "1.0.0-alpha.8.40",
   "builder": "BUILD_ENDLUME_840_GITHUB.command",
-  "notes": "Simple signed updater via static GitHub Release",
-  "platforms": ["darwin-aarch64", "windows-x86_64"]
+  "notes": "Native signed Tauri updater via static GitHub Release. Preserves ENDLUME 8.39 60 FPS, 1920x1080 Fill, fast render, crossfade/no-gap and chroma despill.",
+  "platforms": ["darwin-aarch64"]
 }

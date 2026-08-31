@@ -11,6 +11,11 @@ for file_name in ['package.json','src-tauri/Cargo.toml','src-tauri/tauri.conf.js
 p=Path('src/pages/SettingsPage.tsx')
 s=p.read_text(encoding='utf-8')
 s=re.sub(r'Обновлено <b>[^<]+</b>','Обновлено <b>31.08.2026</b>',s,count=1)
+about_marker='<span>UI <b>Tauri 2</b></span>'
+owner_rows='<span>Создатель <b>Kirill Peisov</b></span><span>Email <b>peisov.business@gmail.com</b></span>'
+if 'Kirill Peisov' not in s:
+    if about_marker not in s: raise SystemExit('8.40: About UI marker missing')
+    s=s.replace(about_marker,about_marker+owner_rows,1)
 p.write_text(s,encoding='utf-8')
 
 p=Path('src/components/ReleaseHistory.tsx')
@@ -28,4 +33,4 @@ if "version:'1.0.0-alpha.8.40'" not in h:
     if marker not in h: raise SystemExit('8.40: release history marker missing')
     h=h.replace(marker,marker+entry,1)
 p.write_text(h,encoding='utf-8')
-print('ENDLUME alpha.8.40 updater-bootstrap version/history synced')
+print('ENDLUME alpha.8.40 updater-bootstrap version/history/About synced')

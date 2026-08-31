@@ -1,5 +1,5 @@
 from pathlib import Path
-import json,re
+import json
 
 BOOT=Path('updates/github/bootstrap.json')
 if not BOOT.is_file():
@@ -7,12 +7,13 @@ if not BOOT.is_file():
 b=json.loads(BOOT.read_text(encoding='utf-8'))
 endpoint=str(b.get('endpoint','')).strip()
 pubkey=str(b.get('pubkey','')).strip()
-if endpoint!='https://github.com/ScaleUPPeisov/scaleup-site/releases/download/endlume-stable/latest.json':
+EXPECTED='https://github.com/ScaleUPPeisov/scaleup-site/releases/download/endlume-stable/latest.json'
+if endpoint!=EXPECTED:
     raise SystemExit('8.40: unexpected GitHub updater endpoint')
 if not pubkey:
     raise SystemExit('8.40: updater public key missing')
 
-# Configure official Tauri updater.
+# Configure official Tauri updater from the bootstrap generated on the owner Mac.
 p=Path('src-tauri/tauri.conf.json')
 cfg=json.loads(p.read_text(encoding='utf-8'))
 plugins=cfg.setdefault('plugins',{})
@@ -34,7 +35,8 @@ elif "@tauri-apps/api/app" not in s:
     s=s.replace(anchor,anchor+"import { getVersion } from '@tauri-apps/api/app';\n",1)
 
 start=s.find('  checkUpdate:async()=>{')
-if start<0: raise SystemExit('8.40: checkUpdate block missing')
+if start<0: raise SystemExit('8.40: checkUpdate API block missing')
+# 8.37 still exposes updateStatus via local_update_status; replace the whole API span.
 end_marker="  updateStatus:()=>invoke<{state:string;stage?:string;progress:number;message?:string;logPath?:string}>('local_update_status')\n"
 end=s.find(end_marker,start)
 if end<0: raise SystemExit('8.40: historical updateStatus marker missing')
@@ -80,29 +82,35 @@ if "check()" not in s or 'downloadAndInstall' not in s or 'relaunch()' not in s 
     raise SystemExit('8.40: native updater wiring incomplete')
 p.write_text(s,encoding='utf-8')
 
-# Update Settings UI to a true two-step flow: check first, explicit install second.
+# 8.37 already converts Settings to a two-step check/install UI. Keep that
+# structure; only normalize the wording away from the old remote-builder model.
 p=Path('src/pages/SettingsPage.tsx')
 ui=p.read_text(encoding='utf-8')
-old_fn="""  const checkAndInstall=async()=>{\n    if(busy)return;setBusy(true);setUpdateProgress(null);\n    try{const u=await api.checkUpdate();setUpdate(u||{none:true});if(u?.version&&u?.install){setUpdateProgress(0);await u.install((p:number)=>setUpdateProgress(p));}}\n    catch(e){setUpdateProgress(null);setUpdate({error:String(e)});await api.showError(`Не удалось обновить ENDLUME: ${String(e)}`)}finally{setBusy(false)}\n  };\n"""
-new_fn="""  const checkForUpdate=async()=>{\n    if(busy)return;setBusy(true);setUpdateProgress(null);setUpdate(undefined);\n    try{const u=await api.checkUpdate();setUpdate(u||{none:true});}\n    catch(e){setUpdateProgress(null);setUpdate({error:String(e)});await api.showError(`Не удалось проверить обновления ENDLUME: ${String(e)}`)}finally{setBusy(false)}\n  };\n  const installFoundUpdate=async()=>{\n    if(busy||!update?.install)return;setBusy(true);setUpdateProgress(0);\n    try{await update.install((p:number)=>setUpdateProgress(p));}\n    catch(e){setUpdateProgress(null);setUpdate((u:any)=>({...u,error:String(e)}));await api.showError(`Не удалось установить обновление ENDLUME: ${String(e)}`)}finally{setBusy(false)}\n  };\n"""
-if old_fn not in ui: raise SystemExit('8.40: Settings checkAndInstall block missing')
-ui=ui.replace(old_fn,new_fn,1)
-old_note='<p className="settingsNote">Для текущего локального режима рекомендуем обновлять ENDLUME через локальный builder на Mac. Online updater можно оставить как резервный канал.</p>'
-new_note='<p className="settingsNote">Подписанные обновления ENDLUME загружаются через интернет и устанавливаются внутри приложения. Terminal и локальный builder не используются.</p>'
-if old_note not in ui: raise SystemExit('8.40: old local updater Settings note missing')
-ui=ui.replace(old_note,new_note,1)
-old_button='<button className="settingsAction" disabled={busy} onClick={checkAndInstall}>{busy?(updateProgress!==null?`ОБНОВЛЯЮ ${updateProgress.toFixed(0)}%`:\'ПРОВЕРЯЮ…\'):\'ПРОВЕРИТЬ И ОБНОВИТЬ\'}</button>'
-new_button='<button className="settingsAction" disabled={busy} onClick={checkForUpdate}>{busy&&updateProgress===null?\'ПРОВЕРЯЮ…\':\'ПРОВЕРИТЬ ОБНОВЛЕНИЯ\'}</button>'
-if old_button not in ui: raise SystemExit('8.40: old combined update button missing')
-ui=ui.replace(old_button,new_button,1)
-old_found='<div className="updateFound"><b>Устанавливается ENDLUME {update.version}</b>{update.date&&<small>{String(update.date)}</small>}<p>{update.body}</p><p className="settingsNote">Обновляется только /Applications/ENDLUME Studio.app. После установки приложение автоматически перезапустится.</p></div>'
-new_found='<div className="updateFound"><b>Доступна ENDLUME {update.version}</b>{update.date&&<small>{String(update.date)}</small>}<p>{update.body}</p><button className="settingsAction" disabled={busy} onClick={installFoundUpdate}>{busy&&updateProgress!==null?`ОБНОВЛЯЮ ${updateProgress.toFixed(0)}%`:\'ОБНОВИТЬ\'}</button><p className="settingsNote">Пакет проверяется цифровой подписью. После установки ENDLUME автоматически перезапустится.</p></div>'
-if old_found not in ui: raise SystemExit('8.40: old auto-install updateFound block missing')
-ui=ui.replace(old_found,new_found,1)
-if 'checkAndInstall' in ui or 'ПРОВЕРИТЬ И ОБНОВИТЬ' in ui or 'локальный builder' in ui:
-    raise SystemExit('8.40: old combined/local updater UI survived')
-if 'onClick={checkForUpdate}' not in ui or 'onClick={installFoundUpdate}' not in ui or 'Доступна ENDLUME' not in ui:
-    raise SystemExit('8.40: two-step updater UI incomplete')
+if 'const checkUpdate=async()=>{' not in ui or 'const installUpdate=async()=>{' not in ui:
+    raise SystemExit('8.40: expected 8.37 two-step Settings handlers missing')
+if 'onClick={checkUpdate}' not in ui or 'onClick={installUpdate}' not in ui:
+    raise SystemExit('8.40: expected two-step Settings buttons missing')
+
+old_notes=[
+ '<p className="settingsNote">Для текущего локального режима рекомендуем обновлять ENDLUME через локальный builder на Mac. Online updater можно оставить как резервный канал.</p>',
+ '<p className="settingsNote">Обновления собираются на удалённом macOS-сервере. Этот Mac только скачивает проверенную готовую ENDLUME, устанавливает её и перезапускает приложение — без npm, Rust и Terminal.</p>'
+]
+new_note='<p className="settingsNote">Подписанные обновления ENDLUME проверяются и устанавливаются через интернет внутри приложения. Terminal и локальный builder не используются.</p>'
+for old in old_notes:
+    if old in ui:
+        ui=ui.replace(old,new_note,1)
+        break
+if new_note not in ui:
+    raise SystemExit('8.40: updater Settings note was not normalized')
+
+# Normalize install wording if an older 8.37 phrase survived.
+ui=ui.replace('Обновляется только /Applications/ENDLUME Studio.app. После установки приложение автоматически перезапустится.','Пакет проверяется цифровой подписью. После установки ENDLUME автоматически перезапустится.')
+ui=ui.replace('УСТАНОВИТЬ И ПЕРЕЗАПУСТИТЬ','ОБНОВИТЬ')
+
+if 'ПРОВЕРИТЬ ОБНОВЛЕНИЯ' not in ui or 'Доступна ENDLUME' not in ui:
+    raise SystemExit('8.40: two-step updater UI text incomplete')
+if 'ПРОВЕРИТЬ И ОБНОВИТЬ' in ui or 'локальный builder' in ui or 'удалённом macOS-сервере' in ui:
+    raise SystemExit('8.40: obsolete updater UI text survived')
 p.write_text(ui,encoding='utf-8')
 
-print('ENDLUME 8.40 native signed GitHub updater + two-step Settings UI applied')
+print('ENDLUME 8.40 native signed GitHub updater normalized over 8.37 two-step Settings UI')

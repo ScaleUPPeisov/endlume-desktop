@@ -45,6 +45,7 @@ ASSET="$(find "$ART" -maxdepth 8 -type f -name '*.app.tar.gz' -print -quit)"
 SIG_FILE="$ASSET.sig"
 [[ -s "$SIG_FILE" ]] || { echo "Signature missing: $SIG_FILE" >&2; exit 1; }
 SIG="$(tr -d '\r\n' < "$SIG_FILE")"
+[[ -n "$SIG" ]] || { echo 'Updater signature is empty' >&2; exit 1; }
 
 FIXED="$ART/ENDLUME-macos-aarch64.app.tar.gz"
 FIXED_SIG="$FIXED.sig"
@@ -66,16 +67,59 @@ obj={'version':version,'notes':notes,'pub_date':datetime.datetime.now(datetime.t
 json.dump(obj,open(out,'w'),ensure_ascii=False,indent=2)
 PY
 
+# Validate the exact static JSON contract BEFORE upload.
+python3 - "$LATEST" "$VERSION" "$ASSET_URL" <<'PY'
+import json,sys
+path,version,url=sys.argv[1:]
+d=json.load(open(path))
+assert d.get('version')==version,(d.get('version'),version)
+p=d.get('platforms',{}).get('darwin-aarch64')
+assert isinstance(p,dict),'darwin-aarch64 platform missing'
+assert p.get('url')==url,(p.get('url'),url)
+assert isinstance(p.get('signature'),str) and p['signature'].strip(),'signature empty'
+print('PASS: latest.json static updater contract valid')
+PY
+
 if ! gh release view "$TAG" --repo "$HOST_REPO" >/dev/null 2>&1; then
   gh release create "$TAG" --repo "$HOST_REPO" --title "ENDLUME Stable Updates" --notes "Signed updater channel for ENDLUME Studio. No GitHub Actions are used."
 fi
 
 gh release upload "$TAG" "$FIXED" "$FIXED_SIG" "$LATEST" --clobber --repo "$HOST_REPO"
-echo "ENDLUME $VERSION macOS published"
+
+# CRITICAL: never report success while the public release is empty/incomplete.
+ASSETS_JSON="$(gh api "/repos/$HOST_REPO/releases/tags/$TAG")"
+python3 - "$VERSION" <<'PY' <<<"$ASSETS_JSON"
+import json,sys
+version=sys.argv[1]
+d=json.load(sys.stdin)
+names={x.get('name') for x in d.get('assets',[])}
+required={'latest.json','ENDLUME-macos-aarch64.app.tar.gz','ENDLUME-macos-aarch64.app.tar.gz.sig'}
+missing=required-names
+if missing: raise SystemExit('Published release assets missing: '+', '.join(sorted(missing)))
+print('PASS: GitHub release contains latest.json + app.tar.gz + sig')
+PY
+
+# Download the just-published JSON through the public release URL and validate it
+# again. This catches HTML/redirect/empty-asset mistakes before the agent records success.
+PUBLIC_LATEST="$ART/public-latest.json"
+/usr/bin/curl -fL --retry 3 --connect-timeout 10 --max-time 30 \
+  "https://github.com/$HOST_REPO/releases/download/$TAG/latest.json" -o "$PUBLIC_LATEST"
+python3 - "$PUBLIC_LATEST" "$VERSION" <<'PY'
+import json,sys
+path,version=sys.argv[1:]
+d=json.load(open(path))
+assert d.get('version')==version,(d.get('version'),version)
+p=d.get('platforms',{}).get('darwin-aarch64')
+assert isinstance(p,dict) and p.get('url','').startswith('https://github.com/'),'public updater URL invalid'
+assert isinstance(p.get('signature'),str) and p['signature'].strip(),'public signature empty'
+print('PASS: public latest.json is downloadable and valid')
+PY
+
+echo "✅ ENDLUME $VERSION macOS PUBLISHED ONLINE"
 echo "Updater: https://github.com/$HOST_REPO/releases/download/$TAG/latest.json"
 
-# One-time bridge: existing 8.38/8.39 builds do not know the new static endpoint.
-# Only 8.40 is bootstrap-installed. 8.41+ must use the native in-app updater.
+# Legacy one-time bootstrap retained only for historical 8.40 publisher calls.
+# 8.41+ NEVER installs directly here; installed 8.40 uses native Tauri updater.
 if [[ "$VERSION" == "1.0.0-alpha.8.40" ]]; then
   DEST="/Applications/ENDLUME Studio.app"
   CUR=""

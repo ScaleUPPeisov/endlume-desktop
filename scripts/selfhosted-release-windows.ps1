@@ -9,7 +9,11 @@ $Version = [string]$Request.version
 $Notes = [string]$Request.notes
 $Bucket = 'endlume-private-updates'
 $Key = Join-Path $HOME '.endlume-updater\endlume.key'
-$Art = Join-Path ($env:RUNNER_TEMP ?? $env:TEMP) ("endlume-release-{0}-win" -f ($env:GITHUB_RUN_ID ?? 'local'))
+$TempRoot = $env:RUNNER_TEMP
+if ([string]::IsNullOrWhiteSpace($TempRoot)) { $TempRoot = $env:TEMP }
+$RunId = $env:GITHUB_RUN_ID
+if ([string]::IsNullOrWhiteSpace($RunId)) { $RunId = 'local' }
+$Art = Join-Path $TempRoot ("endlume-release-{0}-win" -f $RunId)
 Remove-Item $Art -Recurse -Force -ErrorAction SilentlyContinue
 New-Item $Art -ItemType Directory -Force | Out-Null
 if (-not (Test-Path $Builder)) { throw "Builder missing: $Builder" }

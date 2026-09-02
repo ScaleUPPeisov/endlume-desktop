@@ -1,12 +1,12 @@
 {
-  "version": "1.0.0-alpha.8.39",
-  "date": "30.08.2026",
+  "version": "1.0.0-alpha.8.40",
+  "date": "02.09.2026",
   "channel": "remote-binary",
-  "candidateRevision": 3,
-  "builder": "BUILD_ENDLUME_839_HYBRID.command",
-  "ciBuilder": "BUILD_ENDLUME_839_HYBRID.command",
-  "releaseTag": "endlume-v1.0.0-alpha.8.39",
-  "asset": "ENDLUME-Studio-1.0.0-alpha.8.39-macos-arm64.zip",
-  "checksumAsset": "ENDLUME-Studio-1.0.0-alpha.8.39-macos-arm64.zip.sha256",
-  "notes": "Точечный релиз без изменения дизайна и рабочего 8.38 fast-render pipeline. Исправлено: реальный 60 FPS для one-image и Effects/эквалайзера; снят старый принудительный 30 FPS clamp; разгружен macOS UI после больших очередей — завершённые jobs больше не перезаписываются в localStorage на каждом progress event, progress пакетируется; восстановлен 3-секундный crossfade и непрерывная HQ 320 kbit/s аудиодорожка без секундных пауз, при crossfade=0 сохранён exact MP3 copy; chromakey получил реальный despill в Render и Live Preview; в О программе добавлены Kirill Peisov и peisov.business@gmail.com. Update Center 8.39 стал гибридным: готовый binary release ставится первым, а если GitHub runner/release временно недоступен, следующая версия может запускать проверенный local fallback прямо из приложения без ручного Terminal. Строго сохранены: 1920×1080 YouTube Fill без чёрных полос, short-master/stream-copy архитектура, быстрый финальный mux, целевой размер до 1 GB, Effects/Subscribe и текущий дизайн."
+  "candidateRevision": 1,
+  "builder": "BUILD_ENDLUME_840_LOCAL.command",
+  "ciBuilder": "BUILD_ENDLUME_840_LOCAL.command",
+  "releaseTag": "endlume-v1.0.0-alpha.8.40",
+  "asset": "ENDLUME-Studio-1.0.0-alpha.8.40-macos-arm64.zip",
+  "checksumAsset": "ENDLUME-Studio-1.0.0-alpha.8.40-macos-arm64.zip.sha256",
+  "notes": "ENDLUME 8.40 добавляет только локальный VYRON Batch Bridge поверх проверенного 8.39 render stack. VYRON может передать batch.json и проекты в ENDLUME без YouTube API; ENDLUME автоматически подставляет batch-папку и output, сохраняет штатный выбор Effects/Subscribe и возвращает локальные статусы Rendering / Completed / Error и готовый файл в status.json. Перед сборкой исправлен replay-guard старого updater migration 8.32, чтобы текущий release pipeline воспроизводился детерминированно. Повторно проверяются TypeScript production build, Rust tests с VYRON round-trip, ARM64 cargo check, текущие кнопки ручного режима и identity studio.endlume.desktop. Дизайн, быстрый render pipeline 8.39, 60 FPS, YouTube Fill 1920×1080, crossfade/audio, chroma/despill, быстрый mux, Effects/Subscribe и пользовательские проекты не меняются."
 }

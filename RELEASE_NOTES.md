@@ -1,1 +1,8 @@
-ENDLUME remote release pipeline bootstrap.
+# ENDLUME Studio 1.0.0-alpha.8.6
+
+- Добавлен локальный вход VYRON Production Manager → ENDLUME.
+- Batch из VYRON автоматически загружается в существующий экран проектов ENDLUME.
+- Пользователь по-прежнему выбирает эффекты и параметры рендера один раз; существующая очередь применяет их ко всей партии.
+- Добавлена обратная запись статусов Rendering / Completed / Error в локальный `status.json` VYRON.
+- Существующий ручной режим ENDLUME, renderer, эффекты, очередь, updater identity и лицензирование не заменялись.
+- Интеграция не использует YouTube API и не добавляет платных API.

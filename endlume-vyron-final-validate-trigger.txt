@@ -1,1 +1,1 @@
-ENDLUME VYRON final bridge validation canonical 8.39 2026-09-02
+ENDLUME VYRON exact release stack validation 2026-09-02

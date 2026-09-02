@@ -45,7 +45,7 @@ meta=meta.replace(marker,inject,1)
 
 # Apply bridge only AFTER all proven 8.39 validators, then re-run compile/test gates.
 needle="src=src.replace(old_stage,new_stage,1)\n"
-extra=r'''src=src.replace(old_stage,new_stage,1)
+extra=r"""src=src.replace(old_stage,new_stage,1)
 bridge_marker='node scripts/validate-motion-ui.mjs\n'
 bridge_add='''python3 -m py_compile scripts/apply-vyron-bridge-8-40.py
 python3 scripts/apply-vyron-bridge-8-40.py
@@ -81,7 +81,7 @@ fi
 if stage10 not in src:
     raise SystemExit('8.40: stage10 marker missing')
 src=src.replace(stage10,ci+stage10,1)
-'''
+"""
 if needle not in meta: raise SystemExit('8.40: 8.39 stage replacement marker missing')
 meta=meta.replace(needle,extra,1)
 

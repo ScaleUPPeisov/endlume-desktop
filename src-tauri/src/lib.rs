@@ -11,6 +11,8 @@ mod queue;
 mod cache;
 mod system;
 mod vyron_bridge;
+#[cfg(test)]
+mod vyron_bridge_tests;
 
 use std::sync::Arc;
 use tauri::Manager;

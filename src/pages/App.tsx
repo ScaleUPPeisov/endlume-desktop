@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { Topbar } from '../components/shell';
 import { RecoveryModal } from '../components/recovery';
+import { VyronBatchBridge } from '../components/VyronBatchBridge';
 import { useApp } from '../store';
 import { api } from '../tauri';
 import type { LicenseStatus, RecoveryPayload } from '../types';
@@ -37,14 +38,13 @@ export function App(){
   },[]);
   if(!license)return <div className="bootScreen"><div className="bootPulse"/>ENDLUME</div>;
   if(!license.valid)return <ActivationScreen onActivated={setLicense}/>;
-  return <div className="appShell"><Topbar/><div className="content">{page==='project'?<ProjectPage/>:page==='render'?<RenderPage/>:page==='library'?<LibraryPage/>:<SettingsPage/>}</div>{editor&&<EditorRouter/>}{recovery&&<RecoveryModal data={recovery} onClose={()=>setRecovery(undefined)}/>} {availableUpdate&&<UpdateNotice update={availableUpdate} onLater={()=>setAvailableUpdate(null)}/>}</div>
+  return <div className="appShell"><VyronBatchBridge/><Topbar/><div className="content">{page==='project'?<ProjectPage/>:page==='render'?<RenderPage/>:page==='library'?<LibraryPage/>:<SettingsPage/>}</div>{editor&&<EditorRouter/>}{recovery&&<RecoveryModal data={recovery} onClose={()=>setRecovery(undefined)}/>} {availableUpdate&&<UpdateNotice update={availableUpdate} onLater={()=>setAvailableUpdate(null)}/>}</div>
 }
 
 function ActivationScreen({onActivated}:{onActivated:(v:LicenseStatus)=>void}){
   const [key,setKey]=useState(''),[busy,setBusy]=useState(false),[error,setError]=useState('');
   return <div className="activationScreen"><div className="activationCard"><div className="activationBrand"><span className="activationInfinity">∞</span><div><b>ENDLUME</b><small>STUDIO</small></div></div><h1>Активация ENDLUME</h1><p>Для запуска введите ключ лицензии. После активации рендер работает локально и не требует постоянного интернета.</p><input autoFocus placeholder="ENDLUME-XXXX-XXXX-XXXX" value={key} onChange={e=>setKey(e.target.value)} onKeyDown={e=>e.key==='Enter'&&document.getElementById('activate')?.click()}/>{error&&<div className="activationError">{error}</div>}<button id="activate" disabled={busy||!key.trim()} onClick={async()=>{setBusy(true);setError('');try{onActivated(await api.activate(key))}catch(e){setError(String(e))}finally{setBusy(false)}}}>{busy?'ПРОВЕРЯЮ КЛЮЧ…':'АКТИВИРОВАТЬ →'}</button><small className="activationFoot">ENDLUME Studio 1.0 • Windows / macOS Apple Silicon</small></div></div>
 }
-
 
 function UpdateNotice({update,onLater}:{update:any;onLater:()=>void}){
   const [progress,setProgress]=useState<number|null>(null),[error,setError]=useState('');

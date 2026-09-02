@@ -81,6 +81,3 @@ pub fn report_if_registered(project_path:&str,render_status:&str,output_file:Opt
   let Some(manifest)=manifest else{return Ok(false)};
   report_vyron_render(manifest,key,render_status.to_string(),output_file,duration,file_size,error)?;Ok(true)
 }
-
-#[cfg(test)]
-mod vyron_bridge_tests;

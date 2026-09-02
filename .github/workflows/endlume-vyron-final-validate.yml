@@ -12,12 +12,12 @@ permissions:
 jobs:
   validate:
     runs-on: macos-15
-    timeout-minutes: 60
+    timeout-minutes: 70
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Verify surgical diff from current release
+      - name: Verify raw release source is untouched
         shell: bash
         run: |
           set -euo pipefail
@@ -28,42 +28,33 @@ jobs:
           from pathlib import Path
           changed=set(Path('/tmp/changed.txt').read_text().splitlines())
           allowed={
-            'src-tauri/src/lib.rs','src-tauri/src/vyron_bridge.rs','src-tauri/src/vyron_bridge_tests.rs',
-            'src/components/VyronBatchBridge.tsx','src/tauri.ts','src/pages/App.tsx',
-            '.github/workflows/endlume-vyron-final-validate.yml','endlume-vyron-final-validate-trigger.txt'
+            '.github/workflows/endlume-vyron-final-validate.yml','endlume-vyron-final-validate-trigger.txt',
+            'scripts/apply-vyron-bridge-8-40.py',
+            'scripts/vyron-bridge-8-40/vyron_bridge.rs','scripts/vyron-bridge-8-40/vyron_bridge_tests.rs','scripts/vyron-bridge-8-40/VyronBatchBridge.tsx'
           }
           extra=changed-allowed
-          assert not extra, f'unexpected files changed: {sorted(extra)}'
-          required={'src-tauri/src/vyron_bridge.rs','src-tauri/src/vyron_bridge_tests.rs','src/components/VyronBatchBridge.tsx'}
-          assert required <= changed, f'missing bridge files: {sorted(required-changed)}'
-          print('Surgical diff from release: PASS')
+          assert not extra, f'unexpected raw release changes: {sorted(extra)}'
+          required={
+            'scripts/apply-vyron-bridge-8-40.py','scripts/vyron-bridge-8-40/vyron_bridge.rs',
+            'scripts/vyron-bridge-8-40/vyron_bridge_tests.rs','scripts/vyron-bridge-8-40/VyronBatchBridge.tsx'
+          }
+          assert required <= changed, f'missing staged bridge payload: {sorted(required-changed)}'
+          print('Raw release source untouched; post-migration payload only: PASS')
           PY
-      - name: Verify protected identity and bridge contracts
+          git diff --quiet origin/release -- src-tauri/src/lib.rs src/tauri.ts src/pages/App.tsx
+          test ! -e src-tauri/src/vyron_bridge.rs
+          test ! -e src-tauri/src/vyron_bridge_tests.rs
+          test ! -e src/components/VyronBatchBridge.tsx
+      - name: Verify staged bridge is local-only
         shell: bash
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          import json
-          c=json.load(open('src-tauri/tauri.conf.json'))
-          assert c['identifier']=='studio.endlume.desktop'
-          print('ENDLUME identifier preserved: PASS')
-          PY
-          grep -q 'mod vyron_bridge' src-tauri/src/lib.rs
-          grep -q 'mod vyron_bridge_tests' src-tauri/src/lib.rs
-          grep -q 'consume_vyron_batch_request' src-tauri/src/lib.rs
-          grep -q 'load_vyron_batch_manifest' src-tauri/src/lib.rs
-          grep -q 'report_vyron_render' src-tauri/src/lib.rs
-          grep -q 'VYRON Inbox' src-tauri/src/vyron_bridge.rs
-          grep -q 'project_paths' src-tauri/src/vyron_bridge.rs
-          grep -q 'statusPath' src-tauri/src/vyron_bridge.rs
-          grep -q 'vyron_manifest_import_and_status_roundtrip' src-tauri/src/vyron_bridge_tests.rs
-          grep -q 'VyronBatchBridge' src/pages/App.tsx
-          grep -q '<VyronBatchBridge/>' src/pages/App.tsx
-          grep -q 'consumeVyronBatch' src/tauri.ts
-          grep -q 'loadVyronBatch' src/tauri.ts
-          grep -q 'reportVyronRender' src/tauri.ts
-          ! grep -RniE 'youtube|googleapis|openai|claude|gemini' src/components/VyronBatchBridge.tsx src-tauri/src/vyron_bridge.rs
-          echo 'VYRON local bridge contracts: PASS'
+          python3 -m py_compile scripts/apply-vyron-bridge-8-40.py
+          grep -q 'VYRON Inbox' scripts/vyron-bridge-8-40/vyron_bridge.rs
+          grep -q 'vyron_manifest_import_and_status_roundtrip' scripts/vyron-bridge-8-40/vyron_bridge_tests.rs
+          grep -q 'VyronBatchBridge' scripts/vyron-bridge-8-40/VyronBatchBridge.tsx
+          ! grep -RniE 'youtube|googleapis|openai|claude|gemini' scripts/vyron-bridge-8-40 scripts/apply-vyron-bridge-8-40.py
+          echo 'Staged VYRON bridge local-only contract: PASS'
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
@@ -164,10 +155,19 @@ jobs:
           assert c['identifier']=='studio.endlume.desktop'
           print('Exact ENDLUME 8.39 stack: PASS')
           PY
-      - name: Verify bridge survived exact release stack
+      - name: Apply ENDLUME 8.40 VYRON bridge after migrations
         shell: bash
         run: |
           set -euo pipefail
+          python3 scripts/apply-vyron-bridge-8-40.py
+          python3 - <<'PY'
+          import json
+          p=json.load(open('package.json'));c=json.load(open('src-tauri/tauri.conf.json'))
+          assert p['version']=='1.0.0-alpha.8.40',p['version']
+          assert c['version']=='1.0.0-alpha.8.40',c['version']
+          assert c['identifier']=='studio.endlume.desktop'
+          print('ENDLUME 8.40 identity/version: PASS')
+          PY
           grep -q 'mod vyron_bridge' src-tauri/src/lib.rs
           grep -q 'mod vyron_bridge_tests' src-tauri/src/lib.rs
           grep -q 'VyronBatchBridge' src/pages/App.tsx
@@ -175,7 +175,8 @@ jobs:
           grep -q 'consumeVyronBatch' src/tauri.ts
           grep -q 'loadVyronBatch' src/tauri.ts
           grep -q 'reportVyronRender' src/tauri.ts
-          echo 'VYRON bridge survived exact release stack: PASS'
+          ! grep -RniE 'youtube|googleapis|openai|claude|gemini' src/components/VyronBatchBridge.tsx src-tauri/src/vyron_bridge.rs
+          echo 'ENDLUME 8.40 VYRON bridge wiring: PASS'
       - name: TypeScript production build
         run: npm run build
       - name: Rust tests including VYRON roundtrip

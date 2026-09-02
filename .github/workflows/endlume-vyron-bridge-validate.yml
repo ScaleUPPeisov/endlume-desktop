@@ -1,0 +1,83 @@
+name: ENDLUME VYRON Bridge Validation
+
+on:
+  push:
+    branches: [endlume-vyron-batch-import-dev]
+    paths: ['endlume-vyron-bridge-validate-trigger.txt']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify version and protected identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          p=json.load(open('package.json'));c=json.load(open('src-tauri/tauri.conf.json'))
+          assert p['version']=='1.0.0-alpha.8.6'
+          assert c['version']=='1.0.0-alpha.8.6'
+          assert c['identifier']=='studio.endlume.desktop'
+          assert c['plugins']['updater']['endpoints']==['https://endlume-updates.vercel.app/api/update?target={{target}}&arch={{arch}}&current_version={{current_version}}']
+          assert c['plugins']['updater']['pubkey'].startswith('dW50cnVzdGVkIGNvbW1lbnQ6')
+          print('ENDLUME identity/updater trust: PASS')
+          PY
+      - name: VYRON bridge contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'mod vyron_bridge' src-tauri/src/lib.rs
+          grep -q 'consume_vyron_batch_request' src-tauri/src/lib.rs
+          grep -q 'load_vyron_batch_manifest' src-tauri/src/lib.rs
+          grep -q 'report_vyron_render' src-tauri/src/lib.rs
+          grep -q 'VYRON Inbox' src-tauri/src/vyron_bridge.rs
+          grep -q 'project_paths' src-tauri/src/vyron_bridge.rs
+          grep -q 'statusPath' src-tauri/src/vyron_bridge.rs
+          grep -q 'VyronBatchBridge' src/pages/App.tsx
+          grep -q 'consumeVyronBatch' src/tauri.ts
+          grep -q 'loadVyronBatch' src/tauri.ts
+          grep -q 'reportVyronRender' src/tauri.ts
+          ! grep -RniE 'youtube|googleapis|openai|claude|gemini' src/components/VyronBatchBridge.tsx src-tauri/src/vyron_bridge.rs
+          echo 'Local VYRON bridge contracts: PASS'
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Setup Rust ARM64
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+          cache-on-failure: true
+      - name: Install frontend dependencies
+        run: npm install --no-audit --no-fund
+      - name: TypeScript production build
+        run: npm run build
+      - name: Rust tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml --lib
+      - name: Cargo check ARM64
+        run: cargo check --manifest-path src-tauri/Cargo.toml --target aarch64-apple-darwin
+      - name: Existing manual workflow regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'scan::scan_root' src-tauri/src/lib.rs
+          grep -q 'queue::enqueue_projects' src-tauri/src/lib.rs
+          grep -q 'preview::generate_preview' src-tauri/src/lib.rs
+          grep -q 'license::activate_license' src-tauri/src/lib.rs
+          grep -q 'cache::clear_effect_cache' src-tauri/src/lib.rs
+          grep -q 'ProjectPage' src/pages/App.tsx
+          grep -q 'RenderPage' src/pages/App.tsx
+          grep -q 'LibraryPage' src/pages/App.tsx
+          grep -q 'SettingsPage' src/pages/App.tsx
+          echo 'Existing ENDLUME manual mode contracts: PASS'

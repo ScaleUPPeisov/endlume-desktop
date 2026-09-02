@@ -4,6 +4,9 @@ import { check } from '@tauri-apps/plugin-updater';
 import { relaunch } from '@tauri-apps/plugin-process';
 import type { BenchmarkResult, EffectPreset, LibraryPayload, LicenseStatus, ProjectScanItem, QueueJob, RecoveryPayload, RenderSettings, SubscribePreset } from './types';
 
+export type VyronBatchRequest={batchId:string;manifestPath:string;requestedAt?:string|null};
+export type VyronBatchInfo={batchId:string;channelId:string;channelName:string;projectCount:number;tracksAssigned:number;rootPath:string;outputDir:string;statusPath:string;manifestPath:string;projectPaths:string[]};
+
 export const api = {
   chooseRoots: async()=>{
     const result=await open({directory:true,multiple:true,title:'Выберите папку или несколько папок с проектами'});
@@ -42,11 +45,14 @@ export const api = {
   clearCache:()=>invoke<void>('clear_effect_cache'),
   openPath:(p:string)=>invoke<void>('open_result_path',{path:p}),
   reveal:(p:string)=>invoke<void>('reveal_result_path',{path:p}),
+  consumeVyronBatch:()=>invoke<VyronBatchRequest|null>('consume_vyron_batch_request'),
+  loadVyronBatch:(manifestPath:string)=>invoke<VyronBatchInfo>('load_vyron_batch_manifest',{manifestPath}),
+  reportVyronRender:(manifestPath:string,projectPath:string,renderStatus:string,outputFile?:string|null,duration?:number|null,fileSize?:number|null,error?:string|null)=>invoke<void>('report_vyron_render',{manifestPath,projectPath,renderStatus,outputFile:outputFile??null,duration:duration??null,fileSize:fileSize??null,error:error??null}),
   showError:(text:string)=>message(text,{title:'ENDLUME Studio',kind:'error'}),
   showInfo:(text:string)=>message(text,{title:'ENDLUME Studio',kind:'info'}),
   checkUpdate:async()=>{
     const update=await check();
-    if(!update)return {none:true,current:'1.0.0-alpha.8.5',channel:'alpha',signedUpdater:true};
+    if(!update)return {none:true,current:'1.0.0-alpha.8.6',channel:'alpha',signedUpdater:true};
     let downloaded=0,total=0;
     return {
       version:update.version,

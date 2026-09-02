@@ -1,11 +1,11 @@
 {
   "enabled": true,
-  "generation": 20,
+  "generation": 21,
   "app": "endlume",
   "channel": "stable",
-  "version": "1.0.0-alpha.8.43",
-  "builder": "BUILD_ENDLUME_843_SELFHOSTED.command",
-  "notes": "Real 60 FPS Output Validation. FPS-only release: 30 -> CFR30, 60 -> CFR60. CFR is structurally injected into the actual Smart/Hybrid Fidelity, source clip, Effects and Subscribe video encode stages; final two-hour mux remains stream-copy. Final MP4 hard guard validates r_frame_rate, avg_frame_rate and actual video packet cadence. Proven 500k speed/size budget, updater, audio and all unrelated functionality remain unchanged.",
+  "version": "1.0.0-alpha.8.44",
+  "builder": "BUILD_ENDLUME_844_SELFHOSTED.command",
+  "notes": "VYRON Batch Bridge on top of ENDLUME 8.43. Adds only local VYRON batch.json intake/status reporting while preserving the proven Real CFR30/CFR60 render validation, 1920x1080 YouTube Fill, 500k speed/size budget, audio/crossfade/gapless path, Effects/Subscribe, manual render workflow and the signed Tauri online updater. Full 8.43 regression gate is mandatory before publication.",
   "platforms": [
     "darwin-aarch64"
   ]

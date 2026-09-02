@@ -1,0 +1,113 @@
+name: ENDLUME VYRON Final Bridge Validation
+
+on:
+  push:
+    branches: [endlume-vyron-batch-import-final]
+    paths: ['endlume-vyron-final-validate-trigger.txt']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: macos-15
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify surgical diff from current release
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin release
+          git diff --name-only origin/release...HEAD | sort > /tmp/changed.txt
+          cat /tmp/changed.txt
+          python3 - <<'PY'
+          from pathlib import Path
+          changed=set(Path('/tmp/changed.txt').read_text().splitlines())
+          allowed={
+            'src-tauri/src/lib.rs','src-tauri/src/vyron_bridge.rs','src-tauri/src/vyron_bridge_tests.rs',
+            'src/components/VyronBatchBridge.tsx','src/tauri.ts','src/pages/App.tsx',
+            '.github/workflows/endlume-vyron-final-validate.yml','endlume-vyron-final-validate-trigger.txt'
+          }
+          extra=changed-allowed
+          assert not extra, f'unexpected files changed: {sorted(extra)}'
+          required={'src-tauri/src/vyron_bridge.rs','src-tauri/src/vyron_bridge_tests.rs','src/components/VyronBatchBridge.tsx'}
+          assert required <= changed, f'missing bridge files: {sorted(required-changed)}'
+          print('Surgical diff from release: PASS')
+          PY
+      - name: Verify protected identity and bridge contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          c=json.load(open('src-tauri/tauri.conf.json'))
+          assert c['identifier']=='studio.endlume.desktop'
+          print('ENDLUME identifier preserved: PASS')
+          PY
+          grep -q 'mod vyron_bridge' src-tauri/src/lib.rs
+          grep -q 'mod vyron_bridge_tests' src-tauri/src/lib.rs
+          grep -q 'consume_vyron_batch_request' src-tauri/src/lib.rs
+          grep -q 'load_vyron_batch_manifest' src-tauri/src/lib.rs
+          grep -q 'report_vyron_render' src-tauri/src/lib.rs
+          grep -q 'VYRON Inbox' src-tauri/src/vyron_bridge.rs
+          grep -q 'project_paths' src-tauri/src/vyron_bridge.rs
+          grep -q 'statusPath' src-tauri/src/vyron_bridge.rs
+          grep -q 'vyron_manifest_import_and_status_roundtrip' src-tauri/src/vyron_bridge_tests.rs
+          grep -q 'VyronBatchBridge' src/pages/App.tsx
+          grep -q '<VyronBatchBridge/>' src/pages/App.tsx
+          grep -q 'consumeVyronBatch' src/tauri.ts
+          grep -q 'loadVyronBatch' src/tauri.ts
+          grep -q 'reportVyronRender' src/tauri.ts
+          ! grep -RniE 'youtube|googleapis|openai|claude|gemini' src/components/VyronBatchBridge.tsx src-tauri/src/vyron_bridge.rs
+          echo 'VYRON local bridge contracts: PASS'
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Setup Rust ARM64
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+          cache-on-failure: true
+      - name: Install frontend dependencies
+        run: npm install --no-audit --no-fund
+      - name: Prepare existing FFmpeg sidecars
+        shell: bash
+        run: |
+          set -euo pipefail
+          brew list ffmpeg >/dev/null 2>&1 || brew install ffmpeg
+          mkdir -p src-tauri/binaries
+          cp "$(command -v ffmpeg)" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp "$(command -v ffprobe)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          chmod +x src-tauri/binaries/*
+          echo 'ENDLUME FFmpeg sidecars: PASS'
+      - name: TypeScript production build
+        run: npm run build
+      - name: Rust tests including VYRON roundtrip
+        run: cargo test --manifest-path src-tauri/Cargo.toml --lib -- --nocapture
+      - name: Cargo check ARM64
+        run: cargo check --manifest-path src-tauri/Cargo.toml --target aarch64-apple-darwin
+      - name: Existing manual workflow regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'scan::scan_root' src-tauri/src/lib.rs
+          grep -q 'queue::enqueue_projects' src-tauri/src/lib.rs
+          grep -q 'preview::generate_preview' src-tauri/src/lib.rs
+          grep -q 'live_preview::prepare_live_preview' src-tauri/src/lib.rs
+          grep -q 'assets::import_library_asset' src-tauri/src/lib.rs
+          grep -q 'license::activate_license' src-tauri/src/lib.rs
+          grep -q 'cache::clear_effect_cache' src-tauri/src/lib.rs
+          grep -q 'ProjectPage' src/pages/App.tsx
+          grep -q 'RenderPage' src/pages/App.tsx
+          grep -q 'LibraryPage' src/pages/App.tsx
+          grep -q 'SettingsPage' src/pages/App.tsx
+          echo 'Existing ENDLUME manual mode contracts: PASS'

@@ -89,11 +89,20 @@ jobs:
           cp "$(command -v ffprobe)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
           chmod +x src-tauri/binaries/*
           echo 'ENDLUME FFmpeg sidecars: PASS'
-      - name: Apply canonical ENDLUME 8.39 migration chain
+      - name: Apply exact proven ENDLUME 8.25 to 8.39 stack
         shell: bash
         run: |
           set -euo pipefail
+          FFMPEG="$PWD/src-tauri/binaries/ffmpeg-aarch64-apple-darwin"
+          FFPROBE="$PWD/src-tauri/binaries/ffprobe-aarch64-apple-darwin"
           python3 -m py_compile \
+            scripts/apply-render-stability-8-25.py scripts/apply-release-ui-8-25.py \
+            scripts/apply-smart-repeat-8-26.py scripts/apply-ui-version-8-26.py \
+            scripts/apply-original-fidelity-8-27.py scripts/apply-original-fidelity-ui-8-27.py \
+            scripts/apply-hybrid-fidelity-8-28.py scripts/apply-hybrid-fidelity-ui-8-28.py \
+            scripts/repair-hybrid-patcher-8-29.py scripts/apply-version-8-30.py \
+            scripts/apply-runtime-ux-8-31.py scripts/apply-version-8-31.py \
+            scripts/apply-queue-updater-8-32.py scripts/apply-version-8-32.py \
             scripts/repair-speed-workdir-8-33.py scripts/apply-speed-fidelity-8-33.py scripts/apply-version-8-33.py \
             scripts/apply-stability-8-34.py scripts/apply-version-8-34.py \
             scripts/apply-strict-fidelity-8-35.py scripts/apply-version-8-35.py scripts/repair-strict-store-8-35.py \
@@ -101,6 +110,23 @@ jobs:
             scripts/repair-settings-updater-8-37.py scripts/apply-remote-updater-8-37.py scripts/apply-version-8-37.py \
             scripts/apply-youtube-fill-8-38.py scripts/apply-version-8-38.py \
             scripts/apply-performance-fidelity-8-39.py scripts/apply-hybrid-updater-8-39.py scripts/apply-version-8-39.py
+          python3 scripts/repair-hybrid-patcher-8-29.py
+          python3 -m py_compile scripts/apply-hybrid-fidelity-8-28.py
+          python3 scripts/apply-render-stability-8-25.py
+          python3 scripts/apply-release-ui-8-25.py
+          python3 scripts/apply-smart-repeat-8-26.py
+          python3 scripts/apply-ui-version-8-26.py
+          python3 scripts/apply-original-fidelity-8-27.py
+          python3 scripts/apply-original-fidelity-ui-8-27.py
+          python3 scripts/apply-hybrid-fidelity-8-28.py
+          python3 scripts/apply-hybrid-fidelity-ui-8-28.py
+          python3 scripts/apply-version-8-30.py
+          python3 scripts/apply-runtime-ux-8-31.py
+          python3 scripts/apply-version-8-31.py
+          python3 scripts/apply-queue-updater-8-32.py
+          python3 scripts/apply-version-8-32.py
+          chmod +x scripts/validate-release-8-32.sh
+          scripts/validate-release-8-32.sh
           python3 scripts/repair-speed-workdir-8-33.py
           python3 scripts/apply-speed-fidelity-8-33.py
           python3 scripts/apply-version-8-33.py
@@ -109,25 +135,36 @@ jobs:
           python3 scripts/apply-strict-fidelity-8-35.py
           python3 scripts/apply-version-8-35.py
           python3 scripts/repair-strict-store-8-35.py
+          chmod +x scripts/validate-release-8-33.sh scripts/validate-release-8-34.sh
+          scripts/validate-release-8-33.sh "$FFMPEG" "$FFPROBE"
+          scripts/validate-release-8-34.sh "$FFMPEG" "$FFPROBE"
           python3 scripts/apply-fidelity-1080p-8-36.py
           python3 scripts/apply-version-8-36.py
+          chmod +x scripts/validate-release-8-36.sh
+          scripts/validate-release-8-36.sh "$FFMPEG" "$FFPROBE"
           python3 scripts/repair-settings-updater-8-37.py
           python3 scripts/apply-remote-updater-8-37.py
           python3 scripts/apply-version-8-37.py
+          chmod +x scripts/validate-release-8-37.sh
+          scripts/validate-release-8-37.sh
           python3 scripts/apply-youtube-fill-8-38.py
           python3 scripts/apply-version-8-38.py
+          chmod +x scripts/validate-release-8-38.sh
+          scripts/validate-release-8-38.sh "$FFMPEG" "$FFPROBE"
           python3 scripts/apply-performance-fidelity-8-39.py
           python3 scripts/apply-hybrid-updater-8-39.py
           python3 scripts/apply-version-8-39.py
+          chmod +x scripts/validate-release-8-39.sh
+          scripts/validate-release-8-39.sh "$FFMPEG" "$FFPROBE"
           python3 - <<'PY'
           import json
           p=json.load(open('package.json'));c=json.load(open('src-tauri/tauri.conf.json'))
           assert p['version']=='1.0.0-alpha.8.39',p['version']
           assert c['version']=='1.0.0-alpha.8.39',c['version']
           assert c['identifier']=='studio.endlume.desktop'
-          print('Canonical ENDLUME 8.39 migration: PASS')
+          print('Exact ENDLUME 8.39 stack: PASS')
           PY
-      - name: Verify bridge survived canonical migration
+      - name: Verify bridge survived exact release stack
         shell: bash
         run: |
           set -euo pipefail
@@ -138,7 +175,7 @@ jobs:
           grep -q 'consumeVyronBatch' src/tauri.ts
           grep -q 'loadVyronBatch' src/tauri.ts
           grep -q 'reportVyronRender' src/tauri.ts
-          echo 'VYRON bridge survived 8.39 migration: PASS'
+          echo 'VYRON bridge survived exact release stack: PASS'
       - name: TypeScript production build
         run: npm run build
       - name: Rust tests including VYRON roundtrip

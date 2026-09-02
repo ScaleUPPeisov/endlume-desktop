@@ -2,7 +2,7 @@
   "version": "1.0.0-alpha.8.40",
   "date": "02.09.2026",
   "channel": "remote-binary",
-  "candidateRevision": 2,
+  "candidateRevision": 3,
   "builder": "BUILD_ENDLUME_840_LOCAL.command",
   "ciBuilder": "BUILD_ENDLUME_840_LOCAL.command",
   "releaseTag": "endlume-v1.0.0-alpha.8.40",

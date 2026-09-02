@@ -85,6 +85,11 @@ src=src.replace(stage10,ci+stage10,1)
 if needle not in meta: raise SystemExit('8.40: 8.39 stage replacement marker missing')
 meta=meta.replace(needle,extra,1)
 
+# 8.39 direct builder intentionally rejected CI mutation. 8.40 owns a guarded
+# artifact path, so disable only those two inherited anti-CI assertions here.
+meta=meta.replace("if 'ENDLUME_CI_ARTIFACT_DIR' in src:\n    raise SystemExit('8.39 direct: CI artifact mutation must not exist')\n",'',1)
+meta=meta.replace("if grep -Fq 'ENDLUME_CI_ARTIFACT_DIR' \"$PATCHED\"; then fail \"CI artifact mutation leaked into direct installer\"; fi\n",'',1)
+
 # Update outer preflight expectations only; keep 8.39 script names untouched.
 meta=meta.replace('ENDLUME Studio 1.0.0-alpha.8.39','ENDLUME Studio 1.0.0-alpha.8.40',1)
 meta=meta.replace('❌ ENDLUME 8.39 DIRECT','❌ ENDLUME 8.40 DIRECT',1)

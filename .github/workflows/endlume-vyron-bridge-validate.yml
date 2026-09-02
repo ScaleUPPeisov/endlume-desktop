@@ -61,6 +61,16 @@ jobs:
           cache-on-failure: true
       - name: Install frontend dependencies
         run: npm install --no-audit --no-fund
+      - name: Prepare existing FFmpeg sidecars
+        shell: bash
+        run: |
+          set -euo pipefail
+          brew list ffmpeg >/dev/null 2>&1 || brew install ffmpeg
+          mkdir -p src-tauri/binaries
+          cp "$(command -v ffmpeg)" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp "$(command -v ffprobe)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          chmod +x src-tauri/binaries/*
+          echo 'ENDLUME FFmpeg sidecars: PASS'
       - name: TypeScript production build
         run: npm run build
       - name: Rust tests

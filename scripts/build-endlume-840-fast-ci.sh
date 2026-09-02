@@ -32,7 +32,6 @@ grep -q hevc_videotoolbox /tmp/endlume-840-encoders.txt || fail 'ffmpeg hevc_vid
 grep -q alac /tmp/endlume-840-encoders.txt || fail 'ffmpeg ALAC missing'
 grep -q concatf /tmp/endlume-840-protocols.txt || fail 'ffmpeg concatf missing'
 
-# Reproduce the proven migration stack deterministically on the checked-out release source.
 python3 -m py_compile \
  scripts/apply-render-stability-8-25.py scripts/apply-release-ui-8-25.py \
  scripts/apply-smart-repeat-8-26.py scripts/apply-ui-version-8-26.py \
@@ -92,6 +91,25 @@ python3 scripts/apply-youtube-fill-8-38.py
 python3 scripts/apply-version-8-38.py
 chmod +x scripts/validate-release-8-38.sh
 scripts/validate-release-8-38.sh "$FFMPEG" "$FFPROBE"
+
+# Replay compatibility: 8.25 intentionally converted the render keyer to RGB colorkey,
+# while the original 8.39 patch expected the older chromakey expression. Preserve
+# colorkey and add the same despill stage before applying the rest of 8.39.
+python3 - <<'PY'
+from pathlib import Path
+p=Path('src-tauri/src/render.rs')
+r=p.read_text(encoding='utf-8')
+marker='despill=type={}:mix={}:expand=0.20'
+if marker not in r:
+    old='format!("[{idx}:v]fps={},format=rgba,colorkey={}:{}:{}",s.fps,color_ffmpeg(&e.key_color),e.similarity.clamp(0.001,0.60),e.blend.clamp(0.001,0.35))'
+    new='format!("[{idx}:v]fps={},format=rgba,colorkey={}:{}:{},despill=type={}:mix={}:expand=0.20",s.fps,color_ffmpeg(&e.key_color),e.similarity.clamp(0.001,0.60),e.blend.clamp(0.001,0.35),chroma_despill_type(&e.key_color),e.despill.clamp(0.0,1.0))'
+    if old not in r:
+        raise SystemExit('8.40 replay repair: colorkey render marker missing')
+    r=r.replace(old,new,1)
+    p.write_text(r,encoding='utf-8')
+print('8.40 replay repair: colorkey + despill compatibility ready')
+PY
+
 python3 scripts/apply-performance-fidelity-8-39.py
 python3 scripts/apply-hybrid-updater-8-39.py
 python3 scripts/apply-version-8-39.py
@@ -99,7 +117,6 @@ chmod +x scripts/validate-release-8-39.sh
 scripts/validate-release-8-39.sh "$FFMPEG" "$FFPROBE"
 node scripts/validate-motion-ui.mjs
 
-# Only now add the VYRON bridge on top of the proven 8.39 state.
 python3 scripts/apply-vyron-bridge-8-40.py
 npm run check
 npm run build
@@ -128,7 +145,6 @@ BFP="$(find "$APP/Contents/MacOS" -maxdepth 1 -type f -name 'ffprobe*' -print -q
 codesign --force --deep --sign - "$APP" >/dev/null
 codesign --verify --deep --strict "$APP"
 
-# Final short render smoke on the binaries that are actually inside the built app.
 SMOKE="$(mktemp -d)"
 "$BFF" -hide_banner -loglevel error -f lavfi -i 'color=c=0x182038:size=1920x1080:rate=60' -t 1 -an -c:v hevc_videotoolbox -realtime 1 -b:v 600k -tag:v hvc1 -pix_fmt yuv420p -y "$SMOKE/v.mp4"
 "$BFF" -hide_banner -loglevel error -f lavfi -i 'sine=frequency=440:sample_rate=44100' -t 1 -ac 2 -c:a libmp3lame -b:a 320k -y "$SMOKE/a.mp3"

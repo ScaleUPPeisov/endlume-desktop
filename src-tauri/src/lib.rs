@@ -10,9 +10,6 @@ mod benchmark;
 mod queue;
 mod cache;
 mod system;
-mod vyron_bridge;
-#[cfg(test)]
-mod vyron_bridge_tests;
 
 use std::sync::Arc;
 use tauri::Manager;
@@ -35,8 +32,7 @@ pub fn run(){
       benchmark::benchmark_engine,
       license::activate_license,license::license_status,
       cache::cache_stats,cache::clear_effect_cache,
-      system::power_status,system::disk_status,system::cleanup_duplicate_apps,system::normalize_current_app_name,system::open_result_path,system::reveal_result_path,
-      vyron_bridge::consume_vyron_batch_request,vyron_bridge::load_vyron_batch_manifest,vyron_bridge::report_vyron_render
+      system::power_status,system::disk_status,system::cleanup_duplicate_apps,system::normalize_current_app_name,system::open_result_path,system::reveal_result_path
     ])
     .setup(|app|{
       persistence::mark_session_open(&app.handle().clone())?;

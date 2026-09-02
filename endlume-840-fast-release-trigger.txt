@@ -1,1 +1,1 @@
-trigger ENDLUME 1.0.0-alpha.8.40 direct release — despill replay fix
+trigger ENDLUME 1.0.0-alpha.8.40 direct release — scoped no-bars guards

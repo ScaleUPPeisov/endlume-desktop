@@ -12,7 +12,7 @@ permissions:
 jobs:
   validate:
     runs-on: macos-15
-    timeout-minutes: 50
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
         with:
@@ -89,6 +89,56 @@ jobs:
           cp "$(command -v ffprobe)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
           chmod +x src-tauri/binaries/*
           echo 'ENDLUME FFmpeg sidecars: PASS'
+      - name: Apply canonical ENDLUME 8.39 migration chain
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            scripts/repair-speed-workdir-8-33.py scripts/apply-speed-fidelity-8-33.py scripts/apply-version-8-33.py \
+            scripts/apply-stability-8-34.py scripts/apply-version-8-34.py \
+            scripts/apply-strict-fidelity-8-35.py scripts/apply-version-8-35.py scripts/repair-strict-store-8-35.py \
+            scripts/apply-fidelity-1080p-8-36.py scripts/apply-version-8-36.py \
+            scripts/repair-settings-updater-8-37.py scripts/apply-remote-updater-8-37.py scripts/apply-version-8-37.py \
+            scripts/apply-youtube-fill-8-38.py scripts/apply-version-8-38.py \
+            scripts/apply-performance-fidelity-8-39.py scripts/apply-hybrid-updater-8-39.py scripts/apply-version-8-39.py
+          python3 scripts/repair-speed-workdir-8-33.py
+          python3 scripts/apply-speed-fidelity-8-33.py
+          python3 scripts/apply-version-8-33.py
+          python3 scripts/apply-stability-8-34.py
+          python3 scripts/apply-version-8-34.py
+          python3 scripts/apply-strict-fidelity-8-35.py
+          python3 scripts/apply-version-8-35.py
+          python3 scripts/repair-strict-store-8-35.py
+          python3 scripts/apply-fidelity-1080p-8-36.py
+          python3 scripts/apply-version-8-36.py
+          python3 scripts/repair-settings-updater-8-37.py
+          python3 scripts/apply-remote-updater-8-37.py
+          python3 scripts/apply-version-8-37.py
+          python3 scripts/apply-youtube-fill-8-38.py
+          python3 scripts/apply-version-8-38.py
+          python3 scripts/apply-performance-fidelity-8-39.py
+          python3 scripts/apply-hybrid-updater-8-39.py
+          python3 scripts/apply-version-8-39.py
+          python3 - <<'PY'
+          import json
+          p=json.load(open('package.json'));c=json.load(open('src-tauri/tauri.conf.json'))
+          assert p['version']=='1.0.0-alpha.8.39',p['version']
+          assert c['version']=='1.0.0-alpha.8.39',c['version']
+          assert c['identifier']=='studio.endlume.desktop'
+          print('Canonical ENDLUME 8.39 migration: PASS')
+          PY
+      - name: Verify bridge survived canonical migration
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'mod vyron_bridge' src-tauri/src/lib.rs
+          grep -q 'mod vyron_bridge_tests' src-tauri/src/lib.rs
+          grep -q 'VyronBatchBridge' src/pages/App.tsx
+          grep -q '<VyronBatchBridge/>' src/pages/App.tsx
+          grep -q 'consumeVyronBatch' src/tauri.ts
+          grep -q 'loadVyronBatch' src/tauri.ts
+          grep -q 'reportVyronRender' src/tauri.ts
+          echo 'VYRON bridge survived 8.39 migration: PASS'
       - name: TypeScript production build
         run: npm run build
       - name: Rust tests including VYRON roundtrip

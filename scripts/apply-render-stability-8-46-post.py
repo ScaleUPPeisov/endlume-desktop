@@ -31,11 +31,34 @@ new=r'''async fn output(app:&AppHandle,name:&str,args:Vec<String>)->Result<(Vec<
 }'''
 s=s[:start]+new+s[end:]
 
-# A successful final mux is NOT deleted merely because metadata verification timed out.
-old='''Err(e)=>{last_error=e;let _=std::fs::remove_dir_all(&work);let _=std::fs::remove_file(&out);if last_error==CANCELLED{return Err(last_error)}if last_error.starts_with("FINAL_VERIFY:"){return Err(last_error.trim_start_matches("FINAL_VERIFY: ").to_string())}if last_error.starts_with("FFMPEG_STALL:"){return Err(last_error.trim_start_matches("FFMPEG_STALL: ").to_string())}'''
-new='''Err(e)=>{last_error=e;let _=std::fs::remove_dir_all(&work);if last_error==CANCELLED{let _=std::fs::remove_file(&out);return Err(last_error)}if last_error.starts_with("FINAL_VERIFY:"){let detail=last_error.trim_start_matches("FINAL_VERIFY: ").to_string();render_diag(job,"final-verify",&format!("FAILED file_preserved={} detail={}",out.display(),detail));return Err(format!("FINAL_VERIFY_FILE_PRESERVED: path={}; {}",out.display(),detail))}let _=std::fs::remove_file(&out);if last_error.starts_with("FFMPEG_STALL:"){return Err(last_error.trim_start_matches("FFMPEG_STALL: ").to_string())}'''
-must(old in s,'render error ordering marker missing');s=s.replace(old,new,1)
+# A successful final mux must survive a metadata-only FINAL_VERIFY failure.
+# Do not exact-match the whole minified Rust error arm: earlier migrations are
+# allowed to change retry text. Anchor only to the guards guaranteed by 8.45/8.46.
+final_guard='if last_error.starts_with("FINAL_VERIFY:"){return Err(last_error.trim_start_matches("FINAL_VERIFY: ").to_string())}'
+stall_guard='if last_error.starts_with("FFMPEG_STALL:"){return Err(last_error.trim_start_matches("FFMPEG_STALL: ").to_string())}'
+must(s.count(final_guard)==1,'FINAL_VERIFY guard missing/non-unique')
+must(s.count(stall_guard)==1,'FFMPEG_STALL guard missing/non-unique')
+g=s.find(final_guard)
+err_start=s.rfind('Err(e)=>{last_error=e;',0,g)
+must(err_start>=0,'render error arm start missing')
+remove_stmt='let _=std::fs::remove_file(&out);'
+remove_pos=s.rfind(remove_stmt,err_start,g)
+must(remove_pos>=err_start,'render error output cleanup marker missing')
+# Remove only the cleanup that happens before FINAL_VERIFY discrimination.
+s=s[:remove_pos]+s[remove_pos+len(remove_stmt):]
+g=s.find(final_guard,err_start)
+cancel_guard='if last_error==CANCELLED{return Err(last_error)}'
+c=s.rfind(cancel_guard,err_start,g)
+must(c>=err_start,'cancel guard missing in render error arm')
+cancel_new='if last_error==CANCELLED{let _=std::fs::remove_file(&out);return Err(last_error)}'
+s=s[:c]+cancel_new+s[c+len(cancel_guard):]
+final_new='if last_error.starts_with("FINAL_VERIFY:"){let detail=last_error.trim_start_matches("FINAL_VERIFY: ").to_string();render_diag(job,"final-verify",&format!("FAILED file_preserved={} detail={}",out.display(),detail));return Err(format!("FINAL_VERIFY_FILE_PRESERVED: path={}; {}",out.display(),detail))}'
+s=s.replace(final_guard,final_new,1)
+# For every other error class, including a watchdog stall, delete the incomplete
+# final target before returning/retrying. FINAL_VERIFY returns before this line.
+s=s.replace(stall_guard,remove_stmt+stall_guard,1)
 must('FINAL_VERIFY_FILE_PRESERVED:' in s,'verification preservation marker missing')
+must('if last_error==CANCELLED{let _=std::fs::remove_file(&out);return Err(last_error)}' in s,'cancel cleanup ordering missing')
 p.write_text(s,encoding='utf-8')
 
 p=need('src-tauri/src/queue.rs');q=p.read_text(encoding='utf-8')

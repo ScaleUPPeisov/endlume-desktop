@@ -1,11 +1,11 @@
 {
   "enabled": true,
-  "generation": 24,
+  "generation": 25,
   "app": "endlume",
   "channel": "stable",
-  "version": "1.0.0-alpha.8.49",
-  "builder": "BUILD_ENDLUME_849_SELFHOSTED_R2.command",
-  "notes": "ENDLUME STUDIO PEISOV 8.49 production release. Preserves exact 1920x1080 YouTube Fill/cover, 500k video budget, CFR30/60, watchdog, bounded metadata-only FFprobe, Effects, Subscribe, VYRON bridge and official signed Tauri updater. 8.49 restores x265 quality-first short-master rendering with VideoToolbox fallback, adds persistent visual/Subscribe/original-audio/HQ320 caches for warm repeated renders, removes arbitrary two-hour boundary song truncation in whole-track mode while keeping exact mode unchanged, and renames the product display bundle to ENDLUME STUDIO PEISOV without changing bundle identifier studio.endlume.desktop. Candidate gates require SSIM >=0.995, whole-track audio regression, two-hour warm stream-copy <=30s, strict-valid macOS bundle signature inside the updater archive, and signed updater artifact validation.",
+  "version": "1.0.0-alpha.8.50",
+  "builder": "BUILD_ENDLUME_850_SELFHOSTED.command",
+  "notes": "ENDLUME STUDIO PEISOV 8.50 real-speed release. Apple HEVC VideoToolbox is primary on macOS using the M1-measured q100 fidelity profile with 500k target and 12M/64M I-frame quality headroom; libx265 is fallback only. Preserve exact 1920x1080 Fill/cover, CFR30/60, whole-track audio without arbitrary 2h song truncation, original/HQ320 audio behavior, persistent visual/Subscribe/audio caches, Effects, Subscribe, VYRON, watchdog, bounded metadata-only FFprobe, bundle id studio.endlume.desktop and signed Tauri updater. Candidate passed q100 first-frame SSIM 0.999814, 12s static master 4.038s, representative 60s cold effect master 19.427s, all whole-track tests and strict signed updater archive validation.",
   "platforms": [
     "darwin-aarch64"
   ]

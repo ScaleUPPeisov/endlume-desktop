@@ -1,0 +1,44 @@
+name: ENDLUME Apply Render Watchdog Source
+
+on:
+  push:
+    branches: [endlume-render-watchdog-fix]
+    paths:
+      - '.github/workflows/render-watchdog-patch-linux.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch-source:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: endlume-render-watchdog-fix
+          fetch-depth: 0
+      - name: Apply source patch
+        run: python3 tools/apply_render_watchdog_fix.py
+      - name: Static watchdog contracts
+        run: |
+          set -euo pipefail
+          grep -Fq 'FFMPEG_STALL_TIMEOUT_SECS:u64=120' src-tauri/src/render.rs
+          grep -Fq 'FFmpeg не отвечает — останавливаю процесс' src-tauri/src/render.rs
+          grep -Fq 'tokio::time::timeout(Duration::from_secs(HELPER_TIMEOUT_SECS)' src-tauri/src/render.rs
+          grep -Fq 'mod watchdog_tests' src-tauri/src/render.rs
+          python3 - <<'PY'
+          from pathlib import Path
+          s=Path('src-tauri/src/render.rs').read_text()
+          assert s.count('FFMPEG_STALL_TIMEOUT_SECS')>=3
+          assert 'if ffmpeg_is_stalled(last_progress.elapsed(),last_activity.elapsed())' in s
+          assert 'if out_sec>last_out_sec+0.001' in s
+          print('ENDLUME render watchdog static contracts: PASS')
+          PY
+      - name: Commit patched source
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src-tauri/src/render.rs
+          git commit -m 'fix(endlume): stop stalled ffmpeg renders' || exit 0
+          git push origin HEAD:endlume-render-watchdog-fix

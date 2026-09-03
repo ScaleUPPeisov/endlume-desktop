@@ -1,0 +1,50 @@
+name: ENDLUME Render Watchdog Fix
+
+on:
+  push:
+    branches: [endlume-render-watchdog-fix]
+    paths:
+      - '.github/workflows/render-watchdog-fix.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-test:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: endlume-render-watchdog-fix
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+      - name: Apply watchdog patch
+        run: python3 tools/apply_render_watchdog_fix.py
+      - name: Frontend build
+        run: |
+          npm install --no-audit --no-fund
+          npm run build
+      - name: Rust regression
+        run: |
+          cargo test --manifest-path src-tauri/Cargo.toml --lib watchdog_tests -- --nocapture
+          cargo check --manifest-path src-tauri/Cargo.toml --target aarch64-apple-darwin
+      - name: Verify watchdog contracts
+        run: |
+          grep -Fq 'FFMPEG_STALL_TIMEOUT_SECS:u64=120' src-tauri/src/render.rs
+          grep -Fq 'FFmpeg не отвечает — останавливаю процесс' src-tauri/src/render.rs
+          grep -Fq 'tokio::time::timeout(Duration::from_secs(HELPER_TIMEOUT_SECS)' src-tauri/src/render.rs
+          grep -Fq 'Финальный файл создан пустым или повреждённым' src-tauri/src/render.rs
+          echo 'ENDLUME watchdog contracts: PASS'
+      - name: Commit tested source fix
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src-tauri/src/render.rs
+          git commit -m 'fix(endlume): stop stalled ffmpeg renders' || exit 0
+          git push origin HEAD:endlume-render-watchdog-fix

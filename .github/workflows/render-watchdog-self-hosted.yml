@@ -1,0 +1,82 @@
+name: ENDLUME Render Watchdog Self-Hosted Validation
+
+on:
+  push:
+    branches: [endlume-render-watchdog-release]
+    paths:
+      - '.github/workflows/render-watchdog-self-hosted.yml'
+      - 'tools/apply_render_watchdog_fix.py'
+      - 'watchdog-validation-trigger.txt'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: endlume-watchdog-validation
+  cancel-in-progress: false
+
+jobs:
+  validate-and-commit:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 90
+    steps:
+      - name: Checkout watchdog release branch
+        uses: actions/checkout@v4
+        with:
+          ref: endlume-render-watchdog-release
+          clean: true
+          fetch-depth: 0
+
+      - name: Verify self-hosted Mac
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          test "$(uname -s)" = "Darwin"
+          test "$(uname -m)" = "arm64"
+          command -v node
+          command -v npm
+          command -v cargo
+          echo "Self-hosted ARM64 Mac: PASS"
+
+      - name: Apply render watchdog
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 tools/apply_render_watchdog_fix.py
+          grep -Fq 'FFMPEG_STALL_TIMEOUT_SECS:u64=120' src-tauri/src/render.rs
+          grep -Fq 'FFmpeg не отвечает — останавливаю процесс' src-tauri/src/render.rs
+          grep -Fq 'tokio::time::timeout(Duration::from_secs(HELPER_TIMEOUT_SECS)' src-tauri/src/render.rs
+          grep -Fq 'mod watchdog_tests' src-tauri/src/render.rs
+          echo "Watchdog source contracts: PASS"
+
+      - name: Frontend regression
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          npm install --no-audit --no-fund
+          npm run build
+
+      - name: Rust watchdog tests and ARM64 check
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          cargo test --manifest-path src-tauri/Cargo.toml --lib watchdog_tests -- --nocapture
+          cargo check --manifest-path src-tauri/Cargo.toml --target aarch64-apple-darwin
+
+      - name: Commit tested render source
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src-tauri/src/render.rs
+          if git diff --cached --quiet; then
+            echo 'No source diff to commit'
+          else
+            git commit -m 'fix(endlume): stop stalled FFmpeg renders'
+            git push origin HEAD:endlume-render-watchdog-release
+          fi
+          echo "ENDLUME watchdog validated and committed: PASS"

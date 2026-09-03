@@ -1,0 +1,21 @@
+#!/bin/bash
+set -Eeuo pipefail
+R='src-tauri/src/render.rs'
+fail(){ echo "❌ ENDLUME 8.45 VALIDATION: $1" >&2; exit 1; }
+[[ -s "$R" ]] || fail 'render.rs missing'
+grep -Fq 'const FFPROBE_TIMEOUT_SECS:u64=15;' "$R" || fail 'FFprobe timeout constant missing'
+grep -Fq 'async fn ffprobe_output(' "$R" || fail 'timed FFprobe helper missing'
+grep -Fq 'tokio::time::timeout(Duration::from_secs(FFPROBE_TIMEOUT_SECS)' "$R" || fail 'FFprobe timeout not enforced'
+! grep -Fq 'output(app,"ffprobe",' "$R" || fail 'unbounded FFprobe call remains'
+grep -Fq '"final-verify"' "$R" || fail 'final verification timing missing'
+grep -Fq 'verify_result(app,&out,final_duration,&job.settings).await?' "$R" || fail 'real final verification missing'
+grep -Fq '"-c:v","copy","-c:a","copy"' "$R" || fail 'final stream-copy mux changed'
+grep -Fq 'static_smart_encoder_args' "$R" || fail 'Smart Size path missing'
+grep -Fq 'build_long_audio' "$R" || fail 'audio pipeline missing'
+grep -Fq 'render-done' "$R" || fail 'Completed event missing'
+grep -Fq 'mod vyron_bridge;' src-tauri/src/lib.rs || fail 'VYRON bridge missing'
+grep -Fq 'report_if_registered' src-tauri/src/vyron_bridge.rs || fail 'VYRON render receipt missing'
+! grep -RniE 'youtube\.com|googleapis\.com|youtube_upload|youtube_list' src-tauri/src/render.rs src-tauri/src/vyron_bridge.rs >/tmp/endlume845-network.txt || fail 'network/YouTube code entered local render path'
+node -e "const p=require('./package.json');if(p.version!=='1.0.0-alpha.8.45')process.exit(1)" || fail 'package version mismatch'
+grep -Eq '^version = "1\.0\.0-alpha\.8\.45"' src-tauri/Cargo.toml || fail 'Cargo version mismatch'
+echo '✅ ENDLUME 8.45 static finalize/fidelity/VYRON regression gate PASS'

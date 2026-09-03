@@ -1,0 +1,118 @@
+name: ENDLUME 8.46 Render Stability Candidate
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['candidate/render-stability-8.46']
+    paths:
+      - 'BUILD_ENDLUME_846_CANDIDATE.command'
+      - 'scripts/apply-render-stability-8-46.py'
+      - 'scripts/validate-release-8-46.sh'
+      - '.github/workflows/endlume-846-candidate.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-846-candidate
+  cancel-in-progress: true
+
+jobs:
+  candidate:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 180
+    env:
+      GH_TOKEN: ${{ github.token }}
+      ENDLUME_IN_APP_UPDATE: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: candidate/render-stability-8.46
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify candidate inputs
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          test "$(uname -s)" = Darwin
+          test "$(uname -m)" = arm64
+          python3 -m py_compile scripts/apply-render-stability-8-46.py
+          /bin/bash -n BUILD_ENDLUME_846_CANDIDATE.command
+          /bin/bash -n scripts/validate-release-8-46.sh
+          test -s "$HOME/.endlume-updater/endlume.key"
+          test -s "$HOME/.endlume-updater/endlume.key.pub"
+          echo 'PASS: candidate inputs / Apple Silicon / signing material'
+
+      - name: Build exact final 8.46 tree
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          KEY="$HOME/.endlume-updater/endlume.key"
+          ART="$HOME/.endlume-release-bridge/endlume/candidate-8.46"
+          rm -rf "$ART"; mkdir -p "$ART"
+          export TAURI_SIGNING_PRIVATE_KEY_PATH="$KEY"
+          export TAURI_SIGNING_PRIVATE_KEY="$KEY"
+          export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
+          export ENDLUME_RELEASE_ARTIFACT_DIR="$ART"
+          export ENDLUME_RELEASE_PLATFORM="darwin-aarch64"
+          export ENDLUME_RELEASE_VERSION="1.0.0-alpha.8.46"
+          export ENDLUME_UPDATER_PUBLIC_KEY_FILE="$KEY.pub"
+          export ENDLUME_UPDATER_ENDPOINT="https://github.com/ScaleUPPeisov/scaleup-site/releases/download/endlume-stable/latest.json"
+          chmod +x BUILD_ENDLUME_846_CANDIDATE.command
+          /bin/bash BUILD_ENDLUME_846_CANDIDATE.command
+          test -n "$(find "$ART" -type f -name '*.app.tar.gz' -print -quit)"
+          echo 'PASS: exact final 8.46 tree built and signed'
+
+      - name: Validate staged application and final binary
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ART="$HOME/.endlume-release-bridge/endlume/candidate-8.46"
+          TAR="$(find "$ART" -type f -name '*.app.tar.gz' -print -quit)"
+          UNPACK="$ART/unpack"; rm -rf "$UNPACK"; mkdir -p "$UNPACK"
+          /usr/bin/tar -xzf "$TAR" -C "$UNPACK"
+          APP="$(find "$UNPACK" -type d -name 'ENDLUME Studio.app' -print -quit)"
+          test -d "$APP"
+          test "$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$APP/Contents/Info.plist")" = studio.endlume.desktop
+          test "$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist")" = 1.0.0-alpha.8.46
+          EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
+          /usr/bin/lipo -archs "$APP/Contents/MacOS/$EXE" | grep -qw arm64
+          /usr/bin/codesign --verify --deep --strict "$APP"
+          FFMPEG="$(find "$APP/Contents/MacOS" -maxdepth 1 -type f -name 'ffmpeg*' -print -quit)"
+          FFPROBE="$(find "$APP/Contents/MacOS" -maxdepth 1 -type f -name 'ffprobe*' -print -quit)"
+          test -x "$FFMPEG"; test -x "$FFPROBE"
+          echo "CANDIDATE_APP=$APP" >> "$GITHUB_ENV"
+          echo "CANDIDATE_FFMPEG=$FFMPEG" >> "$GITHUB_ENV"
+          echo "CANDIDATE_FFPROBE=$FFPROBE" >> "$GITHUB_ENV"
+          echo 'PASS: staged .app / version / arm64 / codesign / sidecars'
+
+      - name: FFmpeg finalization regression and long metadata probe
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          TMP="$(mktemp -d /tmp/endlume-846-finalize.XXXXXX)"; trap 'rm -rf "$TMP"' EXIT
+          "$CANDIDATE_FFMPEG" -hide_banner -loglevel error -f lavfi -i 'color=c=black:s=1920x1080:r=60:d=30' -f lavfi -i 'sine=frequency=330:sample_rate=48000:duration=30' -c:v libx265 -preset ultrafast -b:v 500k -maxrate 4M -bufsize 16M -pix_fmt yuv420p -c:a aac -b:a 320k -shortest -y "$TMP/segment.partial.mp4"
+          mv "$TMP/segment.partial.mp4" "$TMP/segment.mp4"
+          "$CANDIDATE_FFMPEG" -hide_banner -loglevel error -stream_loop 239 -i "$TMP/segment.mp4" -t 7200 -map 0:v:0 -map 0:a:0 -c:v copy -c:a copy -video_track_timescale 60000 -y "$TMP/two-hour.mp4"
+          START=$(python3 -c 'import time;print(time.monotonic())')
+          "$CANDIDATE_FFPROBE" -v error -show_entries 'format=duration:stream=codec_type,width,height,r_frame_rate,avg_frame_rate,nb_frames,duration,bit_rate' -of json "$TMP/two-hour.mp4" > "$TMP/probe.json"
+          END=$(python3 -c 'import time;print(time.monotonic())')
+          python3 - "$TMP/probe.json" "$START" "$END" <<'PY'
+          import json,sys
+          d=json.load(open(sys.argv[1])); elapsed=float(sys.argv[3])-float(sys.argv[2])
+          assert float(d['format']['duration'])>7190
+          assert any(s.get('codec_type')=='video' for s in d['streams'])
+          assert any(s.get('codec_type')=='audio' for s in d['streams'])
+          assert elapsed < 12.0, elapsed
+          print(f'PASS: 2-hour metadata FFprobe {elapsed:.3f}s')
+          PY
+
+      - name: Do not publish candidate
+        shell: bash
+        run: |
+          echo '✅ 8.46 candidate build passed compile/sign/finalization gates'
+          echo '✅ Public updater channel NOT modified by candidate workflow'

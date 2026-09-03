@@ -36,7 +36,7 @@ for marker in [
     must(marker in s, '8.47 invariant missing: ' + marker)
 
 old = 'fn smart_final_duration(target:f64,durations:&[f64],crossfade:f64,mode:&str)->f64{if mode!="whole-track"||durations.is_empty(){return target}let mut t=0.0;let mut i=0usize;while t<target{let add=(durations[i%durations.len()]-if t>0.0{crossfade}else{0.0}).max(0.1);t+=add;i+=1;}if t-target<=240.0{t}else{target}}'
-new = 'fn smart_final_duration(target:f64,durations:&[f64],crossfade:f64,mode:&str)->f64{if mode!="whole-track"||durations.is_empty(){return target}let cf=crossfade.clamp(0.0,10.0);let mut t=0.0;let mut i=0usize;while t<target{let add=(durations[i%durations.len()]-if i>0{cf}else{0.0}).max(0.1);t+=add;i+=1;}t}'
+new = 'fn smart_final_duration(target:f64,durations:&[f64],crossfade:f64,mode:&str)->f64{if mode!="whole-track"||durations.is_empty(){return target}let cf=crossfade.clamp(0.0,10.0);let mut t=0.0;let mut i=0usize;while t<target{let idx=i%durations.len();let add=(durations[idx]-if idx>0{cf}else{0.0}).max(0.1);t+=add;i+=1;}t}'
 
 must(old in s, 'whole-track duration block changed or already patched')
 s = s.replace(old, new, 1)
@@ -82,6 +82,17 @@ mod audio_timeline_tests{
   }
 
   #[test]
+  fn repeated_cycle_does_not_invent_crossfade_at_stream_loop_boundary(){
+    let d=tracks();
+    let cf=5.125;
+    let first_cycle=d.iter().sum::<f64>()-cf*((d.len()-1) as f64);
+    let target=first_cycle+100.0;
+    let expected=first_cycle+d[0];
+    let actual=smart_final_duration(target,&d,cf,"whole-track");
+    near(actual,expected);
+  }
+
+  #[test]
   fn non_whole_track_mode_keeps_exact_target_behavior(){
     let d=tracks();
     near(smart_final_duration(7200.375,&d,5.0,"exact"),7200.375);
@@ -101,7 +112,8 @@ s = s.replace(anchor, new + tests + '\n\nasync fn build_long_audio', 1)
 
 must('if t-target<=240.0{t}else{target}' not in s, 'old 240-second truncation cap still present')
 must('let cf=crossfade.clamp(0.0,10.0);' in s, 'crossfade duration is not aligned with audio filter clamp')
-must('whole_track_crossfade_off_never_cuts_boundary_track' in s, 'audio regression test missing')
+must('let idx=i%durations.len();' in s, 'playlist cycle boundary accounting missing')
+must('repeated_cycle_does_not_invent_crossfade_at_stream_loop_boundary' in s, 'stream-loop crossfade regression missing')
 
 p.write_text(s, encoding='utf-8')
 

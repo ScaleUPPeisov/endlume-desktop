@@ -1,0 +1,124 @@
+name: ENDLUME 8.46 Full Source Backup Export
+
+on:
+  push:
+    branches:
+      - backup/endlume-8.46-final-20260903
+    paths:
+      - '.github/workflows/endlume-846-source-backup.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  export-source:
+    name: macOS ARM64 • Export effective 8.46 source
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout immutable 8.46 recovery branch
+        uses: actions/checkout@v4
+        with:
+          ref: backup/endlume-8.46-final-20260903
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify effective ENDLUME 8.46 source tree
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          SRC="$HOME/.endlume-local-builder/endlume-desktop-8.40-bootstrap"
+          test -d "$SRC"
+          test -f "$SRC/package.json"
+          test -f "$SRC/src-tauri/src/render.rs"
+          python3 - "$SRC/package.json" <<'PY'
+          import json,sys
+          d=json.load(open(sys.argv[1]))
+          assert d.get('version')=='1.0.0-alpha.8.46', d.get('version')
+          print('PASS: effective source version', d['version'])
+          PY
+          grep -Fq 'FFMPEG_STALL_TIMEOUT_SECS:u64=120' "$SRC/src-tauri/src/render.rs"
+          grep -Fq 'FINAL_VERIFY_FILE_PRESERVED:' "$SRC/src-tauri/src/render.rs"
+          grep -Fq '@tauri-apps/plugin-updater' "$SRC/package.json"
+          grep -Fq 'studio.endlume.desktop' "$SRC/src-tauri/tauri.conf.json"
+          echo 'PASS: 8.46 watchdog/final-verify/updater/bundle identity verified'
+
+      - name: Build self-contained recovery source ZIP
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          VERSION='1.0.0-alpha.8.46'
+          DATE='2026-09-03'
+          SRC="$HOME/.endlume-local-builder/endlume-desktop-8.40-bootstrap"
+          OUT="$RUNNER_TEMP/endlume-846-source-backup"
+          ROOT="$OUT/ENDLUME_Studio_${VERSION}_FULL_SOURCE_BACKUP_${DATE}"
+          ZIP="$OUT/ENDLUME_Studio_${VERSION}_FULL_SOURCE_BACKUP_${DATE}.zip"
+          LOCAL_DIR="$HOME/.endlume-backups"
+          LOCAL_ZIP="$LOCAL_DIR/ENDLUME_Studio_${VERSION}_FULL_SOURCE_BACKUP_${DATE}.zip"
+          rm -rf "$OUT"
+          mkdir -p "$ROOT/effective-source" "$ROOT/recovery-pipeline" "$LOCAL_DIR"
+
+          /usr/bin/rsync -a \
+            --exclude '.git' \
+            --exclude 'node_modules' \
+            --exclude 'dist' \
+            --exclude 'src-tauri/target' \
+            --exclude '.DS_Store' \
+            "$SRC/" "$ROOT/effective-source/"
+
+          # Preserve the release/rebuild machinery beside the already-expanded source.
+          find . -maxdepth 1 -type f -name 'BUILD_ENDLUME_*.command' -exec cp {} "$ROOT/recovery-pipeline/" \;
+          cp -R scripts "$ROOT/recovery-pipeline/scripts"
+          mkdir -p "$ROOT/recovery-pipeline/updates/github" "$ROOT/recovery-pipeline/.github/workflows"
+          cp updates/github/build-request.json "$ROOT/recovery-pipeline/updates/github/build-request.json"
+          cp .github/workflows/endlume-self-hosted-release.yml "$ROOT/recovery-pipeline/.github/workflows/endlume-self-hosted-release.yml"
+
+          cat > "$ROOT/BACKUP_INFO.txt" <<EOF
+          ENDLUME Studio FULL SOURCE BACKUP
+          Version: ${VERSION}
+          Backup date: ${DATE}
+          Production release commit: 71c590c635088dcdeef72d91d5b74fcb7a1287c3
+          Immutable backup branch: backup/endlume-8.46-final-20260903
+          Bundle ID: studio.endlume.desktop
+          Platform: macOS ARM64 / Apple Silicon
+
+          This archive contains the EFFECTIVE source tree after the ENDLUME 8.46 migration chain was applied,
+          not only the historical builder wrappers. Heavy generated directories (node_modules, dist, Rust target)
+          are intentionally excluded because they are reproducible build outputs/dependency caches.
+
+          recovery-pipeline/ contains the production builder/migration scripts and release request used to recreate
+          the signed application. effective-source/ is the expanded source tree that compiled as 1.0.0-alpha.8.46.
+          EOF
+
+          (
+            cd "$ROOT"
+            find . -type f ! -name 'SHA256SUMS.txt' -print0 | LC_ALL=C sort -z | xargs -0 shasum -a 256 > SHA256SUMS.txt
+          )
+
+          rm -f "$ZIP"
+          /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$ROOT" "$ZIP"
+          test -s "$ZIP"
+          cp "$ZIP" "$LOCAL_ZIP"
+          shasum -a 256 "$ZIP" | tee "$OUT/ARCHIVE_SHA256.txt"
+          test -s "$LOCAL_ZIP"
+          echo "PASS: local disaster-recovery copy: $LOCAL_ZIP"
+          echo "PASS: artifact ZIP: $ZIP"
+
+      - name: Upload source backup archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: ENDLUME_Studio_1.0.0-alpha.8.46_FULL_SOURCE_BACKUP_2026-09-03
+          path: |
+            ${{ runner.temp }}/endlume-846-source-backup/ENDLUME_Studio_1.0.0-alpha.8.46_FULL_SOURCE_BACKUP_2026-09-03.zip
+            ${{ runner.temp }}/endlume-846-source-backup/ARCHIVE_SHA256.txt
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Backup complete
+        shell: bash
+        run: |
+          echo '✅ ENDLUME 1.0.0-alpha.8.46 effective source backup created'
+          echo '✅ Persistent local copy saved under ~/.endlume-backups/'
+          echo '✅ GitHub Actions artifact uploaded for direct download'

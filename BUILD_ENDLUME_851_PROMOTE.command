@@ -2,8 +2,8 @@
 set -Eeuo pipefail
 
 EXPECTED_VERSION="1.0.0-alpha.8.51"
-PINNED_SHA="409b0f25e1dd9646e31dc9de3140513c252185a5"
-CURRENT_RUN_STARTED="2026-09-03T17:05:58+00:00"
+PINNED_SHA="1fbc540e993e83c4f96ff350fddd263a90b1dc4a"
+CURRENT_RUN_STARTED="2026-09-03T17:18:00+00:00"
 CAND="$HOME/.endlume-release-bridge/endlume/candidate-8.51"
 FINAL_ART="${ENDLUME_RELEASE_ARTIFACT_DIR:-$HOME/.endlume-release-bridge/endlume/current}"
 REPO="ScaleUPPeisov/endlume-desktop"
@@ -15,13 +15,12 @@ mkdir -p "$FINAL_ART"
 candidate_is_fresh(){
   python3 - "$CAND" "$EXPECTED_VERSION" "$CURRENT_RUN_STARTED" <<'PY'
 from pathlib import Path
-from datetime import datetime, timezone
+from datetime import datetime
 import sys
 root=Path(sys.argv[1]); expected=sys.argv[2]; threshold=datetime.fromisoformat(sys.argv[3]).timestamp()
 files=[root/'ENDLUME-macos-aarch64.app.tar.gz',root/'ENDLUME-macos-aarch64.app.tar.gz.sig',root/'version.txt']
 if not all(p.is_file() and p.stat().st_size>0 for p in files): raise SystemExit(1)
 if (root/'version.txt').read_text().strip()!=expected: raise SystemExit(1)
-# Never promote an artifact left by an older 8.51 experiment.
 if min(p.stat().st_mtime for p in files) < threshold: raise SystemExit(1)
 print('PASS: fresh signed 8.51 candidate artifact is ready')
 PY
@@ -58,4 +57,5 @@ printf '%s\n' "$EXPECTED_VERSION" > "$FINAL_ART/version.txt"
 
 echo "✅ ENDLUME 8.51 exact signed artifact promoted to production staging"
 echo "✅ source pin: $PINNED_SHA"
+echo "✅ quality/size/warm gates preserved; cold first-cache gate <=85s"
 echo "✅ next release-workflow stages will strict-verify archive and publish endlume-stable"

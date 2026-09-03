@@ -37,10 +37,9 @@ jobs:
           from pathlib import Path
           import sys
           s=Path(sys.argv[1]).read_text()
-          for name in ['render_sub_segment','assemble_visual','copy_segment','build_variant']:
+          for name in ['render_diag_path','render_sub_segment','assemble_visual','copy_segment','build_variant','subscribe_events']:
               start=s.find('async fn '+name)
-              if start<0:
-                  start=s.find('fn '+name)
+              if start<0: start=s.find('fn '+name)
               if start<0:
                   print('MISSING',name); continue
               brace=s.find('{',start); depth=0; end=brace
@@ -51,4 +50,35 @@ jobs:
                       if depth==0:
                           end=i+1; break
               print('\n===== '+name+' =====\n'+s[start:end])
+          PY
+      - name: Summarize latest real ENDLUME Subscribe diagnostics
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import time
+          roots=[Path('/Volumes/TOSHIBA EXT'),Path.home()/'Library/Caches',Path.home()/'Library/Application Support']
+          found=[]
+          cutoff=time.time()-3*3600
+          for root in roots:
+              if not root.exists(): continue
+              try:
+                  for p in root.rglob('*'):
+                      try:
+                          if not p.is_file() or p.stat().st_mtime<cutoff or p.stat().st_size>20_000_000: continue
+                          n=p.name.lower()
+                          if 'render' not in n and not n.endswith('.log') and 'endlume' not in n: continue
+                          txt=p.read_text(errors='ignore')
+                          if '[render][subscribe]' in txt or 'Добавляю Subscribe' in txt:
+                              found.append((p.stat().st_mtime,p,txt))
+                      except Exception: pass
+              except Exception: pass
+          found.sort(reverse=True,key=lambda x:x[0])
+          if not found:
+              print('NO_RECENT_SUBSCRIBE_LOG_FOUND')
+          for _,p,txt in found[:5]:
+              print('\n===== REAL LOG',p,'=====')
+              lines=[x for x in txt.splitlines() if '[render][subscribe]' in x or '[render][timing]' in x or 'Добавляю Subscribe' in x or '[render][performance]' in x]
+              print('\n'.join(lines[-300:]))
           PY

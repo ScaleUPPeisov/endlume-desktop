@@ -41,6 +41,21 @@ GH_REPO="ScaleUPPeisov/endlume-desktop"
 for f in apply-full-project-speed-8-51.py apply-audio-overlay-polish-8-51.py apply-size-fidelity-8-51.py validate-release-8-51.sh validate-audio-overlay-polish-8-51.sh; do
   gh api -H 'Accept: application/vnd.github.raw+json' "/repos/$GH_REPO/contents/scripts/$f?ref=$PATCH_REF" > "$WORK/scripts/$f" || fail "cannot fetch $f"
 done
+
+# Exact 8.50 is reconstructed by a migration chain, so formatting around the
+# visual planner may differ while semantics stay identical. Harden only the
+# migration's function locator; this does not alter runtime behavior.
+python3 - "$WORK/scripts/apply-full-project-speed-8-51.py" <<'PY'
+from pathlib import Path
+import sys
+p=Path(sys.argv[1]); s=p.read_text(encoding='utf-8')
+old="""start=s.find('async fn assemble_visual(')\nend=s.find('\\n\\nasync fn ',start+10)\nmust(start>=0 and end>start,'assemble_visual block not found')"""
+new="""m=re.search(r'(?m)^(?:pub\\s+)?async\\s+fn\\s+assemble_visual\\s*\\(',s)\nif m:\n    start=m.start()\nelse:\n    marker=s.find('\\\"Склеиваю визуальную дорожку\\\"')\n    if marker<0: marker=s.find('VisualSource::Concat(list)')\n    starts=[x.start() for x in re.finditer(r'(?m)^(?:pub\\s+)?async\\s+fn\\s+\\w+\\s*\\(',s) if marker>=0 and x.start()<marker]\n    start=starts[-1] if starts else -1\nnexts=[x.start() for x in re.finditer(r'(?m)^(?:pub\\s+)?async\\s+fn\\s+\\w+\\s*\\(',s) if start>=0 and x.start()>start]\nend=nexts[0] if nexts else -1\nmust(start>=0 and end>start,'assemble_visual block not found')"""
+if old not in s:
+    raise SystemExit('8.51 builder: visual matcher patch anchor missing')
+p.write_text(s.replace(old,new,1),encoding='utf-8')
+PY
+
 python3 -m py_compile "$WORK/scripts/apply-full-project-speed-8-51.py" "$WORK/scripts/apply-audio-overlay-polish-8-51.py" "$WORK/scripts/apply-size-fidelity-8-51.py"
 /bin/bash -n "$WORK/scripts/validate-release-8-51.sh"
 /bin/bash -n "$WORK/scripts/validate-audio-overlay-polish-8-51.sh"

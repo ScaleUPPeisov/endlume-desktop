@@ -1,1 +1,1 @@
-ENDLUME 8.45 finalize candidate build 2026-09-03
+ENDLUME 8.45 finalize candidate build 2026-09-03 retry-4 structural-patch

@@ -1,0 +1,54 @@
+name: ENDLUME 8.46 Real Project Discovery
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['candidate/render-stability-8.46']
+    paths: ['.github/workflows/endlume-846-project-discovery.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  discover:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 15
+    steps:
+      - name: Find recent real ENDLUME project manifest
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          OUT="$HOME/.endlume-release-bridge/endlume/acceptance-project.json"
+          TMP="$(mktemp /tmp/endlume-projects.XXXXXX)"
+          : > "$TMP"
+          for root in "$HOME/Desktop" "$HOME/Downloads" "$HOME/Documents" /Volumes/*; do
+            [ -d "$root" ] || continue
+            find "$root" -maxdepth 7 -type f -name '*project.json' -mtime -30 -print 2>/dev/null >> "$TMP" || true
+          done
+          python3 - "$TMP" "$OUT" <<'PY'
+          import json,sys,os,pathlib,time
+          candidates=[]
+          for line in open(sys.argv[1],errors='ignore'):
+              p=line.strip()
+              if not p: continue
+              try:d=json.load(open(p))
+              except Exception: continue
+              pr=d.get('project',{}) if isinstance(d,dict) else {}
+              media=pr.get('media') or []; audio=pr.get('audio') or []
+              if not media or not audio: continue
+              existing=sum(os.path.isfile(x) for x in media+audio)
+              score=(existing==len(media)+len(audio), len(media)==1, len(audio)>=10, len(audio), os.path.getmtime(p))
+              candidates.append((score,p,d,existing,len(media)+len(audio)))
+          if not candidates:
+              print('NO_REAL_PROJECT_FIXTURE_FOUND'); raise SystemExit(0)
+          candidates.sort(reverse=True,key=lambda x:x[0])
+          score,p,d,existing,total=candidates[0]
+          pathlib.Path(sys.argv[2]).parent.mkdir(parents=True,exist_ok=True)
+          pathlib.Path(sys.argv[2]).write_text(json.dumps(d,ensure_ascii=False,indent=2))
+          pr=d.get('project',{}); st=d.get('settings',{})
+          print('FOUND_REAL_PROJECT_FIXTURE')
+          print('media=',len(pr.get('media') or []),'audio=',len(pr.get('audio') or []),'existing_files=',f'{existing}/{total}')
+          print('effects=',sum(bool(x.get('enabled')) for x in d.get('effects') or []),'subscribe=',sum(bool((x.get('effect') or x).get('enabled')) for x in d.get('subscribes') or []))
+          print('fps=',st.get('fps'),'resolution=',f"{st.get('width')}x{st.get('height')}",'duration_hours=',st.get('durationHours') or st.get('duration_hours'))
+          print('fixture_saved=',sys.argv[2])
+          PY

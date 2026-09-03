@@ -15,7 +15,6 @@ fail(){ echo "❌ ENDLUME 8.50 BUILDER: $1" >&2; exit 1; }
 [[ "$FINAL_VERSION" = "1.0.0-alpha.8.50" ]] || fail "release version must be 1.0.0-alpha.8.50, got $FINAL_VERSION"
 mkdir -p "$BASE_ART" "$FINAL_ART"
 
-# Reconstruct exact proven 8.49 first. Stable app is never touched by this build.
 export ENDLUME_RELEASE_ARTIFACT_DIR="$BASE_ART"
 export ENDLUME_RELEASE_VERSION="1.0.0-alpha.8.49"
 export ENDLUME_849_PATCH_REF="release"
@@ -94,13 +93,13 @@ cp "$TAR.sig" "$FINAL_ART/ENDLUME-macos-aarch64.app.tar.gz.sig"
 printf '%s\n' '1.0.0-alpha.8.50' > "$FINAL_ART/version.txt"
 
 grep -Fq 'attempt==1&&encoder_works(app,"hevc_videotoolbox")' src-tauri/src/render.rs || fail "hardware-first selector lost"
-grep -Fq '"-maxrate","12M","-bufsize","64M"' src-tauri/src/render.rs || fail "quality VBV lost"
+grep -Fq '"-q:v","100","-b:v","500k","-maxrate","12M","-bufsize","64M"' src-tauri/src/render.rs || fail "q100 fidelity profile lost"
 grep -Fq 'fn hybrid_video_kbps(_s:&RenderSettings)->u64{500}' src-tauri/src/render.rs || fail "500k changed"
-grep -Fq 'RENDER_CACHE_GENERATION:&str="8.50-speed-quality-v1"' src-tauri/src/render.rs || fail "cache generation lost"
+grep -Fq 'RENDER_CACHE_GENERATION:&str="8.50-speed-quality-q100-v1"' src-tauri/src/render.rs || fail "cache generation lost"
 if grep -Fq 'if t-target<=240.0{t}else{target}' src-tauri/src/render.rs; then fail "song cut cap returned"; fi
 
 echo '@@ENDLUME_PROGRESS|100'
 echo '✅ ENDLUME STUDIO PEISOV 8.50 candidate ready'
-echo '✅ VideoToolbox first on Apple Silicon; libx265 fallback only'
-echo '✅ 500k average + 12M/64M quality headroom'
+echo '✅ VideoToolbox q100 first on Apple Silicon; libx265 fallback only'
+echo '✅ 500k target + 12M/64M I-frame quality headroom'
 echo '✅ whole-track / persistent cache / Effects / Subscribe / updater contracts preserved'

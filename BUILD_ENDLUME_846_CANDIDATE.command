@@ -1,0 +1,78 @@
+#!/bin/bash
+set -Eeuo pipefail
+BASE_DIR="$(cd "$(dirname "$0")" && pwd)"
+BASE="$BASE_DIR/BUILD_ENDLUME_845_SELFHOSTED.command"
+TMP="$(mktemp -d /tmp/endlume-846-builder.XXXXXX)"
+WRAP="$TMP/BUILD_ENDLUME_846_WRAPPED.command"
+cleanup(){ rm -rf "$TMP" >/dev/null 2>&1 || true; }
+trap cleanup EXIT
+fail(){ echo "❌ ENDLUME 8.46 BUILDER: $1" >&2; exit 1; }
+[[ -f "$BASE" ]] || fail "8.45 builder missing"
+
+# Keep 8.45 builder intact. Replace only its final exec so we can patch the generated
+# effective 8.45 builder before it runs/compiles the app.
+python3 - "$BASE" "$WRAP" <<'PY'
+from pathlib import Path
+import sys
+s=Path(sys.argv[1]).read_text(encoding='utf-8')
+needle='exec /bin/bash "$PATCHED"\n'
+if s.count(needle)!=1: raise SystemExit('8.46 wrapper: 8.45 final exec marker missing/non-unique')
+inject=r'''python3 - "$PATCHED" <<'PY846'
+from pathlib import Path
+import sys
+p=Path(sys.argv[1]);s=p.read_text(encoding='utf-8')
+# 1) Apply 8.46 only AFTER successful 8.45 finalization migration/gate in the REAL build tree.
+needle='    "scripts/validate-release-8-45.sh \\\"$FFMPEG\\\" \\\"$FFPROBE\\\"\\n"\n'
+if needle not in s: raise SystemExit('8.46 effective builder: 8.45 runtime gate marker missing')
+insert=needle+(
+'    "mkdir -p scripts\\n"\n'
+'    "gh api -H \\\'Accept: application/vnd.github.raw+json\\\' \\\"/repos/$REPO/contents/scripts/apply-render-stability-8-46.py?ref=candidate/render-stability-8.46\\\" > scripts/apply-render-stability-8-46.py || fail \\\"cannot fetch 8.46 migration\\\"\\n"\n'
+'    "gh api -H \\\'Accept: application/vnd.github.raw+json\\\' \\\"/repos/$REPO/contents/scripts/validate-release-8-46.sh?ref=candidate/render-stability-8.46\\\" > scripts/validate-release-8-46.sh || fail \\\"cannot fetch 8.46 validator\\\"\\n"\n'
+'    "python3 -m py_compile scripts/apply-render-stability-8-46.py\\n"\n'
+'    "python3 scripts/apply-render-stability-8-46.py\\n"\n'
+'    "chmod +x scripts/validate-release-8-46.sh\\n"\n'
+'    "scripts/validate-release-8-46.sh \\\"$FFMPEG\\\" \\\"$FFPROBE\\\"\\n"\n'
+)
+s=s.replace(needle,insert,1)
+# 2) Final Stage 7 validates the exact 8.46 tree, not only 8.45.
+old=(
+'    \'stage "7/10 Проверяю ENDLUME 8.45 • FAST FINALIZE + полный 8.44 regression" 58\\n\'\n'
+'    \'chmod +x scripts/validate-release-8-45.sh\\n\'\n'
+'    \'scripts/validate-release-8-45.sh "$FFMPEG" "$FFPROBE"\\n\'\n'
+'    \'gh api -H \\\'Accept: application/vnd.github.raw+json\\\' "/repos/$REPO/contents/scripts/validate-motion-ui-8-41.mjs?ref=release" > scripts/validate-motion-ui-8-41.mjs\\n\'\n'
+'    \'node scripts/validate-motion-ui-8-41.mjs\\n\'\n'
+)
+new=(
+'    \'stage "7/10 Проверяю ENDLUME 8.46 • RENDER STABILITY + полный 8.45 regression" 58\\n\'\n'
+'    \'chmod +x scripts/validate-release-8-46.sh\\n\'\n'
+'    \'scripts/validate-release-8-46.sh "$FFMPEG" "$FFPROBE"\\n\'\n'
+'    \'gh api -H \\\'Accept: application/vnd.github.raw+json\\\' "/repos/$REPO/contents/scripts/validate-motion-ui-8-41.mjs?ref=release" > scripts/validate-motion-ui-8-41.mjs\\n\'\n'
+'    \'node scripts/validate-motion-ui-8-41.mjs\\n\'\n'
+)
+if old not in s: raise SystemExit('8.46 effective builder: final 8.45 Stage 7 block missing')
+s=s.replace(old,new,1)
+# 3) The final artifact identity must be 8.46. 8.46 migration itself updates app source identity.
+s=s.replace('1.0.0-alpha.8.45','1.0.0-alpha.8.46')
+# 4) Strengthen the CORE gates so an old migration cannot overwrite 8.46 later.
+core='    \'grep -Fq \\\'validate-release-8-45.sh\\\' "$REAL" || fail "8.45 final validator missing"\\n\'\n'
+if core not in s: raise SystemExit('8.46 effective builder: 8.45 CORE validator gate missing')
+s=s.replace(core,core+'    \'grep -Fq \\\'apply-render-stability-8-46.py\\\' "$REAL" || fail "8.46 migration missing from REAL builder"\\n\'\n    \'grep -Fq \\\'validate-release-8-46.sh\\\' "$REAL" || fail "8.46 validator missing from REAL builder"\\n\'\n',1)
+s=s.replace('✅ ENDLUME 8.45 signed updater artifact ready','✅ ENDLUME 8.46 candidate signed artifact ready')
+s=s.replace('✅ ENDLUME 8.45 post-8.44 FINALIZE transformation PASS','✅ ENDLUME 8.46 post-8.45 RENDER STABILITY transformation PASS')
+p.write_text(s,encoding='utf-8')
+PY846
+/bin/bash -n "$PATCHED" || fail "8.46 transformed effective builder syntax failed"
+grep -Fq 'apply-render-stability-8-46.py' "$PATCHED" || fail "8.46 migration wiring missing"
+grep -Fq 'validate-release-8-46.sh' "$PATCHED" || fail "8.46 validator wiring missing"
+grep -Fq '1.0.0-alpha.8.46' "$PATCHED" || fail "8.46 identity wiring missing"
+echo '✅ 8.46 candidate wraps proven 8.45 builder'
+echo '✅ 8.45 final FFprobe fix completes before 8.46 stability migration'
+exec /bin/bash "$PATCHED"
+'''
+s=s.replace(needle,inject,1)
+Path(sys.argv[2]).write_text(s,encoding='utf-8')
+PY
+chmod +x "$WRAP"
+/bin/bash -n "$WRAP" || fail "wrapper syntax failed"
+grep -Fq 'PY846' "$WRAP" || fail "effective-tree transform missing"
+exec /bin/bash "$WRAP"

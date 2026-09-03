@@ -106,3 +106,4 @@ echo '✅ ENDLUME STUDIO PEISOV 8.51 candidate ready'
 echo '✅ full-project manifest-only assembly; no duplicate multi-minute normal visual files'
 echo '✅ VideoToolbox q100 / 500k / 1920x1080 / whole-track preserved'
 echo '✅ signed updater archive contains strict-valid ENDLUME STUDIO PEISOV.app'
+# candidate trigger: full-project gate required before any stable promotion

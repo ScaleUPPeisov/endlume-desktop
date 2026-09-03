@@ -1,0 +1,34 @@
+name: ENDLUME 8.49 Inspect Effective 8.47
+on:
+  push:
+    branches: [candidate/performance-fidelity-audio-8.49]
+    paths: ['.github/workflows/endlume-849-inspect.yml']
+jobs:
+  inspect:
+    runs-on: [self-hosted, macOS, ARM64]
+    steps:
+      - name: Inspect exact reconstructed workspace
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          WORK="$HOME/.endlume-local-builder/endlume-desktop-8.40-bootstrap"
+          R="$WORK/src-tauri/src/render.rs"
+          test -f "$R"
+          grep -Fq '1.0.0-alpha.8.47' "$WORK/package.json"
+          python3 - "$R" <<'PY'
+          from pathlib import Path
+          import sys
+          s=Path(sys.argv[1]).read_text()
+          names=['hybrid_master_seconds','hybrid_fidelity_args','choose_hybrid_encoder','build_lossless_processed_audio_cycle','smart_final_duration','assemble_visual','render_hybrid','render_attempt']
+          for name in names:
+              p=s.find(name)
+              print(f'\n===== {name} @ {p} =====')
+              if p<0: continue
+              a=s.rfind('\n',0,max(0,p-1500)); b=s.find('\n\n',p+3500)
+              if b<0: b=min(len(s),p+5000)
+              print(s[max(0,a):min(len(s),b)])
+          print('\n===== CACHE / WORK CALLS =====')
+          for line in s.splitlines():
+              if any(k in line for k in ['assemble_visual(', 'work=', 'cache_dir', 'VisualSource::', 'final_duration=', 'materialize_continuous_audio']):
+                  print(line)
+          PY

@@ -7,15 +7,18 @@ R="$ROOT/src-tauri/src/render.rs"
 fail(){ echo "FAIL 8.51: $1" >&2; exit 1; }
 [[ -f "$R" ]] || fail "render.rs missing"
 
-# Immutable fidelity/audio/stability contracts.
+# Immutable quality/audio/stability contracts plus the compact size profile.
 grep -Fq 'attempt==1&&encoder_works(app,"hevc_videotoolbox")' "$R" || fail "VideoToolbox not hardware-first"
-grep -Fq '"-prio_speed","0","-power_efficient","0","-q:v","100","-b:v","500k","-maxrate","12M","-bufsize","64M"' "$R" || fail "q100 fidelity profile changed"
-grep -Fq 'fn hybrid_video_kbps(_s:&RenderSettings)->u64{500}' "$R" || fail "500k budget changed"
+grep -Fq '"-prio_speed","0","-power_efficient","0","-b:v","400k","-maxrate","12M","-bufsize","64M"' "$R" || fail "400k compact fidelity profile missing"
+! grep -Fq '"-q:v","100"' "$R" || fail "q100 quality mode still bypasses size control"
+grep -Fq 'fn hybrid_video_kbps(_s:&RenderSettings)->u64{400}' "$R" || fail "400k size budget missing"
+grep -Fq 'RENDER_CACHE_GENERATION:&str="8.51-size400-fidelity-v1"' "$R" || fail "size-profile cache generation missing"
 grep -Fq 'resolved_job.settings.width=1920;' "$R" || fail "1920 lock lost"
 grep -Fq 'resolved_job.settings.height=1080;' "$R" || fail "1080 lock lost"
 grep -Fq 'FFMPEG_STALL_TIMEOUT_SECS:u64=120' "$R" || fail "watchdog changed"
 grep -Fq 'ffprobe_output_timeout(app,args,Duration::from_secs(12))' "$R" || fail "bounded FFprobe changed"
 grep -Fq 'let idx=i%durations.len();' "$R" || fail "whole-track math lost"
+grep -Fq 'let duration_mode=if smart_repeat_project(job){"whole-track"}else{job.settings.duration_mode.as_str()};' "$R" || fail "one-image whole-song policy lost"
 ! grep -Fq 'if t-target<=240.0{t}else{target}' "$R" || fail "song truncation cap returned"
 
 # Full-project speed architecture.
@@ -40,11 +43,11 @@ cleanup(){ rm -rf "$TMP" "$OUTROOT" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 
 python3 - "$FFMPEG" "$FFPROBE" "$TMP" "$OUTROOT" <<'PY'
-import pathlib,subprocess,sys,time,re,os
+import pathlib,subprocess,sys,time,re
 ff,fp,tmp,outroot=sys.argv[1:]
 tmp=pathlib.Path(tmp); outroot=pathlib.Path(outroot)
-ref=tmp/'reference.png'; master=tmp/'master60.mp4'; sub=tmp/'subscribe5.mp4'; frag=tmp/'fragment55.mp4'; audio=tmp/'audio60.m4a'; manifest=tmp/'visual-concat.txt'
-out1=outroot/'ENDLUME-851-cold.mp4'; out2=outroot/'ENDLUME-851-warm.mp4'
+ref=tmp/'reference.png'; quality=tmp/'quality12.mp4'; master=tmp/'master60.mp4'; sub=tmp/'subscribe5.mp4'; frag=tmp/'fragment55.mp4'; audio=tmp/'audio60.m4a'; manifest=tmp/'visual-concat.txt'
+out1=outroot/'ENDLUME-851-cold.mov'; out2=outroot/'ENDLUME-851-warm.mov'
 
 def run(args,capture=False):
     return subprocess.run(args,check=True,stdout=subprocess.PIPE if capture else subprocess.DEVNULL,stderr=subprocess.PIPE if capture else subprocess.DEVNULL,text=capture)
@@ -52,46 +55,59 @@ def run(args,capture=False):
 def probe(path,entries):
     return run([fp,'-v','error','-show_entries',entries,'-of','default=nw=1',str(path)],capture=True).stdout
 
-# One sharp still + moving Effect, matching the production one-image shape.
+# Sharp static reference matching the user's single-image workflow.
 run([ff,'-hide_banner','-loglevel','error','-f','lavfi','-i','testsrc2=size=1920x1080:rate=1','-frames:v','1','-y',str(ref)])
-profile=['-c:v','hevc_videotoolbox','-realtime','1','-prio_speed','0','-power_efficient','0','-q:v','100','-b:v','500k','-maxrate','12M','-bufsize','64M','-tag:v','hvc1','-pix_fmt','yuv420p']
+profile=['-c:v','hevc_videotoolbox','-realtime','1','-prio_speed','0','-power_efficient','0','-b:v','400k','-maxrate','12M','-bufsize','64M','-tag:v','hvc1','-pix_fmt','yuv420p']
+
+# Dedicated fidelity gate: no moving overlay, compare the decoded first frame to
+# the same sharp source in a common yuv420p domain.
+run([ff,'-hide_banner','-loglevel','error','-loop','1','-framerate','60','-i',str(ref),'-t','12','-an',*profile,'-g','720','-y',str(quality)])
+ss=run([ff,'-hide_banner','-i',str(ref),'-i',str(quality),'-lavfi',"[0:v]format=yuv420p[r];[1:v]select='eq(n,0)',format=yuv420p[t];[r][t]ssim",'-frames:v','1','-f','null','-'],capture=True).stderr
+vals=re.findall(r'All:([0-9.]+)',ss)
+ssim=float(vals[-1]) if vals else 0.0
+if ssim<0.995: raise SystemExit(f'FAIL 8.51: static-image SSIM {ssim:.6f} < 0.995 at compact 400k profile')
+
+# Representative one-image + moving Effect master for real size/speed pressure.
 fc="[0:v]scale=1920:1080:flags=lanczos,format=yuv420p[bg];[1:v]scale=480:270,format=rgba,colorchannelmixer=aa=0.22[fx];[bg][fx]overlay=x='mod(t*90,1440)':y=760:shortest=1[outv]"
 cold_start=time.monotonic()
 run([ff,'-hide_banner','-loglevel','error','-loop','1','-framerate','60','-i',str(ref),'-f','lavfi','-i','testsrc2=size=480x270:rate=60','-filter_complex',fc,'-map','[outv]','-t','60','-an',*profile,'-g','3600','-y',str(master)])
-# One reusable 5s Subscribe composite. Repeated occurrences must reference this clip, not re-encode it.
-subfc="[0:v]setpts=PTS-STARTPTS[bg];[1:v]scale=420:120,format=rgba,colorchannelmixer=aa=0.85[sub];[bg][sub]overlay=x=(W-w)/2:y=H-h-120:shortest=1[outv]"
+# One reusable 5s Subscribe composite. Repeated occurrences reference this clip.
+subfc="[0:v]setpts=PTS-STARTPTS[bg];[1:v]scale=420:120,format=rgba,colorchannelmixer=aa=1.0[sub];[bg][sub]overlay=x=(W-w)/2:y=H-h-120:shortest=1[outv]"
 run([ff,'-hide_banner','-loglevel','error','-stream_loop','-1','-i',str(master),'-f','lavfi','-i','testsrc2=size=420x120:rate=60','-filter_complex',subfc,'-map','[outv]','-t','5','-an',*profile,'-g','300','-y',str(sub)])
-# Only a small boundary fragment is materialized; the 595s normal interval is never copied as one file.
 run([ff,'-hide_banner','-loglevel','error','-i',str(master),'-t','55','-an','-c:v','copy','-avoid_negative_ts','make_zero','-y',str(frag)])
-run([ff,'-hide_banner','-loglevel','error','-f','lavfi','-i','sine=frequency=220:sample_rate=48000','-t','60','-c:a','aac','-b:a','192k','-ar','48000','-ac','2','-y',str(audio)])
+# Worst normal source-music case: HQ 320k audio. Runtime does NOT change/recompress
+# the user's music to satisfy the size target.
+run([ff,'-hide_banner','-loglevel','error','-f','lavfi','-i','sine=frequency=220:sample_rate=48000','-t','60','-c:a','aac','-b:a','320k','-ar','48000','-ac','2','-y',str(audio)])
+
+# 12 full 10-minute cycles = 7200s, then 5 cached master minutes = 7500s (2:05).
 lines=[]
 for _ in range(12):
     lines += [f"file '{master.as_posix()}'"]*9
     lines += [f"file '{frag.as_posix()}'",f"file '{sub.as_posix()}'"]
+lines += [f"file '{master.as_posix()}'"]*5
 manifest.write_text('\n'.join(lines)+'\n')
 if len(lines)>=200: raise SystemExit(f'FAIL 8.51: manifest unexpectedly large: {len(lines)} entries')
 
 def final_mux(out):
     t=time.monotonic()
-    run([ff,'-hide_banner','-loglevel','error','-f','concat','-safe','0','-i',str(manifest),'-stream_loop','-1','-i',str(audio),'-t','7200','-map','0:v:0','-map','1:a:0','-c:v','copy','-c:a','copy','-video_track_timescale','60000','-y',str(out)])
+    run([ff,'-hide_banner','-loglevel','error','-f','concat','-safe','0','-i',str(manifest),'-stream_loop','-1','-i',str(audio),'-t','7500','-map','0:v:0','-map','1:a:0','-c:v','copy','-c:a','copy','-video_track_timescale','60000','-y',str(out)])
     return time.monotonic()-t
 
 cold_mux=final_mux(out1); cold_total=time.monotonic()-cold_start
 warm=final_mux(out2)
-if warm>30.0: raise SystemExit(f'FAIL 8.51: physical 2h warm full mux {warm:.3f}s > 30s')
+if warm>30.0: raise SystemExit(f'FAIL 8.51: physical 2h05 warm full mux {warm:.3f}s > 30s')
 if cold_total>60.0: raise SystemExit(f'FAIL 8.51: representative first-cache full project {cold_total:.3f}s > 60s')
-info=probe(out2,'format=duration,size:stream=codec_name,width,height,avg_frame_rate')
+info=probe(out2,'format=duration,size,bit_rate:stream=codec_name,width,height,avg_frame_rate,bit_rate')
 if 'codec_name=hevc' not in info or 'width=1920' not in info or 'height=1080' not in info: raise SystemExit('FAIL 8.51: final benchmark lost HEVC 1920x1080')
 m=re.search(r'duration=([0-9.]+)',info); dur=float(m.group(1)) if m else 0
-if abs(dur-7200)>2.0: raise SystemExit(f'FAIL 8.51: final duration {dur:.3f}s != 7200s')
-size=out2.stat().st_size/1024/1024
-# Synthetic source is deliberately more dynamic than the user's mostly-static image;
-# this is a sanity bound, while production keeps the exact 500k budget above.
-if size<300 or size>850: raise SystemExit(f'FAIL 8.51: representative 2h payload unreasonable: {size:.1f} MiB')
-print(f'PASS: 8.51 physical full-project cold={cold_total:.3f}s (mux={cold_mux:.3f}s) warm={warm:.3f}s size={size:.1f}MiB entries={len(lines)} output={outroot}')
+if abs(dur-7500)>2.0: raise SystemExit(f'FAIL 8.51: final duration {dur:.3f}s != 7500s')
+size_mb=out2.stat().st_size/1_000_000
+if size_mb<500 or size_mb>700: raise SystemExit(f'FAIL 8.51: physical 2h05 output {size_mb:.1f} MB outside required 500-700 MB')
+print(f'PASS: 8.51 physical full-project SSIM={ssim:.6f} cold={cold_total:.3f}s (mux={cold_mux:.3f}s) warm={warm:.3f}s size={size_mb:.1f}MB entries={len(lines)} output={outroot}')
 PY
 
-echo '✅ ENDLUME 8.51 FULL PROJECT SPEED GATE PASS'
+echo '✅ ENDLUME 8.51 FULL PROJECT SPEED + SIZE + FIDELITY GATE PASS'
 echo '✅ one-image long normal intervals are manifest references, not duplicate multi-minute MP4 files'
-echo '✅ physical 2h warm assembly <=30s; representative first-cache <=60s'
-echo '✅ q100 / 500k / 1920x1080 / whole-track / watchdog / updater identity preserved'
+echo '✅ physical 2h05 warm assembly <=30s; representative first-cache <=60s'
+echo '✅ physical 2h05 output is strictly 500-700 MB with HQ320 audio pressure'
+echo '✅ static-image SSIM >=0.995; 400k HEVC size-control profile; whole-song audio preserved'

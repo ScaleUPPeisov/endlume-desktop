@@ -1,0 +1,53 @@
+name: ENDLUME 8.46 Binary Backup Export
+
+on:
+  push:
+    branches:
+      - backup/endlume-8.46-final-20260903
+    paths:
+      - '.github/workflows/endlume-846-binary-backup.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  export-binary:
+    name: macOS ARM64 • Export signed 8.46 application
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout immutable recovery branch
+        uses: actions/checkout@v4
+        with:
+          ref: backup/endlume-8.46-final-20260903
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify and stage signed application backup
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          VERSION='1.0.0-alpha.8.46'
+          SRC="$HOME/.endlume-release-bridge/endlume/ENDLUME_Studio_${VERSION}_MAC.zip"
+          OUT="$RUNNER_TEMP/endlume-846-binary-backup"
+          mkdir -p "$OUT"
+          test -s "$SRC"
+          cp "$SRC" "$OUT/ENDLUME_Studio_${VERSION}_MAC.zip"
+          shasum -a 256 "$OUT/ENDLUME_Studio_${VERSION}_MAC.zip" > "$OUT/ENDLUME_Studio_${VERSION}_MAC_SHA256.txt"
+          /usr/bin/unzip -l "$OUT/ENDLUME_Studio_${VERSION}_MAC.zip" | grep -Fq 'ENDLUME Studio.app/'
+          echo 'PASS: signed ENDLUME Studio.app backup staged'
+
+      - name: Upload binary backup
+        uses: actions/upload-artifact@v4
+        with:
+          name: ENDLUME_Studio_1.0.0-alpha.8.46_SIGNED_MAC_BACKUP_2026-09-03
+          path: |
+            ${{ runner.temp }}/endlume-846-binary-backup/ENDLUME_Studio_1.0.0-alpha.8.46_MAC.zip
+            ${{ runner.temp }}/endlume-846-binary-backup/ENDLUME_Studio_1.0.0-alpha.8.46_MAC_SHA256.txt
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Complete
+        run: echo '✅ ENDLUME 8.46 signed application backup uploaded'

@@ -1,11 +1,11 @@
 {
   "enabled": true,
-  "generation": 22,
+  "generation": 23,
   "app": "endlume",
   "channel": "stable",
-  "version": "1.0.0-alpha.8.46",
-  "builder": "BUILD_ENDLUME_846_SELFHOSTED.command",
-  "notes": "Render Pipeline Stability on top of verified ENDLUME 8.45. Adds a progress-aware FFmpeg watchdog based on out_time/frame/total_size with a 120-second no-progress threshold, exactly one controlled same-stage retry, bounded FFmpeg/FFprobe helpers and Effects/Subscribe cache processes, atomic .partial output promotion, Subscribe plan/segment diagnostics and guards, and preservation of a successfully muxed MP4 when only final metadata verification fails. Preserves the proven 500k size/speed budget, exact 1920x1080 YouTube Fill, real CFR30/CFR60, gapless/crossfade audio, Effects, Subscribe, VYRON bridge, manual workflow and official signed Tauri updater.",
+  "version": "1.0.0-alpha.8.47",
+  "builder": "BUILD_ENDLUME_847_SELFHOSTED.command",
+  "notes": "M1 Hardware-First Render Performance on top of verified ENDLUME 8.46. On macOS Apple Silicon the one-image render path now chooses Apple hevc_videotoolbox before CPU libx265, uses realtime/prio_speed hardware encoding while preserving the 500k video budget, exact 1920x1080 YouTube Fill/cover without black bars or stretching, and removes the unnecessary +faststart whole-file relocation from the final stream-copy mux. Preserves 8.46 progress-aware FFmpeg watchdog, bounded metadata-only FFprobe, atomic outputs, queue recovery, high-quality audio/crossfade/gapless path, Effects, Subscribe, VYRON bridge and official signed Tauri updater. CPU libx265 remains fallback only.",
   "platforms": [
     "darwin-aarch64"
   ]

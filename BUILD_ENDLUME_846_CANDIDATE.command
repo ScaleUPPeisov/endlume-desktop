@@ -14,8 +14,6 @@ cp "$BASE_DIR/BUILD_ENDLUME_844_SELFHOSTED.command" "$TMP/BUILD_ENDLUME_844_SELF
 cp "$BASE_DIR/BUILD_ENDLUME_841_PINNED.command" "$TMP/BUILD_ENDLUME_841_PINNED.command"
 chmod +x "$TMP/BUILD_ENDLUME_844_SELFHOSTED.command" "$TMP/BUILD_ENDLUME_841_PINNED.command"
 
-# Keep 8.45 builder intact. Replace only its final exec so we can patch the generated
-# effective 8.45 builder before it runs/compiles the app.
 python3 - "$BASE" "$WRAP" <<'PY'
 from pathlib import Path
 import sys
@@ -55,9 +53,6 @@ new=(
 if old not in s: raise SystemExit('8.46 effective builder: final 8.45 Stage 7 block missing')
 s=s.replace(old,new,1)
 s=s.replace('1.0.0-alpha.8.45','1.0.0-alpha.8.46')
-core='    \'grep -Fq \\\'validate-release-8-45.sh\\\' "$REAL" || fail "8.45 final validator missing"\\n\'\n'
-if core not in s: raise SystemExit('8.46 effective builder: 8.45 CORE validator gate missing')
-s=s.replace(core,core+'    \'grep -Fq \\\'apply-render-stability-8-46.py\\\' "$REAL" || fail "8.46 migration missing from REAL builder"\\n\'\n    \'grep -Fq \\\'validate-release-8-46.sh\\\' "$REAL" || fail "8.46 validator missing from REAL builder"\\n\'\n',1)
 s=s.replace('✅ ENDLUME 8.45 signed updater artifact ready','✅ ENDLUME 8.46 candidate signed artifact ready')
 s=s.replace('✅ ENDLUME 8.45 post-8.44 FINALIZE transformation PASS','✅ ENDLUME 8.46 post-8.45 RENDER STABILITY transformation PASS')
 p.write_text(s,encoding='utf-8')

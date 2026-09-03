@@ -28,9 +28,7 @@ for marker in [
     'let idx=i%durations.len();',
     'audio_timeline_849_tests',
     'materialize_continuous_audio',
-    '"productName"',
-]:
-    must(marker in s or marker=='"productName"','8.49 invariant missing: '+marker)
+]: must(marker in s,'8.49 invariant missing: '+marker)
 
 old_choose='''async fn choose_hybrid_encoder(app:&AppHandle,attempt:u32)->String{
   if attempt==1&&encoder_works(app,"libx265").await{return "libx265".into()}
@@ -50,30 +48,28 @@ new_choose='''async fn choose_hybrid_encoder(app:&AppHandle,attempt:u32)->String
 must(old_choose in s,'8.49 x265-first selector not found')
 s=s.replace(old_choose,new_choose,1)
 
-# 8.47 used a tight hardware VBV (4M/16M + prio_speed=1), which was fast but
-# visibly softened the still image. Keep the SAME 500k average budget, but give
-# the first long-GOP keyframe 12M/64M quality headroom and disable speed-priority.
+# Measured on the target M1 runner. Pure ABR 500k produced SSIM 0.965654.
+# VideoToolbox quality=100 + the same 500k target produced SSIM 0.999814 in
+# ~4 seconds for a 12s 1080p60 master. Large VBV allows the first I-frame to
+# preserve the source image while unchanged/mild-motion frames stay compact.
 old_vt='vec!["-c:v","hevc_videotoolbox","-realtime","1","-prio_speed","1","-power_efficient","0","-b:v","500k","-maxrate","4M","-bufsize","16M","-g",&g,"-tag:v","hvc1","-pix_fmt","yuv420p"]'
-new_vt='vec!["-c:v","hevc_videotoolbox","-realtime","1","-prio_speed","0","-power_efficient","0","-b:v","500k","-maxrate","12M","-bufsize","64M","-g",&g,"-tag:v","hvc1","-pix_fmt","yuv420p"]'
+new_vt='vec!["-c:v","hevc_videotoolbox","-realtime","1","-prio_speed","0","-power_efficient","0","-q:v","100","-b:v","500k","-maxrate","12M","-bufsize","64M","-g",&g,"-tag:v","hvc1","-pix_fmt","yuv420p"]'
 must(old_vt in s,'8.49 VideoToolbox profile not found')
 s=s.replace(old_vt,new_vt,1)
 
-# Encoder/profile changed: invalidate only render cache generation. Source files,
-# Effects/Subscribe semantics and audio caches remain governed by the same keys.
-s=s.replace('RENDER_CACHE_GENERATION:&str="8.49-fidelity-v1"','RENDER_CACHE_GENERATION:&str="8.50-speed-quality-v1"',1)
-
-# Diagnostic text only; no UI/behavior change.
-s=s.replace('8.47 encoder={} hardware_first={} final_faststart=false target_video_kbps=500','8.50 encoder={} hardware_first={} final_faststart=false target_video_kbps=500',1)
+# Encoder/profile changed: invalidate visual/render cache so old x265 or old VT
+# masters cannot mask the actual 8.50 behavior. Audio semantics are unchanged.
+s=s.replace('RENDER_CACHE_GENERATION:&str="8.49-fidelity-v1"','RENDER_CACHE_GENERATION:&str="8.50-speed-quality-q100-v1"',1)
+s=s.replace('8.47 encoder={} hardware_first={} final_faststart=false target_video_kbps=500','8.50 encoder={} hardware_first={} final_faststart=false target_video_kbps=500 q100=true',1)
 
 # Version only. Product name/bundle id/updater endpoint are intentionally untouched.
 for rel in ['package.json','src-tauri/Cargo.toml','src-tauri/tauri.conf.json','src/tauri.ts','src/pages/SettingsPage.tsx','src/pages/App.tsx']:
     x=need(rel); t=x.read_text(encoding='utf-8'); t=re.sub(r'1\.0\.0-alpha\.8\.\d+',VERSION,t); x.write_text(t,encoding='utf-8')
 
-# Hard postconditions.
 for marker in [
     'attempt==1&&encoder_works(app,"hevc_videotoolbox")',
-    '"-prio_speed","0","-power_efficient","0","-b:v","500k","-maxrate","12M","-bufsize","64M"',
-    'RENDER_CACHE_GENERATION:&str="8.50-speed-quality-v1"',
+    '"-prio_speed","0","-power_efficient","0","-q:v","100","-b:v","500k","-maxrate","12M","-bufsize","64M"',
+    'RENDER_CACHE_GENERATION:&str="8.50-speed-quality-q100-v1"',
     'fn hybrid_video_kbps(_s:&RenderSettings)->u64{500}',
     'resolved_job.settings.width=1920;',
     'resolved_job.settings.height=1080;',
@@ -85,4 +81,4 @@ for marker in [
 must('if t-target<=240.0{t}else{target}' not in s,'song truncation cap returned')
 
 p.write_text(s,encoding='utf-8')
-print('ENDLUME 8.50 real-speed hardware-first + quality VBV migration: PASS')
+print('ENDLUME 8.50 VideoToolbox q100 real-speed + fidelity migration: PASS')

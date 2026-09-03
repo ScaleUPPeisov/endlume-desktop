@@ -1,0 +1,204 @@
+name: ENDLUME 8.45 Performance Finalize Release
+
+on:
+  push:
+    branches: [endlume-v845-performance-finalize-release]
+    paths: ['endlume-845-release-trigger.txt']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: endlume-845-performance-finalize-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: macos-15
+    timeout-minutes: 90
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION: 1.0.0-alpha.8.45
+      TAG: endlume-v1.0.0-alpha.8.45
+      ASSET: ENDLUME-Studio-1.0.0-alpha.8.45-macos-arm64.zip
+      CHECKSUM: ENDLUME-Studio-1.0.0-alpha.8.45-macos-arm64.zip.sha256
+    steps:
+      - name: Checkout 8.45 candidate
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify candidate scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF_NAME" = 'endlume-v845-performance-finalize-release'
+          python3 - <<'PY'
+          import json
+          x=json.load(open('updates/release-candidate.json'))
+          assert x['version']=='1.0.0-alpha.8.45'
+          assert x['releaseTag']=='endlume-v1.0.0-alpha.8.45'
+          assert x['asset']=='ENDLUME-Studio-1.0.0-alpha.8.45-macos-arm64.zip'
+          print('8.45 candidate metadata: PASS')
+          PY
+          python3 -m py_compile scripts/apply-finalize-performance-8-45.py
+          bash -n scripts/validate-release-8-45.sh
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Setup Rust ARM64
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          cache-on-failure: true
+
+      - name: Ensure FFmpeg
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v ffprobe >/dev/null 2>&1; then brew install ffmpeg; fi
+          ffmpeg -hide_banner -version | head -1
+          ffprobe -hide_banner -version | head -1
+
+      - name: Prepare deterministic 8.45 builder
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          src=Path('scripts/build-endlume-840-fast-ci.sh').read_text()
+          src=src.replace("VERSION='1.0.0-alpha.8.40'","VERSION='1.0.0-alpha.8.45'",1)
+          src=src.replace('ENDLUME 8.40 FAST CI','ENDLUME 8.45 FINALIZE CI')
+          src=src.replace('"version": "1\\.0\\.0-alpha\\.8\\.40"','"version": "1\\.0\\.0-alpha\\.8\\.45"',1)
+          needle='python3 scripts/apply-vyron-bridge-8-40.py\nnpm run check'
+          repl='python3 scripts/apply-vyron-bridge-8-40.py\npython3 scripts/apply-finalize-performance-8-45.py\nchmod +x scripts/validate-release-8-45.sh\nscripts/validate-release-8-45.sh\nnpm run check'
+          if needle not in src: raise SystemExit('8.45 injection marker missing')
+          src=src.replace(needle,repl,1)
+          Path('/tmp/build-endlume-845-ci.sh').write_text(src)
+          PY
+          chmod +x /tmp/build-endlume-845-ci.sh
+          grep -Fq "VERSION='1.0.0-alpha.8.45'" /tmp/build-endlume-845-ci.sh
+          grep -Fq 'apply-finalize-performance-8-45.py' /tmp/build-endlume-845-ci.sh
+
+      - name: Build and test ENDLUME 8.45
+        shell: bash
+        env:
+          ENDLUME_CI_ARTIFACT_DIR: ${{ github.workspace }}/release-out
+          ENDLUME_CI_ASSET_NAME: ${{ env.ASSET }}
+        run: |
+          set -euo pipefail
+          /tmp/build-endlume-845-ci.sh
+
+      - name: Verify final package and no 97 percent deadlock contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd release-out
+          shasum -a 256 -c "$CHECKSUM"
+          TMP="$(mktemp -d)"
+          ditto -x -k "$ASSET" "$TMP"
+          APP="$(find "$TMP" -maxdepth 4 -type d -name 'ENDLUME Studio.app' -print -quit)"
+          test -n "$APP" && test -d "$APP/Contents"
+          test "$(plutil -extract CFBundleIdentifier raw -o - "$APP/Contents/Info.plist")" = 'studio.endlume.desktop'
+          test "$(plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist")" = "$VERSION"
+          codesign --verify --deep --strict "$APP"
+          BIN="$(find "$APP/Contents/MacOS" -maxdepth 1 -type f -perm -111 -print -quit)"
+          test -n "$BIN" && file "$BIN" | grep -q 'arm64'
+          grep -Fq 'FFPROBE_TIMEOUT_SECS' ../src-tauri/src/render.rs
+          grep -Fq '"final-verify"' ../src-tauri/src/render.rs
+          grep -Fq '"-c:v","copy","-c:a","copy"' ../src-tauri/src/render.rs
+          rm -rf "$TMP"
+          echo 'ENDLUME 8.45 package/identity/codesign/finalize contract: PASS'
+
+      - name: Synthetic finalize smoke with bounded FFprobe
+        shell: bash
+        run: |
+          set -euo pipefail
+          FF=$(command -v ffmpeg); FP=$(command -v ffprobe); D=$(mktemp -d)
+          "$FF" -hide_banner -loglevel error -f lavfi -i 'color=c=0x182038:size=1920x1080:rate=60' -f lavfi -i 'sine=frequency=440:sample_rate=48000' -t 3 -c:v h264_videotoolbox -b:v 700k -c:a aac -b:a 320k -y "$D/reference.mp4"
+          python3 - "$FP" "$D/reference.mp4" <<'PY'
+          import subprocess,sys,time,json
+          fp,path=sys.argv[1:]
+          t=time.time()
+          p=subprocess.run([fp,'-v','error','-show_entries','format=duration:stream=codec_type,width,height','-of','json',path],capture_output=True,text=True,timeout=15,check=True)
+          x=json.loads(p.stdout); assert float(x['format']['duration'])>2.5
+          assert any(s.get('codec_type')=='video' and s.get('width')==1920 and s.get('height')==1080 for s in x['streams'])
+          assert any(s.get('codec_type')=='audio' for s in x['streams'])
+          assert time.time()-t < 15
+          print('Bounded FFprobe synthetic finalize: PASS')
+          PY
+          rm -rf "$D"
+
+      - name: Publish GitHub Release
+        shell: bash
+        run: |
+          set -euo pipefail
+          NOTES="$(python3 - <<'PY'
+          import json
+          print(json.load(open('updates/release-candidate.json'))['notes'])
+          PY
+          )"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" "release-out/$ASSET" "release-out/$CHECKSUM" --repo "$GITHUB_REPOSITORY" --clobber
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --title "ENDLUME Studio $VERSION" --notes "$NOTES"
+          else
+            gh release create "$TAG" "release-out/$ASSET" "release-out/$CHECKSUM" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "ENDLUME Studio $VERSION" --notes "$NOTES"
+          fi
+
+      - name: Promote tested source and live updater
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin release
+          BASE=$(git rev-parse origin/release)
+          git merge-base --is-ancestor "$BASE" HEAD
+          git push origin HEAD:release
+          git fetch origin release
+          rm -rf /tmp/endlume-release-845
+          git worktree add /tmp/endlume-release-845 origin/release
+          cp updates/release-candidate.json /tmp/endlume-release-845/updates/latest.json
+          cd /tmp/endlume-release-845
+          git config user.name 'ENDLUME Release Bot'
+          git config user.email 'actions@users.noreply.github.com'
+          git add updates/latest.json
+          if ! git diff --cached --quiet; then
+            git commit -m 'release(endlume): promote 8.45 live updater'
+            git push origin HEAD:release
+          fi
+
+      - name: Verify published release and live updater
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json tagName,isDraft,isPrerelease,assets > /tmp/endlume845-release.json
+          python3 - <<'PY'
+          import json,os,subprocess
+          x=json.load(open('/tmp/endlume845-release.json'))
+          assert x['tagName']==os.environ['TAG'] and not x['isDraft'] and not x['isPrerelease']
+          names={a['name'] for a in x['assets']}; assert os.environ['ASSET'] in names and os.environ['CHECKSUM'] in names
+          print('8.45 GitHub release assets: PASS')
+          PY
+          git fetch origin release
+          git show origin/release:updates/latest.json >/tmp/endlume845-latest.json
+          python3 - <<'PY'
+          import json,os
+          x=json.load(open('/tmp/endlume845-latest.json'))
+          assert x['version']==os.environ['VERSION'] and x['releaseTag']==os.environ['TAG'] and x['asset']==os.environ['ASSET']
+          print('ENDLUME live updater 8.45: PASS')
+          PY
+
+      - name: Upload CI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ENDLUME-1.0.0-alpha.8.45-macos-arm64
+          path: release-out/*
+          if-no-files-found: error

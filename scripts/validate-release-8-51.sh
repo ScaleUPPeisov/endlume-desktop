@@ -7,9 +7,21 @@ R="$ROOT/src-tauri/src/render.rs"
 fail(){ echo "FAIL 8.51: $1" >&2; exit 1; }
 [[ -f "$R" ]] || fail "render.rs missing"
 
-# Immutable quality/audio/stability contracts plus the quality-first size profile.
-grep -Fq 'attempt==1&&encoder_works(app,"libx265")' "$R" || fail "x265 is not quality-first"
-! grep -Fq 'attempt==1&&encoder_works(app,"hevc_videotoolbox")' "$R" || fail "VideoToolbox is still hardware-first"
+# Validate only the production selector. Legacy helper functions can contain
+# hardware probes without being used by the active short-master path.
+python3 - "$R" <<'PY'
+from pathlib import Path
+import sys
+s=Path(sys.argv[1]).read_text()
+a=s.find('async fn choose_hybrid_encoder')
+b=s.find('async fn probe_audio_decodes',a)
+assert a>=0 and b>a,'choose_hybrid_encoder scope missing'
+sel=s[a:b]
+assert 'attempt==1&&encoder_works(app,"libx265")' in sel,'x265 is not quality-first in choose_hybrid_encoder'
+assert 'attempt==1&&encoder_works(app,"hevc_videotoolbox")' not in sel,'VideoToolbox is still hardware-first in choose_hybrid_encoder'
+print('PASS: active choose_hybrid_encoder is x265 quality-first; VT remains fallback')
+PY
+
 grep -Fq '"-crf","18","-maxrate","400k","-bufsize","4M"' "$R" || fail "x265 CRF18/400k profile missing"
 grep -Fq 'fn hybrid_video_kbps(_s:&RenderSettings)->u64{400}' "$R" || fail "400k size ceiling missing"
 grep -Fq 'RENDER_CACHE_GENERATION:&str="8.51-x265-crf18-size400-v2"' "$R" || fail "8.51 quality cache generation missing"

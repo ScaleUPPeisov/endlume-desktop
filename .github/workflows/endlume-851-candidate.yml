@@ -1,0 +1,69 @@
+name: ENDLUME 8.51 Full Project Speed Candidate
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [candidate/full-project-speed-8.51]
+    paths:
+      - 'scripts/apply-full-project-speed-8-51.py'
+      - 'scripts/validate-release-8-51.sh'
+      - 'BUILD_ENDLUME_851_SELFHOSTED.command'
+      - '.github/workflows/endlume-851-candidate.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-851-full-project-candidate
+  cancel-in-progress: true
+
+jobs:
+  macos-arm64-candidate:
+    name: macOS ARM64 • 8.51 Full Project 20–30s Gate
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 240
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Fetch candidate with shallow HTTP/1.1 bootstrap
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          DIR="$RUNNER_TEMP/endlume-851-candidate-src"
+          rm -rf "$DIR"; mkdir -p "$DIR"
+          gh auth setup-git
+          git -C "$DIR" init
+          git -C "$DIR" remote add origin https://github.com/ScaleUPPeisov/endlume-desktop.git
+          git -C "$DIR" -c http.version=HTTP/1.1 fetch --no-tags --depth=1 origin candidate/full-project-speed-8.51
+          git -C "$DIR" checkout --detach FETCH_HEAD
+          echo "ENDLUME_CANDIDATE_SRC=$DIR" >> "$GITHUB_ENV"
+      - name: Verify M1 runner and release scripts
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          test "$(uname -s)" = Darwin
+          test "$(uname -m)" = arm64
+          test -s "$HOME/.endlume-updater/endlume.key"
+          test -s "$HOME/.endlume-updater/endlume.key.pub"
+          python3 -m py_compile "$ENDLUME_CANDIDATE_SRC/scripts/apply-full-project-speed-8-51.py"
+          /bin/bash -n "$ENDLUME_CANDIDATE_SRC/scripts/validate-release-8-51.sh"
+          /bin/bash -n "$ENDLUME_CANDIDATE_SRC/BUILD_ENDLUME_851_SELFHOSTED.command"
+      - name: Build exact signed 8.51 and run physical two-hour project gates
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          export TAURI_SIGNING_PRIVATE_KEY_PATH="$HOME/.endlume-updater/endlume.key"
+          export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
+          export ENDLUME_RELEASE_ARTIFACT_DIR="$HOME/.endlume-release-bridge/endlume/candidate-8.51"
+          export ENDLUME_RELEASE_VERSION="1.0.0-alpha.8.51"
+          export ENDLUME_851_PATCH_REF="candidate/full-project-speed-8.51"
+          chmod +x "$ENDLUME_CANDIDATE_SRC/BUILD_ENDLUME_851_SELFHOSTED.command"
+          cd "$ENDLUME_CANDIDATE_SRC"
+          /bin/bash ./BUILD_ENDLUME_851_SELFHOSTED.command
+          test -s "$ENDLUME_RELEASE_ARTIFACT_DIR/ENDLUME-macos-aarch64.app.tar.gz"
+          test -s "$ENDLUME_RELEASE_ARTIFACT_DIR/ENDLUME-macos-aarch64.app.tar.gz.sig"
+          grep -Fxq '1.0.0-alpha.8.51' "$ENDLUME_RELEASE_ARTIFACT_DIR/version.txt"
+          echo 'PASS: exact signed 8.51 + physical full-project 2h speed/quality/audio gates'

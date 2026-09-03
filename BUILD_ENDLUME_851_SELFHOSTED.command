@@ -35,7 +35,7 @@ FFPROBE="$(find "$WORK/src-tauri/binaries" -maxdepth 1 -type f -name 'ffprobe*' 
 [[ -x "$FFMPEG" ]] || fail "embedded FFmpeg missing"
 [[ -x "$FFPROBE" ]] || fail "embedded FFprobe missing"
 
-echo "✅ 8.50 reconstructed; applying 8.51 SPEED + WHOLE-SONG + VIVID OVERLAYS + 500-700MB PROFILE from ref=$PATCH_REF"
+echo "✅ 8.50 reconstructed; applying 8.51 MANIFEST SPEED + WHOLE-SONG + VIVID OVERLAYS + VT q100/500k from ref=$PATCH_REF"
 mkdir -p "$WORK/scripts"
 GH_REPO="ScaleUPPeisov/endlume-desktop"
 for f in apply-full-project-speed-8-51.py apply-audio-overlay-polish-8-51.py apply-size-fidelity-8-51.py validate-release-8-51.sh validate-audio-overlay-polish-8-51.sh; do
@@ -68,7 +68,7 @@ python3 "$WORK/scripts/apply-size-fidelity-8-51.py" "$WORK"
 "$WORK/scripts/validate-audio-overlay-polish-8-51.sh" "$WORK" "$FFMPEG"
 
 cd "$WORK"
-echo '@@ENDLUME_STAGE|8.51/10 Проверяю 20–30s / 500–700MB / whole-song / vivid overlays'
+echo '@@ENDLUME_STAGE|8.51/10 Проверяю hardware q100 / <=75s / 500–700MB / whole-song / vivid overlays'
 echo '@@ENDLUME_PROGRESS|74'
 npm run check
 npm run build
@@ -131,13 +131,13 @@ a=s.find('async fn choose_hybrid_encoder')
 b=s.find('async fn probe_audio_decodes',a)
 assert a>=0 and b>a,'active encoder selector scope missing'
 sel=s[a:b]
-assert 'attempt==1&&encoder_works(app,"libx265")' in sel,'quality-first x265 selector lost'
-assert 'attempt==1&&encoder_works(app,"hevc_videotoolbox")' not in sel,'VideoToolbox incorrectly became first again'
+assert 'attempt==1&&encoder_works(app,"hevc_videotoolbox")' in sel,'VideoToolbox q100 hardware-first selector lost'
+assert 'attempt==1&&encoder_works(app,"libx265")' not in sel,'x265-first regression returned'
 PY
-grep -Fq '"-crf","18","-maxrate","400k","-bufsize","4M"' src-tauri/src/render.rs || fail "x265 CRF18/400k quality profile lost"
-grep -Fq 'fn hybrid_video_kbps(_s:&RenderSettings)->u64{400}' src-tauri/src/render.rs || fail "400k budget lost"
-grep -Fq 'RENDER_CACHE_GENERATION:&str="8.51-x265-crf18-size400-v2"' src-tauri/src/render.rs || fail "8.51 cache generation lost"
-grep -Fq '"-q:v","100","-b:v","500k","-maxrate","12M","-bufsize","64M"' src-tauri/src/render.rs || fail "VideoToolbox q100 quality fallback lost"
+grep -Fq '"-q:v","100","-b:v","500k","-maxrate","12M","-bufsize","64M"' src-tauri/src/render.rs || fail "VideoToolbox q100/500k profile lost"
+grep -Fq '"-crf","18","-maxrate","500k","-bufsize","4M"' src-tauri/src/render.rs || fail "x265 fallback profile lost"
+grep -Fq 'fn hybrid_video_kbps(_s:&RenderSettings)->u64{500}' src-tauri/src/render.rs || fail "500k budget lost"
+grep -Fq 'RENDER_CACHE_GENERATION:&str="8.50-speed-quality-q100-v1"' src-tauri/src/render.rs || fail "q100 render cache generation lost"
 grep -Fq 'let idx=i%durations.len();' src-tauri/src/render.rs || fail "whole-track math lost"
 grep -Fq 'let duration_mode=if smart_repeat_project(job){"whole-track"}else{job.settings.duration_mode.as_str()};' src-tauri/src/render.rs || fail "one-image whole-song policy lost"
 grep -Fq 'eq=contrast=1.10:brightness=0.015:saturation={sat}' src-tauri/src/cache.rs || fail "vivid overlay render path lost"
@@ -147,8 +147,8 @@ if grep -Fq 'if t-target<=240.0{t}else{target}' src-tauri/src/render.rs; then fa
 echo '@@ENDLUME_PROGRESS|100'
 echo '✅ ENDLUME STUDIO PEISOV 8.51 candidate ready'
 echo '✅ full-project manifest-only assembly; no duplicate multi-minute normal visual files'
-echo '✅ physical 2h05 test is 500–700 MB while keeping HQ320 audio pressure'
+echo '✅ physical 2h05 gate <=75s cold / <=30s warm and 500–700 MB under HQ320 audio pressure'
 echo '✅ one-image videos finish the current song after 2h; no abrupt music cutoff'
 echo '✅ Subscribe/equalizer vivid pipeline is preserved in Preview and final render'
-echo '✅ x265 CRF18 quality-first 400k profile; VideoToolbox q100 remains fallback'
+echo '✅ VideoToolbox q100/500k hardware-first; x265 CRF18/500k fallback only'
 echo '✅ signed updater archive contains strict-valid ENDLUME STUDIO PEISOV.app'

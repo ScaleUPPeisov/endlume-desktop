@@ -1,0 +1,25 @@
+name: ENDLUME 8.46 Effective Cache Audit
+on:
+  workflow_dispatch:
+  push:
+    branches: ['candidate/render-stability-8.46']
+    paths: ['.github/workflows/endlume-846-effective-cache-audit.yml']
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 10
+    steps:
+      - name: Print effective cache prepare block
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          C="$HOME/.endlume-local-builder/endlume-desktop-8.40-bootstrap/src-tauri/src/cache.rs"
+          test -f "$C"
+          python3 - "$C" <<'PY'
+          from pathlib import Path
+          import sys
+          s=Path(sys.argv[1]).read_text(); i=s.find('pub async fn prepare(')
+          print(s[max(0,i-1500):i+6000])
+          PY

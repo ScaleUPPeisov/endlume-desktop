@@ -16,7 +16,7 @@ fail(){ echo; echo "❌ ENDLUME 8.41 ONLINE: $1"; exit 1; }
 echo "ENDLUME Studio 1.0.0-alpha.8.41 • SIGNED ONLINE UPDATE"
 echo "ONLY requested 1-10 fixes • 8.40 native updater • no manual install"
 echo
-[[ "$(uname -s)" == Darwin && "$(uname -m)" == arm64 ]] || fail "нужен Apple Silicon Mac"
+[[ "$(uname -s)" == "Darwin" && "$(uname -m)" == "arm64" ]] || fail "нужен Apple Silicon Mac"
 command -v gh >/dev/null 2>&1 || fail "GitHub CLI не найден"
 gh auth status -h github.com >/dev/null 2>&1 || fail "GitHub CLI не авторизован"
 [[ -n "${ENDLUME_RELEASE_ARTIFACT_DIR:-}" ]] || fail "ENDLUME_RELEASE_ARTIFACT_DIR missing"
@@ -118,9 +118,15 @@ mkdir -p "$OUT"
 BUNDLE_DIR="src-tauri/target/aarch64-apple-darwin/release/bundle/macos"
 UPDATER="$(find "$BUNDLE_DIR" -maxdepth 1 -type f -name '*.app.tar.gz' -print -quit)"
 [[ -n "$UPDATER" && -s "$UPDATER" ]] || fail "Tauri updater .app.tar.gz не создан"
-[[ -s "$UPDATER.sig" ]] || fail "Tauri updater .sig не создан"
+SIG="$UPDATER.sig"
+if [[ ! -s "$SIG" ]]; then
+  PHYSICAL_TARGET="$(cd src-tauri/target && pwd -P)"
+  PHYSICAL_BUNDLE="$PHYSICAL_TARGET/aarch64-apple-darwin/release/bundle/macos"
+  SIG="$(find "$PHYSICAL_BUNDLE" -maxdepth 1 -type f -name "$(basename "$UPDATER").sig" -print -quit 2>/dev/null || true)"
+fi
+[[ -n "$SIG" && -s "$SIG" ]] || fail "Tauri updater .sig не создан"
 cp "$UPDATER" "$OUT/$(basename "$UPDATER")"
-cp "$UPDATER.sig" "$OUT/$(basename "$UPDATER").sig"
+cp "$SIG" "$OUT/$(basename "$UPDATER").sig"
 [[ -s "$OUT/$(basename "$UPDATER")" && -s "$OUT/$(basename "$UPDATER").sig" ]] || fail "artifact export incomplete"
 echo "@@ENDLUME_PROGRESS|100"
 echo "✅ ENDLUME 8.41 signed updater artifact ready"
@@ -163,10 +169,13 @@ if '--config src-tauri/tauri.local.conf.json' in s:
     raise SystemExit('PRECHECK 8.41: updater artifacts still disabled by local config')
 if 'Экспортирую подписанное ONLINE обновление' not in s:
     raise SystemExit('PRECHECK 8.41: signed artifact export missing')
+if 'PHYSICAL_TARGET="$(cd src-tauri/target && pwd -P)"' not in s:
+    raise SystemExit('PRECHECK 8.41: physical Cargo target signature fallback missing')
 print('✅ PRECHECK 8.41: historical gates ordered correctly')
 print('✅ PRECHECK 8.41: 8.39 chain absent')
 print('✅ PRECHECK 8.41: 8.41 patch/version/gate ordered correctly')
 print('✅ PRECHECK 8.41: signed updater artifacts enabled')
+print('✅ PRECHECK 8.41: physical Cargo target signature lookup enabled')
 print('✅ PRECHECK 8.41: no /Applications install / dragdrop stage')
 PY
 
@@ -175,6 +184,7 @@ grep -Fq 'apply-performance-stability-8-41.py' "$REAL" || fail "8.41 targeted pa
 grep -Fq 'validate-release-8-41.sh' "$REAL" || fail "8.41 full gate missing"
 grep -Fq 'npx tauri build --target aarch64-apple-darwin --bundles app' "$REAL" || fail "signed Tauri build missing"
 grep -Fq 'Экспортирую подписанное ONLINE обновление' "$REAL" || fail "signed artifact stage missing"
+grep -Fq 'PHYSICAL_TARGET="$(cd src-tauri/target && pwd -P)"' "$REAL" || fail "physical Cargo target signature lookup missing"
 
 echo "✅ ENDLUME 8.41 ONLINE preflight passed"
 echo "✅ Only requested 1–10 patch will be applied after proven 8.40 updater bootstrap"

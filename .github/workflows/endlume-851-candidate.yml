@@ -22,6 +22,10 @@ concurrency:
 
 jobs:
   macos-arm64-candidate:
+    # During immediate stable promotion, push runs are intentionally skipped so
+    # they cannot occupy the single production M1 runner. Manual dispatch remains
+    # available for any later diagnostic rerun.
+    if: github.event_name == 'workflow_dispatch'
     name: macOS ARM64 • 8.51 20–30s • 500–700MB • Whole Song Gate
     runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
     timeout-minutes: 240

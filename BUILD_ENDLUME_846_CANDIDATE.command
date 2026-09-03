@@ -29,10 +29,10 @@ if needle not in s: raise SystemExit('8.46 effective builder: 8.45 runtime gate 
 motion='    "gh api -H \\\'Accept: application/vnd.github.raw+json\\\' \\\"/repos/$REPO/contents/scripts/validate-motion-ui-8-41.mjs?ref=release\\\" > scripts/validate-motion-ui-8-41.mjs || fail \\\"cannot fetch 60 FPS UI validator before 8.45 gate\\\"\\n"\n'
 insert=motion+needle+(
 '    "mkdir -p scripts\\n"\n'
-'    "gh api -H \\\'Accept: application/vnd.github.raw+json\\\' \\\"/repos/$REPO/contents/scripts/apply-render-stability-8-46.py?ref=candidate/render-stability-8.46\\\" > scripts/apply-render-stability-8-46.py || fail \\\"cannot fetch 8.46 migration\\\"\\n"\n'
+'    "gh api -H \\\'Accept: application/vnd.github.raw+json\\\' \\\"/repos/$REPO/contents/scripts/apply-render-stability-8-46-final.py?ref=candidate/render-stability-8.46\\\" > scripts/apply-render-stability-8-46-final.py || fail \\\"cannot fetch audited 8.46 migration\\\"\\n"\n'
 '    "gh api -H \\\'Accept: application/vnd.github.raw+json\\\' \\\"/repos/$REPO/contents/scripts/validate-release-8-46.sh?ref=candidate/render-stability-8.46\\\" > scripts/validate-release-8-46.sh || fail \\\"cannot fetch 8.46 validator\\\"\\n"\n'
-'    "python3 -m py_compile scripts/apply-render-stability-8-46.py\\n"\n'
-'    "python3 scripts/apply-render-stability-8-46.py\\n"\n'
+'    "python3 -m py_compile scripts/apply-render-stability-8-46-final.py\\n"\n'
+'    "python3 scripts/apply-render-stability-8-46-final.py\\n"\n'
 '    "chmod +x scripts/validate-release-8-46.sh\\n"\n'
 '    "scripts/validate-release-8-46.sh \\\"$FFMPEG\\\" \\\"$FFPROBE\\\"\\n"\n'
 )
@@ -58,13 +58,13 @@ s=s.replace('✅ ENDLUME 8.45 post-8.44 FINALIZE transformation PASS','✅ ENDLU
 p.write_text(s,encoding='utf-8')
 PY846
 /bin/bash -n "$PATCHED" || fail "8.46 transformed effective builder syntax failed"
-grep -Fq 'apply-render-stability-8-46.py' "$PATCHED" || fail "8.46 migration wiring missing"
+grep -Fq 'apply-render-stability-8-46-final.py' "$PATCHED" || fail "audited 8.46 migration wiring missing"
 grep -Fq 'validate-release-8-46.sh' "$PATCHED" || fail "8.46 validator wiring missing"
 grep -Fq 'validate-motion-ui-8-41.mjs' "$PATCHED" || fail "motion validator prefetch missing"
 grep -Fq '1.0.0-alpha.8.46' "$PATCHED" || fail "8.46 identity wiring missing"
 echo '✅ 8.46 candidate wraps proven 8.45 builder'
 echo '✅ 8.45 final FFprobe gate has its required motion validator before execution'
-echo '✅ 8.46 stability migration runs only after 8.45 passes'
+echo '✅ audited 8.46 migration runs only after 8.45 passes'
 exec /bin/bash "$PATCHED"
 '''
 s=s.replace(needle,inject,1)

@@ -1,11 +1,11 @@
 {
   "enabled": true,
-  "generation": 25,
+  "generation": 26,
   "app": "endlume",
   "channel": "stable",
-  "version": "1.0.0-alpha.8.50",
-  "builder": "BUILD_ENDLUME_850_SELFHOSTED.command",
-  "notes": "ENDLUME STUDIO PEISOV 8.50 real-speed release. Apple HEVC VideoToolbox is primary on macOS using the M1-measured q100 fidelity profile with 500k target and 12M/64M I-frame quality headroom; libx265 is fallback only. Preserve exact 1920x1080 Fill/cover, CFR30/60, whole-track audio without arbitrary 2h song truncation, original/HQ320 audio behavior, persistent visual/Subscribe/audio caches, Effects, Subscribe, VYRON, watchdog, bounded metadata-only FFprobe, bundle id studio.endlume.desktop and signed Tauri updater. Candidate passed q100 first-frame SSIM 0.999814, 12s static master 4.038s, representative 60s cold effect master 19.427s, all whole-track tests and strict signed updater archive validation.",
+  "version": "1.0.0-alpha.8.51",
+  "builder": "BUILD_ENDLUME_851_PROMOTE.command",
+  "notes": "ENDLUME STUDIO PEISOV 8.51 immediate stable release. Promote only a fresh signed artifact from the fixed 8.51 M1 run, otherwise rebuild exact pinned 409b0f25e1dd9646e31dc9de3140513c252185a5. 8.51 keeps exact 1920x1080, CFR30/60, whole-track audio, Effects/Subscribe, VYRON, watchdog and bounded metadata FFprobe; adds manifest-based long visual assembly, vivid overlay parity and x265 CRF18 quality-first 400k size profile with VideoToolbox q100 fallback. Target output 500-700 MB and warm long-project assembly <=30s.",
   "platforms": [
     "darwin-aarch64"
   ]

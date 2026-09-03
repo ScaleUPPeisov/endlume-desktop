@@ -1,11 +1,11 @@
 {
   "enabled": true,
-  "generation": 21,
+  "generation": 22,
   "app": "endlume",
   "channel": "stable",
-  "version": "1.0.0-alpha.8.44",
-  "builder": "BUILD_ENDLUME_844_SELFHOSTED.command",
-  "notes": "VYRON Batch Bridge on top of ENDLUME 8.43. Adds only local VYRON batch.json intake/status reporting while preserving the proven Real CFR30/CFR60 render validation, 1920x1080 YouTube Fill, 500k speed/size budget, audio/crossfade/gapless path, Effects/Subscribe, manual render workflow and the signed Tauri online updater. Full 8.43 regression gate is mandatory before publication.",
+  "version": "1.0.0-alpha.8.46",
+  "builder": "BUILD_ENDLUME_846_SELFHOSTED.command",
+  "notes": "Render Pipeline Stability on top of verified ENDLUME 8.45. Adds a progress-aware FFmpeg watchdog based on out_time/frame/total_size with a 120-second no-progress threshold, exactly one controlled same-stage retry, bounded FFmpeg/FFprobe helpers and Effects/Subscribe cache processes, atomic .partial output promotion, Subscribe plan/segment diagnostics and guards, and preservation of a successfully muxed MP4 when only final metadata verification fails. Preserves the proven 500k size/speed budget, exact 1920x1080 YouTube Fill, real CFR30/CFR60, gapless/crossfade audio, Effects, Subscribe, VYRON bridge, manual workflow and official signed Tauri updater.",
   "platforms": [
     "darwin-aarch64"
   ]

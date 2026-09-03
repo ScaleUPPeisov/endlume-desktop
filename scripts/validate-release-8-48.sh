@@ -42,7 +42,7 @@ assert 'let cf=crossfade.clamp(0.0,10.0);' in s
 assert 'let idx=i%durations.len();' in s
 assert 'args.extend(vec!["-t",&final_duration.to_string(),"-map","0:v:0","-map","1:a:0","-c:v","copy","-c:a","copy"' in s
 assert '"-shortest"' not in s
-assert 'let cf=job.settings.crossfade_sec.clamp(0.0,10.0);' in s
+assert ('let cf=job.settings.crossfade_sec.clamp(0.,10.);' in s or 'let cf=job.settings.crossfade_sec.clamp(0.0,10.0);' in s)
 assert 'probe_duration(app,a).await.unwrap_or(180.0).max(0.2)' in s
 print('PASS: audio fix only; final mux and duration precision path preserved')
 PY

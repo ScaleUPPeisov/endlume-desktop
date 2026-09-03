@@ -1,0 +1,31 @@
+name: ENDLUME 8.46 Effective Source Audit
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['candidate/render-stability-8.46']
+    paths: ['.github/workflows/endlume-846-effective-source-audit.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 10
+    steps:
+      - name: Print effective render snippets without modifying workspace
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          R="$HOME/.endlume-local-builder/endlume-desktop-8.40-bootstrap/src-tauri/src/render.rs"
+          test -f "$R"
+          python3 - "$R" <<'PY'
+          from pathlib import Path
+          import sys
+          s=Path(sys.argv[1]).read_text()
+          for needle in ['let active_sub=','async fn render_sub_segment','async fn run_ffmpeg','async fn subscribe_events']:
+              i=s.find(needle)
+              print('\n===',needle,'index',i,'===')
+              if i>=0: print(s[max(0,i-1000):i+3000])
+          PY

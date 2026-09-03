@@ -5,9 +5,6 @@ on:
   push:
     branches: [candidate/speed-fix-8.50]
     paths:
-      - 'scripts/apply-speed-fix-8-50.py'
-      - 'scripts/validate-release-8-50.sh'
-      - 'BUILD_ENDLUME_850_SELFHOSTED.command'
       - '.github/workflows/endlume-850-candidate.yml'
 
 permissions:
@@ -18,66 +15,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  candidate:
-    name: macOS ARM64 • M1 • Cold Speed Gate
+  retired:
+    if: ${{ false }}
     runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
-    timeout-minutes: 240
-    env:
-      GH_TOKEN: ${{ github.token }}
-      ENDLUME_IN_APP_UPDATE: '1'
     steps:
-      - name: Checkout candidate
-        uses: actions/checkout@v4
-        with:
-          ref: candidate/speed-fix-8.50
-          clean: true
-          fetch-depth: 1
-          persist-credentials: false
-      - name: Verify M1 toolchain
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-          test "$(uname -s)" = Darwin
-          test "$(uname -m)" = arm64
-          command -v gh; command -v node; command -v npm; command -v npx; command -v cargo
-          test -s "$HOME/.endlume-updater/endlume.key"
-          test -s "$HOME/.endlume-updater/endlume.key.pub"
-      - name: Validate scripts
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          python3 -m py_compile scripts/apply-speed-fix-8-50.py
-          /bin/bash -n scripts/validate-release-8-50.sh
-          /bin/bash -n BUILD_ENDLUME_850_SELFHOSTED.command
-      - name: Build exact 8.50 candidate and run cold-render gates
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-          KEY="$HOME/.endlume-updater/endlume.key"
-          ART="$HOME/.endlume-release-bridge/endlume/candidate-8.50"
-          rm -rf "$ART"; mkdir -p "$ART"
-          export TAURI_SIGNING_PRIVATE_KEY_PATH="$KEY"
-          export TAURI_SIGNING_PRIVATE_KEY="$KEY"
-          export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
-          export ENDLUME_RELEASE_ARTIFACT_DIR="$ART"
-          export ENDLUME_RELEASE_VERSION='1.0.0-alpha.8.50'
-          export ENDLUME_850_PATCH_REF='candidate/speed-fix-8.50'
-          chmod +x BUILD_ENDLUME_850_SELFHOSTED.command
-          /bin/bash BUILD_ENDLUME_850_SELFHOSTED.command
-      - name: Verify candidate archive
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          ART="$HOME/.endlume-release-bridge/endlume/candidate-8.50"
-          TAR="$ART/ENDLUME-macos-aarch64.app.tar.gz"
-          test -s "$TAR"; test -s "$TAR.sig"
-          TMP="$(mktemp -d /tmp/endlume-850-verify.XXXXXX)"; trap 'rm -rf "$TMP"' EXIT
-          /usr/bin/tar -xzf "$TAR" -C "$TMP"
-          APP="$TMP/ENDLUME STUDIO PEISOV.app"
-          test -d "$APP"
-          test "$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist")" = '1.0.0-alpha.8.50'
-          test "$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$APP/Contents/Info.plist")" = 'studio.endlume.desktop'
-          /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP"
-          echo 'PASS: signed 8.50 candidate archive'
+      - run: echo 'Superseded by candidate/endlume-850-real-speed q100 profile'

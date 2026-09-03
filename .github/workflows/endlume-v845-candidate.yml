@@ -1,0 +1,96 @@
+name: ENDLUME 8.45 Finalize Candidate
+
+on:
+  push:
+    branches: [endlume-v845-finalize-hotfix-candidate]
+    paths:
+      - 'endlume-v845-candidate-trigger.txt'
+      - 'BUILD_ENDLUME_845_SELFHOSTED.command'
+      - '.github/workflows/endlume-v845-candidate.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-v845-finalize-candidate
+  cancel-in-progress: true
+
+jobs:
+  macos-arm64-candidate:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 240
+    env:
+      GH_TOKEN: ${{ github.token }}
+      ENDLUME_IN_APP_UPDATE: '1'
+    steps:
+      - name: Checkout 8.45 candidate
+        uses: actions/checkout@v4
+        with:
+          ref: endlume-v845-finalize-hotfix-candidate
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify Apple Silicon release host
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          test "$(uname -s)" = Darwin
+          test "$(uname -m)" = arm64
+          command -v node; command -v npm; command -v cargo; command -v gh
+          test -s "$HOME/.endlume-updater/endlume.key"
+          test -s "$HOME/.endlume-updater/endlume.key.pub"
+          echo "Candidate host: $(sw_vers -productVersion) / $(uname -m)"
+
+      - name: Build exact 8.45 candidate without publishing
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          KEY="$HOME/.endlume-updater/endlume.key"
+          ART="$RUNNER_TEMP/endlume-v845-artifacts"
+          rm -rf "$ART" && mkdir -p "$ART"
+          export TAURI_SIGNING_PRIVATE_KEY_PATH="$KEY"
+          export TAURI_SIGNING_PRIVATE_KEY="$KEY"
+          export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
+          export ENDLUME_RELEASE_ARTIFACT_DIR="$ART"
+          export ENDLUME_RELEASE_PLATFORM="darwin-aarch64"
+          export ENDLUME_RELEASE_VERSION="1.0.0-alpha.8.45"
+          export ENDLUME_UPDATER_PUBLIC_KEY_FILE="$KEY.pub"
+          export ENDLUME_UPDATER_ENDPOINT="https://github.com/ScaleUPPeisov/scaleup-site/releases/download/endlume-stable/latest.json"
+          chmod +x BUILD_ENDLUME_845_SELFHOSTED.command
+          /bin/bash BUILD_ENDLUME_845_SELFHOSTED.command
+          TAR="$(find "$ART" -type f -name '*.app.tar.gz' -print -quit)"
+          test -n "$TAR" -a -s "$TAR"
+          test -s "$TAR.sig"
+          echo "TAR=$TAR" >> "$GITHUB_ENV"
+          echo "ART=$ART" >> "$GITHUB_ENV"
+
+      - name: Verify built 8.45 app and no stable publication
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          UNPACK="$RUNNER_TEMP/endlume-v845-unpack"
+          rm -rf "$UNPACK" && mkdir -p "$UNPACK"
+          /usr/bin/tar -xzf "$TAR" -C "$UNPACK"
+          APP="$(find "$UNPACK" -maxdepth 4 -type d -name 'ENDLUME Studio.app' -print -quit)"
+          test -n "$APP" -a -d "$APP"
+          BID="$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$APP/Contents/Info.plist")"
+          VER="$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist")"
+          EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
+          test "$BID" = 'studio.endlume.desktop'
+          test "$VER" = '1.0.0-alpha.8.45'
+          /usr/bin/lipo -archs "$APP/Contents/MacOS/$EXE" | grep -qw arm64
+          /usr/bin/codesign --verify --deep --strict "$APP"
+          FFMPEG="$(find "$APP/Contents/MacOS" -maxdepth 1 -type f -name 'ffmpeg*' -print -quit)"
+          FFPROBE="$(find "$APP/Contents/MacOS" -maxdepth 1 -type f -name 'ffprobe*' -print -quit)"
+          test -x "$FFMPEG" -a -x "$FFPROBE"
+          echo 'PASS: 8.45 signed ARM64 candidate built'
+          echo 'PASS: this workflow has no publish/update-channel step'
+
+      - name: Candidate complete
+        run: |
+          echo '✅ ENDLUME 8.45 candidate passed build/sign/bundle gates'
+          echo '✅ Stable updater was not modified by candidate workflow'

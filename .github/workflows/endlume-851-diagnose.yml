@@ -15,75 +15,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  diagnose:
-    name: macOS ARM64 • inspect exact 8.50 runtime
+  retired:
+    if: ${{ false }}
     runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
-    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: candidate/full-project-speed-8.51
-          clean: true
-          fetch-depth: 1
-          persist-credentials: false
-      - name: Print exact visual / mux runtime from latest production source
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          SRC="$HOME/.endlume-local-builder/endlume-desktop-8.40-bootstrap"
-          test -f "$SRC/src-tauri/src/render.rs"
-          grep -Fq '1.0.0-alpha.8.50' "$SRC/src-tauri/Cargo.toml"
-          python3 - "$SRC/src-tauri/src/render.rs" <<'PY'
-          from pathlib import Path
-          import sys,re
-          s=Path(sys.argv[1]).read_text()
-          def fn(name):
-              start=s.find('async fn '+name)
-              if start<0: start=s.find('fn '+name)
-              if start<0: return None
-              brace=s.find('{',start); depth=0; end=brace
-              for i in range(brace,len(s)):
-                  if s[i]=='{': depth+=1
-                  elif s[i]=='}':
-                      depth-=1
-                      if depth==0: end=i+1; break
-              return s[start:end]
-          for name in ['render_diag_path','render_sub_segment','assemble_visual','copy_segment','build_variant','subscribe_events','materialize_continuous_audio']:
-              x=fn(name); print('\n===== '+name+' =====\n'+(x or 'MISSING'))
-          for needle in ['VisualSource::Concat','Склеиваю визуальную дорожку','Собираю итоговое видео','final-mux','-f","concat']:
-              print('\n===== CONTEXT '+needle+' =====')
-              for m in list(re.finditer(re.escape(needle),s))[-8:]:
-                  a=max(0,m.start()-1800); b=min(len(s),m.end()+2800); print(s[a:b])
-          PY
-      - name: Summarize latest real ENDLUME diagnostics
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
-          import time,os
-          roots=[Path('/Volumes/TOSHIBA EXT'),Path.home()/'Library/Caches',Path.home()/'Library/Application Support']
-          found=[]; cutoff=time.time()-4*3600
-          for root in roots:
-              if not root.exists(): continue
-              try:
-                  for p in root.rglob('*'):
-                      try:
-                          st=p.stat()
-                          if not p.is_file() or st.st_mtime<cutoff or st.st_size>30_000_000: continue
-                          n=p.name.lower()
-                          if not any(k in n for k in ['render','endlume','diag','.log']): continue
-                          txt=p.read_text(errors='ignore')
-                          if '[render]' in txt or 'Добавляю Subscribe' in txt or 'Склеиваю визуальную дорожку' in txt:
-                              found.append((st.st_mtime,p,txt))
-                      except Exception: pass
-              except Exception: pass
-          found.sort(reverse=True,key=lambda x:x[0])
-          if not found: print('NO_RECENT_RENDER_LOG_FOUND')
-          for _,p,txt in found[:8]:
-              print('\n===== REAL LOG',p,'=====')
-              keep=[]
-              for x in txt.splitlines():
-                  if any(k in x for k in ['[render][subscribe]','[render][timing]','[render][performance]','[render][audio-cache]','[render][render-cache]','Добавляю Subscribe','Склеиваю визуальную дорожку','Собираю итоговое видео','final-mux']): keep.append(x)
-              print('\n'.join(keep[-500:]))
-          PY
+      - run: echo 'obsolete diagnostic retired; 8.51 candidate owns the M1 runner'

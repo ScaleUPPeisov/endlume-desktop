@@ -87,7 +87,9 @@ fi
 rm -f "$TAR" "$TAR.sig"
 /usr/bin/tar -czf "$TAR" -C "$BUNDLE" "$(basename "$APP")" || fail "cannot recreate sealed updater tar"
 [[ -s "$TAR" ]] || fail "sealed updater tar missing"
-npx tauri signer sign "$TAR" >/dev/null || fail "Tauri updater signature generation failed"
+# The workflow exports both Tauri key forms for legacy builders. The standalone
+# signer rejects both at once, so keep only the private-key PATH for this command.
+env -u TAURI_SIGNING_PRIVATE_KEY npx tauri signer sign "$TAR" >/dev/null || fail "Tauri updater signature generation failed"
 [[ -s "$TAR.sig" ]] || fail "sealed updater signature missing"
 
 # Prove the archive that will actually be published contains a valid app.

@@ -1,0 +1,36 @@
+name: ENDLUME 8.49 CodeSign Diagnostic
+on:
+  push:
+    branches: ['candidate/performance-fidelity-audio-8.49']
+    paths: ['.github/workflows/endlume-849-codesign-diagnostic.yml']
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 10
+    steps:
+      - name: Inspect and test bundle signature
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          W="$HOME/.endlume-local-builder/endlume-desktop-8.40-bootstrap"
+          APP="$W/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/ENDLUME STUDIO PEISOV.app"
+          test -d "$APP"
+          echo '--- bundle ---'
+          /usr/bin/find "$APP/Contents" -maxdepth 2 -type f -o -type d | /usr/bin/head -80
+          echo '--- signature metadata ---'
+          /usr/bin/codesign -d --verbose=4 "$APP" 2>&1 || true
+          echo '--- strict verify before ---'
+          /usr/bin/codesign --verify --deep --strict --verbose=4 "$APP" 2>&1 || true
+          echo '--- signature directory ---'
+          /bin/ls -la "$APP/Contents/_CodeSignature" 2>&1 || true
+          TEST="$(mktemp -d /tmp/endlume-849-sign.XXXXXX)/ENDLUME STUDIO PEISOV.app"
+          /usr/bin/ditto "$APP" "$TEST"
+          /usr/bin/codesign --force --deep --sign - "$TEST"
+          /usr/bin/codesign --verify --deep --strict --verbose=4 "$TEST"
+          echo 'PASS: clean ad-hoc re-sign makes renamed bundle strict-valid'
+          cd "$W"
+          echo '--- tauri signer help ---'
+          npx tauri signer sign --help | /usr/bin/head -120

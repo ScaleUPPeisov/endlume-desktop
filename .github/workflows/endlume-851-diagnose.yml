@@ -1,0 +1,54 @@
+name: ENDLUME 8.51 Diagnose Full Project Speed
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [candidate/full-project-speed-8.51]
+    paths:
+      - '.github/workflows/endlume-851-diagnose.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-851-diagnose
+  cancel-in-progress: true
+
+jobs:
+  diagnose:
+    name: macOS ARM64 • inspect exact 8.50 runtime
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: candidate/full-project-speed-8.51
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Print exact Subscribe / visual runtime from latest production source
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          SRC="$HOME/.endlume-local-builder/endlume-desktop-8.40-bootstrap"
+          test -f "$SRC/src-tauri/src/render.rs"
+          grep -Fq '1.0.0-alpha.8.50' "$SRC/src-tauri/Cargo.toml"
+          python3 - "$SRC/src-tauri/src/render.rs" <<'PY'
+          from pathlib import Path
+          import sys
+          s=Path(sys.argv[1]).read_text()
+          for name in ['render_sub_segment','assemble_visual','copy_segment','build_variant']:
+              start=s.find('async fn '+name)
+              if start<0:
+                  start=s.find('fn '+name)
+              if start<0:
+                  print('MISSING',name); continue
+              brace=s.find('{',start); depth=0; end=brace
+              for i in range(brace,len(s)):
+                  if s[i]=='{': depth+=1
+                  elif s[i]=='}':
+                      depth-=1
+                      if depth==0:
+                          end=i+1; break
+              print('\n===== '+name+' =====\n'+s[start:end])
+          PY

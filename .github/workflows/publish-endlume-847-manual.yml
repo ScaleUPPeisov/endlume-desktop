@@ -44,6 +44,10 @@ jobs:
           test "$BID" = 'studio.endlume.desktop'
           test "$VER" = "$VERSION"
           /usr/bin/lipo -archs "$APP/Contents/MacOS/$EXE" | grep -qw arm64
+          if ! /usr/bin/codesign --verify --deep --strict "$APP" >/dev/null 2>&1; then
+            echo 'Repairing app signature after updater tar extraction'
+            /usr/bin/codesign --force --deep --sign - "$APP"
+          fi
           /usr/bin/codesign --verify --deep --strict "$APP"
           ZIP="$WORK/ENDLUME_Studio_${VERSION}_MAC.zip"
           /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$APP" "$ZIP"

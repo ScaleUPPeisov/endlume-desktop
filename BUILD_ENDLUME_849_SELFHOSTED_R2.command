@@ -62,8 +62,7 @@ APP="$(find "$BUNDLE" -maxdepth 1 -type d -name '*.app' -print -quit)"
 TAR="$(find "$BUNDLE" -maxdepth 1 -type f -name '*.app.tar.gz' -print -quit)"
 [[ -n "$APP" && -d "$APP" ]] || fail "8.49 .app missing"
 [[ "$(basename "$APP")" = "ENDLUME STUDIO PEISOV.app" ]] || fail "wrong app display bundle: $(basename "$APP")"
-[[ -n "$TAR" && -s "$TAR" ]] || fail "8.49 updater tar missing"
-[[ -s "$TAR.sig" ]] || fail "8.49 updater signature missing"
+[[ -n "$TAR" ]] || TAR="$BUNDLE/ENDLUME STUDIO PEISOV.app.tar.gz"
 
 ID="$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$APP/Contents/Info.plist")"
 VER="$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist")"
@@ -71,9 +70,33 @@ EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.
 [[ "$ID" = "studio.endlume.desktop" ]] || fail "bundle identifier changed: $ID"
 [[ "$VER" = "1.0.0-alpha.8.49" ]] || fail "bundle version mismatch: $VER"
 /usr/bin/lipo -archs "$APP/Contents/MacOS/$EXE" | grep -qw arm64 || fail "main executable is not arm64"
-/usr/bin/codesign --verify --deep --strict "$APP" || fail "codesign verification failed"
 find "$APP/Contents/MacOS" -maxdepth 1 -type f -name 'ffmpeg*' -perm +111 -print -quit | grep -q . || fail "embedded executable FFmpeg missing"
 find "$APP/Contents/MacOS" -maxdepth 1 -type f -name 'ffprobe*' -perm +111 -print -quit | grep -q . || fail "embedded executable FFprobe missing"
+
+# Rust/linker can leave only a Mach-O ad-hoc signature, which is not a sealed
+# macOS application bundle after productName changes. Seal the COMPLETE bundle
+# first, then regenerate and updater-sign the tar so the published archive itself
+# contains the strict-valid app (not a post-extraction repair).
+if ! /usr/bin/codesign --verify --deep --strict "$APP" >/dev/null 2>&1; then
+  echo 'ℹ️ Sealing complete ENDLUME STUDIO PEISOV.app with macOS ad-hoc bundle signature'
+  /usr/bin/codesign --force --deep --sign - "$APP" || fail "macOS bundle re-sign failed"
+fi
+/usr/bin/codesign --verify --deep --strict --verbose=2 "$APP" || fail "codesign strict verification failed after sealing"
+[[ -s "$APP/Contents/_CodeSignature/CodeResources" ]] || fail "sealed app CodeResources missing"
+
+rm -f "$TAR" "$TAR.sig"
+/usr/bin/tar -czf "$TAR" -C "$BUNDLE" "$(basename "$APP")" || fail "cannot recreate sealed updater tar"
+[[ -s "$TAR" ]] || fail "sealed updater tar missing"
+npx tauri signer sign "$TAR" >/dev/null || fail "Tauri updater signature generation failed"
+[[ -s "$TAR.sig" ]] || fail "sealed updater signature missing"
+
+# Prove the archive that will actually be published contains a valid app.
+VERIFY_UNPACK="$TMP/verify-updater"
+mkdir -p "$VERIFY_UNPACK"
+/usr/bin/tar -xzf "$TAR" -C "$VERIFY_UNPACK" || fail "cannot unpack regenerated updater tar"
+VERIFY_APP="$VERIFY_UNPACK/ENDLUME STUDIO PEISOV.app"
+[[ -d "$VERIFY_APP" ]] || fail "renamed app missing inside regenerated updater tar"
+/usr/bin/codesign --verify --deep --strict --verbose=2 "$VERIFY_APP" || fail "published updater archive contains invalid app signature"
 
 rm -rf "$FINAL_ART"
 mkdir -p "$FINAL_ART"
@@ -97,4 +120,5 @@ echo '✅ ENDLUME STUDIO PEISOV 8.49 signed candidate artifact ready'
 echo '✅ full boundary song instead of arbitrary 2h cut'
 echo '✅ x265 quality-first short master; VideoToolbox fallback only'
 echo '✅ persistent visual/Subscribe/audio caches for warm 20–30s target'
+echo '✅ updater tar contains strict-valid sealed ENDLUME STUDIO PEISOV.app'
 echo '✅ 1920x1080 / 500k / CFR30-60 / watchdog / bounded FFprobe / updater identity preserved'

@@ -1,0 +1,98 @@
+name: ENDLUME 8.49 Performance Fidelity Audio Candidate
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['candidate/performance-fidelity-audio-8.49']
+    paths:
+      - 'BUILD_ENDLUME_849_SELFHOSTED.command'
+      - 'scripts/apply-performance-fidelity-audio-8-49.py'
+      - 'scripts/validate-release-8-49.sh'
+      - '.github/workflows/endlume-849-candidate.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-849-candidate
+  cancel-in-progress: true
+
+jobs:
+  candidate:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 180
+    env:
+      GH_TOKEN: ${{ github.token }}
+      ENDLUME_IN_APP_UPDATE: '1'
+      ENDLUME_849_PATCH_REF: candidate/performance-fidelity-audio-8.49
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: candidate/performance-fidelity-audio-8.49
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify 8.49 candidate inputs
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          test "$(uname -s)" = Darwin
+          test "$(uname -m)" = arm64
+          python3 -m py_compile scripts/apply-performance-fidelity-audio-8-49.py
+          /bin/bash -n BUILD_ENDLUME_849_SELFHOSTED.command
+          /bin/bash -n scripts/validate-release-8-49.sh
+          test -s "$HOME/.endlume-updater/endlume.key"
+          test -s "$HOME/.endlume-updater/endlume.key.pub"
+          echo 'PASS: 8.49 inputs / Apple Silicon / updater signing material'
+
+      - name: Build and benchmark exact 8.49 candidate
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          KEY="$HOME/.endlume-updater/endlume.key"
+          ART="$HOME/.endlume-release-bridge/endlume/candidate-8.49"
+          rm -rf "$ART"; mkdir -p "$ART"
+          export TAURI_SIGNING_PRIVATE_KEY_PATH="$KEY"
+          export TAURI_SIGNING_PRIVATE_KEY="$KEY"
+          export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
+          export ENDLUME_RELEASE_ARTIFACT_DIR="$ART"
+          export ENDLUME_RELEASE_PLATFORM="darwin-aarch64"
+          export ENDLUME_RELEASE_VERSION="1.0.0-alpha.8.49"
+          export ENDLUME_UPDATER_PUBLIC_KEY_FILE="$KEY.pub"
+          export ENDLUME_UPDATER_ENDPOINT="https://github.com/ScaleUPPeisov/scaleup-site/releases/download/endlume-stable/latest.json"
+          chmod +x BUILD_ENDLUME_849_SELFHOSTED.command
+          /bin/bash BUILD_ENDLUME_849_SELFHOSTED.command
+          test -s "$ART/ENDLUME-macos-aarch64.app.tar.gz"
+          test -s "$ART/ENDLUME-macos-aarch64.app.tar.gz.sig"
+          echo 'PASS: exact signed 8.49 candidate built locally'
+
+      - name: Verify staged ENDLUME STUDIO PEISOV app
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ART="$HOME/.endlume-release-bridge/endlume/candidate-8.49"
+          UNPACK="$ART/unpack"; rm -rf "$UNPACK"; mkdir -p "$UNPACK"
+          /usr/bin/tar -xzf "$ART/ENDLUME-macos-aarch64.app.tar.gz" -C "$UNPACK"
+          APP="$(find "$UNPACK" -type d -name 'ENDLUME STUDIO PEISOV.app' -print -quit)"
+          test -d "$APP"
+          test "$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$APP/Contents/Info.plist")" = studio.endlume.desktop
+          test "$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist")" = 1.0.0-alpha.8.49
+          EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
+          /usr/bin/lipo -archs "$APP/Contents/MacOS/$EXE" | grep -qw arm64
+          /usr/bin/codesign --verify --deep --strict "$APP"
+          W="$HOME/.endlume-local-builder/endlume-desktop-8.40-bootstrap"
+          grep -Fq 'attempt==1&&encoder_works(app,"libx265")' "$W/src-tauri/src/render.rs"
+          grep -Fq 'RENDER_CACHE_GENERATION:&str="8.49-fidelity-v1"' "$W/src-tauri/src/render.rs"
+          ! grep -Fq 'if t-target<=240.0{t}else{target}' "$W/src-tauri/src/render.rs"
+          grep -Fq 'fn hybrid_video_kbps(_s:&RenderSettings)->u64{500}' "$W/src-tauri/src/render.rs"
+          grep -Fq 'FFMPEG_STALL_TIMEOUT_SECS:u64=120' "$W/src-tauri/src/render.rs"
+          echo 'PASS: staged app identity, source invariants and signing'
+
+      - name: Candidate complete without stable publication
+        shell: bash
+        run: |
+          echo '✅ 8.49 candidate passed all requested gates'
+          echo '✅ Stable updater was NOT modified by candidate workflow'

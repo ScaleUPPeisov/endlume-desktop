@@ -59,6 +59,7 @@ import sys
 p=Path(sys.argv[1])
 s=p.read_text(encoding='utf-8')
 
+# Insert 8.41 immediately after the FIRST executable 8.40 updater gate.
 call40='scripts/validate-release-8-40.sh'
 needle='\n'+call40+'\n'
 i=s.find(needle)
@@ -181,7 +182,7 @@ grep -Fq 'PHYSICAL_TARGET="$(cd src-tauri/target && pwd -P)"' "$REAL" || fail "p
 grep -Fq 'env -u TAURI_SIGNING_PRIVATE_KEY npx tauri signer sign "$UPDATER"' "$REAL" || fail "deterministic signer fallback missing"
 
 echo "✅ ENDLUME 8.41 ONLINE preflight passed"
-echo "✅ Only requested 1–10 patch will be applied after proven 8.40 updater bootstrap"
+echo "✅ Only requested 1-10 patch will be applied after proven 8.40 updater bootstrap"
 echo "✅ Proven 500k speed/size budget is guarded by validate-release-8-41.sh"
 echo "✅ No manual installer will be produced"
 /bin/bash "$REAL"

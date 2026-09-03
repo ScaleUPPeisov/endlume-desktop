@@ -1,0 +1,73 @@
+name: ENDLUME 8.46 Real Media Fixture
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['candidate/render-stability-8.46']
+    paths: ['.github/workflows/endlume-846-real-media-fixture.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  fixture:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 20
+    steps:
+      - name: Assemble real ENDLUME fixture without modifying media
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          OUT="$HOME/.endlume-release-bridge/endlume/acceptance-real-media.json"
+          python3 - "$OUT" <<'PY'
+          import os,sys,json,pathlib,time
+          out=pathlib.Path(sys.argv[1]); out.parent.mkdir(parents=True,exist_ok=True)
+          audio_ext={'.mp3','.wav','.m4a','.aac','.flac','.ogg','.aiff','.aif'}
+          image_ext={'.jpg','.jpeg','.png','.webp','.bmp','.tif','.tiff','.heic','.avif'}
+          roots=[pathlib.Path.home()/'Desktop',pathlib.Path.home()/'Downloads',pathlib.Path.home()/'Documents']
+          vol=pathlib.Path('/Volumes')
+          if vol.is_dir(): roots += [p for p in vol.iterdir() if p.is_dir() and not p.name.startswith('.')]
+          skip={'.git','node_modules','Library','Applications','System','private','.Trash','target','dist','build'}
+          candidates=[]
+          for root in roots:
+            if not root.is_dir(): continue
+            base_depth=len(root.parts)
+            for cur,dirs,files in os.walk(root):
+              cp=pathlib.Path(cur)
+              if len(cp.parts)-base_depth>8:
+                dirs[:]=[]; continue
+              dirs[:]=[d for d in dirs if d not in skip and not d.startswith('.')]
+              aud=[]; imgs=[]
+              for f in files:
+                ext=pathlib.Path(f).suffix.lower()
+                full=str(cp/f)
+                if ext in audio_ext: aud.append(full)
+                elif ext in image_ext: imgs.append(full)
+              if len(aud)>=10 and imgs:
+                try: recent=max(os.path.getmtime(x) for x in aud[:10]+imgs[:1])
+                except OSError: recent=0
+                score=(len(imgs)==1,abs(len(aud)-10)<=5,recent)
+                candidates.append((score,cp,sorted(aud),sorted(imgs)))
+          if not candidates:
+            print('NO_REAL_1_IMAGE_10_TRACK_CLUSTER_FOUND'); raise SystemExit(2)
+          candidates.sort(key=lambda x:x[0],reverse=True)
+          _,folder,audio,images=candidates[0]
+          lib_path=pathlib.Path.home()/'Library/Application Support/studio.endlume.desktop/library.json'
+          lib={}
+          if lib_path.is_file():
+            try: lib=json.load(open(lib_path))
+            except Exception: lib={}
+          effects=[x for x in lib.get('effects',[]) if x.get('enabled') and os.path.isfile(x.get('source',''))]
+          subs=[x for x in lib.get('subscribes',[]) if (x.get('effect') or x).get('enabled') and os.path.isfile((x.get('effect') or x).get('source',''))]
+          fixture={
+            'project':{'id':'acceptance-real-media','name':'ENDLUME Acceptance Real Media','path':str(folder),'media':[images[0]],'audio':audio[:10],'valid':True,'error':None},
+            'settings':{'width':1920,'height':1080,'fps':60,'codec':'h265','bitrateMbps':30.0,'durationHours':2.0,'durationMode':'whole-track','loopMode':'image','crossfadeSec':3.0,'normalizeLufs':False,'outputDir':str(out.parent/'acceptance-output'),'preset':'ultrafast','encoderPreference':'software'},
+            'effects':effects[:2], 'subscribes':subs[:2], 'ambient':None
+          }
+          out.write_text(json.dumps(fixture,ensure_ascii=False,indent=2))
+          print('REAL_MEDIA_FIXTURE_READY')
+          print('images=1 audio=10 all_media_existing=',all(os.path.isfile(x) for x in fixture['project']['media']+fixture['project']['audio']))
+          print('effects_existing_enabled=',len(fixture['effects']),'subscribe_existing_enabled=',len(fixture['subscribes']))
+          print('target=1920x1080 fps=60 codec=h265 duration=2h crossfade=3s')
+          print('fixture_saved=',out)
+          PY

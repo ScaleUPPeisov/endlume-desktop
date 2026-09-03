@@ -1,0 +1,149 @@
+name: ENDLUME 8.45 Self-Hosted Release V2
+
+on:
+  push:
+    branches: [endlume-v845-performance-finalize-release]
+    paths: ['endlume-845-release-v2-trigger.txt']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: endlume-845-release-v2
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 240
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION: 1.0.0-alpha.8.45
+      TAG: endlume-v1.0.0-alpha.8.45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: endlume-v845-performance-finalize-release
+          clean: true
+          fetch-depth: 1
+
+      - name: Verify Apple Silicon runner and signing material
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          test "$(uname -s)" = Darwin; test "$(uname -m)" = arm64
+          command -v node; command -v npm; command -v cargo; command -v ffmpeg; command -v ffprobe
+          test -s "$HOME/.endlume-updater/endlume.key"; test -s "$HOME/.endlume-updater/endlume.key.pub"
+
+      - name: Build 8.45 from proven 8.40 migration pipeline
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          python3 - <<'PY'
+          from pathlib import Path
+          src=Path('scripts/build-endlume-840-fast-ci.sh').read_text()
+          src=src.replace("VERSION='1.0.0-alpha.8.40'","VERSION='1.0.0-alpha.8.45'",1)
+          src=src.replace('ENDLUME 8.40 FAST CI','ENDLUME 8.45 FINALIZE CI')
+          src=src.replace('"version": "1\\.0\\.0-alpha\\.8\\.40"','"version": "1\\.0\\.0-alpha\\.8\\.45"',1)
+          needle='python3 scripts/apply-vyron-bridge-8-40.py\nnpm run check'
+          repl='python3 scripts/apply-vyron-bridge-8-40.py\npython3 scripts/apply-finalize-performance-8-45.py\nchmod +x scripts/validate-release-8-45.sh\nscripts/validate-release-8-45.sh\nnpm run check'
+          if needle not in src: raise SystemExit('8.45 injection marker missing')
+          Path('/tmp/build-endlume-845-v2.sh').write_text(src.replace(needle,repl,1))
+          PY
+          chmod +x /tmp/build-endlume-845-v2.sh
+          ART="$HOME/.endlume-release-bridge/endlume/845-release-v2"; rm -rf "$ART"; mkdir -p "$ART"
+          export TAURI_SIGNING_PRIVATE_KEY="$HOME/.endlume-updater/endlume.key"
+          export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
+          export ENDLUME_CI_ARTIFACT_DIR="$ART"
+          export ENDLUME_CI_ASSET_NAME="ENDLUME-Studio-${VERSION}-macos-arm64.zip"
+          /tmp/build-endlume-845-v2.sh
+          scripts/validate-release-8-45.sh
+
+      - name: Create official signed Tauri updater artifact
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          ART="$HOME/.endlume-release-bridge/endlume/845-release-v2"
+          export TAURI_SIGNING_PRIVATE_KEY="$HOME/.endlume-updater/endlume.key"
+          export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
+          cat >/tmp/endlume-updater-845.json <<'JSON'
+          {"$schema":"https://schema.tauri.app/config/2","bundle":{"createUpdaterArtifacts":true}}
+          JSON
+          npx tauri build --target aarch64-apple-darwin --bundles app --config /tmp/endlume-updater-845.json
+          TAR="$(find src-tauri/target/aarch64-apple-darwin/release/bundle -type f -name '*.app.tar.gz' -print -quit)"
+          SIG="$(find src-tauri/target/aarch64-apple-darwin/release/bundle -type f -name '*.app.tar.gz.sig' -print -quit)"
+          test -n "$TAR" -a -s "$TAR"; test -n "$SIG" -a -s "$SIG"
+          cp "$TAR" "$ART/ENDLUME-macos-aarch64.app.tar.gz"
+          cp "$SIG" "$ART/ENDLUME-macos-aarch64.app.tar.gz.sig"
+          echo "Updater package: $(du -h "$ART/ENDLUME-macos-aarch64.app.tar.gz" | awk '{print $1}')"
+
+      - name: Verify updater app identity ARM64 and finalization contracts
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ART="$HOME/.endlume-release-bridge/endlume/845-release-v2"
+          TAR="$ART/ENDLUME-macos-aarch64.app.tar.gz"; SIG="$TAR.sig"
+          U="$ART/unpack"; rm -rf "$U"; mkdir -p "$U"; /usr/bin/tar -xzf "$TAR" -C "$U"
+          APP="$(find "$U" -maxdepth 4 -type d -name 'ENDLUME Studio.app' -print -quit)"; test -n "$APP"
+          test "$(plutil -extract CFBundleIdentifier raw -o - "$APP/Contents/Info.plist")" = studio.endlume.desktop
+          test "$(plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist")" = "$VERSION"
+          EXE="$(plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
+          lipo -archs "$APP/Contents/MacOS/$EXE" | grep -qw arm64
+          codesign --verify --deep --strict "$APP"
+          grep -Fq 'const FFPROBE_TIMEOUT_SECS:u64=15;' src-tauri/src/render.rs
+          grep -Fq '"final-verify"' src-tauri/src/render.rs
+          grep -Fq '"-c:v","copy","-c:a","copy"' src-tauri/src/render.rs
+          grep -Fq 'static_smart_encoder_args' src-tauri/src/render.rs
+          grep -Fq 'build_long_audio' src-tauri/src/render.rs
+          echo 'ENDLUME 8.45 updater/finalize/fidelity verification: PASS'
+
+      - name: Publish private ENDLUME 8.45 release
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ART="$HOME/.endlume-release-bridge/endlume/845-release-v2"
+          NOTES="$(python3 -c 'import json;print(json.load(open("updates/release-candidate.json"))["notes"])')"
+          ZIP="$(find "$ART" -maxdepth 1 -type f -name 'ENDLUME-Studio-*.zip' -print -quit)"
+          test -s "$ZIP"; test -s "$ART/ENDLUME-macos-aarch64.app.tar.gz"; test -s "$ART/ENDLUME-macos-aarch64.app.tar.gz.sig"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$ZIP" "$ART/ENDLUME-macos-aarch64.app.tar.gz" "$ART/ENDLUME-macos-aarch64.app.tar.gz.sig" --clobber --repo "$GITHUB_REPOSITORY"
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --title "ENDLUME Studio $VERSION" --notes "$NOTES"
+          else
+            gh release create "$TAG" "$ZIP" "$ART/ENDLUME-macos-aarch64.app.tar.gz" "$ART/ENDLUME-macos-aarch64.app.tar.gz.sig" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "ENDLUME Studio $VERSION" --notes "$NOTES"
+          fi
+
+      - name: Publish in-app stable updater
+        shell: bash
+        env:
+          ENDLUME_RELEASE_TOKEN: ${{ secrets.ENDLUME_RELEASE_TOKEN }}
+        run: |
+          set -Eeuo pipefail
+          ART="$HOME/.endlume-release-bridge/endlume/845-release-v2"
+          test -n "${ENDLUME_RELEASE_TOKEN:-}" || { echo 'ENDLUME_RELEASE_TOKEN missing' >&2; exit 1; }
+          export GH_TOKEN="$ENDLUME_RELEASE_TOKEN"
+          HOST=ScaleUPPeisov/scaleup-site; STABLE=endlume-stable
+          URL="https://github.com/$HOST/releases/download/$STABLE/ENDLUME-macos-aarch64.app.tar.gz"
+          SIG="$(tr -d '\r\n' < "$ART/ENDLUME-macos-aarch64.app.tar.gz.sig")"
+          python3 - "$ART/latest.json" "$VERSION" "$URL" "$SIG" <<'PY'
+          import datetime,json,sys
+          p,v,u,s=sys.argv[1:]
+          json.dump({'version':v,'notes':'ENDLUME 8.45: bounded FFprobe final verification, no 97% deadlock; existing high-speed render, original-audio fidelity, Effects/Subscribe, VYRON bridge and 60 FPS UI contracts preserved.','pub_date':datetime.datetime.now(datetime.timezone.utc).isoformat().replace('+00:00','Z'),'platforms':{'darwin-aarch64':{'url':u,'signature':s}}},open(p,'w'),ensure_ascii=False,indent=2)
+          PY
+          gh release view "$STABLE" --repo "$HOST" >/dev/null 2>&1 || gh release create "$STABLE" --repo "$HOST" --title 'ENDLUME Stable Updates' --notes 'Signed updater channel for ENDLUME Studio.'
+          gh release upload "$STABLE" "$ART/ENDLUME-macos-aarch64.app.tar.gz" "$ART/ENDLUME-macos-aarch64.app.tar.gz.sig" "$ART/latest.json" --clobber --repo "$HOST"
+          curl -fsSL "$URL" -o /dev/null
+          curl -fsSL "https://github.com/$HOST/releases/download/$STABLE/latest.json" | python3 -c 'import json,sys;d=json.load(sys.stdin);assert d["version"]=="1.0.0-alpha.8.45";assert "darwin-aarch64" in d["platforms"]'
+          echo 'ENDLUME 8.45 live updater: PASS'
+
+      - name: Promote candidate metadata/source scripts to release
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git fetch origin release
+          git merge-base --is-ancestor origin/release HEAD
+          git push origin HEAD:release
+          echo 'ENDLUME 8.45 release branch promotion: PASS'

@@ -7,10 +7,9 @@ R="$ROOT/src-tauri/src/render.rs"
 fail(){ echo "FAIL 8.50: $1" >&2; exit 1; }
 [[ -f "$R" ]] || fail "render.rs missing"
 
-# Source contracts: speed change only; fidelity/audio/stability stay locked.
 grep -Fq 'attempt==1&&encoder_works(app,"hevc_videotoolbox")' "$R" || fail "VideoToolbox is not hardware-first"
-grep -Fq '"-prio_speed","0","-power_efficient","0","-b:v","500k","-maxrate","12M","-bufsize","64M"' "$R" || fail "quality-preserving VT profile missing"
-grep -Fq 'RENDER_CACHE_GENERATION:&str="8.50-speed-quality-v1"' "$R" || fail "8.50 cache generation missing"
+grep -Fq '"-prio_speed","0","-power_efficient","0","-q:v","100","-b:v","500k","-maxrate","12M","-bufsize","64M"' "$R" || fail "measured q100 VT fidelity profile missing"
+grep -Fq 'RENDER_CACHE_GENERATION:&str="8.50-speed-quality-q100-v1"' "$R" || fail "8.50 cache generation missing"
 grep -Fq 'fn hybrid_video_kbps(_s:&RenderSettings)->u64{500}' "$R" || fail "500k budget changed"
 grep -Fq 'resolved_job.settings.width=1920;' "$R" || fail "1920 lock lost"
 grep -Fq 'resolved_job.settings.height=1080;' "$R" || fail "1080 lock lost"
@@ -35,37 +34,37 @@ ref=tmp/'reference.png'; out=tmp/'vt-quality.mp4'; dec=tmp/'decoded.png'; dyn=tm
 def run(args,check=True,capture=False):
     return subprocess.run(args,check=check,stdout=subprocess.PIPE if capture else subprocess.DEVNULL,stderr=subprocess.PIPE if capture else subprocess.DEVNULL,text=capture)
 
-# High-detail still used for a quality gate.
+def bitrate(path):
+    p=run([fp,'-v','error','-select_streams','v:0','-show_entries','stream=bit_rate','-of','default=nw=1:nk=1',str(path)],capture=True).stdout.strip()
+    try:return int(p)/1000.0
+    except:return 0.0
+
 run([ff,'-hide_banner','-loglevel','error','-f','lavfi','-i','testsrc2=size=1920x1080:rate=1','-frames:v','1','-y',str(ref)])
+profile=['-c:v','hevc_videotoolbox','-realtime','1','-prio_speed','0','-power_efficient','0','-q:v','100','-b:v','500k','-maxrate','12M','-bufsize','64M','-tag:v','hvc1','-pix_fmt','yuv420p']
 
-profile=['-c:v','hevc_videotoolbox','-realtime','1','-prio_speed','0','-power_efficient','0','-b:v','500k','-maxrate','12M','-bufsize','64M','-tag:v','hvc1','-pix_fmt','yuv420p']
-start=time.monotonic()
-run([ff,'-hide_banner','-loglevel','error','-loop','1','-framerate','60','-i',str(ref),'-t','12','-an',*profile,'-g','720','-y',str(out)])
-static_sec=time.monotonic()-start
+start=time.monotonic();run([ff,'-hide_banner','-loglevel','error','-loop','1','-framerate','60','-i',str(ref),'-t','12','-an',*profile,'-g','720','-y',str(out)]);static_sec=time.monotonic()-start
 if static_sec>12.0: raise SystemExit(f'FAIL 8.50: 12s hardware master too slow: {static_sec:.3f}s')
-
 run([ff,'-hide_banner','-loglevel','error','-i',str(out),'-frames:v','1','-y',str(dec)])
 p=run([ff,'-hide_banner','-i',str(ref),'-i',str(dec),'-filter_complex','[0:v]format=yuv420p[a];[1:v]format=yuv420p[b];[a][b]ssim','-frames:v','1','-f','null','-'],capture=True)
 m=re.findall(r'All:([0-9.]+)',p.stderr)
 if not m: raise SystemExit('FAIL 8.50: cannot parse SSIM')
 ssim=float(m[-1])
-if ssim<0.995: raise SystemExit(f'FAIL 8.50: VideoToolbox first-frame SSIM {ssim:.6f} < 0.995')
+if ssim<0.995: raise SystemExit(f'FAIL 8.50: VideoToolbox q100 first-frame SSIM {ssim:.6f} < 0.995')
+static_kbps=bitrate(out)
 
-# Cold-cache representative: 60s 1080p60 still + moving overlay. This exercises
-# the same CPU compositing + hardware encode shape that was taking minutes.
+# 60s 1080p60 Effects-like cold-cache load. First cache may take up to one minute,
+# but must not return to the multi-minute CPU path.
 fc="[0:v]scale=1920:1080:flags=lanczos,format=yuv420p[bg];[1:v]format=rgba,colorchannelmixer=aa=0.30[ov];[bg][ov]overlay=x='mod(t*120,1280)':y=360:shortest=1[outv]"
-start=time.monotonic()
-run([ff,'-hide_banner','-loglevel','error','-loop','1','-framerate','60','-i',str(ref),'-f','lavfi','-i','testsrc2=size=640x360:rate=60','-filter_complex',fc,'-map','[outv]','-t','60','-an',*profile,'-g','3600','-y',str(dyn)])
-dyn_sec=time.monotonic()-start
+start=time.monotonic();run([ff,'-hide_banner','-loglevel','error','-loop','1','-framerate','60','-i',str(ref),'-f','lavfi','-i','testsrc2=size=640x360:rate=60','-filter_complex',fc,'-map','[outv]','-t','60','-an',*profile,'-g','3600','-y',str(dyn)]);dyn_sec=time.monotonic()-start
 if dyn_sec>60.0: raise SystemExit(f'FAIL 8.50: cold 60s effect master {dyn_sec:.3f}s > 60s')
-
+dyn_kbps=bitrate(dyn)
 probe=run([fp,'-v','error','-select_streams','v:0','-show_entries','stream=width,height,avg_frame_rate,codec_name','-of','default=nw=1',str(dyn)],capture=True).stdout
 if 'width=1920' not in probe or 'height=1080' not in probe: raise SystemExit('FAIL 8.50: benchmark output not 1920x1080')
 if 'codec_name=hevc' not in probe: raise SystemExit('FAIL 8.50: benchmark output is not HEVC')
-print(f'PASS: 8.50 static hardware master {static_sec:.3f}s SSIM={ssim:.6f}')
-print(f'PASS: 8.50 representative cold 60s effect master {dyn_sec:.3f}s')
+print(f'PASS: 8.50 q100 hardware master {static_sec:.3f}s SSIM={ssim:.6f} video={static_kbps:.1f}kbps')
+print(f'PASS: 8.50 representative cold 60s effect master {dyn_sec:.3f}s video={dyn_kbps:.1f}kbps')
 PY
 
 echo '✅ ENDLUME 8.50 REAL SPEED / QUALITY GATE PASS'
-echo '✅ VideoToolbox hardware-first with 12M/64M keyframe headroom'
-echo '✅ 500k / 1920x1080 / whole-track / watchdog / updater identity preserved'
+echo '✅ VideoToolbox q100 hardware-first; libx265 fallback only'
+echo '✅ 500k target / 1920x1080 / whole-track / watchdog / updater identity preserved'

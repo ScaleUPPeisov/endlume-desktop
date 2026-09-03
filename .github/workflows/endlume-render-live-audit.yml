@@ -1,0 +1,50 @@
+name: ENDLUME Render Live Audit
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [release]
+    paths:
+      - '.github/workflows/endlume-render-live-audit.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  live-audit:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 10
+    steps:
+      - name: Non-destructive ENDLUME process snapshot
+        shell: bash
+        run: |
+          set -u
+          echo "=== ENDLUME LIVE RENDER AUDIT ==="
+          date
+          echo "Runner: ${RUNNER_NAME:-unknown}"
+          echo
+          echo "--- process snapshot #1 ---"
+          ps -axo pid=,ppid=,etime=,%cpu=,%mem=,command= | grep -E 'ENDLUME Studio|[f]fmpeg|[f]fprobe' || true
+          echo
+          PIDS="$(pgrep -f 'ffmpeg|ffprobe' || true)"
+          for pid in $PIDS; do
+            echo "--- pid=$pid open render-related files ---"
+            ps -ww -p "$pid" -o pid=,ppid=,etime=,%cpu=,%mem=,command= || true
+            /usr/sbin/lsof -p "$pid" 2>/dev/null | grep -E 'visual-seg|variant-|video-long|audio-|Ready Videos|effects|subscribe|\.partial|\.tmp' | tail -80 || true
+          done
+          echo
+          echo "Waiting 8 seconds without touching the render..."
+          sleep 8
+          echo
+          echo "--- process snapshot #2 ---"
+          ps -axo pid=,ppid=,etime=,%cpu=,%mem=,command= | grep -E 'ENDLUME Studio|[f]fmpeg|[f]fprobe' || true
+          for pid in $PIDS; do
+            if kill -0 "$pid" 2>/dev/null; then
+              echo "--- pid=$pid still alive after 8s ---"
+              ps -ww -p "$pid" -o pid=,ppid=,etime=,%cpu=,%mem=,command= || true
+              /usr/sbin/lsof -p "$pid" 2>/dev/null | grep -E 'visual-seg|variant-|video-long|audio-|Ready Videos|effects|subscribe|\.partial|\.tmp' | tail -80 || true
+            else
+              echo "pid=$pid terminated during observation"
+            fi
+          done
+          echo "=== AUDIT COMPLETE: no process was killed or modified ==="

@@ -23,7 +23,6 @@ gh auth status -h github.com >/dev/null 2>&1 || fail "GitHub CLI не автор
 [[ -n "${TAURI_SIGNING_PRIVATE_KEY_PATH:-}" ]] || fail "TAURI_SIGNING_PRIVATE_KEY_PATH missing"
 [[ -s "$TAURI_SIGNING_PRIVATE_KEY_PATH" ]] || fail "Tauri updater signing key missing"
 
-# All new patches must exist before we generate or build anything.
 for path in scripts/apply-performance-stability-8-41.py scripts/apply-version-8-41.py scripts/validate-release-8-41.sh; do
   gh api -H 'Accept: application/vnd.github.raw+json' "/repos/$REPO/contents/$path?ref=$BRANCH" > "$TMP/$(basename "$path")" || fail "не удалось получить $path"
   [[ -s "$TMP/$(basename "$path")" ]] || fail "$path пуст"
@@ -35,8 +34,6 @@ gh api -H 'Accept: application/vnd.github.raw+json' "/repos/$REPO/contents/BUILD
 [[ -s "$BASE" ]] || fail "8.40 builder пуст"
 /bin/bash -n "$BASE" || fail "8.40 builder syntax failed"
 
-# Turn the proven 8.40 outer builder into GENERATE-ONLY mode. It still runs all
-# its structural prechecks, but it does not start npm/cargo/Tauri itself.
 python3 - "$BASE" "$GEN" <<'PY'
 from pathlib import Path
 import sys
@@ -44,7 +41,6 @@ s=Path(sys.argv[1]).read_text(encoding='utf-8')
 old='/bin/bash "$REAL"\n'
 pos=s.rfind(old)
 if pos<0: raise SystemExit('8.41: 8.40 final REAL execution marker missing')
-# It must be the final executable action, otherwise we could accidentally build 8.40.
 tail=s[pos+len(old):].strip()
 if tail: raise SystemExit('8.41: unexpected commands after 8.40 REAL execution marker')
 s=s[:pos]+'cp "$REAL" "$ENDLUME_841_GENERATED_BUILDER"\n'
@@ -57,15 +53,12 @@ export ENDLUME_841_GENERATED_BUILDER="$REAL"
 [[ -s "$REAL" ]] || fail "8.40 proven REAL builder was not generated"
 /bin/bash -n "$REAL" || fail "generated REAL builder syntax failed"
 
-# Upgrade the generated 8.40 REAL builder to 8.41. Historical 8.38/8.40 gates
-# remain before this patch. After 8.41 migration only the 8.41 final gate runs.
 python3 - "$REAL" <<'PY'
 from pathlib import Path
 import sys
 p=Path(sys.argv[1])
 s=p.read_text(encoding='utf-8')
 
-# Insert 8.41 immediately after the FIRST executable 8.40 updater gate.
 call40='scripts/validate-release-8-40.sh'
 needle='\n'+call40+'\n'
 i=s.find(needle)
@@ -79,13 +72,11 @@ scripts/validate-release-8-41.sh "$FFMPEG" "$FFPROBE"
 '''
 s=s[:insert_at]+patch+s[insert_at:]
 
-# Final identity: all final app gates and user-visible build labels become 8.41.
 s=s.replace('VERSION_EXPECTED="1.0.0-alpha.8.40"','VERSION_EXPECTED="1.0.0-alpha.8.41"',1)
 s=s.replace('ENDLUME Studio 1.0.0-alpha.8.40','ENDLUME Studio 1.0.0-alpha.8.41')
 s=s.replace('│ 8.40 • STABLE 8.38 BASE • NATIVE INTERNET UPDATER        │','│ 8.41 • TRUE 60 FPS • STABILITY • GAPLESS • CHROMA        │')
 s=s.replace('[[ "$APP_VERSION" == "1.0.0-alpha.8.40" ]]','[[ "$APP_VERSION" == "1.0.0-alpha.8.41" ]]')
 
-# Stage 7 must no longer run the 8.40 render-baseline (it expects fps:30).
 old_stage='''stage "7/10 Проверяю ENDLUME 8.40 final regression" 58
 chmod +x scripts/validate-release-8-40.sh scripts/validate-render-baseline-8-40.sh
 scripts/validate-release-8-40.sh
@@ -100,15 +91,11 @@ node scripts/validate-motion-ui.mjs
 if old_stage not in s: raise SystemExit('8.41: expected 8.40 Stage 7 block missing')
 s=s.replace(old_stage,new_stage,1)
 
-# Build updater artifacts using the MAIN config. The old local config explicitly
-# disables createUpdaterArtifacts and would produce no .app.tar.gz/.sig.
 old_build='npx tauri build --target aarch64-apple-darwin --bundles app --config src-tauri/tauri.local.conf.json'
 new_build='npx tauri build --target aarch64-apple-darwin --bundles app'
 if old_build not in s: raise SystemExit('8.41: Tauri local-config build marker missing')
 s=s.replace(old_build,new_build,1)
 
-# Replace drag/drop packaging with signed updater artifact export. Nothing touches
-# /Applications here: installed 8.40 receives 8.41 through the native updater.
 stage10='stage "10/10 Готовлю файл для папки Программы" 96\n'
 j=s.find(stage10)
 if j<0: raise SystemExit('8.41: 8.40 dragdrop Stage 10 marker missing')
@@ -122,7 +109,12 @@ SIG="$UPDATER.sig"
 if [[ ! -s "$SIG" ]]; then
   PHYSICAL_TARGET="$(cd src-tauri/target && pwd -P)"
   PHYSICAL_BUNDLE="$PHYSICAL_TARGET/aarch64-apple-darwin/release/bundle/macos"
-  SIG="$(find "$PHYSICAL_BUNDLE" -maxdepth 1 -type f -name "$(basename "$UPDATER").sig" -print -quit 2>/dev/null || true)"
+  SIG="$(find "$PHYSICAL_BUNDLE" -maxdepth 1 -name "$(basename "$UPDATER").sig" -print -quit 2>/dev/null || true)"
+fi
+if [[ -z "$SIG" || ! -s "$SIG" ]]; then
+  echo "⚠️ Built-in updater signature path not visible; regenerating signature with Tauri signer"
+  env -u TAURI_SIGNING_PRIVATE_KEY npx tauri signer sign "$UPDATER" >/dev/null || fail "Tauri updater signature regeneration failed"
+  SIG="$UPDATER.sig"
 fi
 [[ -n "$SIG" && -s "$SIG" ]] || fail "Tauri updater .sig не создан"
 cp "$UPDATER" "$OUT/$(basename "$UPDATER")"
@@ -139,7 +131,6 @@ PY
 
 /bin/bash -n "$REAL" || fail "8.41 REAL builder syntax failed"
 
-# Mandatory preflight: fail FAST before npm/cargo/FFmpeg if ordering or scope is bad.
 python3 - "$REAL" <<'PY'
 from pathlib import Path
 import sys
@@ -154,7 +145,6 @@ call41='scripts/validate-release-8-41.sh "$FFMPEG" "$FFPROBE"'
 
 if s.count(call38)!=1: raise SystemExit(f'PRECHECK 8.41: historical 8.38 validator count={s.count(call38)}')
 p38=s.index(call38); p40=s.index(apply40); v40=s.index(ver40)
-# Find executable call, not chmod text.
 c40=s.find('\n'+call40+'\n',v40)
 if not (p38<p40<v40<c40): raise SystemExit('PRECHECK 8.41: 8.38 -> updater40 -> version40 -> validate40 order broken')
 p41=s.index(apply41,c40); v41=s.index(ver41,p41); c41=s.find('\n'+call41+'\n',v41)
@@ -171,11 +161,14 @@ if 'Экспортирую подписанное ONLINE обновление' n
     raise SystemExit('PRECHECK 8.41: signed artifact export missing')
 if 'PHYSICAL_TARGET="$(cd src-tauri/target && pwd -P)"' not in s:
     raise SystemExit('PRECHECK 8.41: physical Cargo target signature fallback missing')
+if 'env -u TAURI_SIGNING_PRIVATE_KEY npx tauri signer sign "$UPDATER"' not in s:
+    raise SystemExit('PRECHECK 8.41: deterministic signer fallback missing')
 print('✅ PRECHECK 8.41: historical gates ordered correctly')
 print('✅ PRECHECK 8.41: 8.39 chain absent')
 print('✅ PRECHECK 8.41: 8.41 patch/version/gate ordered correctly')
 print('✅ PRECHECK 8.41: signed updater artifacts enabled')
 print('✅ PRECHECK 8.41: physical Cargo target signature lookup enabled')
+print('✅ PRECHECK 8.41: deterministic Tauri signer fallback enabled')
 print('✅ PRECHECK 8.41: no /Applications install / dragdrop stage')
 PY
 
@@ -185,6 +178,7 @@ grep -Fq 'validate-release-8-41.sh' "$REAL" || fail "8.41 full gate missing"
 grep -Fq 'npx tauri build --target aarch64-apple-darwin --bundles app' "$REAL" || fail "signed Tauri build missing"
 grep -Fq 'Экспортирую подписанное ONLINE обновление' "$REAL" || fail "signed artifact stage missing"
 grep -Fq 'PHYSICAL_TARGET="$(cd src-tauri/target && pwd -P)"' "$REAL" || fail "physical Cargo target signature lookup missing"
+grep -Fq 'env -u TAURI_SIGNING_PRIVATE_KEY npx tauri signer sign "$UPDATER"' "$REAL" || fail "deterministic signer fallback missing"
 
 echo "✅ ENDLUME 8.41 ONLINE preflight passed"
 echo "✅ Only requested 1–10 patch will be applied after proven 8.40 updater bootstrap"

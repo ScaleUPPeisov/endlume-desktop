@@ -12,7 +12,7 @@ fail(){ echo "FAIL 8.49: $1" >&2; exit 1; }
 
 python3 - "$R" "$CONF" <<'PY'
 from pathlib import Path
-import json,sys,re
+import json,sys
 r=Path(sys.argv[1]).read_text()
 c=json.loads(Path(sys.argv[2]).read_text())
 assert c['productName']=='ENDLUME STUDIO PEISOV',c['productName']
@@ -32,25 +32,19 @@ for x in ['HIT variant','subscribe-{}.mp4','copy-{}.mp4','audio-original-{}.mp3'
 assert 'if t-target<=240.0{t}else{target}' not in r
 assert 'let idx=i%durations.len();' in r
 assert 'audio_timeline_849_tests' in r
-# Scope only the hybrid selector: it must be x265 first; VT remains fallback.
 a=r.index('async fn choose_hybrid_encoder')
 b=r.index('async fn probe_audio_decodes',a)
 sel=r[a:b]
 assert 'attempt==1&&encoder_works(app,"libx265")' in sel
 assert 'attempt==1&&encoder_works(app,"hevc_videotoolbox")' not in sel
-# Final huge mux remains stream-copy and must not relocate the complete file.
 lines=[x for x in r.splitlines() if '"-c:v","copy","-c:a","copy","-video_track_timescale","60000"' in x]
 assert lines and all('+faststart' not in x for x in lines)
-# Internal processed audio cache also has no +faststart relocation.
 a=r.index('async fn build_lossless_processed_audio_cycle')
 b=r.index('async fn materialize_continuous_audio',a)
 assert '+faststart' not in r[a:b]
 print('PASS: 8.49 source contract / brand / 1080p / 500k / watchdog / persistent cache')
 PY
 
-# Independent whole-track regression: a boundary song is never chopped even
-# when the overshoot is > 240 seconds. Crossfade exists only between real tracks
-# inside the encoded cycle, not at stream_loop wrap.
 python3 - <<'PY'
 d=[590.125,610.250,605.375,615.500,620.625,595.750,600.875,612.125,608.250,603.375,617.500,621.625]
 target=6900.0
@@ -71,8 +65,9 @@ TMP="$(mktemp -d /tmp/endlume-849-gate.XXXXXX)"
 cleanup(){ rm -rf "$TMP" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 
-# Quality gate: encode the exact 8.49 one-image x265 profile. This protects the
-# sharp first frame rather than accepting the low-bitrate VideoToolbox regression.
+# Fidelity gate uses the actual 8.49 60fps one-image production profile.
+# SSIM is measured in the same yuv420p domain as the encoded output, matching
+# the proven 8.36 method and avoiding a false penalty from RGB<->YUV conversion.
 "$FFMPEG" -hide_banner -loglevel error -f lavfi -i 'testsrc2=size=1920x1080:rate=1' -frames:v 1 -y "$TMP/source.png"
 python3 - "$FFMPEG" "$TMP" <<'PY'
 import subprocess,sys,time,re
@@ -80,17 +75,15 @@ ff,tmp=sys.argv[1:]
 cmd=[ff,'-hide_banner','-loglevel','error','-loop','1','-framerate','60','-i',tmp+'/source.png','-vf','scale=1920:1080:force_original_aspect_ratio=increase:flags=lanczos+accurate_rnd,crop=1920:1080:(iw-ow)/2:(ih-oh)/2,fps=60,setsar=1','-t','12','-an','-c:v','libx265','-preset','ultrafast','-crf','18','-maxrate','500k','-bufsize','4M','-x265-params','keyint=720:min-keyint=720:scenecut=0:open-gop=0:aq-mode=3:aq-strength=1.0:vbv-init=1.0','-tag:v','hvc1','-pix_fmt','yuv420p','-y',tmp+'/quality.mp4']
 t=time.monotonic();subprocess.run(cmd,check=True);elapsed=time.monotonic()-t
 if elapsed>15: raise SystemExit(f'quality master too slow: {elapsed:.3f}s > 15s')
-subprocess.run([ff,'-hide_banner','-loglevel','error','-i',tmp+'/quality.mp4','-frames:v','1','-y',tmp+'/decoded.png'],check=True)
-p=subprocess.run([ff,'-hide_banner','-i',tmp+'/decoded.png','-i',tmp+'/source.png','-lavfi','ssim','-f','null','-'],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+p=subprocess.run([ff,'-hide_banner','-loglevel','info','-i',tmp+'/source.png','-i',tmp+'/quality.mp4','-lavfi',"[0:v]format=yuv420p[ref];[1:v]select='eq(n,0)',format=yuv420p[enc];[ref][enc]ssim",'-frames:v','1','-f','null','-'],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
 m=re.search(r'All:([0-9.]+)',p.stderr)
 if not m: raise SystemExit('SSIM result missing')
 ssim=float(m.group(1))
-if ssim<0.985: raise SystemExit(f'first-frame SSIM too low: {ssim:.6f}')
+if ssim<0.995: raise SystemExit(f'first-frame SSIM too low: {ssim:.6f} < 0.995')
 print(f'PASS: x265 one-image quality master {elapsed:.3f}s SSIM={ssim:.6f}')
 PY
 
-# Warm-cache I/O gate: representative ~2h stream-copy. No image/audio encoding is
-# allowed here; this measures the hard lower bound once short caches already exist.
+# Warm-cache hard lower-bound gate: physical two-hour stream-copy on this M1.
 "$FFMPEG" -hide_banner -loglevel error -f lavfi -i 'testsrc2=size=640x360:rate=30' -t 12 -an -c:v libx264 -preset ultrafast -b:v 500k -maxrate 500k -bufsize 1M -g 360 -pix_fmt yuv420p -y "$TMP/io-video.mp4"
 "$FFMPEG" -hide_banner -loglevel error -f lavfi -i 'sine=frequency=440:sample_rate=48000' -t 12 -c:a aac -b:a 256k -y "$TMP/io-audio.m4a"
 python3 - "$FFMPEG" "$TMP" <<'PY'
@@ -105,7 +98,6 @@ if not (430 <= mb <= 760): raise SystemExit(f'representative mux size outside I/
 print(f'PASS: warm cached 2h stream-copy {elapsed:.3f}s, {mb:.1f} MiB')
 PY
 
-# Physical output constraints stay exact.
 DIM="$($FFPROBE -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0:s=x "$TMP/quality.mp4")"
 [[ "$DIM" = "1920x1080" ]] || fail "quality fixture is $DIM, expected 1920x1080"
 

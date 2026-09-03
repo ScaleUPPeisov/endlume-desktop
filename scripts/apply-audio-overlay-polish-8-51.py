@@ -16,15 +16,23 @@ def must(cond,msg):
 # 1. One-image music videos NEVER cut the song at the nominal 2h boundary.
 # The existing 8.49 whole-track math already finds the end of the current song;
 # make that policy mandatory for the one-image ENDLUME product shape even if an
-# old persisted UI setting still says "exact".
+# old persisted UI setting still says "exact". Match structurally because the
+# reconstructed 8.50 source can differ only in whitespace/local variable naming.
 # ---------------------------------------------------------------------------
 p=need('src-tauri/src/render.rs')
 s=p.read_text(encoding='utf-8')
-old='let target=job.settings.duration_hours*3600.0;let final_duration=smart_final_duration(target,&durations,job.settings.crossfade_sec,&job.settings.duration_mode);let audio='
-new='let target=job.settings.duration_hours*3600.0;let duration_mode=if smart_repeat_project(job){"whole-track"}else{job.settings.duration_mode.as_str()};let final_duration=smart_final_duration(target,&durations,job.settings.crossfade_sec,duration_mode);let audio='
-must(old in s or 'let duration_mode=if smart_repeat_project(job){"whole-track"}' in s,'render duration call not found')
-if old in s:s=s.replace(old,new,1)
-must('let duration_mode=if smart_repeat_project(job){"whole-track"}else{job.settings.duration_mode.as_str()};' in s,'mandatory one-image whole-track policy missing')
+policy='let duration_mode=if smart_repeat_project(job){"whole-track"}else{job.settings.duration_mode.as_str()};'
+if policy not in s:
+    pat=re.compile(r'let\s+target\s*=\s*(?P<j>[A-Za-z_][A-Za-z0-9_]*)\.settings\.duration_hours\s*\*\s*3600\.0\s*;\s*let\s+final_duration\s*=\s*smart_final_duration\(\s*target\s*,\s*&durations\s*,\s*(?P=j)\.settings\.crossfade_sec\s*,\s*&(?P=j)\.settings\.duration_mode\s*\)\s*;')
+    m=pat.search(s)
+    must(m is not None,'render duration call not found')
+    j=m.group('j')
+    replacement=(f'let target={j}.settings.duration_hours*3600.0;'
+                 f'let duration_mode=if smart_repeat_project({j}){{"whole-track"}}else{{{j}.settings.duration_mode.as_str()}};'
+                 f'let final_duration=smart_final_duration(target,&durations,{j}.settings.crossfade_sec,duration_mode);')
+    s=s[:m.start()]+replacement+s[m.end():]
+# Runtime currently uses `job`; enforce the exact one-image policy marker after replacement.
+must('duration_mode=if smart_repeat_project(' in s and '"whole-track"' in s,'mandatory one-image whole-track policy missing')
 must('if t-target<=240.0{t}else{target}' not in s,'legacy 4-minute song cut cap returned')
 p.write_text(s,encoding='utf-8')
 

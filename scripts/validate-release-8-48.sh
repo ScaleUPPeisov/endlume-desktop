@@ -9,8 +9,10 @@ fail(){ echo "FAIL 8.48 AUDIO: $1" >&2; exit 1; }
 # New audio-only contract.
 grep -Fq 'fn smart_final_duration' "$R" || fail 'smart_final_duration missing'
 grep -Fq 'let cf=crossfade.clamp(0.0,10.0);' "$R" || fail 'crossfade clamp mismatch'
+grep -Fq 'let idx=i%durations.len();' "$R" || fail 'playlist cycle boundary accounting missing'
 grep -Fq 'whole_track_crossfade_off_never_cuts_boundary_track' "$R" || fail '12-track OFF regression missing'
 grep -Fq 'whole_track_crossfade_on_subtracts_only_real_overlaps' "$R" || fail '12-track ON regression missing'
+grep -Fq 'repeated_cycle_does_not_invent_crossfade_at_stream_loop_boundary' "$R" || fail 'stream-loop boundary regression missing'
 if grep -Fq 'if t-target<=240.0{t}else{target}' "$R"; then
   fail 'old 240-second whole-track truncation cap still present'
 fi
@@ -37,6 +39,7 @@ import sys
 s=open(sys.argv[1],encoding='utf-8').read()
 assert 'if t-target<=240.0{t}else{target}' not in s
 assert 'let cf=crossfade.clamp(0.0,10.0);' in s
+assert 'let idx=i%durations.len();' in s
 assert 'args.extend(vec!["-t",&final_duration.to_string(),"-map","0:v:0","-map","1:a:0","-c:v","copy","-c:a","copy"' in s
 assert '"-shortest"' not in s
 assert 'let cf=job.settings.crossfade_sec.clamp(0.0,10.0);' in s
@@ -56,7 +59,8 @@ assert s-target > 240.0, (s,target)
 def whole(target,d,cf):
     cf=max(0.0,min(10.0,cf)); t=0.0; i=0
     while t < target:
-        t += max(0.1,d[i%len(d)]-(cf if i>0 else 0.0))
+        idx=i%len(d)
+        t += max(0.1,d[idx]-(cf if idx>0 else 0.0))
         i += 1
     return t
 
@@ -66,10 +70,19 @@ cf=5.125
 on=whole(target,d,cf)
 expected=s-cf*(len(d)-1)
 assert abs(on-expected) < 1e-9, (on,expected)
-print(f'PASS: 12-track ~2h timeline OFF={off:.3f}s ON={on:.3f}s; no boundary-track cut')
+
+# A repeated playlist has no acrossfade between the encoded cycle's last track
+# and the next stream_loop cycle's first track. Do not invent one in the math.
+first_cycle=expected
+repeat_target=first_cycle+100.0
+repeat_actual=whole(repeat_target,d,cf)
+repeat_expected=first_cycle+d[0]
+assert abs(repeat_actual-repeat_expected) < 1e-9, (repeat_actual,repeat_expected)
+print(f'PASS: 12-track ~2h OFF={off:.3f}s ON={on:.3f}s repeat={repeat_actual:.3f}s; only real overlaps counted')
 PY
 
 echo '✅ ENDLUME 8.48 AUDIO-ONLY GATE PASS'
 echo '✅ whole-track no longer falls back to exact target after +240s'
-echo '✅ crossfade math uses the same 0..10s clamp as the actual FFmpeg audio graph'
+echo '✅ crossfade is subtracted only on boundaries where the FFmpeg audio cycle actually applies acrossfade'
+echo '✅ stream_loop cycle boundary does not accumulate fake overlap time'
 echo '✅ 1920x1080 / H.265 / VideoToolbox / 500k / Effects / Subscribe / watchdog / updater code untouched'

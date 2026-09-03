@@ -2,7 +2,7 @@
 from pathlib import Path
 import re, sys
 
-ROOT = Path(sys.argv[1]) if len(sys.argv)>1 else Path.cwd()
+ROOT=Path(sys.argv[1]) if len(sys.argv)>1 else Path.cwd()
 VERSION='1.0.0-alpha.8.48'
 
 def need(rel):
@@ -32,13 +32,11 @@ new='fn smart_final_duration(target:f64,durations:&[f64],crossfade:f64,mode:&str
 must(old in s,'whole-track duration block changed or already patched')
 s=s.replace(old,new,1)
 
-# Normalize only the spelling of the existing audio-filter clamp. This is
-# semantically identical Rust and keeps the validator deterministic.
-old_cf='let cf=job.settings.crossfade_sec.clamp(0.,10.);'
-new_cf='let cf=job.settings.crossfade_sec.clamp(0.0,10.0);'
-if old_cf in s:
-    s=s.replace(old_cf,new_cf,1)
-must(new_cf in s,'existing FFmpeg crossfade clamp missing')
+# Preserve semantics of the existing FFmpeg crossfade pipeline while making its
+# already-existing 0..10 clamp representation deterministic for validation.
+cf_pattern=r'let\s+cf\s*=\s*job\.settings\.crossfade_sec\.clamp\(\s*0(?:\.0?)?\s*,\s*10(?:\.0?)?\s*\);'
+s,n=re.subn(cf_pattern,'let cf=job.settings.crossfade_sec.clamp(0.0,10.0);',s,count=1)
+must(n==1,'existing FFmpeg crossfade clamp missing')
 
 anchor=new+'\n\nasync fn build_long_audio'
 must(anchor in s,'build_long_audio anchor missing after duration patch')
@@ -58,46 +56,34 @@ mod audio_timeline_tests{
 
   #[test]
   fn whole_track_crossfade_off_never_cuts_boundary_track(){
-    let d=tracks();
-    let target=6900.0;
-    let expected=d.iter().sum::<f64>();
+    let d=tracks();let target=6900.0;let expected=d.iter().sum::<f64>();
     let actual=smart_final_duration(target,&d,0.0,"whole-track");
-    assert!(expected-target>240.0,"fixture must exercise removed 240s cap");
-    near(actual,expected);
+    assert!(expected-target>240.0,"fixture must exercise removed 240s cap");near(actual,expected);
   }
 
   #[test]
   fn whole_track_crossfade_on_subtracts_only_real_overlaps(){
-    let d=tracks();
-    let target=6900.0;
-    let cf=5.125;
+    let d=tracks();let target=6900.0;let cf=5.125;
     let expected=d.iter().sum::<f64>()-cf*((d.len()-1) as f64);
-    let actual=smart_final_duration(target,&d,cf,"whole-track");
-    assert!(expected>=target);
-    near(actual,expected);
+    let actual=smart_final_duration(target,&d,cf,"whole-track");assert!(expected>=target);near(actual,expected);
   }
 
   #[test]
   fn repeated_cycle_does_not_invent_crossfade_at_stream_loop_boundary(){
-    let d=tracks();
-    let cf=5.125;
+    let d=tracks();let cf=5.125;
     let first_cycle=d.iter().sum::<f64>()-cf*((d.len()-1) as f64);
-    let target=first_cycle+100.0;
-    let expected=first_cycle+d[0];
-    let actual=smart_final_duration(target,&d,cf,"whole-track");
-    near(actual,expected);
+    let target=first_cycle+100.0;let expected=first_cycle+d[0];
+    let actual=smart_final_duration(target,&d,cf,"whole-track");near(actual,expected);
   }
 
   #[test]
   fn non_whole_track_mode_keeps_exact_target_behavior(){
-    let d=tracks();
-    near(smart_final_duration(7200.375,&d,5.0,"exact"),7200.375);
+    let d=tracks();near(smart_final_duration(7200.375,&d,5.0,"exact"),7200.375);
   }
 
   #[test]
   fn crossfade_duration_matches_audio_filter_clamp(){
-    let d=tracks();
-    let target=6900.0;
+    let d=tracks();let target=6900.0;
     let expected=d.iter().sum::<f64>()-10.0*((d.len()-1) as f64);
     near(smart_final_duration(target,&d,99.0,"whole-track"),expected);
   }
@@ -105,7 +91,6 @@ mod audio_timeline_tests{
 '''
 
 s=s.replace(anchor,new+tests+'\n\nasync fn build_long_audio',1)
-
 must('if t-target<=240.0{t}else{target}' not in s,'old 240-second truncation cap still present')
 must('let cf=crossfade.clamp(0.0,10.0);' in s,'crossfade duration is not aligned with audio filter clamp')
 must('let idx=i%durations.len();' in s,'playlist cycle boundary accounting missing')
@@ -113,6 +98,6 @@ must('repeated_cycle_does_not_invent_crossfade_at_stream_loop_boundary' in s,'st
 p.write_text(s,encoding='utf-8')
 
 for rel in ['package.json','src-tauri/Cargo.toml','src-tauri/tauri.conf.json','src/tauri.ts','src/pages/SettingsPage.tsx','src/pages/App.tsx']:
-    x=need(rel); t=x.read_text(encoding='utf-8'); t=re.sub(r'1\.0\.0-alpha\.8\.\d+',VERSION,t); x.write_text(t,encoding='utf-8')
+    x=need(rel);t=x.read_text(encoding='utf-8');t=re.sub(r'1\.0\.0-alpha\.8\.\d+',VERSION,t);x.write_text(t,encoding='utf-8')
 
 print('ENDLUME 8.48 whole-track audio duration fix: PASS')

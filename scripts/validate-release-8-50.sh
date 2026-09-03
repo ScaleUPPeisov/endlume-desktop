@@ -1,5 +1,6 @@
 #!/bin/bash
 set -Eeuo pipefail
+# q100 profile confirmed by M1 sweep on 2026-09-03; rerun full signed candidate.
 ROOT="${1:-.}"
 FFMPEG="${2:-ffmpeg}"
 FFPROBE="${3:-ffprobe}"
@@ -26,22 +27,18 @@ TMP="$(mktemp -d /tmp/endlume-850-gate.XXXXXX)"
 trap 'rm -rf "$TMP"' EXIT
 
 python3 - "$FFMPEG" "$FFPROBE" "$TMP" <<'PY'
-import pathlib,subprocess,sys,time,re,os
+import pathlib,subprocess,sys,time,re
 ff,fp,tmp=sys.argv[1:]
 tmp=pathlib.Path(tmp)
 ref=tmp/'reference.png'; out=tmp/'vt-quality.mp4'; dec=tmp/'decoded.png'; dyn=tmp/'vt-dynamic.mp4'
-
 def run(args,check=True,capture=False):
     return subprocess.run(args,check=check,stdout=subprocess.PIPE if capture else subprocess.DEVNULL,stderr=subprocess.PIPE if capture else subprocess.DEVNULL,text=capture)
-
 def bitrate(path):
     p=run([fp,'-v','error','-select_streams','v:0','-show_entries','stream=bit_rate','-of','default=nw=1:nk=1',str(path)],capture=True).stdout.strip()
     try:return int(p)/1000.0
     except:return 0.0
-
 run([ff,'-hide_banner','-loglevel','error','-f','lavfi','-i','testsrc2=size=1920x1080:rate=1','-frames:v','1','-y',str(ref)])
 profile=['-c:v','hevc_videotoolbox','-realtime','1','-prio_speed','0','-power_efficient','0','-q:v','100','-b:v','500k','-maxrate','12M','-bufsize','64M','-tag:v','hvc1','-pix_fmt','yuv420p']
-
 start=time.monotonic();run([ff,'-hide_banner','-loglevel','error','-loop','1','-framerate','60','-i',str(ref),'-t','12','-an',*profile,'-g','720','-y',str(out)]);static_sec=time.monotonic()-start
 if static_sec>12.0: raise SystemExit(f'FAIL 8.50: 12s hardware master too slow: {static_sec:.3f}s')
 run([ff,'-hide_banner','-loglevel','error','-i',str(out),'-frames:v','1','-y',str(dec)])
@@ -51,9 +48,6 @@ if not m: raise SystemExit('FAIL 8.50: cannot parse SSIM')
 ssim=float(m[-1])
 if ssim<0.995: raise SystemExit(f'FAIL 8.50: VideoToolbox q100 first-frame SSIM {ssim:.6f} < 0.995')
 static_kbps=bitrate(out)
-
-# 60s 1080p60 Effects-like cold-cache load. First cache may take up to one minute,
-# but must not return to the multi-minute CPU path.
 fc="[0:v]scale=1920:1080:flags=lanczos,format=yuv420p[bg];[1:v]format=rgba,colorchannelmixer=aa=0.30[ov];[bg][ov]overlay=x='mod(t*120,1280)':y=360:shortest=1[outv]"
 start=time.monotonic();run([ff,'-hide_banner','-loglevel','error','-loop','1','-framerate','60','-i',str(ref),'-f','lavfi','-i','testsrc2=size=640x360:rate=60','-filter_complex',fc,'-map','[outv]','-t','60','-an',*profile,'-g','3600','-y',str(dyn)]);dyn_sec=time.monotonic()-start
 if dyn_sec>60.0: raise SystemExit(f'FAIL 8.50: cold 60s effect master {dyn_sec:.3f}s > 60s')

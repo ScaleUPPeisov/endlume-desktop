@@ -15,6 +15,14 @@ fail(){ echo "❌ ENDLUME 8.51 BUILDER: $1" >&2; exit 1; }
 [[ "$FINAL_VERSION" = "1.0.0-alpha.8.51" ]] || fail "release version must be 1.0.0-alpha.8.51, got $FINAL_VERSION"
 mkdir -p "$BASE_ART" "$FINAL_ART"
 
+# Tauri build requires the private key value, while the standalone signer can use
+# the existing key path. Load it silently into the environment; never print it.
+SIGNING_KEY_PATH="${TAURI_SIGNING_PRIVATE_KEY_PATH:-$HOME/.endlume-updater/endlume.key}"
+[[ -s "$SIGNING_KEY_PATH" ]] || fail "Tauri updater private key file missing"
+export TAURI_SIGNING_PRIVATE_KEY_PATH="$SIGNING_KEY_PATH"
+export TAURI_SIGNING_PRIVATE_KEY="$(cat "$SIGNING_KEY_PATH")"
+export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}"
+
 # Reconstruct the exact stable 8.50 foundation first.
 export ENDLUME_RELEASE_ARTIFACT_DIR="$BASE_ART"
 export ENDLUME_RELEASE_VERSION="1.0.0-alpha.8.50"
@@ -29,19 +37,24 @@ FFPROBE="$(find "$WORK/src-tauri/binaries" -maxdepth 1 -type f -name 'ffprobe*' 
 [[ -x "$FFMPEG" ]] || fail "embedded FFmpeg missing"
 [[ -x "$FFPROBE" ]] || fail "embedded FFprobe missing"
 
-echo "✅ 8.50 foundation reconstructed; applying 8.51 FULL PROJECT SPEED from ref=$PATCH_REF"
+echo "✅ 8.50 foundation reconstructed; applying 8.51 FULL PROJECT SPEED + AUDIO/OVERLAY POLISH from ref=$PATCH_REF"
 mkdir -p "$WORK/scripts"
 GH_REPO="ScaleUPPeisov/endlume-desktop"
 gh api -H 'Accept: application/vnd.github.raw+json' "/repos/$GH_REPO/contents/scripts/apply-full-project-speed-8-51.py?ref=$PATCH_REF" > "$WORK/scripts/apply-full-project-speed-8-51.py" || fail "cannot fetch 8.51 migration"
 gh api -H 'Accept: application/vnd.github.raw+json' "/repos/$GH_REPO/contents/scripts/validate-release-8-51.sh?ref=$PATCH_REF" > "$WORK/scripts/validate-release-8-51.sh" || fail "cannot fetch 8.51 validator"
-python3 -m py_compile "$WORK/scripts/apply-full-project-speed-8-51.py"
+gh api -H 'Accept: application/vnd.github.raw+json' "/repos/$GH_REPO/contents/scripts/apply-audio-overlay-polish-8-51.py?ref=$PATCH_REF" > "$WORK/scripts/apply-audio-overlay-polish-8-51.py" || fail "cannot fetch 8.51 audio/overlay polish"
+gh api -H 'Accept: application/vnd.github.raw+json' "/repos/$GH_REPO/contents/scripts/validate-audio-overlay-polish-8-51.sh?ref=$PATCH_REF" > "$WORK/scripts/validate-audio-overlay-polish-8-51.sh" || fail "cannot fetch 8.51 audio/overlay validator"
+python3 -m py_compile "$WORK/scripts/apply-full-project-speed-8-51.py" "$WORK/scripts/apply-audio-overlay-polish-8-51.py"
 /bin/bash -n "$WORK/scripts/validate-release-8-51.sh"
-chmod +x "$WORK/scripts/validate-release-8-51.sh"
+/bin/bash -n "$WORK/scripts/validate-audio-overlay-polish-8-51.sh"
+chmod +x "$WORK/scripts/validate-release-8-51.sh" "$WORK/scripts/validate-audio-overlay-polish-8-51.sh"
 python3 "$WORK/scripts/apply-full-project-speed-8-51.py" "$WORK"
+python3 "$WORK/scripts/apply-audio-overlay-polish-8-51.py" "$WORK"
 "$WORK/scripts/validate-release-8-51.sh" "$WORK" "$FFMPEG" "$FFPROBE"
+"$WORK/scripts/validate-audio-overlay-polish-8-51.sh" "$WORK" "$FFMPEG"
 
 cd "$WORK"
-echo '@@ENDLUME_STAGE|8.51/10 Проверяю full-project 20–30s / whole-track / watchdog'
+echo '@@ENDLUME_STAGE|8.51/10 Проверяю 20–30s / whole-song / vivid overlays / watchdog'
 echo '@@ENDLUME_PROGRESS|74'
 npm run check
 npm run build
@@ -99,11 +112,16 @@ grep -Fq '8.51 MANIFEST_READY' src-tauri/src/render.rs || fail "manifest speed p
 grep -Fq 'attempt==1&&encoder_works(app,"hevc_videotoolbox")' src-tauri/src/render.rs || fail "hardware-first selector lost"
 grep -Fq '"-q:v","100","-b:v","500k","-maxrate","12M","-bufsize","64M"' src-tauri/src/render.rs || fail "q100 fidelity profile lost"
 grep -Fq 'let idx=i%durations.len();' src-tauri/src/render.rs || fail "whole-track math lost"
+grep -Fq 'let duration_mode=if smart_repeat_project(job){"whole-track"}else{job.settings.duration_mode.as_str()};' src-tauri/src/render.rs || fail "one-image whole-song policy lost"
+grep -Fq 'eq=contrast=1.10:brightness=0.015:saturation={sat}' src-tauri/src/cache.rs || fail "vivid overlay render path lost"
+grep -Fq 'uniform float sat' src/components/LiveCompositePreview.tsx || fail "vivid Live Preview path lost"
 if grep -Fq 'if t-target<=240.0{t}else{target}' src-tauri/src/render.rs; then fail "song cut cap returned"; fi
 
 echo '@@ENDLUME_PROGRESS|100'
 echo '✅ ENDLUME STUDIO PEISOV 8.51 candidate ready'
 echo '✅ full-project manifest-only assembly; no duplicate multi-minute normal visual files'
-echo '✅ VideoToolbox q100 / 500k / 1920x1080 / whole-track preserved'
+echo '✅ one-image videos finish the current song after the nominal 2h target; no abrupt music cutoff'
+echo '✅ Subscribe/equalizer vivid pipeline: saturation + contrast + stronger alpha in Preview and final render'
+echo '✅ VideoToolbox q100 / 500k / 1920x1080 / watchdog preserved'
 echo '✅ signed updater archive contains strict-valid ENDLUME STUDIO PEISOV.app'
 # candidate trigger: full-project gate required before any stable promotion

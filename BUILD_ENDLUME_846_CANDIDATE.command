@@ -8,6 +8,11 @@ cleanup(){ rm -rf "$TMP" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 fail(){ echo "❌ ENDLUME 8.46 BUILDER: $1" >&2; exit 1; }
 [[ -f "$BASE" ]] || fail "8.45 builder missing"
+[[ -f "$BASE_DIR/BUILD_ENDLUME_844_SELFHOSTED.command" ]] || fail "8.44 proven builder missing"
+[[ -f "$BASE_DIR/BUILD_ENDLUME_841_PINNED.command" ]] || fail "8.41 pinned foundation missing"
+cp "$BASE_DIR/BUILD_ENDLUME_844_SELFHOSTED.command" "$TMP/BUILD_ENDLUME_844_SELFHOSTED.command"
+cp "$BASE_DIR/BUILD_ENDLUME_841_PINNED.command" "$TMP/BUILD_ENDLUME_841_PINNED.command"
+chmod +x "$TMP/BUILD_ENDLUME_844_SELFHOSTED.command" "$TMP/BUILD_ENDLUME_841_PINNED.command"
 
 # Keep 8.45 builder intact. Replace only its final exec so we can patch the generated
 # effective 8.45 builder before it runs/compiles the app.
@@ -21,7 +26,6 @@ inject=r'''python3 - "$PATCHED" <<'PY846'
 from pathlib import Path
 import sys
 p=Path(sys.argv[1]);s=p.read_text(encoding='utf-8')
-# 1) Apply 8.46 only AFTER successful 8.45 finalization migration/gate in the REAL build tree.
 needle='    "scripts/validate-release-8-45.sh \\\"$FFMPEG\\\" \\\"$FFPROBE\\\"\\n"\n'
 if needle not in s: raise SystemExit('8.46 effective builder: 8.45 runtime gate marker missing')
 insert=needle+(
@@ -34,7 +38,6 @@ insert=needle+(
 '    "scripts/validate-release-8-46.sh \\\"$FFMPEG\\\" \\\"$FFPROBE\\\"\\n"\n'
 )
 s=s.replace(needle,insert,1)
-# 2) Final Stage 7 validates the exact 8.46 tree, not only 8.45.
 old=(
 '    \'stage "7/10 Проверяю ENDLUME 8.45 • FAST FINALIZE + полный 8.44 regression" 58\\n\'\n'
 '    \'chmod +x scripts/validate-release-8-45.sh\\n\'\n'
@@ -51,9 +54,7 @@ new=(
 )
 if old not in s: raise SystemExit('8.46 effective builder: final 8.45 Stage 7 block missing')
 s=s.replace(old,new,1)
-# 3) The final artifact identity must be 8.46. 8.46 migration itself updates app source identity.
 s=s.replace('1.0.0-alpha.8.45','1.0.0-alpha.8.46')
-# 4) Strengthen the CORE gates so an old migration cannot overwrite 8.46 later.
 core='    \'grep -Fq \\\'validate-release-8-45.sh\\\' "$REAL" || fail "8.45 final validator missing"\\n\'\n'
 if core not in s: raise SystemExit('8.46 effective builder: 8.45 CORE validator gate missing')
 s=s.replace(core,core+'    \'grep -Fq \\\'apply-render-stability-8-46.py\\\' "$REAL" || fail "8.46 migration missing from REAL builder"\\n\'\n    \'grep -Fq \\\'validate-release-8-46.sh\\\' "$REAL" || fail "8.46 validator missing from REAL builder"\\n\'\n',1)

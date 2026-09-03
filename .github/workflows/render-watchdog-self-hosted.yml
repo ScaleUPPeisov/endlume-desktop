@@ -35,7 +35,22 @@ jobs:
           test "$(uname -s)" = "Darwin"
           test "$(uname -m)" = "arm64"
           command -v cargo
+          command -v ffmpeg
+          command -v ffprobe
           echo "Self-hosted ARM64 Mac: PASS"
+
+      - name: Prepare bundled FFmpeg sidecars
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          mkdir -p src-tauri/binaries
+          cp "$(command -v ffmpeg)" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp "$(command -v ffprobe)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          chmod +x src-tauri/binaries/ffmpeg-aarch64-apple-darwin src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          test -x src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          test -x src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          echo "FFmpeg sidecars prepared: PASS"
 
       - name: Apply render watchdog
         shell: bash
@@ -56,13 +71,12 @@ jobs:
           cargo test --manifest-path src-tauri/Cargo.toml --lib watchdog_tests -- --nocapture
           cargo check --manifest-path src-tauri/Cargo.toml --target aarch64-apple-darwin
 
-      - name: Confirm unrelated frontend baseline separately
+      - name: Confirm watchdog scope isolation
         shell: bash
         run: |
           set -Eeuo pipefail
-          echo 'The release branch frontend is transformed by the proven 8.45 builder before npm build.'
-          echo 'This watchdog changes only src-tauri/src/render.rs; frontend sources are untouched.'
-          git diff --name-only HEAD -- | grep -Ev '^src-tauri/src/render.rs$' && exit 1 || true
+          changed="$(git diff --name-only HEAD -- | grep -v '^src-tauri/binaries/' || true)"
+          test "$changed" = 'src-tauri/src/render.rs'
           echo "Watchdog scope isolation: PASS"
 
       - name: Commit tested render source

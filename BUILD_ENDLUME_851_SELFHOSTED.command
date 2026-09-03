@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 BASE_DIR="$(cd "$(dirname "$0")" && pwd)"
 BASE="$BASE_DIR/BUILD_ENDLUME_850_SELFHOSTED.command"
-PATCH_REF="${ENDLUME_851_PATCH_REF:-candidate/full-project-speed-8.51}"
+PATCH_REF="${ENDLUME_851_PATCH_REF:-release}"
 FINAL_ART="${ENDLUME_RELEASE_ARTIFACT_DIR:-$HOME/.endlume-release-bridge/endlume/current}"
 FINAL_VERSION="${ENDLUME_RELEASE_VERSION:-1.0.0-alpha.8.51}"
 TMP="$(mktemp -d /tmp/endlume-851-builder.XXXXXX)"
@@ -123,10 +123,21 @@ printf '%s\n' '1.0.0-alpha.8.51' > "$FINAL_ART/version.txt"
 
 grep -Fq 'VISUAL_PLAN_CACHE_GENERATION:&str="8.51-manifest-v1"' src-tauri/src/render.rs || fail "8.51 manifest generation lost"
 grep -Fq '8.51 MANIFEST_READY' src-tauri/src/render.rs || fail "manifest speed path lost"
-grep -Fq 'attempt==1&&encoder_works(app,"hevc_videotoolbox")' src-tauri/src/render.rs || fail "hardware-first selector lost"
-grep -Fq '"-b:v","400k","-maxrate","12M","-bufsize","64M"' src-tauri/src/render.rs || fail "400k compact fidelity profile lost"
+python3 - src-tauri/src/render.rs <<'PY'
+from pathlib import Path
+import sys
+s=Path(sys.argv[1]).read_text()
+a=s.find('async fn choose_hybrid_encoder')
+b=s.find('async fn probe_audio_decodes',a)
+assert a>=0 and b>a,'active encoder selector scope missing'
+sel=s[a:b]
+assert 'attempt==1&&encoder_works(app,"libx265")' in sel,'quality-first x265 selector lost'
+assert 'attempt==1&&encoder_works(app,"hevc_videotoolbox")' not in sel,'VideoToolbox incorrectly became first again'
+PY
+grep -Fq '"-crf","18","-maxrate","400k","-bufsize","4M"' src-tauri/src/render.rs || fail "x265 CRF18/400k quality profile lost"
 grep -Fq 'fn hybrid_video_kbps(_s:&RenderSettings)->u64{400}' src-tauri/src/render.rs || fail "400k budget lost"
-if grep -Fq '"-q:v","100"' src-tauri/src/render.rs; then fail "q100 size bypass returned"; fi
+grep -Fq 'RENDER_CACHE_GENERATION:&str="8.51-x265-crf18-size400-v2"' src-tauri/src/render.rs || fail "8.51 cache generation lost"
+grep -Fq '"-q:v","100","-b:v","500k","-maxrate","12M","-bufsize","64M"' src-tauri/src/render.rs || fail "VideoToolbox q100 quality fallback lost"
 grep -Fq 'let idx=i%durations.len();' src-tauri/src/render.rs || fail "whole-track math lost"
 grep -Fq 'let duration_mode=if smart_repeat_project(job){"whole-track"}else{job.settings.duration_mode.as_str()};' src-tauri/src/render.rs || fail "one-image whole-song policy lost"
 grep -Fq 'eq=contrast=1.10:brightness=0.015:saturation={sat}' src-tauri/src/cache.rs || fail "vivid overlay render path lost"
@@ -139,5 +150,5 @@ echo '✅ full-project manifest-only assembly; no duplicate multi-minute normal 
 echo '✅ physical 2h05 test is 500–700 MB while keeping HQ320 audio pressure'
 echo '✅ one-image videos finish the current song after 2h; no abrupt music cutoff'
 echo '✅ Subscribe/equalizer vivid pipeline is preserved in Preview and final render'
-echo '✅ VideoToolbox 400k compact profile / 1920x1080 / watchdog / updater identity preserved'
+echo '✅ x265 CRF18 quality-first 400k profile; VideoToolbox q100 remains fallback'
 echo '✅ signed updater archive contains strict-valid ENDLUME STUDIO PEISOV.app'

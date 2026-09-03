@@ -59,7 +59,6 @@ s=s.replace('RENDER_CACHE_GENERATION:&str="8.50-speed-quality-q100-v1"','RENDER_
 s=s.replace('8.50 encoder={} hardware_first={} final_faststart=false target_video_kbps=500 q100=true','8.51 encoder={} quality_first=true final_faststart=false target_video_kbps=400 size_target_mb=500-700 vt_q100_fallback=true',1)
 
 for marker in [
-    'attempt==1&&encoder_works(app,"libx265")',
     '"-crf","18","-maxrate","400k","-bufsize","4M"',
     'fn hybrid_video_kbps(_s:&RenderSettings)->u64{400}',
     'RENDER_CACHE_GENERATION:&str="8.51-x265-crf18-size400-v2"',
@@ -68,7 +67,14 @@ for marker in [
     'let duration_mode=if smart_repeat_project(job){"whole-track"}else{job.settings.duration_mode.as_str()};',
     'FFMPEG_STALL_TIMEOUT_SECS:u64=120',
 ]: must(marker in s,'postcondition missing: '+marker)
-must('attempt==1&&encoder_works(app,"hevc_videotoolbox")' not in s,'VideoToolbox is still hardware-first')
+# Scope selector validation to choose_hybrid_encoder. Older/unused fidelity helpers
+# may still contain hardware-first probes and must not cause a false release failure.
+a=s.find('async fn choose_hybrid_encoder')
+b=s.find('async fn probe_audio_decodes',a)
+must(a>=0 and b>a,'choose_hybrid_encoder scope not found')
+sel=s[a:b]
+must('attempt==1&&encoder_works(app,"libx265")' in sel,'x265 is not quality-first in choose_hybrid_encoder')
+must('attempt==1&&encoder_works(app,"hevc_videotoolbox")' not in sel,'VideoToolbox is still first in choose_hybrid_encoder')
 must('if t-target<=240.0{t}else{target}' not in s,'legacy song-cut cap returned')
 
 p.write_text(s,encoding='utf-8')

@@ -1,1 +1,1 @@
-ENDLUME 8.45 self-hosted candidate build requested 2026-09-03
+ENDLUME 8.45 self-hosted candidate build requested 2026-09-03 pass 2

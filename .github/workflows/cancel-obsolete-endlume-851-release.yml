@@ -1,0 +1,23 @@
+name: Cancel Obsolete ENDLUME 8.51 Production
+
+on:
+  push:
+    branches: [release]
+    paths:
+      - '.github/workflows/cancel-obsolete-endlume-851-release.yml'
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  cancel-old-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Cancel obsolete generation 26 release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          gh run cancel 33783024025 --repo ScaleUPPeisov/endlume-desktop || true
+          echo 'Obsolete ENDLUME release run 33783024025 cancellation requested.'

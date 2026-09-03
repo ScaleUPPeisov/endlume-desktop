@@ -7,6 +7,8 @@ use tauri_plugin_shell::{process::CommandEvent,ShellExt};
 
 const IMAGE_EXT:&[&str]=&["jpg","jpeg","png","webp","bmp","tif","tiff","heic","avif"];
 const CANCELLED:&str="__ENDLUME_CANCELLED__";
+const HELPER_TIMEOUT_SECS:u64=60;
+const FFMPEG_STALL_TIMEOUT_SECS:u64=120;
 static ENCODER_CACHE:OnceLock<parking_lot::Mutex<HashMap<String,String>>>=OnceLock::new();
 static AUDIO_ENCODER_CACHE:OnceLock<String>=OnceLock::new();
 
@@ -24,9 +26,17 @@ fn color_ffmpeg(hex:&str)->String{format!("0x{}",hex.trim().trim_start_matches('
 fn emit_timing(app:&AppHandle,id:&str,key:&str,sec:f64){let _=app.emit("engine-timing",json!({"id":id,"key":key,"seconds":sec}));}
 
 async fn output(app:&AppHandle,name:&str,args:Vec<String>)->Result<(Vec<u8>,Vec<u8>),String>{
-  let out=app.shell().sidecar(name).map_err(|e|e.to_string())?.args(args).output().await.map_err(|e|e.to_string())?;
+  let command=app.shell().sidecar(name).map_err(|e|e.to_string())?.args(args);
+  let out=tokio::time::timeout(Duration::from_secs(HELPER_TIMEOUT_SECS),command.output()).await
+    .map_err(|_|format!("{name} не отвечает более {HELPER_TIMEOUT_SECS} сек"))?
+    .map_err(|e|e.to_string())?;
   if !out.status.success(){return Err(String::from_utf8_lossy(&out.stderr).trim().to_string())}
   Ok((out.stdout,out.stderr))
+}
+
+fn ffmpeg_is_stalled(progress_idle:Duration,activity_idle:Duration)->bool{
+  let limit=Duration::from_secs(FFMPEG_STALL_TIMEOUT_SECS);
+  progress_idle>=limit&&activity_idle>=limit
 }
 
 async fn probe_duration(app:&AppHandle,path:&str)->Result<f64,String>{
@@ -160,9 +170,17 @@ async fn run_ffmpeg(app:&AppHandle,job:&QueueJob,started:i64,timer:&Instant,args
   emit_progress(app,job,started,timer,base,stage,encoder,attempt,None);
   let (mut rx,child)=app.shell().sidecar("ffmpeg").map_err(|e|e.to_string())?.args(args).spawn().map_err(|e|e.to_string())?;
   let pid=child.pid();let mut child=Some(child);let mut last=base;let mut stderr_tail=String::new();let mut sys=System::new_all();let mut metric_tick=Instant::now();
+  let mut last_activity=Instant::now();let mut last_progress=Instant::now();let mut last_out_sec=-1.0_f64;
   loop{
     if cancel.load(Ordering::SeqCst){if let Some(c)=child.take(){let _=c.kill();}return Err(CANCELLED.into())}
     let event=tokio::time::timeout(Duration::from_millis(160),rx.recv()).await;
+    if ffmpeg_is_stalled(last_progress.elapsed(),last_activity.elapsed()){
+      emit_progress(app,job,started,timer,last,"FFmpeg не отвечает — останавливаю процесс",encoder,attempt,None);
+      if let Some(c)=child.take(){let _=c.kill();}
+      let tail=stderr_tail.lines().rev().take(8).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n");
+      let detail=if tail.trim().is_empty(){String::new()}else{format!("\nПоследний вывод FFmpeg:\n{tail}")};
+      return Err(format!("FFmpeg завис на этапе «{stage}»: нет прогресса более {FFMPEG_STALL_TIMEOUT_SECS} сек.{detail}"));
+    }
     if metric_tick.elapsed()>=Duration::from_millis(480){
       let pids=[Pid::from_u32(pid)];sys.refresh_processes(ProcessesToUpdate::Some(&pids),true);sys.refresh_memory();
       if let Some(p)=sys.process(pids[0]){let cpu=(p.cpu_usage()/(sys.cpus().len().max(1) as f32)).clamp(0.0,100.0);emit_progress(app,job,started,timer,last,stage,encoder,attempt,Some((cpu,p.memory(),sys.total_memory(),sys.available_memory())))}
@@ -171,13 +189,17 @@ async fn run_ffmpeg(app:&AppHandle,job:&QueueJob,started:i64,timer:&Instant,args
     let ev=match event{Err(_)=>continue,Ok(Some(ev))=>ev,Ok(None)=>return Err("FFmpeg закрыл канал без статуса завершения".into())};
     match ev{
       CommandEvent::Stdout(bytes)|CommandEvent::Stderr(bytes)=>{
+        last_activity=Instant::now();
         let text=String::from_utf8_lossy(&bytes);stderr_tail.push_str(&text);if stderr_tail.len()>12000{stderr_tail=stderr_tail.split_off(stderr_tail.len()-9000)}
         for line in text.lines(){
           let raw=line.strip_prefix("out_time_us=").or_else(||line.strip_prefix("out_time_ms="));
           if let Some(raw)=raw.and_then(|x|x.parse::<f64>().ok()){
-            let out_sec=raw/1_000_000.0;let frac=if expected_sec>0.0{(out_sec/expected_sec).clamp(0.0,1.0)}else{0.0};let p=base+frac*span;
+            let out_sec=raw/1_000_000.0;
+            if out_sec>last_out_sec+0.001{last_out_sec=out_sec;last_progress=Instant::now();}
+            let frac=if expected_sec>0.0{(out_sec/expected_sec).clamp(0.0,1.0)}else{0.0};let p=base+frac*span;
             if p-last>=0.01{last=p;emit_progress(app,job,started,timer,p,stage,encoder,attempt,None)}
           }
+          if line.trim()=="progress=end"{last_progress=Instant::now();}
         }
       },
       CommandEvent::Error(e)=>return Err(e),
@@ -344,7 +366,7 @@ fn write_side_files(job:&QueueJob,output_dir:&Path,durations:&[f64],final_durati
   std::fs::write(time_dir.join(format!("{} — timecodes.txt",name)),tc).map_err(|e|e.to_string())?;let tracklist=job.project.audio.iter().enumerate().map(|(i,p)|format!("{}. {}",i+1,Path::new(p).file_name().and_then(|x|x.to_str()).unwrap_or(p))).collect::<Vec<_>>().join("\n");std::fs::write(output_dir.join(format!("{} — tracklist.txt",name)),tracklist).map_err(|e|e.to_string())?;std::fs::write(log_dir.join(format!("{} — project.json",name)),serde_json::to_vec_pretty(job).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;Ok(())
 }
 
-async fn verify_result(app:&AppHandle,out:&Path,expected:f64,s:&RenderSettings)->Result<(),String>{let d=probe_duration(app,out.to_string_lossy().as_ref()).await?;if (d-expected).abs()>4.0{return Err(format!("Финальный файл имеет неверную длительность: {:0.1} сек вместо {:0.1}",d,expected))}if !probe_has_audio(app,out).await{return Err("В финальном файле отсутствует аудиодорожка".into())}let args=vec!["-v","error","-select_streams","v:0","-show_entries","stream=width,height","-of","csv=p=0:s=x",out.to_string_lossy().as_ref()].into_iter().map(String::from).collect();let (stdout,_)=output(app,"ffprobe",args).await?;let got=String::from_utf8_lossy(&stdout);if !got.trim().starts_with(&format!("{}x{}",s.width,s.height)){return Err(format!("Неверное разрешение результата: {}",got.trim()))}Ok(())}
+async fn verify_result(app:&AppHandle,out:&Path,expected:f64,s:&RenderSettings)->Result<(),String>{let meta=std::fs::metadata(out).map_err(|e|format!("Финальный файл не создан: {e}"))?;if meta.len()<1024{return Err("Финальный файл создан пустым или повреждённым".into())}let d=probe_duration(app,out.to_string_lossy().as_ref()).await?;if (d-expected).abs()>4.0{return Err(format!("Финальный файл имеет неверную длительность: {:0.1} сек вместо {:0.1}",d,expected))}if !probe_has_audio(app,out).await{return Err("В финальном файле отсутствует аудиодорожка".into())}let args=vec!["-v","error","-select_streams","v:0","-show_entries","stream=width,height","-of","csv=p=0:s=x",out.to_string_lossy().as_ref()].into_iter().map(String::from).collect();let (stdout,_)=output(app,"ffprobe",args).await?;let got=String::from_utf8_lossy(&stdout);if !got.trim().starts_with(&format!("{}x{}",s.width,s.height)){return Err(format!("Неверное разрешение результата: {}",got.trim()))}Ok(())}
 
 pub async fn render_job(app:&AppHandle,job:&QueueJob,cancel:Arc<AtomicBool>)->Result<(),String>{
   for p in &job.project.media{if !Path::new(p).is_file(){return Err(format!("Не найден файл изображения/видео: {}",Path::new(p).file_name().and_then(|x|x.to_str()).unwrap_or(p)));}}
@@ -363,4 +385,20 @@ pub async fn render_job(app:&AppHandle,job:&QueueJob,cancel:Arc<AtomicBool>)->Re
     }
   }
   Err(last_error)
+}
+
+
+#[cfg(test)]
+mod watchdog_tests{
+  use super::*;
+  #[test]
+  fn does_not_timeout_active_ffmpeg(){
+    assert!(!ffmpeg_is_stalled(Duration::from_secs(119),Duration::from_secs(119)));
+    assert!(!ffmpeg_is_stalled(Duration::from_secs(121),Duration::from_secs(1)));
+  }
+  #[test]
+  fn times_out_truly_stalled_ffmpeg(){
+    assert!(ffmpeg_is_stalled(Duration::from_secs(120),Duration::from_secs(120)));
+    assert!(ffmpeg_is_stalled(Duration::from_secs(300),Duration::from_secs(300)));
+  }
 }

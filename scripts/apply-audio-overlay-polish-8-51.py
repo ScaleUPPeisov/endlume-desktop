@@ -14,24 +14,28 @@ def must(cond,msg):
 
 # ---------------------------------------------------------------------------
 # 1. One-image music videos NEVER cut the song at the nominal 2h boundary.
-# The existing 8.49 whole-track math already finds the end of the current song;
-# make that policy mandatory for the one-image ENDLUME product shape even if an
-# old persisted UI setting still says "exact". Match structurally because the
-# reconstructed 8.50 source can differ only in whitespace/local variable naming.
+# Locate the final-duration assignment itself, independent of neighboring
+# formatting/variable layout in the reconstructed 8.50 source.
 # ---------------------------------------------------------------------------
 p=need('src-tauri/src/render.rs')
 s=p.read_text(encoding='utf-8')
-policy='let duration_mode=if smart_repeat_project(job){"whole-track"}else{job.settings.duration_mode.as_str()};'
-if policy not in s:
-    pat=re.compile(r'let\s+target\s*=\s*(?P<j>[A-Za-z_][A-Za-z0-9_]*)\.settings\.duration_hours\s*\*\s*3600\.0\s*;\s*let\s+final_duration\s*=\s*smart_final_duration\(\s*target\s*,\s*&durations\s*,\s*(?P=j)\.settings\.crossfade_sec\s*,\s*&(?P=j)\.settings\.duration_mode\s*\)\s*;')
-    m=pat.search(s)
-    must(m is not None,'render duration call not found')
-    j=m.group('j')
-    replacement=(f'let target={j}.settings.duration_hours*3600.0;'
-                 f'let duration_mode=if smart_repeat_project({j}){{"whole-track"}}else{{{j}.settings.duration_mode.as_str()}};'
-                 f'let final_duration=smart_final_duration(target,&durations,{j}.settings.crossfade_sec,duration_mode);')
-    s=s[:m.start()]+replacement+s[m.end():]
-# Runtime currently uses `job`; enforce the exact one-image policy marker after replacement.
+if 'duration_mode=if smart_repeat_project(' not in s:
+    pat=re.compile(r'let\s+final_duration\s*=\s*smart_final_duration\((?P<args>[^;]+?)\)\s*;')
+    matches=list(pat.finditer(s))
+    must(matches,'render duration call not found')
+    chosen=None; jobvar=None
+    for m in matches:
+        args=[x.strip() for x in m.group('args').split(',')]
+        if len(args)!=4 or 'durations' not in args[1] or 'duration_mode' not in args[3]:
+            continue
+        vm=re.search(r'([A-Za-z_][A-Za-z0-9_]*)\.settings\.(?:crossfade_sec|duration_mode)',args[2]+' '+args[3])
+        if vm:
+            chosen=m; jobvar=vm.group(1); break
+    must(chosen is not None and jobvar is not None,'render duration call not found')
+    args=[x.strip() for x in chosen.group('args').split(',')]
+    policy=f'let duration_mode=if smart_repeat_project({jobvar}){{"whole-track"}}else{{{jobvar}.settings.duration_mode.as_str()}};'
+    call=f'let final_duration=smart_final_duration({args[0]},{args[1]},{args[2]},duration_mode);'
+    s=s[:chosen.start()]+policy+call+s[chosen.end():]
 must('duration_mode=if smart_repeat_project(' in s and '"whole-track"' in s,'mandatory one-image whole-track policy missing')
 must('if t-target<=240.0{t}else{target}' not in s,'legacy 4-minute song cut cap returned')
 p.write_text(s,encoding='utf-8')

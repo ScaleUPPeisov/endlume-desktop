@@ -11,15 +11,20 @@ permissions:
 
 jobs:
   patch-and-test:
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: endlume-render-watchdog-fix
           fetch-depth: 0
-      - uses: actions/setup-node@v4
+      - name: Verify ARM64 runner
+        run: |
+          uname -m
+          test "$(uname -m)" = "arm64"
+      - uses: actions/setup-node@v6
         with:
           node-version: 22
+          cache: npm
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin

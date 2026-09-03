@@ -1,0 +1,50 @@
+name: ENDLUME 8.51 Local Real Render Probe
+
+on:
+  push:
+    branches: [candidate/full-project-speed-8.51]
+    paths:
+      - '.github/workflows/endlume-851-local-probe.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: macOS ARM64 • local render log no checkout
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 10
+    steps:
+      - name: Read latest real ENDLUME diagnostics directly from Mac
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import time
+          roots=[Path('/Volumes/TOSHIBA EXT'),Path.home()/'Library/Caches',Path.home()/'Library/Application Support']
+          found=[]; cutoff=time.time()-6*3600
+          for root in roots:
+              if not root.exists(): continue
+              try:
+                  for p in root.rglob('*'):
+                      try:
+                          st=p.stat()
+                          if not p.is_file() or st.st_mtime<cutoff or st.st_size>30_000_000: continue
+                          n=p.name.lower()
+                          if not any(k in n for k in ['render','endlume','diagnostic','.log']): continue
+                          txt=p.read_text(errors='ignore')
+                          if '[render]' in txt:
+                              found.append((st.st_mtime,p,txt))
+                      except Exception: pass
+              except Exception: pass
+          found.sort(reverse=True,key=lambda x:x[0])
+          print('FOUND',len(found))
+          for _,p,txt in found[:10]:
+              print('\n===== REAL LOG',p,'=====')
+              keep=[]
+              for x in txt.splitlines():
+                  if any(k in x for k in ['[render][subscribe]','[render][timing]','[render][performance]','[render][audio-cache]','[render][render-cache]','[render][visual]','[render][final-mux]']):
+                      keep.append(x)
+              print('\n'.join(keep[-1000:]))
+          PY

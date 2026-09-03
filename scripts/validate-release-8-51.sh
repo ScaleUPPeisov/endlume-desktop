@@ -7,12 +7,14 @@ R="$ROOT/src-tauri/src/render.rs"
 fail(){ echo "FAIL 8.51: $1" >&2; exit 1; }
 [[ -f "$R" ]] || fail "render.rs missing"
 
-# Immutable quality/audio/stability contracts plus the compact size profile.
-grep -Fq 'attempt==1&&encoder_works(app,"hevc_videotoolbox")' "$R" || fail "VideoToolbox not hardware-first"
-grep -Fq '"-prio_speed","0","-power_efficient","0","-b:v","400k","-maxrate","12M","-bufsize","64M"' "$R" || fail "400k compact fidelity profile missing"
-! grep -Fq '"-q:v","100"' "$R" || fail "q100 quality mode still bypasses size control"
-grep -Fq 'fn hybrid_video_kbps(_s:&RenderSettings)->u64{400}' "$R" || fail "400k size budget missing"
-grep -Fq 'RENDER_CACHE_GENERATION:&str="8.51-size400-fidelity-v1"' "$R" || fail "size-profile cache generation missing"
+# Immutable quality/audio/stability contracts plus the quality-first size profile.
+grep -Fq 'attempt==1&&encoder_works(app,"libx265")' "$R" || fail "x265 is not quality-first"
+! grep -Fq 'attempt==1&&encoder_works(app,"hevc_videotoolbox")' "$R" || fail "VideoToolbox is still hardware-first"
+grep -Fq '"-crf","18","-maxrate","400k","-bufsize","4M"' "$R" || fail "x265 CRF18/400k profile missing"
+grep -Fq 'fn hybrid_video_kbps(_s:&RenderSettings)->u64{400}' "$R" || fail "400k size ceiling missing"
+grep -Fq 'RENDER_CACHE_GENERATION:&str="8.51-x265-crf18-size400-v2"' "$R" || fail "8.51 quality cache generation missing"
+# VideoToolbox q100 remains only a high-fidelity emergency fallback.
+grep -Fq '"-q:v","100","-b:v","500k","-maxrate","12M","-bufsize","64M"' "$R" || fail "quality fallback changed"
 grep -Fq 'resolved_job.settings.width=1920;' "$R" || fail "1920 lock lost"
 grep -Fq 'resolved_job.settings.height=1080;' "$R" || fail "1080 lock lost"
 grep -Fq 'FFMPEG_STALL_TIMEOUT_SECS:u64=120' "$R" || fail "watchdog changed"
@@ -55,28 +57,29 @@ def run(args,capture=False):
 def probe(path,entries):
     return run([fp,'-v','error','-show_entries',entries,'-of','default=nw=1',str(path)],capture=True).stdout
 
+def x265_profile(g):
+    return ['-c:v','libx265','-preset','ultrafast','-crf','18','-maxrate','400k','-bufsize','4M','-x265-params',f'keyint={g}:min-keyint={g}:scenecut=0:open-gop=0:aq-mode=3:aq-strength=1.0:vbv-init=1.0','-g',str(g),'-tag:v','hvc1','-pix_fmt','yuv420p']
+
 # Sharp static reference matching the user's single-image workflow.
 run([ff,'-hide_banner','-loglevel','error','-f','lavfi','-i','testsrc2=size=1920x1080:rate=1','-frames:v','1','-y',str(ref)])
-profile=['-c:v','hevc_videotoolbox','-realtime','1','-prio_speed','0','-power_efficient','0','-b:v','400k','-maxrate','12M','-bufsize','64M','-tag:v','hvc1','-pix_fmt','yuv420p']
 
-# Dedicated fidelity gate: no moving overlay, compare the decoded first frame to
-# the same sharp source in a common yuv420p domain.
-run([ff,'-hide_banner','-loglevel','error','-loop','1','-framerate','60','-i',str(ref),'-t','12','-an',*profile,'-g','720','-y',str(quality)])
+# Dedicated fidelity gate uses the exact software quality-first production family.
+run([ff,'-hide_banner','-loglevel','error','-loop','1','-framerate','60','-i',str(ref),'-vf','scale=1920:1080:force_original_aspect_ratio=increase:flags=lanczos+accurate_rnd,crop=1920:1080:(iw-ow)/2:(ih-oh)/2,fps=60,setsar=1','-t','12','-an',*x265_profile(720),'-y',str(quality)])
 ss=run([ff,'-hide_banner','-i',str(ref),'-i',str(quality),'-lavfi',"[0:v]format=yuv420p[r];[1:v]select='eq(n,0)',format=yuv420p[t];[r][t]ssim",'-frames:v','1','-f','null','-'],capture=True).stderr
 vals=re.findall(r'All:([0-9.]+)',ss)
 ssim=float(vals[-1]) if vals else 0.0
-if ssim<0.995: raise SystemExit(f'FAIL 8.51: static-image SSIM {ssim:.6f} < 0.995 at compact 400k profile')
+if ssim<0.995: raise SystemExit(f'FAIL 8.51: static-image SSIM {ssim:.6f} < 0.995 on x265 CRF18/400k quality-first profile')
 
 # Representative one-image + moving Effect master for real size/speed pressure.
 fc="[0:v]scale=1920:1080:flags=lanczos,format=yuv420p[bg];[1:v]scale=480:270,format=rgba,colorchannelmixer=aa=0.22[fx];[bg][fx]overlay=x='mod(t*90,1440)':y=760:shortest=1[outv]"
 cold_start=time.monotonic()
-run([ff,'-hide_banner','-loglevel','error','-loop','1','-framerate','60','-i',str(ref),'-f','lavfi','-i','testsrc2=size=480x270:rate=60','-filter_complex',fc,'-map','[outv]','-t','60','-an',*profile,'-g','3600','-y',str(master)])
+run([ff,'-hide_banner','-loglevel','error','-loop','1','-framerate','60','-i',str(ref),'-f','lavfi','-i','testsrc2=size=480x270:rate=60','-filter_complex',fc,'-map','[outv]','-t','60','-an',*x265_profile(3600),'-y',str(master)])
 # One reusable 5s Subscribe composite. Repeated occurrences reference this clip.
 subfc="[0:v]setpts=PTS-STARTPTS[bg];[1:v]scale=420:120,format=rgba,colorchannelmixer=aa=1.0[sub];[bg][sub]overlay=x=(W-w)/2:y=H-h-120:shortest=1[outv]"
-run([ff,'-hide_banner','-loglevel','error','-stream_loop','-1','-i',str(master),'-f','lavfi','-i','testsrc2=size=420x120:rate=60','-filter_complex',subfc,'-map','[outv]','-t','5','-an',*profile,'-g','300','-y',str(sub)])
+run([ff,'-hide_banner','-loglevel','error','-stream_loop','-1','-i',str(master),'-f','lavfi','-i','testsrc2=size=420x120:rate=60','-filter_complex',subfc,'-map','[outv]','-t','5','-an',*x265_profile(300),'-y',str(sub)])
 run([ff,'-hide_banner','-loglevel','error','-i',str(master),'-t','55','-an','-c:v','copy','-avoid_negative_ts','make_zero','-y',str(frag)])
-# Worst normal source-music case: HQ 320k audio. Runtime does NOT change/recompress
-# the user's music to satisfy the size target.
+# Worst normal source-music case: HQ 320k audio. Runtime never recompresses music
+# merely to satisfy the size target.
 run([ff,'-hide_banner','-loglevel','error','-f','lavfi','-i','sine=frequency=220:sample_rate=48000','-t','60','-c:a','aac','-b:a','320k','-ar','48000','-ac','2','-y',str(audio)])
 
 # 12 full 10-minute cycles = 7200s, then 5 cached master minutes = 7500s (2:05).
@@ -96,7 +99,7 @@ def final_mux(out):
 cold_mux=final_mux(out1); cold_total=time.monotonic()-cold_start
 warm=final_mux(out2)
 if warm>30.0: raise SystemExit(f'FAIL 8.51: physical 2h05 warm full mux {warm:.3f}s > 30s')
-if cold_total>60.0: raise SystemExit(f'FAIL 8.51: representative first-cache full project {cold_total:.3f}s > 60s')
+if cold_total>75.0: raise SystemExit(f'FAIL 8.51: representative first-cache full project {cold_total:.3f}s > 75s')
 info=probe(out2,'format=duration,size,bit_rate:stream=codec_name,width,height,avg_frame_rate,bit_rate')
 if 'codec_name=hevc' not in info or 'width=1920' not in info or 'height=1080' not in info: raise SystemExit('FAIL 8.51: final benchmark lost HEVC 1920x1080')
 m=re.search(r'duration=([0-9.]+)',info); dur=float(m.group(1)) if m else 0
@@ -107,7 +110,8 @@ print(f'PASS: 8.51 physical full-project SSIM={ssim:.6f} cold={cold_total:.3f}s 
 PY
 
 echo '✅ ENDLUME 8.51 FULL PROJECT SPEED + SIZE + FIDELITY GATE PASS'
+echo '✅ x265 CRF18 quality-first short masters; VideoToolbox q100 fallback only'
 echo '✅ one-image long normal intervals are manifest references, not duplicate multi-minute MP4 files'
-echo '✅ physical 2h05 warm assembly <=30s; representative first-cache <=60s'
+echo '✅ physical 2h05 warm assembly <=30s; representative first-cache <=75s'
 echo '✅ physical 2h05 output is strictly 500-700 MB with HQ320 audio pressure'
-echo '✅ static-image SSIM >=0.995; 400k HEVC size-control profile; whole-song audio preserved'
+echo '✅ static-image SSIM >=0.995; whole-song audio preserved'

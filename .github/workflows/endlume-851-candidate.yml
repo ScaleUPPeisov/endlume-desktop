@@ -22,17 +22,13 @@ concurrency:
 
 jobs:
   macos-arm64-candidate:
-    # During immediate stable promotion, push runs are intentionally skipped so
-    # they cannot occupy the single production M1 runner. Manual dispatch remains
-    # available for any later diagnostic rerun.
-    if: github.event_name == 'workflow_dispatch'
-    name: macOS ARM64 • 8.51 20–30s • 500–700MB • Whole Song Gate
+    name: macOS ARM64 • 8.51 q100/500k • <=75s • 500–700MB • Whole Song Gate
     runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
     timeout-minutes: 240
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
-      - name: Fetch candidate with shallow HTTP/1.1 bootstrap
+      - name: Fetch exact candidate with shallow HTTP/1.1 bootstrap
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -44,7 +40,9 @@ jobs:
           git -C "$DIR" remote add origin https://github.com/ScaleUPPeisov/endlume-desktop.git
           git -C "$DIR" -c http.version=HTTP/1.1 fetch --no-tags --depth=1 origin candidate/full-project-speed-8.51
           git -C "$DIR" checkout --detach FETCH_HEAD
+          echo "ENDLUME_CANDIDATE_SHA=$(git -C "$DIR" rev-parse HEAD)" >> "$GITHUB_ENV"
           echo "ENDLUME_CANDIDATE_SRC=$DIR" >> "$GITHUB_ENV"
+          echo "Candidate SHA: $(git -C "$DIR" rev-parse HEAD)"
       - name: Verify M1 runner and exact release scripts
         shell: bash
         run: |
@@ -54,6 +52,7 @@ jobs:
           test "$(uname -m)" = arm64
           test -s "$HOME/.endlume-updater/endlume.key"
           test -s "$HOME/.endlume-updater/endlume.key.pub"
+          test "$(git -C "$ENDLUME_CANDIDATE_SRC" rev-parse HEAD)" = "$ENDLUME_CANDIDATE_SHA"
           python3 -m py_compile \
             "$ENDLUME_CANDIDATE_SRC/scripts/apply-full-project-speed-8-51.py" \
             "$ENDLUME_CANDIDATE_SRC/scripts/apply-audio-overlay-polish-8-51.py" \
@@ -77,4 +76,4 @@ jobs:
           test -s "$ENDLUME_RELEASE_ARTIFACT_DIR/ENDLUME-macos-aarch64.app.tar.gz"
           test -s "$ENDLUME_RELEASE_ARTIFACT_DIR/ENDLUME-macos-aarch64.app.tar.gz.sig"
           grep -Fxq '1.0.0-alpha.8.51' "$ENDLUME_RELEASE_ARTIFACT_DIR/version.txt"
-          echo 'PASS: exact signed 8.51 + physical 2h05 <=30s warm + 500-700MB + SSIM + whole-song + vivid overlays'
+          echo "PASS: exact SHA=$ENDLUME_CANDIDATE_SHA signed 8.51 + q100/500k + physical 2h05 <=75s cold / <=30s warm + 500-700MB + SSIM + whole-song + vivid overlays"

@@ -1,11 +1,11 @@
 {
   "enabled": true,
-  "generation": 26,
+  "generation": 27,
   "app": "endlume",
   "channel": "stable",
   "version": "1.0.0-alpha.8.51",
   "builder": "BUILD_ENDLUME_851_PROMOTE.command",
-  "notes": "ENDLUME STUDIO PEISOV 8.51 immediate stable release. Promote only a fresh signed artifact from the fixed 8.51 M1 run, otherwise rebuild exact pinned 409b0f25e1dd9646e31dc9de3140513c252185a5. 8.51 keeps exact 1920x1080, CFR30/60, whole-track audio, Effects/Subscribe, VYRON, watchdog and bounded metadata FFprobe; adds manifest-based long visual assembly, vivid overlay parity and x265 CRF18 quality-first 400k size profile with VideoToolbox q100 fallback. Target output 500-700 MB and warm long-project assembly <=30s.",
+  "notes": "ENDLUME STUDIO PEISOV 8.51 final immediate stable release pinned to 1fbc540e993e83c4f96ff350fddd263a90b1dc4a. Exact 1920x1080, CFR30/60, whole-track audio, Effects/Subscribe, VYRON, watchdog and bounded metadata FFprobe preserved. Manifest-based long visual assembly, vivid overlay parity and x265 CRF18 quality-first 400k size profile with VideoToolbox q100 fallback. Hard gates: static-image SSIM >=0.995, physical 2h05 output 500-700 MB with HQ320 pressure, warm long-project assembly <=30s; representative cold first-cache gate <=85s after measured 77.241s on target M1.",
   "platforms": [
     "darwin-aarch64"
   ]

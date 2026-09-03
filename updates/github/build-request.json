@@ -1,11 +1,11 @@
 {
   "enabled": true,
-  "generation": 23,
+  "generation": 24,
   "app": "endlume",
   "channel": "stable",
-  "version": "1.0.0-alpha.8.47",
-  "builder": "BUILD_ENDLUME_847_SELFHOSTED.command",
-  "notes": "M1 Hardware-First Render Performance on top of verified ENDLUME 8.46. On macOS Apple Silicon the one-image render path now chooses Apple hevc_videotoolbox before CPU libx265, uses realtime/prio_speed hardware encoding while preserving the 500k video budget, exact 1920x1080 YouTube Fill/cover without black bars or stretching, and removes the unnecessary +faststart whole-file relocation from the final stream-copy mux. Preserves 8.46 progress-aware FFmpeg watchdog, bounded metadata-only FFprobe, atomic outputs, queue recovery, high-quality audio/crossfade/gapless path, Effects, Subscribe, VYRON bridge and official signed Tauri updater. CPU libx265 remains fallback only.",
+  "version": "1.0.0-alpha.8.49",
+  "builder": "BUILD_ENDLUME_849_SELFHOSTED_R2.command",
+  "notes": "ENDLUME STUDIO PEISOV 8.49 production release. Preserves exact 1920x1080 YouTube Fill/cover, 500k video budget, CFR30/60, watchdog, bounded metadata-only FFprobe, Effects, Subscribe, VYRON bridge and official signed Tauri updater. 8.49 restores x265 quality-first short-master rendering with VideoToolbox fallback, adds persistent visual/Subscribe/original-audio/HQ320 caches for warm repeated renders, removes arbitrary two-hour boundary song truncation in whole-track mode while keeping exact mode unchanged, and renames the product display bundle to ENDLUME STUDIO PEISOV without changing bundle identifier studio.endlume.desktop. Candidate gates require SSIM >=0.995, whole-track audio regression, two-hour warm stream-copy <=30s, strict-valid macOS bundle signature inside the updater archive, and signed updater artifact validation.",
   "platforms": [
     "darwin-aarch64"
   ]

@@ -102,7 +102,7 @@ jobs:
           fi
           printf '%s\n' "$VERSION" > "$ART/version.txt"
 
-      - name: Verify staged ENDLUME Studio.app
+      - name: Verify staged ENDLUME app archive
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -114,8 +114,11 @@ jobs:
           rm -rf "$UNPACK"
           mkdir -p "$UNPACK"
           /usr/bin/tar -xzf "$TAR" -C "$UNPACK"
-          APP="$(find "$UNPACK" -maxdepth 4 -type d -name 'ENDLUME Studio.app' -print -quit)"
+          APP="$(find "$UNPACK" -maxdepth 4 -type d -name '*.app' -print -quit)"
           test -n "$APP" -a -d "$APP"
+          if test "$VERSION" = '1.0.0-alpha.8.49'; then
+            test "$(basename "$APP")" = 'ENDLUME STUDIO PEISOV.app'
+          fi
           BID="$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$APP/Contents/Info.plist")"
           VER="$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist")"
           EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
@@ -126,12 +129,12 @@ jobs:
           FFPROBE="$(find "$APP/Contents/MacOS" -maxdepth 1 -type f -name 'ffprobe*' -print -quit)"
           test -x "$FFMPEG"
           test -x "$FFPROBE"
-          /usr/bin/codesign --verify --deep --strict "$APP" >/dev/null 2>&1 || /usr/bin/codesign --force --deep --sign - "$APP"
-          /usr/bin/codesign --verify --deep --strict "$APP"
+          /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP"
+          test -s "$APP/Contents/_CodeSignature/CodeResources"
           rm -f "$USER_ZIP"
           /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$APP" "$USER_ZIP"
           test -s "$USER_ZIP"
-          echo "PASS: staged $VER / $BID / arm64 / codesign"
+          echo "PASS: staged $VER / $BID / arm64 / strict-valid archive codesign"
           echo "PASS: local emergency ZIP $USER_ZIP"
           echo "PASS: installed /Applications copy was NOT replaced or launched"
 

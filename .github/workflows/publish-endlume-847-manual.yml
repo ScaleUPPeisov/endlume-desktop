@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: endlume-847-manual-publish
+  group: endlume-self-hosted-macos-release
   cancel-in-progress: true
 
 jobs:

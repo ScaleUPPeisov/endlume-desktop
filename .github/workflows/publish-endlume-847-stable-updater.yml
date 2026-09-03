@@ -1,0 +1,101 @@
+name: Publish ENDLUME 8.47 Stable Updater
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [release]
+    paths:
+      - '.github/workflows/publish-endlume-847-stable-updater.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-self-hosted-macos-release
+  cancel-in-progress: true
+
+jobs:
+  publish-stable-updater:
+    name: Publish signed ENDLUME 8.47 to stable updater
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 20
+    steps:
+      - name: Verify signed 8.47 candidate and publish stable updater
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.ENDLUME_RELEASE_TOKEN }}
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          VERSION='1.0.0-alpha.8.47'
+          ART="$HOME/.endlume-release-bridge/endlume/candidate-8.47"
+          TAR="$ART/ENDLUME-macos-aarch64.app.tar.gz"
+          SIGFILE="$ART/ENDLUME-macos-aarch64.app.tar.gz.sig"
+          WORK="$(mktemp -d /tmp/endlume-847-stable-updater.XXXXXX)"
+          trap 'rm -rf "$WORK"' EXIT
+          test -n "${GH_TOKEN:-}"
+          test -s "$TAR"
+          test -s "$SIGFILE"
+
+          /usr/bin/tar -xzf "$TAR" -C "$WORK"
+          APP="$(find "$WORK" -type d -name 'ENDLUME Studio.app' -print -quit)"
+          test -n "$APP" -a -d "$APP"
+          BID="$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$APP/Contents/Info.plist")"
+          VER="$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist")"
+          EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
+          test "$BID" = 'studio.endlume.desktop'
+          test "$VER" = "$VERSION"
+          /usr/bin/lipo -archs "$APP/Contents/MacOS/$EXE" | grep -qw arm64
+
+          HOST_REPO='ScaleUPPeisov/scaleup-site'
+          TAG='endlume-stable'
+          STABLE_TAR="$WORK/ENDLUME-macos-aarch64.app.tar.gz"
+          STABLE_SIG="$WORK/ENDLUME-macos-aarch64.app.tar.gz.sig"
+          LATEST="$WORK/latest.json"
+          cp "$TAR" "$STABLE_TAR"
+          cp "$SIGFILE" "$STABLE_SIG"
+          SIG="$(tr -d '\r\n' < "$STABLE_SIG")"
+          test -n "$SIG"
+          ASSET_URL="https://github.com/$HOST_REPO/releases/download/$TAG/ENDLUME-macos-aarch64.app.tar.gz"
+
+          python3 - "$LATEST" "$VERSION" "$ASSET_URL" "$SIG" <<'PY'
+          import datetime,json,sys
+          out,version,url,sig=sys.argv[1:]
+          data={
+            'version':version,
+            'notes':'ENDLUME 8.47 M1 performance update: VideoToolbox hardware-first render path, faster final mux, preserved 1920x1080/500k/audio/stability contracts.',
+            'pub_date':datetime.datetime.now(datetime.timezone.utc).isoformat().replace('+00:00','Z'),
+            'platforms':{'darwin-aarch64':{'url':url,'signature':sig}}
+          }
+          json.dump(data,open(out,'w'),ensure_ascii=False,indent=2)
+          PY
+
+          if ! gh release view "$TAG" --repo "$HOST_REPO" >/dev/null 2>&1; then
+            gh release create "$TAG" --repo "$HOST_REPO" --title 'ENDLUME Stable Updates' --notes 'Signed updater channel for ENDLUME Studio.'
+          fi
+          gh release upload "$TAG" "$STABLE_TAR" "$STABLE_SIG" "$LATEST" --clobber --repo "$HOST_REPO"
+
+          PUBLIC="$WORK/public-latest.json"
+          for i in {1..18}; do
+            if /usr/bin/curl -fsSL --connect-timeout 10 --max-time 30 "https://github.com/$HOST_REPO/releases/download/$TAG/latest.json?run=${GITHUB_RUN_ID:-0}-$i" -o "$PUBLIC"; then
+              if python3 - "$PUBLIC" "$VERSION" <<'PY'
+          import json,sys
+          d=json.load(open(sys.argv[1]))
+          assert d.get('version')==sys.argv[2],d.get('version')
+          p=d.get('platforms',{}).get('darwin-aarch64',{})
+          assert p.get('url') and p.get('signature')
+          PY
+              then break; fi
+            fi
+            sleep 5
+          done
+          python3 - "$PUBLIC" "$VERSION" <<'PY'
+          import json,sys
+          d=json.load(open(sys.argv[1]))
+          assert d.get('version')==sys.argv[2],d.get('version')
+          p=d.get('platforms',{}).get('darwin-aarch64',{})
+          assert p.get('url') and p.get('signature')
+          PY
+          /usr/bin/curl -fsIL --connect-timeout 10 --max-time 30 "$ASSET_URL" >/dev/null
+          /usr/bin/curl -fsIL --connect-timeout 10 --max-time 30 "$ASSET_URL.sig" >/dev/null
+          echo "PASS: public stable updater is now $VERSION"

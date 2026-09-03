@@ -22,58 +22,17 @@ jobs:
           echo "=== ENDLUME LIVE RENDER AUDIT ==="
           date
           echo "Runner: ${RUNNER_NAME:-unknown}"
-          echo
           echo "--- process snapshot #1 ---"
           ps -axo pid=,ppid=,etime=,%cpu=,%mem=,command= | grep -E 'ENDLUME Studio|[f]fmpeg|[f]fprobe' || true
-          echo
-          PIDS="$(pgrep -f 'ffmpeg|ffprobe' || true)"
-          for pid in $PIDS; do
-            echo "--- pid=$pid open render-related files ---"
-            ps -ww -p "$pid" -o pid=,ppid=,etime=,%cpu=,%mem=,command= || true
-            /usr/sbin/lsof -p "$pid" 2>/dev/null | grep -E 'visual-seg|variant-|video-long|audio-|Ready Videos|effects|subscribe|\.partial|\.tmp' | tail -80 || true
-          done
-          echo
-          echo "--- persisted ENDLUME queue/session state ---"
-          find "$HOME/Library/Application Support" "$HOME/Library" -maxdepth 4 \( -name queue.json -o -name recovery.json -o -name session.json \) 2>/dev/null | grep -Ei 'endlume|studio\.endlume' | sort -u | while IFS= read -r f; do
+          echo "--- persisted ENDLUME state ---"
+          find "$HOME/Library/Application Support" -maxdepth 5 \( -name queue.json -o -name recovery.json -o -name session.json \) -print 2>/dev/null | grep -Ei 'endlume|studio\.endlume' | sort -u | while IFS= read -r f; do
             echo "FILE: $f"
-            python3 - "$f" <<'PY'
-import json,sys,os
-p=sys.argv[1]
-try:
- d=json.load(open(p))
-except Exception as e:
- print('  unreadable:',e); raise SystemExit
-if p.endswith('queue.json') or p.endswith('recovery.json'):
- a=d.get('active')
- print('  interrupted=',d.get('interrupted'))
- print('  updatedAt=',d.get('updatedAt') or d.get('detectedAt'))
- print('  pending=',len(d.get('pending') or []))
- if isinstance(a,dict):
-  pr=a.get('project') or {}
-  st=a.get('settings') or {}
-  print('  active.id=',pr.get('id'))
-  print('  active.name=',pr.get('name'))
-  print('  active.media=',len(pr.get('media') or []),'audio=',len(pr.get('audio') or []))
-  print('  active.fps=',st.get('fps'),'resolution=',str(st.get('width'))+'x'+str(st.get('height')))
- else:
-  print('  active=None')
-else:
- print('  open=',d.get('open'),'started=',d.get('started'),'closed=',d.get('closed'))
-PY
+            python3 -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p)); a=d.get("active"); pr=(a or {}).get("project",{}) if isinstance(a,dict) else {}; st=(a or {}).get("settings",{}) if isinstance(a,dict) else {}; print(" interrupted=",d.get("interrupted")," updated=",d.get("updatedAt") or d.get("detectedAt")," pending=",len(d.get("pending") or [])," active_id=",pr.get("id")," active_name=",pr.get("name")," media=",len(pr.get("media") or [])," audio=",len(pr.get("audio") or [])," fps=",st.get("fps")," size=",str(st.get("width"))+"x"+str(st.get("height"))," session_open=",d.get("open"))' "$f" || true
           done
-          echo
+          echo "--- ENDLUME app-data directory ---"
+          find "$HOME/Library/Application Support" -maxdepth 3 -type d -iname '*endlume*' -print 2>/dev/null || true
           echo "Waiting 8 seconds without touching the render..."
           sleep 8
-          echo
           echo "--- process snapshot #2 ---"
           ps -axo pid=,ppid=,etime=,%cpu=,%mem=,command= | grep -E 'ENDLUME Studio|[f]fmpeg|[f]fprobe' || true
-          for pid in $PIDS; do
-            if kill -0 "$pid" 2>/dev/null; then
-              echo "--- pid=$pid still alive after 8s ---"
-              ps -ww -p "$pid" -o pid=,ppid=,etime=,%cpu=,%mem=,command= || true
-              /usr/sbin/lsof -p "$pid" 2>/dev/null | grep -E 'visual-seg|variant-|video-long|audio-|Ready Videos|effects|subscribe|\.partial|\.tmp' | tail -80 || true
-            else
-              echo "pid=$pid terminated during observation"
-            fi
-          done
           echo "=== AUDIT COMPLETE: no process or file was modified ==="

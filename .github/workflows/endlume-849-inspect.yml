@@ -17,18 +17,25 @@ jobs:
           grep -Fq '1.0.0-alpha.8.47' "$WORK/package.json"
           python3 - "$R" <<'PY'
           from pathlib import Path
-          import sys
+          import sys,re
           s=Path(sys.argv[1]).read_text()
-          names=['hybrid_master_seconds','hybrid_fidelity_args','choose_hybrid_encoder','build_lossless_processed_audio_cycle','smart_final_duration','assemble_visual','render_hybrid','render_attempt']
-          for name in names:
-              p=s.find(name)
-              print(f'\n===== {name} @ {p} =====')
-              if p<0: continue
-              a=s.rfind('\n',0,max(0,p-1500)); b=s.find('\n\n',p+3500)
-              if b<0: b=min(len(s),p+5000)
-              print(s[max(0,a):min(len(s),b)])
-          print('\n===== CACHE / WORK CALLS =====')
+          def show(name):
+              patterns=[rf'async fn {re.escape(name)}\b',rf'fn {re.escape(name)}\b',rf'pub async fn {re.escape(name)}\b']
+              m=None
+              for pat in patterns:
+                  m=re.search(pat,s)
+                  if m: break
+              print(f'\n===== {name} @ {m.start() if m else -1} =====')
+              if not m:return
+              p=m.start(); nxt=re.search(r'\n(?:pub )?(?:async )?fn [A-Za-z0-9_]+\b',s[m.end():])
+              end=(m.end()+nxt.start()) if nxt else min(len(s),p+12000)
+              print(s[p:min(len(s),end)])
+          for name in ['render_work_dir','build_variant','render_sub_segment','assemble_visual','smart_final_duration','render_job']:
+              show(name)
+          print('\n===== IMPORTS =====')
+          print('\n'.join(s.splitlines()[:16]))
+          print('\n===== FINAL MUX LINES =====')
           for line in s.splitlines():
-              if any(k in line for k in ['assemble_visual(', 'work=', 'cache_dir', 'VisualSource::', 'final_duration=', 'materialize_continuous_audio']):
+              if any(k in line for k in ['final-mux','video_track_timescale','AudioSource::','VisualSource::','unique_output(','render_work_dir(']):
                   print(line)
           PY

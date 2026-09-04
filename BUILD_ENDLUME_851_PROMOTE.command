@@ -2,8 +2,8 @@
 set -Eeuo pipefail
 
 EXPECTED_VERSION="1.0.0-alpha.8.51"
-PINNED_SHA="1fbc540e993e83c4f96ff350fddd263a90b1dc4a"
-CURRENT_RUN_STARTED="2026-09-03T17:18:00+00:00"
+PINNED_SHA="4190a696a30d01d1f55c571a089e7cbb6a475cf3"
+CURRENT_RUN_STARTED="2026-09-04T00:20:00+00:00"
 CAND="$HOME/.endlume-release-bridge/endlume/candidate-8.51"
 FINAL_ART="${ENDLUME_RELEASE_ARTIFACT_DIR:-$HOME/.endlume-release-bridge/endlume/current}"
 REPO="ScaleUPPeisov/endlume-desktop"
@@ -30,11 +30,21 @@ if ! candidate_is_fresh; then
   echo "ℹ️ Fresh 8.51 candidate artifact not available; building exact pinned $PINNED_SHA now"
   TMP="$(mktemp -d /tmp/endlume-851-promote.XXXXXX)"
   trap 'rm -rf "$TMP" >/dev/null 2>&1 || true' EXIT
-  gh auth setup-git
-  git -C "$TMP" init
+  gh auth setup-git >/dev/null 2>&1 || true
+  git -C "$TMP" init -q
   git -C "$TMP" remote add origin "https://github.com/$REPO.git"
-  git -C "$TMP" -c http.version=HTTP/1.1 fetch --no-tags --depth=1 origin "$PINNED_SHA"
+  fetched=0
+  for attempt in 1 2 3 4 5; do
+    if git -C "$TMP" -c http.version=HTTP/1.1 fetch --no-tags --depth=1 origin "$PINNED_SHA"; then
+      fetched=1
+      break
+    fi
+    echo "⚠️ exact 8.51 source fetch retry $attempt/5" >&2
+    sleep $((attempt*2))
+  done
+  [[ "$fetched" == 1 ]] || fail "cannot fetch exact 8.51 source $PINNED_SHA"
   git -C "$TMP" checkout --detach FETCH_HEAD
+  test "$(git -C "$TMP" rev-parse HEAD)" = "$PINNED_SHA" || fail "exact 8.51 SHA mismatch"
   export ENDLUME_851_PATCH_REF="$PINNED_SHA"
   export ENDLUME_RELEASE_VERSION="$EXPECTED_VERSION"
   export ENDLUME_RELEASE_ARTIFACT_DIR="$CAND"
@@ -57,5 +67,6 @@ printf '%s\n' "$EXPECTED_VERSION" > "$FINAL_ART/version.txt"
 
 echo "✅ ENDLUME 8.51 exact signed artifact promoted to production staging"
 echo "✅ source pin: $PINNED_SHA"
-echo "✅ quality/size/warm gates preserved; cold first-cache gate <=85s"
+echo "✅ VideoToolbox q100/500k hardware-first; x265 CRF18/500k fallback"
+echo "✅ hard gates preserved: SSIM >=0.995, 500–700 MB, cold <=75s, warm <=30s"
 echo "✅ next release-workflow stages will strict-verify archive and publish endlume-stable"

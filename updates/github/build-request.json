@@ -1,11 +1,11 @@
 {
   "enabled": true,
-  "generation": 27,
+  "generation": 28,
   "app": "endlume",
   "channel": "stable",
   "version": "1.0.0-alpha.8.51",
   "builder": "BUILD_ENDLUME_851_PROMOTE.command",
-  "notes": "ENDLUME STUDIO PEISOV 8.51 final immediate stable release pinned to 1fbc540e993e83c4f96ff350fddd263a90b1dc4a. Exact 1920x1080, CFR30/60, whole-track audio, Effects/Subscribe, VYRON, watchdog and bounded metadata FFprobe preserved. Manifest-based long visual assembly, vivid overlay parity and x265 CRF18 quality-first 400k size profile with VideoToolbox q100 fallback. Hard gates: static-image SSIM >=0.995, physical 2h05 output 500-700 MB with HQ320 pressure, warm long-project assembly <=30s; representative cold first-cache gate <=85s after measured 77.241s on target M1.",
+  "notes": "ENDLUME STUDIO PEISOV 8.51 final stable release pinned to 4190a696a30d01d1f55c571a089e7cbb6a475cf3. Exact 1920x1080, CFR30/60, whole-track audio, Effects/Subscribe, VYRON, watchdog and bounded metadata FFprobe preserved. 8.51 uses manifest-based long visual assembly and vivid overlay parity while keeping the proven 8.50 Apple Silicon VideoToolbox q100/500k hardware-first encoder with libx265 CRF18/500k fallback. Hard gates: static-image SSIM >=0.995, physical 2h05 output 500-700 MB under HQ320 audio pressure, representative cold first-cache <=75s and warm long-project assembly <=30s. Pinned 8.41 bootstrap GitHub fetch now retries transient network resets before failing.",
   "platforms": [
     "darwin-aarch64"
   ]

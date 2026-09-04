@@ -1,11 +1,11 @@
 {
   "enabled": true,
-  "generation": 29,
+  "generation": 30,
   "app": "endlume",
   "channel": "stable",
   "version": "1.0.0-alpha.8.51",
   "builder": "BUILD_ENDLUME_851_PROMOTE.command",
-  "notes": "ENDLUME STUDIO PEISOV 8.51 final stable release pinned to d4f50ea8a13a21d6163c1ab16d4669432d09f97d. Exact 1920x1080, CFR30/60, whole-track audio, Effects/Subscribe, VYRON, watchdog and bounded metadata FFprobe preserved. VideoToolbox q100/500k hardware-first with libx265 CRF18/500k fallback. Physical production gate already measured SSIM 0.999987, cold 27.441s, warm 1.994s and 697.5MB for 2h05. Legacy vivid preset validation now correctly counts two migration occurrences even when both reside on one source line. Hard gates remain SSIM >=0.995, 500-700MB, cold <=75s and warm <=30s. Pinned bootstrap retries transient GitHub network resets.",
+  "notes": "ENDLUME STUDIO PEISOV 8.51 final stable release pinned to 20f01b492a32aa03a1a1c2b2048fb12d6e256121. Exact 1920x1080, CFR30/60, whole-track audio, Effects/Subscribe, VYRON, watchdog and bounded metadata FFprobe preserved. VideoToolbox q100/500k hardware-first with libx265 CRF18/500k fallback. Physical production gate measured SSIM 0.999987, cold 27.858s, warm 2.623s and 697.5MB for 2h05. Final migration fixes the assemble_visual replacement boundary so synchronous release helpers FinalProbe, final_verify_error and write_side_files are preserved. Hard gates remain SSIM >=0.995, 500-700MB, cold <=75s and warm <=30s. Old candidate artifacts are invalidated before promotion.",
   "platforms": [
     "darwin-aarch64"
   ]

@@ -1,11 +1,11 @@
 {
   "enabled": true,
-  "generation": 28,
+  "generation": 29,
   "app": "endlume",
   "channel": "stable",
   "version": "1.0.0-alpha.8.51",
   "builder": "BUILD_ENDLUME_851_PROMOTE.command",
-  "notes": "ENDLUME STUDIO PEISOV 8.51 final stable release pinned to 4190a696a30d01d1f55c571a089e7cbb6a475cf3. Exact 1920x1080, CFR30/60, whole-track audio, Effects/Subscribe, VYRON, watchdog and bounded metadata FFprobe preserved. 8.51 uses manifest-based long visual assembly and vivid overlay parity while keeping the proven 8.50 Apple Silicon VideoToolbox q100/500k hardware-first encoder with libx265 CRF18/500k fallback. Hard gates: static-image SSIM >=0.995, physical 2h05 output 500-700 MB under HQ320 audio pressure, representative cold first-cache <=75s and warm long-project assembly <=30s. Pinned 8.41 bootstrap GitHub fetch now retries transient network resets before failing.",
+  "notes": "ENDLUME STUDIO PEISOV 8.51 final stable release pinned to d4f50ea8a13a21d6163c1ab16d4669432d09f97d. Exact 1920x1080, CFR30/60, whole-track audio, Effects/Subscribe, VYRON, watchdog and bounded metadata FFprobe preserved. VideoToolbox q100/500k hardware-first with libx265 CRF18/500k fallback. Physical production gate already measured SSIM 0.999987, cold 27.441s, warm 1.994s and 697.5MB for 2h05. Legacy vivid preset validation now correctly counts two migration occurrences even when both reside on one source line. Hard gates remain SSIM >=0.995, 500-700MB, cold <=75s and warm <=30s. Pinned bootstrap retries transient GitHub network resets.",
   "platforms": [
     "darwin-aarch64"
   ]

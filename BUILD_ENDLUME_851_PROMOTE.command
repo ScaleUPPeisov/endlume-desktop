@@ -2,8 +2,8 @@
 set -Eeuo pipefail
 
 EXPECTED_VERSION="1.0.0-alpha.8.51"
-PINNED_SHA="d4f50ea8a13a21d6163c1ab16d4669432d09f97d"
-CURRENT_RUN_STARTED="2026-09-04T00:44:30+00:00"
+PINNED_SHA="20f01b492a32aa03a1a1c2b2048fb12d6e256121"
+CURRENT_RUN_STARTED="2026-09-04T01:11:30+00:00"
 CAND="$HOME/.endlume-release-bridge/endlume/candidate-8.51"
 FINAL_ART="${ENDLUME_RELEASE_ARTIFACT_DIR:-$HOME/.endlume-release-bridge/endlume/current}"
 REPO="ScaleUPPeisov/endlume-desktop"
@@ -69,5 +69,5 @@ echo "✅ ENDLUME 8.51 exact signed artifact promoted to production staging"
 echo "✅ source pin: $PINNED_SHA"
 echo "✅ VideoToolbox q100/500k hardware-first; x265 CRF18/500k fallback"
 echo "✅ hard gates preserved: SSIM >=0.995, 500–700 MB, cold <=75s, warm <=30s"
-echo "✅ vivid migration validator fixed to count occurrences, not matching lines"
+echo "✅ assemble_visual migration preserves FinalProbe/final_verify_error/write_side_files"
 echo "✅ next release-workflow stages will strict-verify archive and publish endlume-stable"

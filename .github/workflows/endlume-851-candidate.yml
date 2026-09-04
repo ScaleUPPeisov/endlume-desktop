@@ -2,16 +2,6 @@ name: ENDLUME 8.51 Full Project Speed Size Candidate
 
 on:
   workflow_dispatch:
-  push:
-    branches: [candidate/full-project-speed-8.51]
-    paths:
-      - 'scripts/apply-full-project-speed-8-51.py'
-      - 'scripts/apply-audio-overlay-polish-8-51.py'
-      - 'scripts/apply-size-fidelity-8-51.py'
-      - 'scripts/validate-release-8-51.sh'
-      - 'scripts/validate-audio-overlay-polish-8-51.sh'
-      - 'BUILD_ENDLUME_851_SELFHOSTED.command'
-      - '.github/workflows/endlume-851-candidate.yml'
 
 permissions:
   contents: read

@@ -29,7 +29,21 @@ grep -Fq 'a=min(1.,a*1.25)' "$L" || fail "Live Preview alpha punch missing"
 grep -Fq 'gl.uniform1f(uSat' "$L" || fail "Live Preview saturation value missing"
 [[ "$(grep -Fc 'Насыщенность / сила цвета' "$E")" -ge 2 ]] || fail "Effects + Subscribe saturation controls missing"
 [[ "$(grep -Fc 'saturation: 1.25' "$E")" -ge 2 ]] || fail "vivid editor defaults missing"
-[[ "$(grep -Fc 'saturation:Math.abs((e.saturation??1)-1)<0.001?1.25' "$S")" -ge 2 ]] || fail "legacy preset vivid migration missing"
+
+# store.ts keeps Effects + Subscribe migration expressions on the same physical
+# source line in the reconstructed app. grep -c counts matching LINES, not
+# occurrences, so it produced a false negative despite the patcher's own
+# occurrence-count postcondition passing. Count literal occurrences instead.
+python3 - "$S" <<'PY' || fail "legacy preset vivid migration missing"
+from pathlib import Path
+import sys
+s=Path(sys.argv[1]).read_text(encoding='utf-8')
+needle='saturation:Math.abs((e.saturation??1)-1)<0.001?1.25'
+count=s.count(needle)
+if count < 2:
+    raise SystemExit(f'expected >=2 legacy vivid migration occurrences, got {count}')
+print(f'PASS: legacy vivid migration occurrences={count}')
+PY
 
 # Physical FFmpeg smoke: the exact alpha+saturation+contrast chain must really run
 # with the embedded FFmpeg, not merely exist as source text.

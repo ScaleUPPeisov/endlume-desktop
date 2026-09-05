@@ -10,6 +10,7 @@ mod benchmark;
 mod queue;
 mod cache;
 mod system;
+mod updater_local;
 
 use std::sync::Arc;
 use tauri::Manager;
@@ -32,7 +33,8 @@ pub fn run(){
       benchmark::benchmark_engine,
       license::activate_license,license::license_status,
       cache::cache_stats,cache::clear_effect_cache,
-      system::power_status,system::disk_status,system::cleanup_duplicate_apps,system::normalize_current_app_name,system::open_result_path,system::reveal_result_path
+      system::power_status,system::disk_status,system::cleanup_duplicate_apps,system::normalize_current_app_name,system::open_result_path,system::reveal_result_path,
+      updater_local::local_update_check,updater_local::local_update_start,updater_local::local_update_status
     ])
     .setup(|app|{
       persistence::mark_session_open(&app.handle().clone())?;

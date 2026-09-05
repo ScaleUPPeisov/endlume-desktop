@@ -16,7 +16,7 @@ const emptyEffect = (source = ''): EffectPreset => ({
   keyColor: '#00ff00',
   similarity: 0.10,
   blend: 0.06,
-  despill: 0,
+  despill: 0.35,
   lumaThreshold: 0.03,
   lumaTolerance: 0.08,
   saturation: 1,
@@ -165,10 +165,11 @@ function EffectsEditor() {
           <label>Режим<select value={current.mode} onChange={(event) => patch({ mode: event.target.value as EffectPreset['mode'] })}><option value="chromakey">Chromakey</option><option value="luma">Luma Alpha</option><option value="screen">Screen Blend</option></select></label>
           {current.mode === 'chromakey' && <>
             <label>Цвет chromakey<input type="color" value={current.keyColor} onChange={(event) => patch({ keyColor: event.target.value })} /></label>
-            <button className="chromaReset" onClick={() => patch({ keyColor: '#00ff00', similarity: 0.10, blend: 0.06, saturation: 1, despill: 0 })}>СБРОСИТЬ CHROMAKEY</button>
+            <button className="chromaReset" onClick={() => patch({ keyColor: '#00ff00', similarity: 0.10, blend: 0.06, saturation: 1, despill: 0.35 })}>СБРОСИТЬ CHROMAKEY</button>
             <p className="editorHint chromaHint">Нажми «ПИПЕТКА / КИСТЬ» на Preview и выбери фон. ENDLUME возьмёт цвет из исходного кадра.</p>
             <SmallRange label="Similarity" value={current.similarity} min={0.001} max={0.6} step={0.001} onChange={(value) => patch({ similarity: value })} />
             <SmallRange label="Blend / мягкость края" value={current.blend} min={0.001} max={0.35} step={0.001} onChange={(value) => patch({ blend: value })} />
+            <SmallRange label="Despill / убрать зелёный ореол" value={current.despill} min={0} max={1} step={0.01} onChange={(value) => patch({ despill: value })} />
           </>}
           {current.mode === 'luma' && <>
             <SmallRange label="Threshold" value={current.lumaThreshold} min={0} max={1} step={0.01} onChange={(value) => patch({ lumaThreshold: value })} />
@@ -288,10 +289,11 @@ function SubscribeEditor() {
         {current && <>
           <label>Название<input value={current.name} onChange={(event) => patch({ name: event.target.value })} /></label>
           <label>Цвет chromakey<input type="color" value={current.keyColor} onChange={(event) => patch({ keyColor: event.target.value })} /></label>
-          <button className="chromaReset" onClick={() => patch({ keyColor: '#00ff00', similarity: 0.10, blend: 0.06, saturation: 1, despill: 0 })}>СБРОСИТЬ CHROMAKEY</button>
+          <button className="chromaReset" onClick={() => patch({ keyColor: '#00ff00', similarity: 0.10, blend: 0.06, saturation: 1, despill: 0.35 })}>СБРОСИТЬ CHROMAKEY</button>
           <p className="editorHint chromaHint">Пипеткой/кистью в Preview выбери фон Subscribe-видео.</p>
           <SmallRange label="Similarity" value={current.similarity} min={0.001} max={0.6} step={0.001} onChange={(value) => patch({ similarity: value })} />
           <SmallRange label="Blend / мягкость края" value={current.blend} min={0.001} max={0.35} step={0.001} onChange={(value) => patch({ blend: value })} />
+            <SmallRange label="Despill / убрать зелёный ореол" value={current.despill} min={0} max={1} step={0.01} onChange={(value) => patch({ despill: value })} />
           <div className="schedule">
             <label>Первое появление<input type="number" min={0} value={current.firstAtSec} onChange={(event) => patch({ firstAtSec: Math.max(0, Number(event.target.value) || 0) })} /><small>сек</small></label>
             <label>Второе появление<input type="number" min={0} value={current.secondAtSec} onChange={(event) => patch({ secondAtSec: Math.max(0, Number(event.target.value) || 0) })} /><small>сек</small></label>
@@ -323,8 +325,8 @@ function PreviewStage({ title, assets, busy, current, onMove, onScale, onPickCol
   const stageRef = useRef<HTMLDivElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
   const modeRef = useRef<'none' | 'drag' | 'resize'>('none');
-  const pointerRef = useRef<globalThis.PointerEvent>();
-  const rafRef = useRef<number>();
+  const pointerRef = useRef<globalThis.PointerEvent | undefined>(undefined);
+  const rafRef = useRef<number | undefined>(undefined);
   const draftRef = useRef({ x: current.x, y: current.y, scale: current.scale });
   const currentRef = useRef(current);
   const moveRef = useRef(onMove);

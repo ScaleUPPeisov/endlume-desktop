@@ -1,5 +1,5 @@
 use sha2::{Digest,Sha256};
-use std::{fs,path::{Path,PathBuf},time::UNIX_EPOCH};
+use std::{fs,io::Read,path::{Path,PathBuf},time::UNIX_EPOCH};
 use tauri::{AppHandle,Manager};
 
 fn safe_ext(path:&Path)->String{
@@ -8,6 +8,15 @@ fn safe_ext(path:&Path)->String{
 
 fn safe_kind(kind:&str)->&'static str{
   match kind{"subscribe"=>"subscribe","ambient"=>"ambient",_=>"effects"}
+}
+
+fn has_appledouble_magic(path:&Path)->bool{
+  let mut b=[0u8;4];
+  fs::File::open(path).and_then(|mut f|f.read_exact(&mut b)).is_ok()&&matches!(u32::from_be_bytes(b),0x00051607|0x00051600)
+}
+fn is_macos_sidecar(path:&Path)->bool{
+  let n=path.file_name().and_then(|x|x.to_str()).unwrap_or("");
+  n==".DS_Store"||n.starts_with("._")||n.starts_with(".Spotlight-")||n.starts_with(".Trashes")||n.starts_with('.')
 }
 
 fn managed_root(app:&AppHandle,kind:&str)->Result<PathBuf,String>{
@@ -29,6 +38,7 @@ fn fingerprint(path:&Path,meta:&fs::Metadata)->String{
 pub fn ensure_managed_asset(app:&AppHandle,source:&str,kind:&str)->Result<String,String>{
   let src=PathBuf::from(source);
   if !src.is_file(){return Err(format!("Выбранный файл не найден: {}",src.display()))}
+  if is_macos_sidecar(&src)||has_appledouble_magic(&src){return Err("ENDLUME не импортирует служебные AppleDouble/resource-fork файлы macOS. Выберите настоящий медиафайл.".into())}
   let meta=fs::metadata(&src).map_err(|e|format!("Не удалось прочитать выбранный файл: {e}"))?;
   if meta.len()==0{return Err("Выбран пустой файл".into())}
 

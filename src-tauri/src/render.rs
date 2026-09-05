@@ -2,7 +2,7 @@ use crate::{cache,model::{EffectPreset,Progress,QueueJob,RenderSettings,Subscrib
 use serde_json::json;
 use std::{collections::HashMap,path::{Path,PathBuf},sync::{Arc,OnceLock,atomic::{AtomicBool,Ordering}},time::{Duration,Instant}};
 use sysinfo::{Pid,ProcessesToUpdate,System};
-use tauri::{AppHandle,Emitter};
+use tauri::{AppHandle,Emitter,Manager};
 use tauri_plugin_shell::{process::CommandEvent,ShellExt};
 
 const IMAGE_EXT:&[&str]=&["jpg","jpeg","png","webp","bmp","tif","tiff","heic","avif"];
@@ -13,15 +13,184 @@ static AUDIO_ENCODER_CACHE:OnceLock<String>=OnceLock::new();
 #[derive(Clone)]
 struct SubEvent{start:f64,end:f64,sub:SubscribePreset,event_start:f64}
 
-enum VisualSource{Loop(PathBuf),Long(PathBuf)}
+enum VisualSource{Loop(PathBuf),Long(PathBuf),Concat(PathBuf)}
 enum AudioSource{Loop(PathBuf),Long(PathBuf)}
 
 fn is_image(path:&str)->bool{Path::new(path).extension().and_then(|x|x.to_str()).map(|x|IMAGE_EXT.contains(&x.to_ascii_lowercase().as_str())).unwrap_or(false)}
 fn safe_name(name:&str)->String{name.chars().map(|c|if ['/', '\\', ':', '*', '?', '"', '<', '>', '|'].contains(&c){'_'}else{c}).collect()}
 fn unique_output(dir:&Path,name:&str)->PathBuf{let safe=safe_name(name);let mut p=dir.join(format!("{} — Ready Videos.mp4",safe));let mut n=2;while p.exists(){p=dir.join(format!("{} — Ready Videos_{}.mp4",safe,n));n+=1}p}
+fn unique_output_ext(dir:&Path,name:&str,ext:&str)->PathBuf{let safe=safe_name(name);let ext=ext.trim_start_matches('.');let mut p=dir.join(format!("{} — Ready Videos.{}",safe,ext));let mut n=2;while p.exists(){p=dir.join(format!("{} — Ready Videos_{}.{}",safe,n,ext));n+=1}p}
 fn fmt_ts(sec:f64)->String{let s=sec.max(0.0).round() as u64;format!("{:02}:{:02}:{:02}",s/3600,(s%3600)/60,s%60)}
 fn color_ffmpeg(hex:&str)->String{format!("0x{}",hex.trim().trim_start_matches('#').trim_start_matches("0x"))}
 fn emit_timing(app:&AppHandle,id:&str,key:&str,sec:f64){let _=app.emit("engine-timing",json!({"id":id,"key":key,"seconds":sec}));}
+
+
+const AUDIO_EXT:&[&str]=&["mp3","wav","m4a","aac","flac","ogg","opus","aif","aiff"];
+fn is_audio(path:&Path)->bool{path.extension().and_then(|x|x.to_str()).map(|x|AUDIO_EXT.contains(&x.to_ascii_lowercase().as_str())).unwrap_or(false)}
+fn software_encoder(s:&RenderSettings)->String{if s.codec.eq_ignore_ascii_case("h265"){"libx265".into()}else{"libx264".into()}}
+fn smart_repeat_project(job:&QueueJob)->bool{job.project.media.len()==1&&job.project.media.iter().all(|m|is_image(m))}
+
+async fn choose_fidelity_encoder(app:&AppHandle,attempt:u32)->String{
+  #[cfg(target_os="macos")]
+  {
+    if attempt==1&&encoder_works(app,"hevc_videotoolbox").await{return "hevc_videotoolbox".into()}
+  }
+  "libx265".into()
+}
+
+fn fidelity_video_args(encoder:&str,s:&RenderSettings)->Vec<String>{
+  let g=(s.fps.max(1)*10).to_string();
+  let raw:Vec<&str>=match encoder{
+    "hevc_videotoolbox"=>vec!["-c:v","hevc_videotoolbox","-realtime","1","-prio_speed","1","-power_efficient","0","-q:v","95","-g",&g,"-tag:v","hvc1","-pix_fmt","yuv420p"],
+    "h264_videotoolbox"=>vec!["-c:v","h264_videotoolbox","-realtime","1","-prio_speed","1","-power_efficient","0","-q:v","95","-g",&g,"-pix_fmt","yuv420p"],
+    "libx265"=>vec!["-c:v","libx265","-preset","ultrafast","-crf","14","-tune","ssim","-g",&g,"-pix_fmt","yuv420p"],
+    _=>vec!["-c:v","libx264","-preset","ultrafast","-crf","12","-tune","stillimage","-g",&g,"-keyint_min",&g,"-sc_threshold","0","-pix_fmt","yuv420p"],
+  };
+  raw.into_iter().map(String::from).collect()
+}
+
+fn hybrid_master_seconds(_s:&RenderSettings)->f64{12.0}
+
+async fn hybrid_master_seconds_for_job(app:&AppHandle,job:&QueueJob)->f64{
+  let mut d=hybrid_master_seconds(&job.settings);
+  for e in job.effects.iter().filter(|e|e.enabled&&!e.source.trim().is_empty()){
+    if let Ok(x)=probe_duration(app,&e.source).await{d=d.max(x.clamp(2.0,60.0));}
+  }
+  d.clamp(12.0,60.0)
+}
+
+fn hybrid_video_kbps(_s:&RenderSettings)->u64{500}
+
+fn hybrid_fidelity_args(s:&RenderSettings,encoder:&str,duration:f64)->Vec<String>{
+  let frames=(s.fps.max(1) as f64*duration.max(2.0)).round().max(1.0) as u32;
+  let g=frames.to_string();
+  if encoder=="libx265"{
+    let x265=format!("keyint={}:min-keyint={}:scenecut=0:open-gop=0:aq-mode=3:aq-strength=1.0:vbv-init=1.0",g,g);
+    vec!["-c:v","libx265","-preset","ultrafast","-crf","18","-maxrate","500k","-bufsize","4M","-x265-params",&x265,"-tag:v","hvc1","-pix_fmt","yuv420p"].into_iter().map(String::from).collect()
+  }else{
+    vec!["-c:v","hevc_videotoolbox","-realtime","1","-prio_speed","0","-power_efficient","0","-b:v","500k","-maxrate","4M","-bufsize","16M","-g",&g,"-tag:v","hvc1","-pix_fmt","yuv420p"].into_iter().map(String::from).collect()
+  }
+}
+
+async fn choose_hybrid_encoder(app:&AppHandle,attempt:u32)->String{
+  if attempt==1&&encoder_works(app,"libx265").await{return "libx265".into()}
+  #[cfg(target_os="macos")]
+  {if encoder_works(app,"hevc_videotoolbox").await{return "hevc_videotoolbox".into()}}
+  "libx265".into()
+}
+
+async fn probe_audio_decodes(app:&AppHandle,path:&Path)->bool{
+  let args=vec!["-v","error","-i",path.to_string_lossy().as_ref(),"-map","0:a:0","-t","1.0","-f","null","-"].into_iter().map(String::from).collect();
+  output(app,"ffmpeg",args).await.is_ok()
+}
+
+async fn probe_audio_signature(app:&AppHandle,path:&str)->Result<(String,u32,u32),String>{
+  let args=vec!["-v","error","-select_streams","a:0","-show_entries","stream=codec_name,sample_rate,channels","-of","csv=p=0:s=|",path].into_iter().map(String::from).collect();
+  let (stdout,_)=output(app,"ffprobe",args).await?;
+  let line=String::from_utf8_lossy(&stdout).trim().to_string();
+  let parts=line.split('|').collect::<Vec<_>>();
+  if parts.len()<3{return Err(format!("Не удалось прочитать параметры аудио: {path}"))}
+  let rate=parts[1].parse::<u32>().map_err(|_|format!("Не удалось прочитать sample rate: {path}"))?;
+  let channels=parts[2].parse::<u32>().map_err(|_|format!("Не удалось прочитать channels: {path}"))?;
+  Ok((parts[0].to_string(),rate,channels))
+}
+
+fn ffconcat_escape(path:&Path)->String{
+  let s=path.to_string_lossy().replace('\\',"/");
+  let mut out=String::with_capacity(s.len()+8);
+  for c in s.chars(){
+    if matches!(c,' '|'\''|'#'){out.push('\\')}
+    out.push(c);
+  }
+  out
+}
+
+async fn build_original_audio_cycle(app:&AppHandle,job:&QueueJob,started:i64,timer:&Instant,work:&Path,encoder:&str,attempt:u32,cancel:&AtomicBool)->Result<(PathBuf,Vec<f64>,f64),String>{
+  if job.project.audio.is_empty(){return Err("Нет песен".into())}
+  let mut durations=Vec::new();let mut first:Option<(String,u32,u32)>=None;let mut clean=Vec::new();
+  for (i,a) in job.project.audio.iter().enumerate(){
+    durations.push(probe_duration(app,a).await.unwrap_or(180.0).max(0.2));
+    if !a.to_ascii_lowercase().ends_with(".mp3"){return Err(format!("{} — не MP3",Path::new(a).file_name().and_then(|x|x.to_str()).unwrap_or(a)))}
+    let sig=probe_audio_signature(app,a).await?;
+    if sig.0!="mp3"{return Err(format!("{} — codec {}",Path::new(a).file_name().and_then(|x|x.to_str()).unwrap_or(a),sig.0))}
+    if let Some(ref base)=first{if base!=&sig{return Err(format!("MP3 имеют разные параметры: ожидается {} Hz / {} ch, найдено {} Hz / {} ch",base.1,base.2,sig.1,sig.2))}}else{first=Some(sig)}
+    let dst=work.join(format!("audio-clean-{i:03}.mp3"));
+    let args=vec!["-hide_banner","-loglevel","error","-i",a.as_str(),"-map","0:a:0","-c:a","copy","-map_metadata","-1","-write_xing","0","-id3v2_version","0","-y",dst.to_string_lossy().as_ref()].into_iter().map(String::from).collect();
+    output(app,"ffmpeg",args).await.map_err(|e|format!("Original Audio clean-remux: {e}"))?;clean.push(dst);
+  }
+  let raw_list=work.join("audio-raw-list.txt");
+  let body=clean.iter().map(|p|p.to_string_lossy().into_owned()).collect::<Vec<_>>().join("
+");std::fs::write(&raw_list,body).map_err(|e|e.to_string())?;
+  let cycle=work.join("audio-original-clean.mp3");let input=format!("concatf:{}",raw_list.to_string_lossy());let expected=durations.iter().sum::<f64>().max(0.2);
+  let args=vec!["-hide_banner","-loglevel","error","-fflags","+genpts","-i",&input,"-map","0:a:0","-c:a","copy","-map_metadata","-1","-write_xing","0","-id3v2_version","0","-progress","pipe:1","-y",cycle.to_string_lossy().as_ref()].into_iter().map(String::from).collect();
+  run_ffmpeg(app,job,started,timer,args,"Original Audio: MP3 bitstream-copy + новые таймстампы",35.0,8.0,expected,encoder,attempt,cancel).await?;
+  if !probe_audio_decodes(app,&cycle).await{return Err("Original Audio: очищенный MP3 не декодируется".into())}
+  let cycle_duration=probe_duration(app,cycle.to_string_lossy().as_ref()).await.unwrap_or(expected);
+  Ok((cycle,durations,cycle_duration))
+}
+
+async fn build_lossless_audio_cycle(app:&AppHandle,job:&QueueJob,started:i64,timer:&Instant,work:&Path,encoder:&str,attempt:u32,cancel:&AtomicBool)->Result<(PathBuf,Vec<f64>,f64),String>{
+  if job.project.audio.is_empty(){return Err("Нет песен".into())}
+  let mut durations=Vec::new();let mut args:Vec<String>=vec!["-hide_banner","-loglevel","error"].into_iter().map(String::from).collect();
+  for a in &job.project.audio{
+    durations.push(probe_duration(app,a).await.unwrap_or(180.0).max(0.2));
+    args.extend(vec!["-i",a.as_str()].into_iter().map(String::from));
+  }
+  let mut graph=String::new();
+  for i in 0..job.project.audio.len(){
+    if i>0{graph.push(';')}
+    graph.push_str(&format!("[{i}:a]aresample=48000,aformat=sample_fmts=s32p:sample_rates=48000:channel_layouts=stereo,asetpts=N/SR/TB[a{i}]"));
+  }
+  let inputs=(0..job.project.audio.len()).map(|i|format!("[a{i}]")).collect::<String>();
+  graph.push_str(&format!(";{inputs}concat=n={}:v=0:a=1[outa]",job.project.audio.len()));
+  let cycle=work.join("audio-lossless.m4a");let expected=durations.iter().sum::<f64>().max(0.2);
+  args.extend(vec!["-filter_complex",&graph,"-map","[outa]","-c:a","alac","-progress","pipe:1","-y",cycle.to_string_lossy().as_ref()].into_iter().map(String::from));
+  run_ffmpeg(app,job,started,timer,args,"Original Audio: ALAC lossless fallback",35.0,12.0,expected,encoder,attempt,cancel).await?;
+  let cycle_duration=probe_duration(app,cycle.to_string_lossy().as_ref()).await.unwrap_or(expected);
+  Ok((cycle,durations,cycle_duration))
+}
+fn emit_warning(app:&AppHandle,id:&str,message:&str){let _=app.emit("render-warning",json!({"id":id,"message":message}));}
+
+fn writable_dir(path:&Path)->bool{
+  if std::fs::create_dir_all(path).is_err(){return false}
+  let probe=path.join(format!(".endlume-write-test-{}",uuid::Uuid::new_v4()));
+  match std::fs::write(&probe,b"ok"){Ok(_)=>{let _=std::fs::remove_file(probe);true},Err(_)=>false}
+}
+
+fn resolve_output_dir(app:&AppHandle,requested:&Path)->Result<PathBuf,String>{
+  if !requested.as_os_str().is_empty()&&writable_dir(requested){return Ok(requested.to_path_buf())}
+  let fallback=app.path().video_dir().map_err(|e|format!("Не удалось определить папку Movies: {e}"))?.join("ENDLUME Studio");
+  if writable_dir(&fallback){Ok(fallback)}else{Err("ENDLUME не может записать ни в выбранную папку, ни в Movies/ENDLUME Studio".into())}
+}
+
+fn render_work_dir(output:&Path,id:&str,attempt:u32)->Result<PathBuf,String>{
+  let root=output.join(".ENDLUME-work");
+  std::fs::create_dir_all(&root).map_err(|e|format!("Не удалось создать рабочую папку рендера на выбранном диске: {e}"))?;
+  let dir=root.join(format!("{}-{}",safe_name(id),attempt));
+  let _=std::fs::remove_dir_all(&dir);
+  std::fs::create_dir_all(&dir).map_err(|e|format!("Не удалось создать рабочую папку проекта на выбранном диске: {e}"))?;
+  Ok(dir)
+}
+
+
+fn refresh_project_paths(job:&mut QueueJob){
+  let root=PathBuf::from(&job.project.path);
+  if root.is_dir(){
+    let media_missing=job.project.media.is_empty()||job.project.media.iter().any(|p|!Path::new(p).is_file());
+    let audio_missing=job.project.audio.is_empty()||job.project.audio.iter().any(|p|!Path::new(p).is_file());
+    if media_missing{
+      let mut files=walkdir::WalkDir::new(&root).max_depth(2).into_iter().filter_map(Result::ok).map(|e|e.into_path()).filter(|p|p.is_file()&&is_image(p.to_string_lossy().as_ref())).collect::<Vec<_>>();
+      files.sort_by_key(|p|p.file_name().map(|x|x.to_string_lossy().to_lowercase()).unwrap_or_default());
+      if !files.is_empty(){job.project.media=files.into_iter().map(|p|p.to_string_lossy().into_owned()).collect();}
+    }
+    if audio_missing{
+      let mut files=walkdir::WalkDir::new(&root).max_depth(2).into_iter().filter_map(Result::ok).map(|e|e.into_path()).filter(|p|p.is_file()&&is_audio(p)).collect::<Vec<_>>();
+      files.sort_by_key(|p|p.file_name().map(|x|x.to_string_lossy().to_lowercase()).unwrap_or_default());
+      if !files.is_empty(){job.project.audio=files.into_iter().map(|p|p.to_string_lossy().into_owned()).collect();}
+    }
+  }
+  if job.ambient.as_ref().map(|p|!p.trim().is_empty()&&!Path::new(p).is_file()).unwrap_or(false){job.ambient=None;}
+}
 
 async fn output(app:&AppHandle,name:&str,args:Vec<String>)->Result<(Vec<u8>,Vec<u8>),String>{
   let out=app.shell().sidecar(name).map_err(|e|e.to_string())?.args(args).output().await.map_err(|e|e.to_string())?;
@@ -66,9 +235,9 @@ fn static_video_kbps(s:&RenderSettings)->u64{
   // Smart Size budget. At 4K: ~0.62 Mbit/s base video + one high-quality
   // keyframe per 12 s + AAC 320k => around 0.9–1.1 GB for two hours.
   match s.width{
-    0..=1920=>450,
-    1921..=2560=>520,
-    _=>620,
+    0..=1920=>520,
+    1921..=2560=>600,
+    _=>700,
   }
 }
 
@@ -95,7 +264,7 @@ fn static_smart_encoder_args(s:&RenderSettings)->Vec<String>{
 async fn encode_static_smart_clip(app:&AppHandle,job:&QueueJob,media:&str,out:&Path,started:i64,timer:&Instant,encoder:&str,attempt:u32,cancel:&AtomicBool,base:f64,span:f64)->Result<f64,String>{
   let s=&job.settings;let duration=static_master_seconds(s);
   let mut args:Vec<String>=vec!["-hide_banner","-loglevel","error","-loop","1","-framerate",&s.fps.to_string(),"-i",media,"-filter_complex",&format!("{}[outv]",base_filter(s,"0:v")),"-map","[outv]","-t",&duration.to_string(),"-an"].into_iter().map(String::from).collect();
-  args.extend(static_smart_encoder_args(s));
+  args.extend(fidelity_video_args(encoder,s));
   args.extend(vec!["-progress","pipe:1","-y",out.to_string_lossy().as_ref()].into_iter().map(String::from));
   run_ffmpeg(app,job,started,timer,args,"Собираю Smart Size master",base,span,duration,encoder,attempt,cancel).await?;
   Ok(duration)
@@ -158,7 +327,7 @@ fn emit_progress(app:&AppHandle,job:&QueueJob,started:i64,timer:&Instant,progres
 
 async fn run_ffmpeg(app:&AppHandle,job:&QueueJob,started:i64,timer:&Instant,args:Vec<String>,stage:&str,base:f64,span:f64,expected_sec:f64,encoder:&str,attempt:u32,cancel:&AtomicBool)->Result<(),String>{
   emit_progress(app,job,started,timer,base,stage,encoder,attempt,None);
-  let (mut rx,child)=app.shell().sidecar("ffmpeg").map_err(|e|e.to_string())?.args(args).spawn().map_err(|e|e.to_string())?;
+  let (mut rx,child)=app.shell().sidecar("ffmpeg").map_err(|e|format!("{stage}: FFmpeg недоступен: {e}"))?.args(args).spawn().map_err(|e|format!("{stage}: не удалось запустить FFmpeg: {e}"))?;
   let pid=child.pid();let mut child=Some(child);let mut last=base;let mut stderr_tail=String::new();let mut sys=System::new_all();let mut metric_tick=Instant::now();
   loop{
     if cancel.load(Ordering::SeqCst){if let Some(c)=child.take(){let _=c.kill();}return Err(CANCELLED.into())}
@@ -168,7 +337,7 @@ async fn run_ffmpeg(app:&AppHandle,job:&QueueJob,started:i64,timer:&Instant,args
       if let Some(p)=sys.process(pids[0]){let cpu=(p.cpu_usage()/(sys.cpus().len().max(1) as f32)).clamp(0.0,100.0);emit_progress(app,job,started,timer,last,stage,encoder,attempt,Some((cpu,p.memory(),sys.total_memory(),sys.available_memory())))}
       metric_tick=Instant::now();
     }
-    let ev=match event{Err(_)=>continue,Ok(Some(ev))=>ev,Ok(None)=>return Err("FFmpeg закрыл канал без статуса завершения".into())};
+    let ev=match event{Err(_)=>continue,Ok(Some(ev))=>ev,Ok(None)=>return Err(format!("{stage}: FFmpeg закрыл канал без статуса завершения"))};
     match ev{
       CommandEvent::Stdout(bytes)|CommandEvent::Stderr(bytes)=>{
         let text=String::from_utf8_lossy(&bytes);stderr_tail.push_str(&text);if stderr_tail.len()>12000{stderr_tail=stderr_tail.split_off(stderr_tail.len()-9000)}
@@ -180,10 +349,10 @@ async fn run_ffmpeg(app:&AppHandle,job:&QueueJob,started:i64,timer:&Instant,args
           }
         }
       },
-      CommandEvent::Error(e)=>return Err(e),
+      CommandEvent::Error(e)=>return Err(format!("{stage}: {e}")),
       CommandEvent::Terminated(t)=>{
         child.take();
-        if t.code.unwrap_or(1)!=0{return Err(if stderr_tail.trim().is_empty(){format!("FFmpeg завершился с кодом {:?}",t.code)}else{stderr_tail.lines().rev().take(12).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n")})}
+        if t.code.unwrap_or(1)!=0{return Err(if stderr_tail.trim().is_empty(){format!("{stage}: FFmpeg завершился с кодом {:?}",t.code)}else{format!("{stage}: {}",stderr_tail.lines().rev().take(12).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n"))})}
         break
       },
       _=>{}
@@ -192,12 +361,12 @@ async fn run_ffmpeg(app:&AppHandle,job:&QueueJob,started:i64,timer:&Instant,args
   emit_progress(app,job,started,timer,base+span,stage,encoder,attempt,None);Ok(())
 }
 
-fn base_filter(s:&RenderSettings,label:&str)->String{format!("[{label}]scale={}:{}:force_original_aspect_ratio=decrease,pad={}:{}:(ow-iw)/2:(oh-ih)/2,fps={},setsar=1",s.width,s.height,s.width,s.height,s.fps)}
+fn base_filter(s:&RenderSettings,label:&str)->String{format!("[{label}]scale={}:{}:force_original_aspect_ratio=increase:flags=lanczos+accurate_rnd,crop={}:{}:(iw-ow)/2:(ih-oh)/2,fps={},setsar=1",s.width,s.height,s.width,s.height,s.fps)}
 
 async fn build_media_clip(app:&AppHandle,job:&QueueJob,media:&str,index:usize,total:usize,started:i64,timer:&Instant,work:&Path,encoder:&str,attempt:u32,cancel:&AtomicBool)->Result<(PathBuf,f64),String>{
   let s=&job.settings;let clip=work.join(format!("source-{index:03}.mp4"));let base=8.0+(index as f64/total.max(1) as f64)*14.0;let span=14.0/total.max(1) as f64;
   let mut args:Vec<String>=vec!["-hide_banner","-loglevel","error"].into_iter().map(String::from).collect();let duration:f64;let graph:String;
-  if is_image(media) && total==1 && job.effects.iter().all(|e|!e.enabled) && job.subscribes.iter().all(|e|!e.effect.enabled){
+  if is_image(media) && total==1{
     duration=encode_static_smart_clip(app,job,media,&clip,started,timer,encoder,attempt,cancel,base,span).await?;
     return Ok((clip,duration));
   }else if is_image(media){
@@ -210,11 +379,61 @@ async fn build_media_clip(app:&AppHandle,job:&QueueJob,media:&str,index:usize,to
       _=>{duration=d;args.extend(vec!["-i",media].into_iter().map(String::from));graph=format!("{}[outv]",base_filter(s,"0:v"));}
     }
   }
-  args.extend(vec!["-filter_complex",&graph,"-map","[outv]","-t",&duration.to_string(),"-an"].into_iter().map(String::from));if is_image(media){args.extend(static_smart_encoder_args(s));}else{args.extend(encoder_args(encoder,s,false));}args.extend(vec!["-progress","pipe:1","-y",clip.to_string_lossy().as_ref()].into_iter().map(String::from));
+  args.extend(vec!["-filter_complex",&graph,"-map","[outv]","-t",&duration.to_string(),"-an"].into_iter().map(String::from));if is_image(media){args.extend(fidelity_video_args(encoder,s));}else{args.extend(encoder_args(encoder,s,false));}args.extend(vec!["-progress","pipe:1","-y",clip.to_string_lossy().as_ref()].into_iter().map(String::from));
   run_ffmpeg(app,job,started,timer,args,&format!("Подготавливаю медиа {}/{}",index+1,total),base,span,duration,encoder,attempt,cancel).await?;Ok((clip,duration))
 }
 
+async fn build_lossless_processed_audio_cycle(app:&AppHandle,job:&QueueJob,started:i64,timer:&Instant,work:&Path,encoder:&str,attempt:u32,cancel:&AtomicBool)->Result<(PathBuf,Vec<f64>,f64),String>{
+  if job.project.audio.is_empty(){return Err("Нет песен".into())}
+  let mut durations=Vec::new();
+  let mut args:Vec<String>=vec!["-hide_banner","-loglevel","error"].into_iter().map(String::from).collect();
+  for a in &job.project.audio{
+    durations.push(probe_duration(app,a).await.unwrap_or(180.0).max(0.2));
+    args.extend(vec!["-i",a.as_str()].into_iter().map(String::from));
+  }
+  let min_track=durations.iter().copied().fold(f64::INFINITY,f64::min);
+  let cf=job.settings.crossfade_sec.clamp(0.0,10.0).min((min_track*0.40).max(0.0));
+  let mut graph=String::new();
+  for i in 0..job.project.audio.len(){
+    if i>0{graph.push(';')}
+    graph.push_str(&format!("[{i}:a]aresample=48000:async=1:first_pts=0,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,asetpts=N/SR/TB[a{i}]"));
+  }
+  let last=if job.project.audio.len()==1{"a0".to_string()}else if cf>0.01{
+    let mut cur="a0".to_string();
+    for i in 1..job.project.audio.len(){
+      let out=format!("xf{i}");
+      graph.push_str(&format!(";[{cur}][a{i}]acrossfade=d={cf}:c1=tri:c2=tri[{out}]"));
+      cur=out;
+    }
+    cur
+  }else{
+    let inputs=(0..job.project.audio.len()).map(|i|format!("[a{i}]")).collect::<String>();
+    graph.push_str(&format!(";{inputs}concat=n={}:v=0:a=1[joined]",job.project.audio.len()));
+    "joined".to_string()
+  };
+  graph.push_str(&format!(";[{last}]aresample=48000:async=1:first_pts=0,alimiter=limit=0.98[outa]"));
+  let cycle=work.join("audio-crossfade-gapless.m4a");
+  let expected=(durations.iter().sum::<f64>()-cf*((durations.len().saturating_sub(1)) as f64)).max(0.2);
+  let audio_encoder=choose_audio_encoder(app).await;
+  args.extend(vec!["-filter_complex",&graph,"-map","[outa]"].into_iter().map(String::from));
+  args.extend(audio_encoder_args(&audio_encoder));
+  args.extend(vec!["-movflags","+faststart","-progress","pipe:1","-y",cycle.to_string_lossy().as_ref()].into_iter().map(String::from));
+  run_ffmpeg(app,job,started,timer,args,"Кроссфейд между треками • HQ 320k",35.0,18.0,expected,encoder,attempt,cancel).await?;
+  if !probe_audio_decodes(app,&cycle).await{return Err("Crossfade Audio: итоговая дорожка не декодируется".into())}
+  let cycle_duration=probe_duration(app,cycle.to_string_lossy().as_ref()).await.unwrap_or(expected);
+  Ok((cycle,durations,cycle_duration))
+}
+
+async fn materialize_continuous_audio(app:&AppHandle,job:&QueueJob,started:i64,timer:&Instant,work:&Path,cycle:&Path,final_duration:f64,encoder:&str,attempt:u32,cancel:&AtomicBool)->Result<PathBuf,String>{
+  let out=work.join("audio-continuous.m4a");
+  let args=vec!["-hide_banner","-loglevel","error","-stream_loop","-1","-fflags","+genpts","-i",cycle.to_string_lossy().as_ref(),"-t",&final_duration.to_string(),"-map","0:a:0","-c:a","copy","-avoid_negative_ts","make_zero","-movflags","+faststart","-progress","pipe:1","-y",out.to_string_lossy().as_ref()].into_iter().map(String::from).collect();
+  run_ffmpeg(app,job,started,timer,args,"Фиксирую непрерывную аудиодорожку",53.0,4.0,final_duration,encoder,attempt,cancel).await?;
+  if !probe_audio_decodes(app,&out).await{return Err("Crossfade Audio: непрерывная дорожка не декодируется".into())}
+  Ok(out)
+}
+
 async fn build_source_master(app:&AppHandle,job:&QueueJob,started:i64,timer:&Instant,work:&Path,encoder:&str,attempt:u32,cancel:&AtomicBool)->Result<(PathBuf,f64),String>{
+  if smart_repeat_project(job)&&job.project.media.len()==1&&is_image(&job.project.media[0]){let d=hybrid_master_seconds_for_job(app,job).await;emit_timing(app,&job.project.id,"master-loop",0.0);return Ok((PathBuf::from(&job.project.media[0]),d))}
   if job.project.media.is_empty(){return Err("Нет изображения или видео".into())}
   let mark=Instant::now();let total=job.project.media.len();let mut clips=Vec::new();let mut total_duration=0.0;
   for (i,m) in job.project.media.iter().enumerate(){let (p,d)=build_media_clip(app,job,m,i,total,started,timer,work,encoder,attempt,cancel).await?;clips.push(p);total_duration+=d;}
@@ -230,13 +449,17 @@ async fn build_source_master(app:&AppHandle,job:&QueueJob,started:i64,timer:&Ins
 fn apply_effects_filter(mut graph:String,mut base:String,effects:&[EffectPreset],s:&RenderSettings,input_start:usize)->(String,String){
   for (n,e) in effects.iter().filter(|e|e.enabled&&!e.source.trim().is_empty()).enumerate(){
     let idx=input_start+n;let fx=format!("fx{n}");let next=format!("b{}",n+1);
+    let target=((s.width as f64)*e.scale.clamp(0.05,1.5)).round().max(2.0) as u32;let target=if target%2==0{target}else{target+1};
+    let scale=if e.fullscreen{format!("scale={}:{}:force_original_aspect_ratio=decrease,pad={}:{}:(ow-iw)/2:(oh-ih)/2:color=black@0",s.width,s.height,s.width,s.height)}else{format!("scale={}:-2:flags=lanczos",target)};
+    let x=if e.fullscreen{"0".into()}else{format!("max(0,min(W-w,W*{}-w/2))",e.x.clamp(0.0,1.0))};
+    let y=if e.fullscreen{"0".into()}else{format!("max(0,min(H-h,H*{}-h/2))",e.y.clamp(0.0,1.0))};
     if e.mode=="screen"||e.mode=="screen-cache"{
-      let prep=if e.mode=="screen-cache"{format!("[{idx}:v]fps={},scale={}:{},setsar=1",s.fps,s.width,s.height)}else{format!("[{idx}:v]fps={},scale={}:{},setsar=1,eq=saturation={}",s.fps,s.width,s.height,e.saturation)};
-      graph.push_str(&format!(";{prep}[{fx}];[{base}][{fx}]blend=all_mode=screen:all_opacity=1[{next}]"));
+      let px=if e.fullscreen{"0".into()}else{format!("max(0,min(ow-iw,ow*{}-iw/2))",e.x.clamp(0.0,1.0))};
+      let py=if e.fullscreen{"0".into()}else{format!("max(0,min(oh-ih,oh*{}-ih/2))",e.y.clamp(0.0,1.0))};
+      graph.push_str(&format!(";[{idx}:v]fps={},format=rgba,{scale},pad={}:{}:'{px}':'{py}':color=black@0,setsar=1[{fx}];[{base}][{fx}]blend=all_mode=screen:all_opacity=1[{next}]",s.fps,s.width,s.height));
     }else{
-      let prep=if e.mode=="prealpha"{format!("[{idx}:v]fps={},format=argb",s.fps)}else if e.mode=="luma"{format!("[{idx}:v]fps={},format=rgba,eq=saturation={},lumakey=threshold={}:tolerance={}:softness=0.08",s.fps,e.saturation,e.luma_threshold,e.luma_tolerance)}else{format!("[{idx}:v]fps={},format=rgba,chromakey={}:{}:{}",s.fps,color_ffmpeg(&e.key_color),e.similarity.max(0.00001),e.blend)};
-      let scale=if e.fullscreen{format!("scale={}:{}",s.width,s.height)}else{format!("scale=iw*{}:ih*{}",e.scale.max(0.01),e.scale.max(0.01))};let x=if e.fullscreen{"0".into()}else{format!("(W-w)*{}",e.x.clamp(0.0,1.0))};let y=if e.fullscreen{"0".into()}else{format!("(H-h)*{}",e.y.clamp(0.0,1.0))};
-      graph.push_str(&format!(";{prep},{scale}[{fx}];[{base}][{fx}]overlay=x='{x}':y='{y}':shortest=1:eof_action=repeat[{next}]"));
+      let prep=if e.mode=="prealpha"{format!("[{idx}:v]fps={},format=argb",s.fps)}else if e.mode=="luma"{format!("[{idx}:v]fps={},format=rgba,lumakey=threshold={}:tolerance={}:softness=0.08",s.fps,e.luma_threshold,e.luma_tolerance)}else{format!("[{idx}:v]fps={},format=rgba,colorkey={}:{}:{}",s.fps,color_ffmpeg(&e.key_color),e.similarity.clamp(0.001,0.60),e.blend.clamp(0.001,0.35))};
+      graph.push_str(&format!(";{prep},{scale}[{fx}];[{base}][{fx}]overlay=x='{x}':y='{y}':shortest=1:eof_action=repeat:format=auto[{next}]"));
     }
     base=next;
   }
@@ -244,9 +467,21 @@ fn apply_effects_filter(mut graph:String,mut base:String,effects:&[EffectPreset]
 }
 
 async fn prepare_overlays(app:&AppHandle,job:&QueueJob,started:i64,timer:&Instant,encoder:&str,attempt:u32)->Result<(Vec<EffectPreset>,Vec<SubscribePreset>),String>{
+  if smart_repeat_project(job){
+    emit_progress(app,job,started,timer,26.0,"Smart Fidelity: Effects/Subscribe из оригиналов",encoder,attempt,None);
+    emit_timing(app,&job.project.id,"effects-cache",0.0);
+    emit_progress(app,job,started,timer,31.0,"Effects и Subscribe готовы без тяжёлого внутреннего cache",encoder,attempt,None);
+    return Ok((job.effects.clone(),job.subscribes.clone()))
+  }
   emit_progress(app,job,started,timer,26.0,"Проверяю кэш Effects и Subscribe",encoder,attempt,None);let mark=Instant::now();let mut fx=Vec::new();let mut subs=Vec::new();
-  for e in &job.effects{fx.push(cache::prepare(app,e,job.settings.fps).await?)}
-  for s in &job.subscribes{let mut p=s.clone();p.effect=cache::prepare(app,&s.effect,job.settings.fps).await?;subs.push(p)}
+  for e in &job.effects{
+    if !e.enabled{continue}
+    match cache::prepare(app,e,job.settings.fps).await{Ok(p)=>fx.push(p),Err(err)=>emit_warning(app,&job.project.id,&format!("Effect '{}' пропущен: {}",e.name,err))}
+  }
+  for s in &job.subscribes{
+    if !s.effect.enabled{continue}
+    match cache::prepare(app,&s.effect,job.settings.fps).await{Ok(effect)=>{let mut p=s.clone();p.effect=effect;subs.push(p)},Err(err)=>emit_warning(app,&job.project.id,&format!("Subscribe '{}' пропущен: {}",s.effect.name,err))}
+  }
   emit_timing(app,&job.project.id,"effects-cache",mark.elapsed().as_secs_f64());emit_progress(app,job,started,timer,31.0,"Кэш Effects и Subscribe готов",encoder,attempt,None);Ok((fx,subs))
 }
 
@@ -256,12 +491,21 @@ fn active_effects_at(effects:&[EffectPreset],t:f64,final_duration:f64)->Vec<Effe
 fn state_key(effects:&[EffectPreset])->String{let mut ids=effects.iter().map(|e|e.id.clone()).collect::<Vec<_>>();ids.sort();ids.join("|")}
 
 async fn build_variant(app:&AppHandle,job:&QueueJob,source_master:&Path,master_duration:f64,effects:&[EffectPreset],work:&Path,encoder:&str,attempt:u32,cancel:&AtomicBool,variant_no:usize,started:i64,timer:&Instant)->Result<PathBuf,String>{
-  if effects.is_empty(){return Ok(source_master.to_path_buf())}
-  let out=work.join(format!("variant-{variant_no:03}.mp4"));let mut args:Vec<String>=vec!["-hide_banner","-loglevel","error","-stream_loop","-1","-i",source_master.to_string_lossy().as_ref()].into_iter().map(String::from).collect();
+  let smart=smart_repeat_project(job)&&job.project.media.len()==1&&is_image(&job.project.media[0]);
+  if effects.is_empty()&&!smart{return Ok(source_master.to_path_buf())}
+  let out=work.join(format!("variant-{variant_no:03}.mp4"));let mut args:Vec<String>=vec!["-hide_banner","-loglevel","error"].into_iter().map(String::from).collect();let input_start;
+  let base_graph:String;
+  if smart{
+    args.extend(vec!["-loop","1","-framerate",&job.settings.fps.to_string(),"-i",job.project.media[0].as_str()].into_iter().map(String::from));input_start=1;base_graph=format!("{}[b0]",base_filter(&job.settings,"0:v"));
+  }else{
+    args.extend(vec!["-stream_loop","-1","-i",source_master.to_string_lossy().as_ref()].into_iter().map(String::from));input_start=1;base_graph="[0:v]setpts=PTS-STARTPTS[b0]".into();
+  }
   for e in effects{args.extend(vec!["-stream_loop","-1","-i",e.source.as_str()].into_iter().map(String::from));}
-  let (graph,last)=apply_effects_filter("[0:v]setpts=PTS-STARTPTS[b0]".into(),"b0".into(),effects,&job.settings,1);let graph=format!("{graph};[{last}]format=yuv420p[outv]");
-  args.extend(vec!["-filter_complex",&graph,"-map","[outv]","-t",&master_duration.to_string(),"-an"].into_iter().map(String::from));args.extend(encoder_args(encoder,&job.settings,false));args.extend(vec!["-progress","pipe:1","-y",out.to_string_lossy().as_ref()].into_iter().map(String::from));
-  run_ffmpeg(app,job,started,timer,args,"Подготавливаю вариант Effects",32.0,3.0,master_duration,encoder,attempt,cancel).await?;Ok(out)
+  let (graph,last)=apply_effects_filter(base_graph,"b0".into(),effects,&job.settings,input_start);let graph=format!("{graph};[{last}]format=yuv420p[outv]");
+  args.extend(vec!["-filter_complex",&graph,"-map","[outv]","-t",&master_duration.to_string(),"-an"].into_iter().map(String::from));
+  if smart{args.extend(hybrid_fidelity_args(&job.settings,encoder,master_duration));}else{args.extend(encoder_args(encoder,&job.settings,false));}
+  args.extend(vec!["-progress","pipe:1","-y",out.to_string_lossy().as_ref()].into_iter().map(String::from));
+  run_ffmpeg(app,job,started,timer,args,"Hybrid Fidelity: собираю короткий master",32.0,3.0,master_duration,encoder,attempt,cancel).await?;Ok(out)
 }
 
 async fn build_audio_cycle(app:&AppHandle,job:&QueueJob,started:i64,timer:&Instant,work:&Path,encoder:&str,attempt:u32,cancel:&AtomicBool)->Result<(PathBuf,Vec<f64>,f64),String>{
@@ -269,13 +513,21 @@ async fn build_audio_cycle(app:&AppHandle,job:&QueueJob,started:i64,timer:&Insta
   if job.project.audio.is_empty(){return Err("Нет песен".into())}
   let mut args:Vec<String>=vec!["-hide_banner","-loglevel","error"].into_iter().map(String::from).collect();for a in &job.project.audio{args.extend(vec!["-i",a.as_str()].into_iter().map(String::from));}
   let ambient_index=job.project.audio.len();if let Some(a)=job.ambient.as_ref().filter(|p|!p.trim().is_empty()){args.extend(vec!["-stream_loop","-1","-i",a.as_str()].into_iter().map(String::from));}
-  let mut labels=Vec::new();let mut graph=String::new();for i in 0..job.project.audio.len(){if i>0{graph.push(';')}graph.push_str(&format!("[{i}:a]aresample=48000,asetpts=N/SR/TB[a{i}]"));labels.push(format!("a{i}"));}
-  let cf=job.settings.crossfade_sec.clamp(0.0,10.0);let mut last=labels[0].clone();for i in 1..labels.len(){let out=format!("x{i}");graph.push_str(&format!(";[{last}][{}]acrossfade=d={}:c1=tri:c2=tri[{out}]",labels[i],cf));last=out;}
+  let mut labels=Vec::new();let mut graph=String::new();for i in 0..job.project.audio.len(){if i>0{graph.push(';')}graph.push_str(&format!("[{i}:a]aresample=48000,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,asetpts=N/SR/TB[a{i}]"));labels.push(format!("a{i}"));}
+  let min_duration=durations.iter().copied().fold(f64::INFINITY,f64::min);let cf=job.settings.crossfade_sec.clamp(0.0,10.0).min((min_duration/3.0).max(0.05));let mut last=labels[0].clone();for i in 1..labels.len(){let out=format!("x{i}");graph.push_str(&format!(";[{last}][{}]acrossfade=d={}:c1=tri:c2=tri[{out}]",labels[i],cf));last=out;}
   let music="music";if job.settings.normalize_lufs{graph.push_str(&format!(";[{last}]loudnorm=I=-14:TP=-1.5:LRA=11[{music}]"));}else{graph.push_str(&format!(";[{last}]anull[{music}]"));}
   if job.ambient.as_ref().map(|x|!x.trim().is_empty()).unwrap_or(false){graph.push_str(&format!(";[{ambient_index}:a]aresample=48000,volume=0.18[amb];[{music}][amb]amix=inputs=2:duration=first:weights='1 1':normalize=0,alimiter=limit=0.97[outa]"));}else{graph.push_str(&format!(";[{music}]alimiter=limit=0.97[outa]"));}
   let audio_encoder=choose_audio_encoder(app).await;let cycle=work.join("audio-cycle.m4a");args.extend(vec!["-filter_complex",&graph,"-map","[outa]"].into_iter().map(String::from));args.extend(audio_encoder_args(&audio_encoder));args.extend(vec!["-progress","pipe:1","-y",cycle.to_string_lossy().as_ref()].into_iter().map(String::from));
   let expected=(durations.iter().sum::<f64>()-cf*((durations.len().saturating_sub(1)) as f64)).max(1.0);run_ffmpeg(app,job,started,timer,args,"Подготавливаю музыку",35.0,20.0,expected,encoder,attempt,cancel).await?;
   let cycle_duration=probe_duration(app,cycle.to_string_lossy().as_ref()).await.unwrap_or(expected);emit_timing(app,&job.project.id,"audio",mark.elapsed().as_secs_f64());Ok((cycle,durations,cycle_duration))
+}
+
+async fn smart_repeat_visual_seconds(app:&AppHandle,base:f64,effects:&[EffectPreset])->f64{
+  let mut seconds=base.max(1.0);
+  for e in effects.iter().filter(|e|e.enabled&&!e.source.trim().is_empty()){
+    if let Ok(d)=probe_duration(app,&e.source).await{seconds=seconds.max(d.clamp(1.0,60.0));}
+  }
+  seconds
 }
 
 fn smart_final_duration(target:f64,durations:&[f64],crossfade:f64,mode:&str)->f64{if mode!="whole-track"||durations.is_empty(){return target}let mut t=0.0;let mut i=0usize;while t<target{let add=(durations[i%durations.len()]-if t>0.0{crossfade}else{0.0}).max(0.1);t+=add;i+=1;}if t-target<=240.0{t}else{target}}
@@ -319,7 +571,7 @@ async fn render_sub_segment(app:&AppHandle,job:&QueueJob,variant:&Path,variant_d
   let phase=(start%variant_duration.max(0.1)).max(0.0);let mut args:Vec<String>=vec!["-hide_banner","-loglevel","error","-stream_loop","-1","-ss",&phase.to_string(),"-i",variant.to_string_lossy().as_ref()].into_iter().map(String::from).collect();
   for ev in active{let offset=(start-ev.event_start).max(0.0);args.extend(vec!["-ss",&offset.to_string(),"-i",ev.sub.effect.source.as_str()].into_iter().map(String::from));}
   let sub_effects=active.iter().map(|e|e.sub.effect.clone()).collect::<Vec<_>>();let (graph,last)=apply_effects_filter("[0:v]setpts=PTS-STARTPTS[b0]".into(),"b0".into(),&sub_effects,&job.settings,1);let graph=format!("{graph};[{last}]format=yuv420p[outv]");
-  args.extend(vec!["-filter_complex",&graph,"-map","[outv]","-t",&len.to_string(),"-an"].into_iter().map(String::from));args.extend(encoder_args(encoder,&job.settings,false));args.extend(vec!["-progress","pipe:1","-y",out.to_string_lossy().as_ref()].into_iter().map(String::from));run_ffmpeg(app,job,started,timer,args,"Добавляю Subscribe",base,span,len,encoder,attempt,cancel).await
+  args.extend(vec!["-filter_complex",&graph,"-map","[outv]","-t",&len.to_string(),"-an"].into_iter().map(String::from));if smart_repeat_project(job){args.extend(hybrid_fidelity_args(&job.settings,encoder,len));}else{args.extend(encoder_args(encoder,&job.settings,false));}args.extend(vec!["-progress","pipe:1","-y",out.to_string_lossy().as_ref()].into_iter().map(String::from));run_ffmpeg(app,job,started,timer,args,"Добавляю Subscribe",base,span,len,encoder,attempt,cancel).await
 }
 
 async fn assemble_visual(app:&AppHandle,job:&QueueJob,source_master:&Path,master_duration:f64,effects:&[EffectPreset],subs:&[SubscribePreset],final_duration:f64,work:&Path,encoder:&str,attempt:u32,cancel:&AtomicBool,started:i64,timer:&Instant)->Result<VisualSource,String>{
@@ -329,13 +581,22 @@ async fn assemble_visual(app:&AppHandle,job:&QueueJob,source_master:&Path,master
   if events.is_empty()&&!has_timed{emit_timing(app,&job.project.id,"visual-plan",mark.elapsed().as_secs_f64());return Ok(VisualSource::Loop(variants.get(&key).unwrap().0.clone()))}
   let mut boundaries=vec![0.0,final_duration];for e in effects.iter().filter(|e|e.enabled){if e.start_sec>0.0&&e.start_sec<final_duration{boundaries.push(e.start_sec)}if let Some(x)=e.end_sec{if x>0.0&&x<final_duration{boundaries.push(x)}}}for e in &events{boundaries.push(e.start);boundaries.push(e.end)}
   boundaries.sort_by(|a,b|a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));boundaries.dedup_by(|a,b|(*a-*b).abs()<0.001);
-  let intervals=boundaries.windows(2).filter(|w|w[1]-w[0]>0.005).map(|w|(w[0],w[1])).collect::<Vec<_>>();let mut segments=Vec::new();
+  let intervals=boundaries.windows(2).filter(|w|w[1]-w[0]>0.005).map(|w|(w[0],w[1])).collect::<Vec<_>>();let mut segments=Vec::new();let mut sub_cache:HashMap<String,PathBuf>=HashMap::new();
   for (i,(a,b)) in intervals.iter().copied().enumerate(){if cancel.load(Ordering::SeqCst){return Err(CANCELLED.into())}let mid=(a+b)/2.0;let active_fx=active_effects_at(effects,mid,final_duration);let k=state_key(&active_fx);
     if !variants.contains_key(&k){let no=variants.len();let v=build_variant(app,job,source_master,master_duration,&active_fx,work,encoder,attempt,cancel,no,started,timer).await?;variants.insert(k.clone(),(v,master_duration));}
     let (variant,vd)=variants.get(&k).cloned().unwrap();let active_sub=events.iter().filter(|e|e.start<=mid&&e.end>mid).cloned().collect::<Vec<_>>();let seg=work.join(format!("visual-seg-{i:04}.mp4"));let base=64.0+(i as f64/intervals.len().max(1) as f64)*22.0;let span=22.0/intervals.len().max(1) as f64;
-    if active_sub.is_empty(){copy_segment(app,job,&variant,vd,a,b-a,&seg,encoder,attempt,cancel,base,span,started,timer).await?;}else{render_sub_segment(app,job,&variant,vd,a,b-a,&active_sub,&seg,encoder,attempt,cancel,base,span,started,timer).await?;}segments.push(seg);
+    if active_sub.is_empty(){
+      copy_segment(app,job,&variant,vd,a,b-a,&seg,encoder,attempt,cancel,base,span,started,timer).await?;segments.push(seg);
+    }else{
+      let phase=(a%vd.max(0.1)).max(0.0);let mut ids=active_sub.iter().map(|e|e.sub.effect.id.clone()).collect::<Vec<_>>();ids.sort();
+      let ck=format!("{}|{:.3}|{:.3}|{}",k,phase,b-a,ids.join(","));
+      if let Some(existing)=sub_cache.get(&ck){segments.push(existing.clone());}
+      else{render_sub_segment(app,job,&variant,vd,a,b-a,&active_sub,&seg,encoder,attempt,cancel,base,span,started,timer).await?;sub_cache.insert(ck,seg.clone());segments.push(seg);}
+    }
   }
-  let long=work.join("video-long.mp4");let list=work.join("visual-concat.txt");let text=segments.iter().map(|p|format!("file '{}'",p.to_string_lossy().replace('\\',"/"))).collect::<Vec<_>>().join("\n");std::fs::write(&list,text).map_err(|e|e.to_string())?;let args=vec!["-hide_banner","-loglevel","error","-f","concat","-safe","0","-i",list.to_string_lossy().as_ref(),"-an","-c:v","copy","-progress","pipe:1","-y",long.to_string_lossy().as_ref()].into_iter().map(String::from).collect();run_ffmpeg(app,job,started,timer,args,"Склеиваю визуальную дорожку",86.0,4.0,final_duration,encoder,attempt,cancel).await?;emit_timing(app,&job.project.id,"visual-plan",mark.elapsed().as_secs_f64());Ok(VisualSource::Long(long))
+  let list=work.join("visual-concat.txt");let text=segments.iter().map(|p|format!("file '{}'",p.to_string_lossy().replace('\\',"/"))).collect::<Vec<_>>().join("\n");std::fs::write(&list,text).map_err(|e|e.to_string())?;
+  if smart_repeat_project(job){emit_timing(app,&job.project.id,"visual-plan",mark.elapsed().as_secs_f64());return Ok(VisualSource::Concat(list))}
+  let long=work.join("video-long.mp4");let args=vec!["-hide_banner","-loglevel","error","-f","concat","-safe","0","-i",list.to_string_lossy().as_ref(),"-an","-c:v","copy","-progress","pipe:1","-y",long.to_string_lossy().as_ref()].into_iter().map(String::from).collect();run_ffmpeg(app,job,started,timer,args,"Склеиваю визуальную дорожку",86.0,4.0,final_duration,encoder,attempt,cancel).await?;emit_timing(app,&job.project.id,"visual-plan",mark.elapsed().as_secs_f64());Ok(VisualSource::Long(long))
 }
 
 fn write_side_files(job:&QueueJob,output_dir:&Path,durations:&[f64],final_duration:f64,result_stem:&str)->Result<(),String>{
@@ -344,22 +605,94 @@ fn write_side_files(job:&QueueJob,output_dir:&Path,durations:&[f64],final_durati
   std::fs::write(time_dir.join(format!("{} — timecodes.txt",name)),tc).map_err(|e|e.to_string())?;let tracklist=job.project.audio.iter().enumerate().map(|(i,p)|format!("{}. {}",i+1,Path::new(p).file_name().and_then(|x|x.to_str()).unwrap_or(p))).collect::<Vec<_>>().join("\n");std::fs::write(output_dir.join(format!("{} — tracklist.txt",name)),tracklist).map_err(|e|e.to_string())?;std::fs::write(log_dir.join(format!("{} — project.json",name)),serde_json::to_vec_pretty(job).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;Ok(())
 }
 
-async fn verify_result(app:&AppHandle,out:&Path,expected:f64,s:&RenderSettings)->Result<(),String>{let d=probe_duration(app,out.to_string_lossy().as_ref()).await?;if (d-expected).abs()>4.0{return Err(format!("Финальный файл имеет неверную длительность: {:0.1} сек вместо {:0.1}",d,expected))}if !probe_has_audio(app,out).await{return Err("В финальном файле отсутствует аудиодорожка".into())}let args=vec!["-v","error","-select_streams","v:0","-show_entries","stream=width,height","-of","csv=p=0:s=x",out.to_string_lossy().as_ref()].into_iter().map(String::from).collect();let (stdout,_)=output(app,"ffprobe",args).await?;let got=String::from_utf8_lossy(&stdout);if !got.trim().starts_with(&format!("{}x{}",s.width,s.height)){return Err(format!("Неверное разрешение результата: {}",got.trim()))}Ok(())}
+async fn verify_result(app:&AppHandle,out:&Path,expected:f64,s:&RenderSettings)->Result<(),String>{
+  let d=probe_duration(app,out.to_string_lossy().as_ref()).await?;
+  if (d-expected).abs()>4.0{return Err(format!("Финальный файл имеет неверную длительность: {:0.1} сек вместо {:0.1}",d,expected))}
+  if !probe_has_audio(app,out).await{return Err("В финальном файле отсутствует аудиодорожка".into())}
+  if !probe_audio_decodes(app,out).await{return Err("Аудиодорожка есть, но не воспроизводится/не декодируется".into())}
+  let args=vec!["-v","error","-select_streams","v:0","-show_entries","stream=width,height,avg_frame_rate","-of","json",out.to_string_lossy().as_ref()].into_iter().map(String::from).collect();
+  let (stdout,_)=output(app,"ffprobe",args).await?;
+  let v:serde_json::Value=serde_json::from_slice(&stdout).map_err(|e|e.to_string())?;
+  let stream=v.get("streams").and_then(|x|x.as_array()).and_then(|x|x.first()).ok_or("FFprobe не вернул видеопоток")?;
+  let w=stream.get("width").and_then(|x|x.as_u64()).unwrap_or(0) as u32;
+  let h=stream.get("height").and_then(|x|x.as_u64()).unwrap_or(0) as u32;
+  if w!=s.width||h!=s.height{return Err(format!("Неверное разрешение результата: {}x{} вместо {}x{}",w,h,s.width,s.height))}
+  let rate=stream.get("avg_frame_rate").and_then(|x|x.as_str()).unwrap_or("0/1");
+  let mut it=rate.split('/');let n=it.next().and_then(|x|x.parse::<f64>().ok()).unwrap_or(0.0);let den=it.next().and_then(|x|x.parse::<f64>().ok()).unwrap_or(1.0).max(0.0001);let fps=n/den;
+  if s.fps==60&&(fps<59.0||fps>61.0){return Err(format!("Финальный файл не 60 FPS: {:.3}",fps))}
+  Ok(())
+}
 
 pub async fn render_job(app:&AppHandle,job:&QueueJob,cancel:Arc<AtomicBool>)->Result<(),String>{
+  let mut resolved_job=job.clone();refresh_project_paths(&mut resolved_job);
+  if smart_repeat_project(&resolved_job){
+    if resolved_job.settings.width!=1920||resolved_job.settings.height!=1080{emit_warning(app,&resolved_job.project.id,"Fidelity Lock: one-image проект выводится строго 1920x1080. Это убирает бессмысленное 4K-сжатие при лимите около 1 ГБ.");}
+    resolved_job.settings.width=1920;
+    resolved_job.settings.height=1080;
+    resolved_job.settings.fps=60;
+    resolved_job.settings.codec="h265".into();
+    resolved_job.settings.normalize_lufs=false;
+    resolved_job.ambient=None;
+  }
+  let job=&resolved_job;
   for p in &job.project.media{if !Path::new(p).is_file(){return Err(format!("Не найден файл изображения/видео: {}",Path::new(p).file_name().and_then(|x|x.to_str()).unwrap_or(p)));}}
   for p in &job.project.audio{if !Path::new(p).is_file(){return Err(format!("Не найден аудиофайл: {}",Path::new(p).file_name().and_then(|x|x.to_str()).unwrap_or(p)));}}
-  if let Some(p)=job.ambient.as_ref().filter(|x|!x.trim().is_empty()){if !Path::new(p).is_file(){return Err(format!("Не найден ambient-файл: {}",Path::new(p).file_name().and_then(|x|x.to_str()).unwrap_or(p)));}}
-  let started=chrono::Utc::now().timestamp_millis();let timer=Instant::now();let mut last_error=String::new();let out_dir=PathBuf::from(&job.settings.output_dir);std::fs::create_dir_all(&out_dir).map_err(|e|e.to_string())?;let out=unique_output(&out_dir,&job.project.name);
+  if job.project.media.is_empty(){return Err("В проекте нет изображения или видео".into())}
+  if job.project.audio.is_empty(){return Err("В проекте нет музыки".into())}
+  let started=chrono::Utc::now().timestamp_millis();let timer=Instant::now();let mut last_error=String::new();
+  let requested_out_dir=PathBuf::from(&job.settings.output_dir);let out_dir=resolve_output_dir(app,&requested_out_dir)?;if out_dir!=requested_out_dir{emit_warning(app,&job.project.id,&format!("Выбранная папка недоступна. Результат будет сохранён в {}",out_dir.display()));}
+  let out=if smart_repeat_project(job){unique_output_ext(&out_dir,&job.project.name,"mov")}else{unique_output(&out_dir,&job.project.name)};
   for attempt in 1..=2{
-    if cancel.load(Ordering::SeqCst){return Err(CANCELLED.into())}let _=std::fs::remove_file(&out);let encoder=choose_encoder(app,&job.settings).await;let pure_static=job.project.media.iter().all(|m|is_image(m))&&job.effects.iter().all(|e|!e.enabled)&&job.subscribes.iter().all(|e|!e.effect.enabled);let _=app.emit("engine-profile",json!({"id":job.project.id,"smartSize":pure_static,"targetVideoKbps":if pure_static{Some(static_video_kbps(&job.settings))}else{None::<u64>}}));emit_progress(app,job,started,&timer,1.0,"Анализ файлов",&encoder,attempt,None);let work=std::env::temp_dir().join(format!("endlume-{}-{}",job.project.id,attempt));let _=std::fs::remove_dir_all(&work);std::fs::create_dir_all(&work).map_err(|e|e.to_string())?;
+    if cancel.load(Ordering::SeqCst){return Err(CANCELLED.into())}
+    let smart_repeat=smart_repeat_project(job);let _=std::fs::remove_file(&out);let encoder=if smart_repeat{choose_hybrid_encoder(app,attempt).await}else if attempt==1{choose_encoder(app,&job.settings).await}else{software_encoder(&job.settings)};
+    let _=app.emit("engine-profile",json!({"id":job.project.id,"smartSize":smart_repeat,"smartRepeat":smart_repeat,"originalFidelity":smart_repeat,"targetVideoKbps":None::<u64>}));
+    emit_progress(app,job,started,&timer,1.0,"Анализ файлов",&encoder,attempt,None);let work=render_work_dir(&out_dir,&job.project.id,attempt)?;
     let result:Result<(Vec<f64>,f64),String>=async{
-      emit_progress(app,job,started,&timer,4.0,"Проверяю самый быстрый движок",&encoder,attempt,None);let (source_master,master_duration)=build_source_master(app,job,started,&timer,&work,&encoder,attempt,&cancel).await?;let (fx,subs)=prepare_overlays(app,job,started,&timer,&encoder,attempt).await?;let (cycle,durations,cycle_duration)=build_audio_cycle(app,job,started,&timer,&work,&encoder,attempt,&cancel).await?;let target=job.settings.duration_hours*3600.0;let final_duration=smart_final_duration(target,&durations,job.settings.crossfade_sec,&job.settings.duration_mode);let audio=build_long_audio(app,job,started,&timer,&work,&cycle,cycle_duration,final_duration,&encoder,attempt,&cancel).await?;
-      let visual=assemble_visual(app,job,&source_master,master_duration,&fx,&subs,final_duration,&work,&encoder,attempt,&cancel,started,&timer).await?;let mux_mark=Instant::now();let mut args:Vec<String>=vec!["-hide_banner","-loglevel","error"].into_iter().map(String::from).collect();match visual{VisualSource::Loop(p)=>args.extend(vec!["-stream_loop","-1","-i",p.to_string_lossy().as_ref()].into_iter().map(String::from)),VisualSource::Long(p)=>args.extend(vec!["-i",p.to_string_lossy().as_ref()].into_iter().map(String::from))}match audio{AudioSource::Loop(p)=>args.extend(vec!["-stream_loop","-1","-i",p.to_string_lossy().as_ref()].into_iter().map(String::from)),AudioSource::Long(p)=>args.extend(vec!["-i",p.to_string_lossy().as_ref()].into_iter().map(String::from))}args.extend(vec!["-t",&final_duration.to_string(),"-map","0:v:0","-map","1:a:0","-c:v","copy","-c:a","copy","-progress","pipe:1","-y",out.to_string_lossy().as_ref()].into_iter().map(String::from));run_ffmpeg(app,job,started,&timer,args,"Собираю итоговое видео",90.0,6.0,final_duration,&encoder,attempt,&cancel).await?;emit_timing(app,&job.project.id,"final-mux",mux_mark.elapsed().as_secs_f64());emit_progress(app,job,started,&timer,97.0,"Финальная проверка FFprobe",&encoder,attempt,None);verify_result(app,&out,final_duration,&job.settings).await?;let result_stem=out.file_stem().and_then(|x|x.to_str()).unwrap_or(&job.project.name);write_side_files(job,&out_dir,&durations,final_duration,result_stem)?;Ok((durations,final_duration))
+      emit_progress(app,job,started,&timer,4.0,"Проверяю самый быстрый движок",&encoder,attempt,None);
+      let (source_master,master_duration)=build_source_master(app,job,started,&timer,&work,&encoder,attempt,&cancel).await?;
+      let (fx,subs)=prepare_overlays(app,job,started,&timer,&encoder,attempt).await?;
+      let visual_master_duration=if smart_repeat{smart_repeat_visual_seconds(app,master_duration,&fx).await}else{master_duration};
+      let target=job.settings.duration_hours*3600.0;
+      let (audio,durations,final_duration)=if smart_repeat{
+        let processed=job.settings.crossfade_sec>0.01||job.settings.normalize_lufs||job.ambient.as_ref().map(|x|!x.trim().is_empty()).unwrap_or(false);
+        if processed{
+          let (cycle,durations,_cycle_duration)=build_lossless_processed_audio_cycle(app,job,started,&timer,&work,&encoder,attempt,&cancel).await?;
+          let final_duration=smart_final_duration(target,&durations,job.settings.crossfade_sec,&job.settings.duration_mode);
+          let _=app.emit("engine-profile",json!({"id":job.project.id,"audioOriginal":false,"audioLossless":false,"audioHighQuality320":true,"crossfadeApplied":job.settings.crossfade_sec>0.01}));
+          if job.settings.crossfade_sec>0.01{emit_warning(app,&job.project.id,"Кроссфейд применён. Переходы сведены в непрерывную HQ 320 кбит/с дорожку без пауз.");}
+          let continuous=materialize_continuous_audio(app,job,started,&timer,&work,&cycle,final_duration,&encoder,attempt,&cancel).await?;
+          (AudioSource::Long(continuous),durations,final_duration)
+        }else{
+          match build_original_audio_cycle(app,job,started,&timer,&work,&encoder,attempt,&cancel).await{
+            Ok((cycle,durations,_cycle_duration))=>{
+              let final_duration=smart_final_duration(target,&durations,0.0,&job.settings.duration_mode);
+              let _=app.emit("engine-profile",json!({"id":job.project.id,"audioOriginal":true,"audioLossless":false,"crossfadeApplied":false}));
+              (AudioSource::Loop(cycle),durations,final_duration)
+            },
+            Err(reason)=>{
+              return Err(format!("Strict Fidelity: исходную музыку нельзя сохранить bitstream-copy ({reason}). Для режима <=1 ГБ без потери музыки используй MP3 с одинаковыми sample rate/channel layout."));
+            }
+          }
+        }
+      }else{
+        let (cycle,durations,cycle_duration)=build_audio_cycle(app,job,started,&timer,&work,&encoder,attempt,&cancel).await?;
+        let final_duration=smart_final_duration(target,&durations,job.settings.crossfade_sec,&job.settings.duration_mode);
+        let audio=build_long_audio(app,job,started,&timer,&work,&cycle,cycle_duration,final_duration,&encoder,attempt,&cancel).await?;
+        (audio,durations,final_duration)
+      };
+      let visual=assemble_visual(app,job,&source_master,visual_master_duration,&fx,&subs,final_duration,&work,&encoder,attempt,&cancel,started,&timer).await?;
+      let mux_mark=Instant::now();let mut args:Vec<String>=vec!["-hide_banner","-loglevel","error"].into_iter().map(String::from).collect();
+      match visual{VisualSource::Loop(p)=>args.extend(vec!["-stream_loop","-1","-i",p.to_string_lossy().as_ref()].into_iter().map(String::from)),VisualSource::Long(p)=>args.extend(vec!["-i",p.to_string_lossy().as_ref()].into_iter().map(String::from)),VisualSource::Concat(p)=>args.extend(vec!["-f","concat","-safe","0","-i",p.to_string_lossy().as_ref()].into_iter().map(String::from))}
+      match audio{AudioSource::Loop(p)=>args.extend(vec!["-stream_loop","-1","-fflags","+genpts","-i",p.to_string_lossy().as_ref()].into_iter().map(String::from)),AudioSource::Long(p)=>args.extend(vec!["-i",p.to_string_lossy().as_ref()].into_iter().map(String::from))}
+      args.extend(vec!["-t",&final_duration.to_string(),"-map","0:v:0","-map","1:a:0","-c:v","copy","-c:a","copy","-movflags","+faststart","-progress","pipe:1","-y",out.to_string_lossy().as_ref()].into_iter().map(String::from));
+      run_ffmpeg(app,job,started,&timer,args,"Собираю итоговое видео",90.0,6.0,final_duration,&encoder,attempt,&cancel).await?;
+      emit_timing(app,&job.project.id,"final-mux",mux_mark.elapsed().as_secs_f64());emit_progress(app,job,started,&timer,97.0,"Финальная проверка FFprobe",&encoder,attempt,None);verify_result(app,&out,final_duration,&job.settings).await?;
+      let result_stem=out.file_stem().and_then(|x|x.to_str()).unwrap_or(&job.project.name);if let Err(err)=write_side_files(job,&out_dir,&durations,final_duration,result_stem){emit_warning(app,&job.project.id,&format!("Видео готово, но служебные файлы не записаны: {err}"));}
+      Ok((durations,final_duration))
     }.await;
     match result{
       Ok((_durations,_fd))=>{let bytes=std::fs::metadata(&out).ok().map(|m|m.len());let bitrate=probe_video_bitrate(app,&out).await;let _=app.emit("render-done",Progress{id:job.project.id.clone(),status:"done".into(),progress:100.0,stage:"Готово".into(),started_at:Some(started),elapsed_sec:timer.elapsed().as_secs_f64(),eta_sec:Some(0.0),result_path:Some(out.to_string_lossy().into_owned()),result_bytes:bytes,actual_video_bitrate:bitrate,cpu_pct:None,ram_bytes:None,ram_total_bytes:None,ram_available_bytes:None,gpu_pct:None,encoder:Some(encoder),attempt:Some(attempt)});let _=std::fs::remove_dir_all(&work);return Ok(())},
-      Err(e)=>{last_error=e;let _=std::fs::remove_dir_all(&work);let _=std::fs::remove_file(&out);if last_error==CANCELLED{return Err(last_error)}if attempt<2{emit_progress(app,job,started,&timer,2.0,"Проверка не пройдена — автоматический повтор",&encoder,attempt+1,None);}}
+      Err(e)=>{last_error=e;emit_warning(app,&job.project.id,&format!("Попытка {attempt} не прошла: {last_error}"));let _=std::fs::remove_dir_all(&work);let _=std::fs::remove_file(&out);if last_error==CANCELLED{return Err(last_error)}if attempt<2{emit_progress(app,job,started,&timer,2.0,"Hardware не прошёл — повторяю через software encoder",&encoder,attempt+1,None);}}
     }
   }
   Err(last_error)

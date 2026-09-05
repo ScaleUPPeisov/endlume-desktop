@@ -3,7 +3,138 @@ import React from 'react';
 type Release={version:string;date:string;current?:boolean;title:string;items:string[]};
 
 const releases:Release[]=[
-  {version:'1.0.0-alpha.8.19',date:'24.08.2026',current:true,title:'Chromakey Fidelity + Render Recovery',items:[
+  {version:'1.0.0-alpha.8.41',date:'31.08.2026',current:true,title:'60 FPS • Stability • Gapless Audio • Chroma',items:[
+    'Smart/Fidelity render снова работает в реальных 60 FPS без изменения проверенного 500k видеобюджета и быстрого short-master pipeline.',
+    'Effects/Equalizer получают motion-interpolated 60 FPS cache и 60 FPS Live Preview вместо простого дублирования 25/30 FPS кадров.',
+    'История 100+ рендеров больше не сериализуется в localStorage на каждом progress event; UI progress синхронизируется через requestAnimationFrame.',
+    'Crossfade 3 сек восстановлен. Обработанная музыка — HQ 320 кбит/с с нормализованными timestamps и непрерывной long-audio дорожкой без секундных пауз.',
+    'Chromakey получил despill с сохранением настройки, новый default 0.35 и отдельный регулятор для удаления зелёного/синего ореола.',
+    'О программе: Kirill Peisov • peisov.business@gmail.com. Обновления устанавливаются штатным подписанным Tauri updater внутри ENDLUME.'
+  ]},
+  {version:'1.0.0-alpha.8.40',date:'31.08.2026',current:false,title:'Native Signed Updates',items:[
+    'Чистый bootstrap интернет-обновлений на последней доказанно стабильной базе 8.38 — без запуска проблемной цепочки 8.39 при установке.',
+    'Update Center переведён на официальный Tauri updater: проверка, скачивание, проверка подписи, установка и перезапуск выполняются внутри приложения.',
+    'GitHub Actions, Cloudflare, VPS, IP и SSH больше не нужны установленному ENDLUME для получения обновлений.',
+    'Исходный репозиторий остаётся приватным; публичный канал содержит только подписанные updater-пакеты и latest.json.',
+    'Исправления 60 FPS/crossfade/chroma из ветки 8.39 будут возвращены отдельным удалённым релизом после перехода на новую систему обновлений.'
+  ]},
+  {version:'1.0.0-alpha.8.38',date:'27.08.2026',current:false,title:'YouTube Fill 16:9 — No Black Bars',items:[
+    'One-image YouTube рендер всегда заполняет весь кадр 1920×1080 без letterbox/pillarbox.',
+    'Вместо decrease + pad используется increase + center crop: изображения не 16:9 слегка обрезаются по краям, а не дополняются чёрными полосами.',
+    'Lanczos + accurate rounding, x265-first CRF18, original MP3 bitstream-copy, Preview Shield и Remote Update Center сохранены.',
+    'Release gate отдельно проверяет квадратный и вертикальный исходник: итог должен быть ровно 1920×1080 и pipeline не должен содержать pad.'
+  ]},
+  {version:'1.0.0-alpha.8.37',date:'27.08.2026',current:false,title:'Remote Update Center',items:[
+    'ENDLUME больше не собирает обновления на пользовательском Mac: npm/Rust/Tauri-компиляция перенесена на удалённый macOS runner.',
+    'Настройки → Обновления теперь разделены на Проверить обновления и Установить и перезапустить.',
+    'Готовая .app скачивается из приватного GitHub release, проверяется SHA-256, Bundle ID, версия и codesign перед заменой.',
+    'При установке используется atomic swap с предыдущей .app и rollback при ошибке.',
+    '1080p Fidelity Lock, original MP3 bitstream-copy, Preview Shield и AppleDouble-защита сохранены.'
+  ]},
+  {version:'1.0.0-alpha.8.36',date:'27.08.2026',current:false,title:'1080p Fidelity Lock',items:[
+    'One-image проекты теперь рендерятся строго 1920×1080: 4K больше не тратит битрейт впустую при лимите около 1 ГБ.',
+    'Исходная картинка масштабируется один раз напрямую из оригинала фильтром Lanczos + accurate rounding.',
+    'Короткий master кодируется x265-first: CRF 18 защищает первый I-frame от мозаики, VBV 550 кбит/с ограничивает динамические Effects, VideoToolbox остаётся fallback.',
+    '30 FPS, H.265, original MP3 bitstream-copy, отключение crossfade/LUFS/ambient в one-image Fidelity Lock сохранены.',
+    'Контрольный gate проверяет точные 1920×1080, SSIM первого кадра, динамический bitrate budget и скорость короткого master.',
+    'AppleDouble build-workspace shield, Preview Shield v6, очередь, updater и удаление Noise 1/2 сохранены.'
+  ]},
+  {version:'1.0.0-alpha.8.35',date:'27.08.2026',current:false,title:'Strict Fidelity • 1-minute target',items:[
+    'Для проекта 1 изображение + музыка Smart Repeat рендерится максимум в 30 FPS: статичная картинка не теряет деталей, а нагрузка Effects/Subscribe снижается примерно вдвое относительно старого 60 FPS профиля.',
+    'Убран двухсекундный GOP, который создавал слишком много тяжёлых 4K I-кадров. Теперь один GOP покрывает полный short-master, а VideoToolbox получает увеличенный 64 MB buffer для чистого первого кадра.',
+    '4K video budget настроен на 740 кбит/с; вместе с типичным оригинальным MP3 320 кбит/с расчётный двухчасовой payload около 0.954 GB, оставляя запас под контейнер.',
+    'Strict Fidelity отключает crossfade/LUFS/ambient только для one-image профиля, чтобы музыка шла точным MP3 bitstream-copy без повторного lossy-кодирования и без многогигабайтного ALAC.',
+    'Если исходные аудиофайлы невозможно объединить точным MP3 copy, ENDLUME теперь показывает понятную ошибку вместо скрытого перехода на большой ALAC-файл.',
+    'Новые настройки по умолчанию: 4K, HEVC, 30 FPS, crossfade выключен. Старый сохранённый 4K60/crossfade=3 профиль мигрирует один раз.',
+    'AppleDouble Preview Shield, Live Preview v6, удаление Noise 1/2, предыдущая ENDLUME infinity-иконка и все queue/updater исправления сохранены.'
+  ]},
+  {version:'1.0.0-alpha.8.34',date:'27.08.2026',current:false,title:'Preview Shield + 100/100 Stability Gate',items:[
+    'Effects и Subscribe: кроме ._* ENDLUME теперь проверяет AppleDouble/resource-fork по сигнатуре файла, поэтому даже переименованный служебный файл не попадёт в FFmpeg.',
+    'Live Preview cache переведён на v6, чтобы старые повреждённые preview-файлы не переиспользовались.',
+    'Импорт Effects/Subscribe блокирует служебные macOS-файлы до копирования в постоянную библиотеку.',
+    'Noise 1 и Noise 2 остаются полностью удалёнными.',
+    'Сохранён Fast Fidelity: Apple HEVC VideoToolbox first, libx265 fallback, короткий master, повторное использование Subscribe и direct concat.',
+    'Целевой профиль 1 изображение + 10–15 треков + 2 часа сохранён: 700–1000 МБ при типичном 320 кбит/с MP3 и компактном HEVC budget.',
+    'Оригинальный MP3 идёт bitstream-copy; при реальном crossfade используется lossless ALAC.',
+    'Возвращена прежняя прозрачная ENDLUME infinity-иконка без чёрного квадратного фона.',
+    'Перед установкой выполняется отдельный 100/100 Effects+Subscribe preview stability smoke; при любом сбое старая ENDLUME не заменяется.'
+  ]},
+  {version:'1.0.0-alpha.8.33',date:'27.08.2026',current:false,title:'SSD Fast Fidelity + Effects/Subscribe Fix',items:[
+    'Исправлена ошибка Live Preview Invalid PNG signature 0x516070020000: ENDLUME теперь игнорирует служебные macOS AppleDouble-файлы ._*, которые появляются на внешних SSD.',
+    'Тяжёлый render-work для проекта создаётся на выбранном диске результата. При сохранении на внешний SSD внутренний диск Mac больше не используется под многогигабайтные промежуточные видео.',
+    'Для проекта «1 изображение + Effects + Subscribe» первый проход использует аппаратный HEVC VideoToolbox; libx265 CRF14 остаётся автоматическим quality fallback.',
+    'Effects и Subscribe в Smart Fidelity компонуются прямо из исходных файлов без огромного qtrle-cache на внутреннем диске и без лишнего поколения перекодирования.',
+    'Длина короткого master подстраивается под длительность непрерывного Effect, чтобы не обрывать эффект.',
+    'Повторяющиеся Subscribe-композиты переиспользуются, а финальный Smart Fidelity mux читает concat-сегменты напрямую — убрана одна полная дополнительная копия двухчасовой видеодорожки.',
+    'Noise 1 и Noise 2 полностью удалены из UI, TypeScript, Rust settings и render filter.',
+    'Кроссфейд, Original Audio MP3 bitstream-copy, lossless ALAC fallback, очередь и in-app updater сохранены.',
+    'Возвращена фирменная ENDLUME infinity-иконка без чёрной квадратной рамки.'
+  ]},
+  {version:'1.0.0-alpha.8.32',date:'26.08.2026',current:false,title:'Queue Sync + обновления полностью внутри ENDLUME',items:[
+    'Исправлена потеря второго и следующих проектов в окне Рендер: UI теперь синхронизируется с реальной backend-очередью через queue-changed и queue_snapshot.',
+    'Каждое добавление в очередь получает уникальный job ID, поэтому одну и ту же папку можно отправить повторно, не скрывая новый рендер.',
+    'Список рендеров сохраняется между переходами по вкладкам и перезапуском приложения; готовые проекты не исчезают при добавлении новой задачи.',
+    'Добавлен приватный In-App Update Center: проверка, сборка, тесты и установка запускаются из ENDLUME без Terminal и без GitHub Actions.',
+    'Обновление использует уже авторизованный GitHub CLI только как безопасный доступ к приватному release-каналу; исходное приложение не заменяется до прохождения всех gates.',
+    'Во время обновления в приложении отображаются текущий этап и процент; в момент atomic swap ENDLUME перезапускается автоматически.',
+    'Сохранены 8.31: живые этапы рендера, реальный lossless-crossfade, Noise 1/2, Effects/Subscribe и Hybrid Fidelity.'
+  ]},
+  {version:'1.0.0-alpha.8.31',date:'26.08.2026',current:false,title:'Render Center Live + рабочий lossless crossfade + встроенный Шум 1/2',items:[
+    'Render Center теперь всегда показывает фактический текущий этап и процент, даже если backend использует новый Hybrid Fidelity stage.',
+    'Кроссфейд в статичных проектах больше не игнорируется: переход реально строится через acrossfade.',
+    'После кроссфейда музыка сохраняется в ALAC lossless, поэтому нет повторного AAC/MP3 lossy-сжатия. При выключенном кроссфейде совместимые MP3 остаются bitstream-copy.',
+    'Добавлены встроенные эффекты «Шум 1» и «Шум 2» с отдельным ВКЛ/ВЫКЛ; внешний overlay-файл не нужен.',
+    'Большой служебный блок ORIGINAL/HYBRID FIDELITY удалён из основного интерфейса.',
+    'Сохранены fresh-clone builder, Effects/Subscribe gates, 4K SSIM gate, compact short-master и atomic install/rollback.'
+  ]},
+  {version:'1.0.0-alpha.8.30',date:'26.08.2026',current:false,title:'Stability Gate 2: установка без patch-drift + exact MP3 + компактный 2ч render',items:[
+    'Установщик собирает проект только из чистого fresh-clone и не использует старый локальный source-cache.',
+    'Hybrid Fidelity patcher стал идемпотентным: повторная установка не зависит от точной minified-строки Subscribe.',
+    'Перед заменой приложения проходят Python syntax, TypeScript, Vite, Rust, Render, Effects, Subscribe, 4K fidelity и exact-MP3 runtime gates.',
+    'Финальная ENDLUME Studio.app дополнительно проверяется уже со встроенными FFmpeg/FFprobe.',
+    'Совместимые MP3 копируются без повторного lossy-кодирования; при несовместимости качество имеет приоритет над размером.',
+    'Для типового проекта 1 картинка + небольшие Effects/Subscribe цель остаётся около 1 ГБ на 2 часа при visually-lossless 4K gate.'
+  ]},
+  {version:'1.0.0-alpha.8.28',date:'26.08.2026',current:false,title:'Hybrid Fidelity: маленький файл + живой MP3 + короткий master',items:[
+    'Исправлена причина файла 14–17 ГБ: VideoToolbox q95 больше не кодирует весь повторяющийся визуальный master с огромным средним битрейтом.',
+    'Для проекта «1 изображение + музыка + Effects/Subscribe» исходная картинка идёт напрямую в короткий 30-секундный x265 CRF14 master без предварительного пережатия.',
+    'Короткий master повторяется через stream-copy; статичные пиксели и небольшие Effects хорошо сжимаются, поэтому двухчасовой проект больше не обязан занимать десятки гигабайт.',
+    'Effects и Subscribe продолжают использовать lossless qtrle chromakey-cache, сохраняют aspect ratio и кодируются только в коротких сегментах/master.',
+    'Совместимые MP3 сначала очищаются stream-copy от ID3/Xing, затем объединяются как непрерывный MP3-поток с новыми монотонными таймстампами. Аудиосэмплы не перекодируются.',
+    'Original Fidelity теперь сохраняется в QuickTime MOV: это устраняет сценарий, когда MP3-трек присутствует в MP4, но QuickTime Player воспроизводит видео без звука.',
+    'Перед успешным рендером ENDLUME не только видит аудиотрек через FFprobe, но и реально декодирует его тестовый фрагмент.',
+    'Если MP3 имеют несовместимые параметры, остаётся ALAC lossless fallback вместо AAC.'
+  ]},
+  {version:'1.0.0-alpha.8.27',date:'25.08.2026',current:false,title:'Original Fidelity: музыка без повторного lossy-кодирования + quality-first видео',items:[
+    'Для проектов «1 изображение + музыка + Effects/Subscribe» включён Original Fidelity.',
+    'Совместимые MP3 с одинаковыми sample rate/channel layout объединяются через stream-copy: аудиокадры не перекодируются.',
+    'Кроссфейд, LUFS-нормализация и ambient автоматически не применяются в Original Fidelity, потому что любая такая обработка требует изменения исходного аудиосигнала.',
+    'Если MP3 нельзя безопасно stream-copy объединить, ENDLUME использует ALAC lossless fallback вместо AAC; файл может стать больше 1 ГБ.',
+    'Убран жёсткий 520–700 кбит/с лимит для Smart Repeat: изображение и Effects больше не портятся ради размера.',
+    'На Apple Silicon Original Fidelity использует HEVC VideoToolbox quality-first; software fallback — x265 CRF 14.',
+    'Effects/Subscribe по-прежнему композятся из lossless qtrle chromakey-cache и сохраняют исходное соотношение сторон.',
+    '20–30 секунд остаются архитектурной целью для короткого master + stream-copy mux, но качество имеет приоритет над обещанием размера или времени.'
+  ]},
+  {version:'1.0.0-alpha.8.26',date:'25.08.2026',current:false,title:'Smart Repeat: 2 часа около 700–1000 МБ и быстрый финальный mux',items:[
+    'Smart Size теперь работает не только для чистой картинки, но и для проекта «1 изображение + Effects + Subscribe».',
+    'Для 2 часов целевой бюджет видео: 520 кбит/с для 1080p, 600 кбит/с для 1440p и 700 кбит/с для 4K; вместе с AAC 320 кбит/с это примерно 700–1000 МБ.',
+    'Постоянные Effects больше не переводят весь двухчасовой ролик на пользовательские 20–30 Мбит/с.',
+    'Вариант Effects собирается напрямую из исходного изображения, чтобы не делать лишнее повторное сжатие фоновой картинки.',
+    'ENDLUME учитывает длительность исходного Effect-loop до 60 секунд, чтобы длинная анимация не перезапускалась каждые 8–12 секунд.',
+    'Финальный mux остаётся stream-copy: уменьшение визуального потока с десятков гигабайт до ~1 ГБ резко сокращает время последнего этапа.',
+    'Для обычных видео-проектов Smart Repeat не включается: их пользовательский профиль качества остаётся без изменений.'
+  ]},
+  {version:'1.0.0-alpha.8.25',date:'25.08.2026',current:false,title:'Render Recovery + Effects/Subscribe Stability',items:[
+    'Сборка больше не переписывает исходники Python-hotfix скриптами при каждом npm/Tauri build: TypeScript собирается из стабильного исходного кода.',
+    'Рендер использует writable app-cache workspace и автоматически переключает недоступную папку результата на Movies/ENDLUME Studio.',
+    'Первая попытка использует аппаратный кодировщик, вторая принудительно libx264/libx265 вместо повторения того же сломанного encoder.',
+    'Сломанный или потерянный Effect/Subscribe пропускается с предупреждением и больше не валит весь проект.',
+    'Effects и Subscribe используют одинаковую с Preview центрированную X/Y/SIZE геометрию и сохраняют исходное соотношение сторон.',
+    'Subscribe импортируется в собственную managed-библиотеку, новые Effects/Subscribe автоматически ставятся по центру.',
+    'MP3 до acrossfade нормализуются в 48 kHz stereo/fltp; stale пути проекта восстанавливаются повторным сканированием папки.',
+    'Перед локальной установкой обязательны TypeScript, frontend, Rust, 100 Loop Mode тестов, Effects/Subscribe aspect test и финальный video+audio mux test.'
+  ]},
+  {version:'1.0.0-alpha.8.19',date:'24.08.2026',title:'Chromakey Fidelity + Render Recovery',items:[
     'Chromakey переведён на RGB colorkey: видимые пиксели Effects/Subscribe сохраняют исходный цвет без прежней глобальной saturation/despill коррекции.',
     'В Live Preview добавлена «ПИПЕТКА / КИСТЬ»: можно кликнуть или провести по фону overlay-видео и взять реальный цвет chromakey из исходного кадра.',
     'Старые пресеты с Similarity/Blend около 0.9–1.0 автоматически приводятся к безопасным значениям и получают новый fidelity-cache.',

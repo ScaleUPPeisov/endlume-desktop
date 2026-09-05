@@ -5,7 +5,7 @@ import { useApp } from '../store';
 import type { LoopMode, RenderProject } from '../types';
 import { Icon,Range,Toggle } from '../components/ui';
 
-const resolutions=[{w:3840,h:2160,label:'4K UHD'},{w:2560,h:1440,label:'2K QHD'},{w:1920,h:1080,label:'1080P FULL HD'}];
+const resolutions=[{w:1920,h:1080,label:'1080P FULL HD'},{w:2560,h:1440,label:'2K QHD'},{w:3840,h:2160,label:'4K UHD'}];
 const modes:Array<{id:LoopMode;title:string;subtitle:string;icon:'image'|'crossfade'|'pingpong'|'original'}>=[
   {id:'image',title:'Image',subtitle:'Зацикливание из статичной картинки',icon:'image'},
   {id:'crossfade',title:'Crossfade',subtitle:'Плавный переход между концом и началом',icon:'crossfade'},
@@ -68,8 +68,10 @@ export function ProjectPage(){
       const activeEffects=features.effects?effects.filter(e=>e.enabled):[];
       const activeSubscribes=features.subscribe?subscribes.filter(e=>e.enabled):[];
       const activeAmbient=features.ambient?ambient:undefined;
-      await api.enqueue(draftProjects,settings,activeEffects,activeSubscribes,activeAmbient);
-      appendProjects(draftProjects.map(p=>({...p,status:'queued',stage:'Ожидает в очереди'})));
+      const stamp=Date.now().toString(36);
+      const queuedProjects=draftProjects.map((p,i)=>({...p,id:`${p.id}-${stamp}-${i}-${Math.random().toString(36).slice(2,8)}`,status:'queued' as const,progress:0,stage:'Ожидает в очереди',elapsedSec:0}));
+      await api.enqueue(queuedProjects,settings,activeEffects,activeSubscribes,activeAmbient);
+      appendProjects(queuedProjects);
       setDraftProjects([]);setInvalidProjects([]);setScanNote('');setPage('render');
     }catch(e){await api.showError(String(e))}
   };
@@ -103,8 +105,8 @@ export function ProjectPage(){
 
         <div className="bigControl"><div><b>Длительность</b><small>Целевое время финального видео</small></div><div className="bigValue">{settings.durationHours} ч</div><Range value={settings.durationHours} min={.5} max={12} step={.5} onChange={v=>patchSettings({durationHours:v})} minLabel="0.5 ч" maxLabel="12 ч"/></div>
         <div className="durationPresets">{[1,1.5,2,3,4,8,10,12].map(v=><button className={settings.durationHours===v?'selected':''} key={v} onClick={()=>patchSettings({durationHours:v})}>{v}ч</button>)}</div>
-        <div className="bigControl"><div><b>Битрейт</b><small>Для видео/эффектов. У проектов с одной картинкой Smart Size автоматически уменьшает размер без повторного многочасового кодирования.</small></div><div className="bigValue">{settings.bitrateMbps} Мбит/с</div><Range value={settings.bitrateMbps} min={1} max={100} onChange={v=>patchSettings({bitrateMbps:v})} minLabel="1 Мбит/с" maxLabel="100 Мбит/с"/></div>
-        <div className="bigControl compactControl"><div><b>Кроссфейд между треками</b><small>Плавный переход без резкого стыка</small></div><div className="bigValue small">{settings.crossfadeSec} сек</div><Range value={settings.crossfadeSec} min={1} max={10} onChange={v=>patchSettings({crossfadeSec:v})} minLabel="1 сек" maxLabel="10 сек"/></div>
+        <div className="bigControl"><div><b>Битрейт</b><small>Для обычных видео-проектов. Для статичного проекта ENDLUME автоматически выбирает компактный режим без жёсткого ухудшения качества.</small></div><div className="bigValue">{settings.bitrateMbps} Мбит/с</div><Range value={settings.bitrateMbps} min={1} max={100} onChange={v=>patchSettings({bitrateMbps:v})} minLabel="1 Мбит/с" maxLabel="100 Мбит/с"/></div>
+        <div className="bigControl compactControl"><div><b>Кроссфейд между треками</b><small>{settings.crossfadeSec>0?'Включён. Переход реально сводится между песнями и сохраняется в ALAC lossless без повторного lossy-сжатия.':'Выключен. YouTube Fill 16:9: one-image проект всегда заполняет весь кадр 1920×1080 без чёрных полос. Если исходник не 16:9, края слегка обрезаются по центру. Совместимые MP3 идут bitstream-copy без повторного кодирования.'}</small></div><div className="bigValue small">{settings.crossfadeSec>0?`${settings.crossfadeSec} сек`:'Выкл'}</div><Range value={settings.crossfadeSec} min={0} max={10} step={0.5} onChange={v=>patchSettings({crossfadeSec:v})} minLabel="Выкл" maxLabel="10 сек"/></div><div className="durationPresets"><button className={settings.crossfadeSec===0?'selected':''} onClick={()=>patchSettings({crossfadeSec:0})}>ВЫКЛ</button>{[1,2,3,5,7,10].map(v=><button className={settings.crossfadeSec===v?'selected':''} key={`cf-${v}`} onClick={()=>patchSettings({crossfadeSec:v})}>{v}с</button>)}</div>
 
         <div className="toggles">
           <Toggle checked={settings.normalizeLufs} onChange={v=>patchSettings({normalizeLufs:v})} label="Нормализация звука до -14 LUFS"/>
@@ -123,7 +125,6 @@ export function ProjectPage(){
       <div className="sectionTitle">ЭФФЕКТЫ</div>
       <div className="featureRow"><span className="featureIcon blue"><Icon name="effects"/></span><div><b>Набор эффектов поверх видео</b><small>{!features.effects?'Отключено для текущих рендеров':effects.filter(e=>e.enabled).length?`Активно: ${effects.filter(e=>e.enabled).length} • сохранено: ${effects.length}`:'Эффекты не выбраны'}</small></div><div className="rowButtons"><button onClick={()=>setFeature('effects',!features.effects)}>{features.effects?'ВЫКЛЮЧИТЬ':'ВКЛЮЧИТЬ'}</button><button onClick={()=>openEditor({kind:'effects'})}>НАСТРОИТЬ →</button></div></div>
     </section>
-
     <section className="sectionBlock">
       <div className="sectionTitle">ФОНОВЫЙ ЗВУК</div>
       <div className="featureRow"><span className="featureIcon"><Icon name="ambient"/></span><div><b>Добавить ambient-звук</b><small>{!features.ambient?'Отключено для текущих рендеров':ambient||'Не выбран'}</small></div><div className="rowButtons"><button onClick={()=>setFeature('ambient',!features.ambient)}>{features.ambient?'ВЫКЛЮЧИТЬ':'ВКЛЮЧИТЬ'}</button><button onClick={async()=>{const p=await api.chooseAmbient();if(p)setAmbient(p)}}>ВЫБРАТЬ</button>{ambient&&<button className="dangerText" onClick={()=>setAmbient(undefined)}>УДАЛИТЬ</button>}</div></div>

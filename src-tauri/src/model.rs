@@ -28,6 +28,7 @@ pub struct RenderSettings{
   pub output_dir:String,
   pub preset:String,
   pub encoder_preference:String,
+
 }
 
 #[derive(Debug,Clone,Serialize,Deserialize)]

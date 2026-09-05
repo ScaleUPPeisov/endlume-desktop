@@ -6,6 +6,11 @@ use tauri::{AppHandle,Emitter,Manager};
 use tauri_plugin_shell::ShellExt;
 
 fn color(hex:&str)->String{format!("0x{}",hex.trim().trim_start_matches('#').trim_start_matches("0x"))}
+fn despill_type(hex:&str)->&'static str{
+  let raw=hex.trim().trim_start_matches('#');
+  if raw.len()==6{if let Ok(v)=u32::from_str_radix(raw,16){let g=(v>>8)&255;let b=v&255;if b>g{return "blue"}}}
+  "green"
+}
 
 fn cache_dir(app:&AppHandle)->Result<PathBuf,String>{
   // v4 cache contains only keyed pixels at the ORIGINAL source geometry.
@@ -23,7 +28,7 @@ fn fingerprint(e:&EffectPreset,fps:u32)->String{
   let mut h=Sha256::new();
   // Geometry is deliberately absent from the key: x/y/scale/fullscreen do not
   // change source pixels and therefore must not invalidate the chroma cache.
-  h.update(format!("aspect-safe-v4|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",e.source,size,modified,fps,e.mode,e.key_color,e.similarity,e.blend,e.luma_threshold,e.luma_tolerance,e.saturation));
+  h.update(format!("aspect-safe-v6-motion|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",e.source,size,modified,fps,e.mode,e.key_color,e.similarity,e.blend,e.luma_threshold,e.luma_tolerance,e.saturation,e.despill));
   hex::encode(h.finalize())[..24].to_string()
 }
 
@@ -33,11 +38,11 @@ pub async fn prepare(app:&AppHandle,e:&EffectPreset,fps:u32)->Result<EffectPrese
   let key=fingerprint(e,fps);let path=cache_dir(app)?.join(format!("{}.mov",key));
   if !path.exists(){
     let similarity=e.similarity.clamp(0.001,0.60);let blend=e.blend.clamp(0.001,0.35);
+    let motion=if fps>=50{format!("minterpolate=fps={fps}:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1")}else{format!("fps={fps}")};
     let vf=match e.mode.as_str(){
-      "luma"=>format!("fps={fps},format=rgba,lumakey=threshold={}:tolerance={}:softness=0.08,format=argb",e.luma_threshold,e.luma_tolerance),
-      "screen"=>format!("fps={fps},format=rgb24"),
-      // RGB colorkey changes alpha only; kept pixels preserve original source RGB.
-      _=>format!("fps={fps},format=rgba,colorkey={}:{}:{},format=argb",color(&e.key_color),similarity,blend)
+      "luma"=>format!("{motion},format=rgba,lumakey=threshold={}:tolerance={}:softness=0.08,format=argb",e.luma_threshold,e.luma_tolerance),
+      "screen"=>format!("{motion},format=rgb24"),
+      _=>format!("{motion},format=rgba,colorkey={}:{}:{},despill=type={}:mix={}:expand=0.20,format=argb",color(&e.key_color),similarity,blend,despill_type(&e.key_color),e.despill.clamp(0.0,1.0))
     };
     let pix=if e.mode=="screen"{"rgb24"}else{"argb"};
     let args=vec!["-hide_banner","-loglevel","error","-i",e.source.as_str(),"-vf",vf.as_str(),"-an","-c:v","qtrle","-pix_fmt",pix,"-y",path.to_string_lossy().as_ref()].into_iter().map(String::from).collect::<Vec<_>>();

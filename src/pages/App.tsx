@@ -36,6 +36,19 @@ function compactPayload<T extends Record<string,any>>(value:T):Partial<T>{
   return Object.fromEntries(Object.entries(value||{}).filter(([,v])=>v!==null&&v!==undefined)) as Partial<T>;
 }
 
+function syncBackendQueue(snapshot:any){
+  const st=useApp.getState();
+  const old=new Map(st.projects.map(p=>[p.id,p]));
+  const items:any[]=[];
+  const push=(job:any,status:'rendering'|'queued')=>{
+    const project=job?.project;if(!project?.id)return;const prev=old.get(project.id);
+    items.push({...project,status,progress:status==='rendering'?(prev?.progress||0):0,stage:status==='rendering'?(prev?.stage||'Восстанавливаю текущий этап…'):'Ожидает в очереди',elapsedSec:prev?.elapsedSec||0,startedAt:prev?.startedAt,etaSec:prev?.etaSec,encoder:prev?.encoder,engineTimings:prev?.engineTimings});
+  };
+  if(snapshot?.active)push(snapshot.active,'rendering');
+  for(const job of snapshot?.pending||[])push(job,'queued');
+  st.syncQueueProjects(items);
+}
+
 export function App(){
   const page=useApp(s=>s.page),editor=useApp(s=>s.editor),patchProject=useApp(s=>s.patchProject),setLibrary=useApp(s=>s.setLibrary),appendProjects=useApp(s=>s.appendProjects);
   const [recovery,setRecovery]=useState<RecoveryPayload>();
@@ -50,6 +63,7 @@ export function App(){
     api.license().then(setLicense).catch(()=>setLicense({valid:false}));
     api.loadLibrary().then(setLibrary).catch(()=>setLibrary({effects:[],subscribes:[]}));
     api.loadRecovery().then(r=>{if(r?.interrupted)setRecovery(r)}).catch(()=>{});
+    api.queueSnapshot().then(syncBackendQueue).catch(()=>{});
     api.queueSnapshot().then(syncQueueSnapshot).catch(()=>{});
 
     const checkForUpdate=async(force=false)=>{
@@ -84,9 +98,11 @@ export function App(){
     const onVisibility=()=>{if(document.visibilityState==='visible'&&Date.now()-lastUpdateCheck.current>60_000)checkForUpdate(false)};
     window.addEventListener('focus',onFocus);document.addEventListener('visibilitychange',onVisibility);
 
+    const progressPending=new Map<string,any>();let progressRaf:number|undefined;
+    const flushRenderProgress=()=>{progressRaf=undefined;if(progressPending.size===0)return;const batch=new Map(progressPending);progressPending.clear();useApp.setState(state=>({projects:state.projects.map(p=>{const next=batch.get(p.id);return next?{...p,...compactPayload(next)}:p})}));};
     const off:Promise<()=>void>[]=[];
     off.push(listen<any>('queue-changed',e=>syncQueueSnapshot(e.payload)));
-    off.push(listen<any>('render-progress',e=>patchProject(e.payload.id,compactPayload(e.payload))));
+    off.push(listen<any>('render-progress',e=>{const p=e.payload;if(!p?.id)return;progressPending.set(p.id,p);if(progressRaf===undefined)progressRaf=requestAnimationFrame(flushRenderProgress)}));
     off.push(listen<any>('render-done',e=>patchProject(e.payload.id,compactPayload(e.payload))));
     off.push(listen<any>('render-error',e=>patchProject(e.payload.id,compactPayload(e.payload))));
     off.push(listen<any>('queue-recovered',e=>{const p=(e.payload?.projects||[]).map((x:any)=>({...x,status:'queued',progress:0,stage:'Восстановлено после сбоя',elapsedSec:0}));appendProjects(p)}));
@@ -94,7 +110,7 @@ export function App(){
     off.push(listen<any>('engine-profile',e=>{const {id,...rest}=e.payload||{};if(id)patchProject(id,compactPayload(rest))}));
     off.push(listen<any>('cache-updated',e=>{const {id,cacheKey,cacheReady}=e.payload||{};if(!id)return;const st=useApp.getState();const effects=st.effects.map(x=>x.id===id?{...x,cacheKey,cacheReady}:x);const subscribes=st.subscribes.map(x=>x.id===id?{...x,cacheKey,cacheReady}:x);st.setEffects(effects);st.setSubscribes(subscribes);api.saveLibrary({effects,subscribes,ambient:st.ambient}).catch(()=>{});}));
     return()=>{
-      disposed=true;if(updateTimer)window.clearTimeout(updateTimer);if(updateInterval)window.clearInterval(updateInterval);
+      disposed=true;if(updateTimer)window.clearTimeout(updateTimer);if(updateInterval)window.clearInterval(updateInterval);if(progressRaf!==undefined)cancelAnimationFrame(progressRaf);progressPending.clear();
       window.removeEventListener('focus',onFocus);document.removeEventListener('visibilitychange',onVisibility);off.forEach(p=>p.then(f=>f()));
     }
   },[]);
@@ -112,7 +128,7 @@ function ActivationScreen({onActivated}:{onActivated:(v:LicenseStatus)=>void}){
 }
 
 function UpdateNotice({update,onLater}:{update:any;onLater:()=>void}){
-  const [progress,setProgress]=useState<number|null>(null),[error,setError]=useState('');
+  const [progress,setProgress]=useState<number|null>(null),[stage,setStage]=useState(''),[error,setError]=useState('');
   const installing=progress!==null;
   return <aside className="updateNotice" role="status" aria-live="polite">
     <div className="updateNoticeGlow"/>
@@ -122,7 +138,7 @@ function UpdateNotice({update,onLater}:{update:any;onLater:()=>void}){
     {error&&<div className="updateNoticeError">{error}</div>}
     <div className="updateNoticeActions">
       <button className="later" disabled={installing} onClick={onLater}>НАПОМНИТЬ ЧЕРЕЗ ЧАС</button>
-      <button className="updateNow" disabled={installing} onClick={async()=>{setError('');setProgress(0);try{await update.install((p:number)=>setProgress(p))}catch(e){setProgress(null);setError(`Не удалось обновить: ${String(e)}`)}}}>{installing?'ОБНОВЛЯЮ…':'ОБНОВИТЬ'}</button>
+      <button className="updateNow" disabled={installing} onClick={async()=>{setError('');setProgress(0);try{await update.install((p:number,s?:string)=>{setProgress(p);if(s)setStage(s)})}catch(e){setProgress(null);setError(`Не удалось обновить: ${String(e)}`)}}}>{installing?'ОБНОВЛЯЮ…':'ОБНОВИТЬ'}</button>
     </div>
   </aside>
 }

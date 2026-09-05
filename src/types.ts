@@ -35,6 +35,9 @@ export interface RenderProject extends ProjectScanItem {
   attempt?: number;
   smartSize?: boolean;
   targetVideoKbps?: number;
+  originalFidelity?: boolean;
+  audioOriginal?: boolean;
+  audioLossless?: boolean;
 }
 
 export interface EffectPreset {

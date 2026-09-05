@@ -51,7 +51,7 @@ fn migrate_item(app:&AppHandle,item:&mut Value,kind:&str)->bool{
     if sim>0.60{obj.insert("similarity".into(),json!(0.10));changed=true;}
     if blend>0.35{obj.insert("blend".into(),json!(0.06));changed=true;}
     if obj.get("saturation").and_then(Value::as_f64).unwrap_or(1.0)!=1.0{obj.insert("saturation".into(),json!(1.0));changed=true;}
-    if obj.get("despill").and_then(Value::as_f64).unwrap_or(0.0)!=0.0{obj.insert("despill".into(),json!(0.0));changed=true;}
+    let despill=obj.get("despill").and_then(Value::as_f64).unwrap_or(0.0);if despill<=0.0{obj.insert("despill".into(),json!(0.35));changed=true;}
     if changed{obj.insert("cacheReady".into(),json!(false));obj.insert("cacheKey".into(),Value::Null);}
   }
   changed

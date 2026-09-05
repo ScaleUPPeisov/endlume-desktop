@@ -97,3 +97,7 @@ details[open]>div{animation:endlumeDetailIn 140ms var(--motion-ease) both}
   .pageScene,.editorPage,.settingsCard,.updateNotice,details[open]>div{animation:none!important}
   .appShell button,.activationScreen button,.appShell input,.appShell select{transition:none!important}
 }
+
+/* ENDLUME 8.41: WKWebView 60fps compositing hints; no layout/design changes. */
+.liveGpuOverlay,.liveOverlayCanvas{will-change:transform;transform:translateZ(0);backface-visibility:hidden;}
+.queueCard{content-visibility:auto!important;contain:layout paint style!important;contain-intrinsic-size:90px!important;}

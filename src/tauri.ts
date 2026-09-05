@@ -1,8 +1,8 @@
 import { invoke, convertFileSrc } from '@tauri-apps/api/core';
-import { getVersion } from '@tauri-apps/api/app';
 import { open, message } from '@tauri-apps/plugin-dialog';
 import { check } from '@tauri-apps/plugin-updater';
 import { relaunch } from '@tauri-apps/plugin-process';
+import { getVersion } from '@tauri-apps/api/app';
 import type { BenchmarkResult, EffectPreset, LibraryPayload, LicenseStatus, ProjectScanItem, RecoveryPayload, RenderSettings, SubscribePreset } from './types';
 
 export type SingleAppStatus={
@@ -81,7 +81,6 @@ export const api = {
   reveal:(p:string)=>invoke<void>('reveal_result_path',{path:p}),
   showError:(text:string)=>message(text,{title:'ENDLUME Studio',kind:'error'}),
   showInfo:(text:string)=>message(text,{title:'ENDLUME Studio',kind:'info'}),
-  appVersion:()=>getVersion(),
   checkUpdate:async()=>{
     const current=await getVersion();
     const update=await withTimeout(check(),20000,'Проверка обновлений');

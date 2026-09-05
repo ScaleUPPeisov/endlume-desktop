@@ -1,0 +1,38 @@
+name: ENDLUME 8.52 Effective Source Inspect
+on:
+  push:
+    branches: [candidate/endlume-852-build]
+    paths: ['.github/workflows/endlume-852-effective-source-inspect.yml']
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: candidate/endlume-852-build
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Extract effective 8.51 render functions
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          R="$HOME/.endlume-local-builder/endlume-desktop-8.40-bootstrap/src-tauri/src/render.rs"
+          C="$HOME/.endlume-local-builder/endlume-desktop-8.40-bootstrap/src-tauri/src/cache.rs"
+          python3 - "$R" <<'PY'
+from pathlib import Path
+import sys,re
+s=Path(sys.argv[1]).read_text()
+for name in ['prepare_overlays','apply_effects_filter','build_variant','render_sub_segment','assemble_visual','choose_hybrid_encoder','hybrid_fidelity_args']:
+    m=re.search(r'(?:async\s+)?fn\s+'+re.escape(name)+r'\s*\(',s)
+    if not m:
+        print('MISSING',name);continue
+    start=m.start(); nxt=re.search(r'\n(?:pub\s+)?(?:async\s+)?fn\s+\w+\s*\(',s[m.end():])
+    end=m.end()+nxt.start() if nxt else min(len(s),start+12000)
+    print('\n===== '+name+' =====\n'+s[start:end][:16000])
+PY
+          echo '===== cache prepare ====='
+          grep -n -A45 -B5 'pub async fn prepare' "$C" || true

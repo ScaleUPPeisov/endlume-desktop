@@ -15,63 +15,32 @@ jobs:
           clean: true
           fetch-depth: 1
           persist-credentials: false
-      - name: Inspect current real ENDLUME/VYRON state
+      - name: Probe exact overlay schedule and render sidecar
         shell: bash
         run: |
           set -Eeuo pipefail
           UUID='2e0e14ba-d97a-48d5-ab32-2fb2b27754bf'
-          echo '--- VOLUMES ---'
-          /bin/ls -la /Volumes || true
-          echo '--- UUID CANDIDATES ---'
-          find /Volumes -maxdepth 10 -path "*${UUID}*" -print 2>/dev/null | head -120 || true
-          OUT="$(find /Volumes -maxdepth 14 -type f -path "*${UUID}*" \( -name '*.mov' -o -name '*.mp4' \) -print -quit 2>/dev/null || true)"
-          echo "OUT=$OUT"
-          if test -n "$OUT" -a -f "$OUT"; then
-            FFP="$HOME/.endlume-local-builder/endlume-desktop-8.40-bootstrap/src-tauri/binaries/ffprobe-aarch64-apple-darwin"
-            if ! test -x "$FFP"; then FFP="$(command -v ffprobe)"; fi
-            "$FFP" -v error -show_entries format=duration,size,bit_rate:stream=index,codec_type,codec_name,bit_rate,width,height,avg_frame_rate,sample_rate,channels -of json "$OUT" || true
-            ROOT="$(dirname "$(dirname "$OUT")")"
-            echo "ROOT=$ROOT"
-            find "$ROOT" -maxdepth 3 -type f \( -name 'batch.json' -o -name 'status.json' -o -name '*render*.json' -o -name '*render*.log' -o -name '*.txt' \) -print | sed 's#^#FILE #' || true
+          FFP="$HOME/.endlume-local-builder/endlume-desktop-8.40-bootstrap/src-tauri/binaries/ffprobe-aarch64-apple-darwin"
+          if ! test -x "$FFP"; then FFP="$(command -v ffprobe)"; fi
+          ROOT="$(find /Volumes -maxdepth 10 -type d -path "*${UUID}*/Neon Drive FM_BATCH_2026-09-05_001" -print -quit 2>/dev/null || true)"
+          echo "ROOT=$ROOT"
+          if test -n "$ROOT"; then
+            SIDE="$(find "$ROOT/Rendered/logs" -type f -name '*project.json' -print -quit 2>/dev/null || true)"
+            echo "SIDECAR=$SIDE"
+            if test -f "$SIDE"; then cat "$SIDE"; fi
           fi
-          echo '--- ENDLUME APP DATA CANDIDATES ---'
-          find "$HOME/Library/Application Support" -maxdepth 5 -type f \( -name 'library.json' -o -name 'queue.json' -o -name 'recovery.json' -o -name 'session.json' \) 2>/dev/null | grep -Ei 'endlume|studio\.endlume' || true
-          python3 - <<'PY'
-          import json,pathlib,os
-          base=pathlib.Path.home()/'Library'/'Application Support'
-          def relevant(p): return 'endlume' in str(p).lower()
-          for p in base.rglob('library.json'):
-              if not relevant(p): continue
-              print('--- LIBRARY',p,'---')
-              try:
-                  d=json.loads(p.read_text())
-                  for kind in ('effects','subscribes'):
-                      print(kind.upper())
-                      for x in d.get(kind,[]):
-                          e=x.get('effect',x)
-                          print(json.dumps({
-                            'id':e.get('id'),'name':e.get('name'),'enabled':e.get('enabled'),'source':os.path.basename(str(e.get('source',''))),
-                            'mode':e.get('mode'),'startSec':e.get('startSec'),'endSec':e.get('endSec'),
-                            'repeatEverySec':x.get('repeatEverySec'),'firstAtSec':x.get('firstAtSec'),'secondAtSec':x.get('secondAtSec')
-                          },ensure_ascii=False))
-                  print('ambient=',d.get('ambient'))
-              except Exception as e: print('ERR',e)
-          for name in ('queue.json','recovery.json'):
-              for p in base.rglob(name):
-                  if not relevant(p): continue
-                  print('---',name,p,'---')
-                  try:
-                      d=json.loads(p.read_text())
-                      def slim_job(j):
-                          if not isinstance(j,dict): return j
-                          return {
-                            'project':j.get('project'),
-                            'settings':j.get('settings'),
-                            'effects':j.get('effects'),
-                            'subscribes':j.get('subscribes'),
-                            'ambient':j.get('ambient')
-                          }
-                      out={'active':slim_job(d.get('active')),'pending':[slim_job(x) for x in d.get('pending',[])[:3]],'interrupted':d.get('interrupted')}
-                      print(json.dumps(out,ensure_ascii=False,indent=2)[:40000])
-                  except Exception as e: print('ERR',e)
+          LIB="$HOME/Library/Application Support/studio.endlume.desktop/library.json"
+          test -f "$LIB"
+          python3 - "$LIB" "$FFP" <<'PY'
+          import json,subprocess,sys,os
+          lib,ffp=sys.argv[1:]
+          d=json.load(open(lib))
+          for kind in ('effects','subscribes'):
+              print('---',kind,'---')
+              for x in d.get(kind,[]):
+                  e=x.get('effect',x)
+                  if not e.get('enabled'): continue
+                  src=e.get('source','')
+                  q=subprocess.run([ffp,'-v','error','-show_entries','format=duration:stream=avg_frame_rate,width,height,codec_name','-of','json',src],capture_output=True,text=True)
+                  print(json.dumps({'kind':kind,'name':e.get('name'),'mode':e.get('mode'),'start':e.get('startSec'),'end':e.get('endSec'),'repeat':x.get('repeatEverySec'),'first':x.get('firstAtSec'),'second':x.get('secondAtSec'),'src':src,'probe':json.loads(q.stdout or '{}')},ensure_ascii=False))
           PY

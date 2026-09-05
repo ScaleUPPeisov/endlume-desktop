@@ -1,0 +1,71 @@
+name: ENDLUME 8.52 Manifest Integration
+on:
+  push:
+    branches: [candidate/endlume-852-effective-source]
+    paths:
+      - 'src-tauri/src/mp4_manifest.rs'
+      - 'src-tauri/src/mp4_manifest_probe_tests.rs'
+      - 'src-tauri/src/lib.rs'
+      - '.github/workflows/endlume-852-manifest-integration.yml'
+permissions:
+  contents: read
+jobs:
+  gate:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: candidate/endlume-852-effective-source
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Rust zero-copy MP4 plus audio gate
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          WORK="$HOME/.endlume-local-builder/endlume-desktop-8.40-bootstrap"
+          FFMPEG="$(find "$WORK/src-tauri/binaries" -maxdepth 1 -type f -name 'ffmpeg*' -perm -111 -print -quit)"
+          FFPROBE="$(find "$WORK/src-tauri/binaries" -maxdepth 1 -type f -name 'ffprobe*' -perm -111 -print -quit)"
+          mkdir -p src-tauri/binaries
+          rsync -a "$WORK/src-tauri/binaries/" src-tauri/binaries/
+          TMP="$(mktemp -d /tmp/endlume-rust-manifest.XXXXXX)"; trap 'rm -rf "$TMP"' EXIT
+          "$FFMPEG" -hide_banner -loglevel error -f lavfi -i 'testsrc2=size=640x360:rate=2' -t 4 -an -c:v libx264 -preset ultrafast -bf 0 -g 4 -keyint_min 4 -sc_threshold 0 -pix_fmt yuv420p -y "$TMP/video.mp4"
+          "$FFMPEG" -hide_banner -loglevel error -f lavfi -i 'sine=frequency=997:sample_rate=48000' -t 8 -c:a aac -b:a 192k -y "$TMP/audio.m4a"
+          "$FFMPEG" -hide_banner -loglevel error -i "$TMP/video.mp4" -i "$TMP/audio.m4a" -t 8 -map 0:v:0 -map 1:a:0 -c copy -y "$TMP/seed.mov"
+          export ENDLUME_MANIFEST_SEED="$TMP/seed.mov"
+          export ENDLUME_MANIFEST_OUT="$TMP/final.mov"
+          export ENDLUME_MANIFEST_PREFIX_FRAMES=4
+          export ENDLUME_MANIFEST_CYCLE_FRAMES=4
+          export ENDLUME_MANIFEST_TOTAL_FRAMES=16
+          cargo test --manifest-path src-tauri/Cargo.toml external_prefix_cycle_manifest_if_requested -- --nocapture
+          "$FFPROBE" -v error -show_entries format=duration,size:stream=index,codec_type,duration,nb_frames,r_frame_rate,avg_frame_rate -of json "$TMP/final.mov"
+          DUR="$($FFPROBE -v error -show_entries format=duration -of default=nw=1:nk=1 "$TMP/final.mov")"
+          FRAMES="$($FFPROBE -v error -select_streams v:0 -show_entries stream=nb_frames -of default=nw=1:nk=1 "$TMP/final.mov")"
+          python3 -c "d=float('$DUR');f=int('$FRAMES');assert abs(d-8.0)<0.08,(d,f);assert f==16,(d,f);print('PASS_RUST_MANIFEST_TIMELINE',d,f)"
+          "$FFMPEG" -hide_banner -loglevel error -i "$TMP/final.mov" -map 0:a:0 -t 8 -f null -
+          "$FFMPEG" -hide_banner -loglevel error -ss 1 -i "$TMP/video.mp4" -frames:v 1 -f framemd5 - > "$TMP/base.md5"
+          "$FFMPEG" -hide_banner -loglevel error -ss 5 -i "$TMP/final.mov" -frames:v 1 -f framemd5 - > "$TMP/repeat.md5"
+          grep -E '^[0-9]' "$TMP/base.md5" | tail -1 > "$TMP/a"; grep -E '^[0-9]' "$TMP/repeat.md5" | tail -1 > "$TMP/b"
+          python3 -c "g=lambda p:open(p).read().split(',')[-1].strip();a=g('$TMP/a');b=g('$TMP/b');assert a==b,(a,b);print('PASS_RUST_MANIFEST_REPEAT_FRAME')"
+          SEED="$(stat -f%z "$TMP/seed.mov")"; FINAL="$(stat -f%z "$TMP/final.mov")"
+          python3 -c "s=int('$SEED');f=int('$FINAL');assert f<s*1.20,(s,f);print('PASS_ZERO_COPY_BYTES seed=',s,'final=',f)"
+          cat > "$TMP/check.swift" <<'SWIFT'
+          import Foundation
+          import AVFoundation
+          let asset=AVURLAsset(url:URL(fileURLWithPath:CommandLine.arguments[1]))
+          let sem=DispatchSemaphore(value:0)
+          Task {
+            do {
+              let d=CMTimeGetSeconds(try await asset.load(.duration))
+              let v=try await asset.loadTracks(withMediaType:.video)
+              let a=try await asset.loadTracks(withMediaType:.audio)
+              print("AV_DURATION=\(d) VIDEO_TRACKS=\(v.count) AUDIO_TRACKS=\(a.count)")
+              if abs(d-8.0)>0.08 || v.count != 1 || a.count != 1 { exit(4) }
+            } catch { print("AV_ERROR=\(error)"); exit(3) }
+            sem.signal()
+          }
+          sem.wait()
+          SWIFT
+          xcrun swift "$TMP/check.swift" "$TMP/final.mov"
+          echo PASS_RUST_ZERO_COPY_AUDIO_AVFOUNDATION

@@ -107,7 +107,7 @@ pub fn consume_vyron_batch_request(app:AppHandle)->Result<Option<VyronBatchReque
       Err(_)=>{
         // Old failed handoffs must never block the newest selection. VYRON writes the
         // handoff/source manifest before ENDLUME polls; five seconds is only a race grace.
-        if request_age(&p)>=Duration::from_secs(5){let _=fs::remove_file(&p)}
+        if request_age(&p)>=Duration::from_secs(5){let _=fs::remove_file(&p);}
         continue
       }
     }

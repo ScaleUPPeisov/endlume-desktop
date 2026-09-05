@@ -1,0 +1,50 @@
+name: ENDLUME 8.53 VYRON Inbox Diagnose
+on:
+  push:
+    branches: [candidate/endlume-853-vyron-accept-hotfix]
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: candidate/endlume-853-vyron-accept-hotfix
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Inspect live VYRON request and manifests
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          echo '=== APP DATA CANDIDATES ==='
+          for D in "$HOME/Library/Application Support/studio.endlume.desktop" "$HOME/Library/Application Support/ENDLUME STUDIO PEISOV"; do
+            echo "DIR=$D"
+            if [ -d "$D" ]; then
+              find "$D" -maxdepth 3 -type f -print | sed 's/^/FILE: /' || true
+              if [ -d "$D/VYRON Inbox" ]; then
+                for F in "$D/VYRON Inbox"/*.json; do
+                  [ -e "$F" ] || continue
+                  echo "--- REQUEST $F ---"
+                  cat "$F"
+                  echo
+                  python3 - "$F" <<'PY'
+          import json,sys,os
+          p=sys.argv[1]
+          d=json.load(open(p))
+          m=d.get('manifestPath') or d.get('manifest_path') or ''
+          print('REQUEST_BATCH_ID=',d.get('batchId') or d.get('batch_id'))
+          print('REQUEST_MANIFEST=',repr(m))
+          print('MANIFEST_EXISTS=',os.path.exists(m))
+          print('PARENT_EXISTS=',os.path.isdir(os.path.dirname(m)) if m else False)
+          PY
+                done
+              fi
+            fi
+          done
+          echo '=== RECENT VYRON batch.json FILES ==='
+          find /Volumes "$HOME" -type f -name 'batch.json' -mtime -2 -print 2>/dev/null | grep -Ei 'VYRON|ВАЙРОН|ProductionManager|Batches' | tail -100 || true
+          echo '=== RECENT VYRON-LIKE JSON FILES ==='
+          find /Volumes "$HOME" -type f -name '*.json' -mtime -2 -print 2>/dev/null | grep -Ei 'VYRON|ВАЙРОН|ProductionManager|Batches' | tail -150 || true

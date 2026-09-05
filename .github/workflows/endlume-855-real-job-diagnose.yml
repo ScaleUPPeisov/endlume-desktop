@@ -19,9 +19,15 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-          OUT='/Volumes/TOSHIBA EXT/ВАЙРОН/ProductionManager/Batches/2e0e14ba-d97a-48d5-ab32-2fb2b27754bf/Neon Drive FM_BATCH_2026-09-05_001/Rendered/001 — Ready Videos.mov'
+          UUID='2e0e14ba-d97a-48d5-ab32-2fb2b27754bf'
+          OUT="$(find '/Volumes/TOSHIBA EXT' -type f -path "*${UUID}*" -name '001 — Ready Videos.mov' -print -quit 2>/dev/null || true)"
+          if test -z "$OUT"; then
+            echo 'Exact basename not found; candidates:'
+            find '/Volumes/TOSHIBA EXT' -type f -path "*${UUID}*" \( -name '*.mov' -o -name '*.mp4' \) -maxdepth 12 -print 2>/dev/null | head -50 || true
+            OUT="$(find '/Volumes/TOSHIBA EXT' -type f -path "*${UUID}*" \( -name '*.mov' -o -name '*.mp4' \) -print -quit 2>/dev/null || true)"
+          fi
           echo "OUT=$OUT"
-          test -f "$OUT"
+          test -n "$OUT" -a -f "$OUT"
           FFP="$HOME/.endlume-local-builder/endlume-desktop-8.40-bootstrap/src-tauri/binaries/ffprobe-aarch64-apple-darwin"
           if ! test -x "$FFP"; then FFP="$(command -v ffprobe)"; fi
           "$FFP" -v error -show_entries format=duration,size,bit_rate:stream=index,codec_type,codec_name,bit_rate,width,height,avg_frame_rate,sample_rate,channels -of json "$OUT"
@@ -48,7 +54,7 @@ jobs:
                   except Exception as e: print('ERR',e)
           PY
           echo '--- ENDLUME APP DATA CANDIDATES ---'
-          find "$HOME/Library/Application Support" -maxdepth 4 -type f \( -name 'library.json' -o -name 'queue.json' -o -name 'recovery.json' -o -name 'session.json' \) 2>/dev/null | grep -Ei 'endlume|studio\.endlume' || true
+          find "$HOME/Library/Application Support" -maxdepth 5 -type f \( -name 'library.json' -o -name 'queue.json' -o -name 'recovery.json' -o -name 'session.json' \) 2>/dev/null | grep -Ei 'endlume|studio\.endlume' || true
           python3 - <<'PY'
           import json,pathlib,os
           base=pathlib.Path.home()/'Library'/'Application Support'

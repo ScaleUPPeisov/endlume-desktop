@@ -24,10 +24,12 @@ jobs:
           SIDE="$(find "$ROOT/Rendered/logs" -type f -name '*project.json' -print -quit)"
           FFM="$HOME/.endlume-local-builder/endlume-desktop-8.40-bootstrap/src-tauri/binaries/ffmpeg-aarch64-apple-darwin"
           FFP="$HOME/.endlume-local-builder/endlume-desktop-8.40-bootstrap/src-tauri/binaries/ffprobe-aarch64-apple-darwin"
-          test -x "$FFM"; test -x "$FFP"; test -f "$SIDE"
+          if ! test -x "$FFM"; then FFM="$(command -v ffmpeg)"; fi
+          if ! test -x "$FFP"; then FFP="$(command -v ffprobe)"; fi
+          echo "FFM=$FFM"; echo "FFP=$FFP"; test -x "$FFM"; test -x "$FFP"; test -f "$SIDE"
           echo '=== AUDIO EXACT ==='
           python3 -u - "$SIDE" "$FFP" <<'PY' || true
-          import json,subprocess,sys,os,traceback
+          import json,subprocess,sys,os
           side,ffp=sys.argv[1:]
           d=json.load(open(side)); tracks=d['project']['audio']; rows=[]
           for n,p in enumerate(tracks,1):

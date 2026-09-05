@@ -1,11 +1,11 @@
 {
   "enabled": true,
-  "generation": 31,
+  "generation": 32,
   "app": "endlume",
   "channel": "stable",
   "version": "1.0.0-alpha.8.52",
-  "builder": "BUILD_ENDLUME_852_PROMOTE.command",
-  "notes": "ENDLUME STUDIO 8.52 stable release pinned to exact source 03399cf0f12b912a846144cd4d060755b5260cc5. Preserves exact 1920x1080, 60 FPS one-image fidelity lock, whole-track audio, Effects/Subscribe, VYRON, watchdog, updater identity studio.endlume.desktop and signed in-app updater. VideoToolbox q100/500k remains hardware-first with libx265 CRF18/500k fallback. 8.52 adds periodic zero-copy MP4 expansion for recurring Subscribe/effect timelines so long one-image videos do not physically encode unchanged hours. Release builder hard-gates Rust compile/tests, FFprobe timeline and frame count, audio decode, repeated-frame identity, zero-copy byte growth, AVFoundation readability, a 2h05/60fps 450000-frame manifest-scale gate, ARM64 bundle identity, strict codesign and Tauri updater signature before publication.",
+  "builder": "BUILD_ENDLUME_852_PROMOTE_R2.command",
+  "notes": "ENDLUME STUDIO 8.52 stable release pinned to exact production source 03399cf0f12b912a846144cd4d060755b5260cc5. Preserves exact 1920x1080, 60 FPS one-image fidelity lock, whole-track audio, Effects/Subscribe, VYRON, watchdog, updater identity studio.endlume.desktop and signed in-app updater. VideoToolbox q100/500k remains hardware-first with libx265 CRF18/500k fallback. 8.52 adds periodic zero-copy MP4 expansion for recurring Subscribe/effect timelines. R2 validates repeated samples through a full sequential decode (not random demuxer seeking over intentionally reused MP4 chunk offsets), plus Rust compile/tests, FFprobe duration/frame count, audio and video decode, exact source-frame identity, zero-copy byte growth, AVFoundation readability, a 2h05/60fps 450000-frame manifest-scale gate, ARM64 bundle identity, strict codesign and Tauri updater signature before publication.",
   "platforms": [
     "darwin-aarch64"
   ]

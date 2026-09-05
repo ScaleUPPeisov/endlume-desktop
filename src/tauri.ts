@@ -24,7 +24,7 @@ export type SingleAppStatus={
 };
 
 export type LivePreviewAssetPaths={basePath:string;baseKind:'image'|'video';overlayPath:string};
-export type VyronBatchRequest={batchId:string;manifestPath:string;requestedAt?:string|null};
+export type VyronBatchRequest={batchId:string;manifestPath:string;requestedAt?:string|null;handoffId?:string|null;selectedProjectIds?:string[];sourceManifestPath?:string|null;schemaVersion?:number|null};
 export type VyronBatchInfo={batchId:string;channelId:string;channelName:string;projectCount:number;tracksAssigned:number;rootPath:string;outputDir:string;statusPath:string;manifestPath:string;projectPaths:string[]};
 
 async function withTimeout<T>(promise:Promise<T>,ms:number,label:string):Promise<T>{
@@ -82,7 +82,7 @@ export const api = {
   openPath:(p:string)=>invoke<void>('open_result_path',{path:p}),
   reveal:(p:string)=>invoke<void>('reveal_result_path',{path:p}),
   consumeVyronBatch:()=>invoke<VyronBatchRequest|null>('consume_vyron_batch_request'),
-  loadVyronBatch:(manifestPath:string)=>invoke<VyronBatchInfo>('load_vyron_batch_manifest',{manifestPath}),
+  loadVyronBatch:(manifestPath:string,selectedProjectIds:string[]=[])= >invoke<VyronBatchInfo>('load_vyron_batch_manifest',{manifestPath,selectedProjectIds}),
   reportVyronRender:(manifestPath:string,projectPath:string,renderStatus:string,outputFile?:string|null,duration?:number|null,fileSize?:number|null,error?:string|null)=>invoke<void>('report_vyron_render',{manifestPath,projectPath,renderStatus,outputFile:outputFile??null,duration:duration??null,fileSize:fileSize??null,error:error??null}),
   showError:(text:string)=>message(text,{title:'ENDLUME Studio',kind:'error'}),
   showInfo:(text:string)=>message(text,{title:'ENDLUME Studio',kind:'info'}),

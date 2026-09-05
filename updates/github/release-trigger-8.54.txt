@@ -1,0 +1,5 @@
+ENDLUME 1.0.0-alpha.8.54
+Generation 34
+VYRON current handoff protocol hotfix only.
+Pinned source: bd6343a11d614fd7f4f656e924fdc78c73f44e91
+Render core unchanged: 9e011adc207872a23105e525a9d5bdab27242b5f

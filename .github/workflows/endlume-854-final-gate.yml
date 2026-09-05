@@ -11,7 +11,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: 6ad051433d17e45e41676bb29e59ec9f0664cc98
+          ref: bd6343a11d614fd7f4f656e924fdc78c73f44e91
           clean: true
           fetch-depth: 1
           persist-credentials: false
@@ -27,7 +27,7 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-          test "$(git rev-parse HEAD)" = "6ad051433d17e45e41676bb29e59ec9f0664cc98"
+          test "$(git rev-parse HEAD)" = "bd6343a11d614fd7f4f656e924fdc78c73f44e91"
           test "$(git hash-object src-tauri/src/render.rs)" = "9e011adc207872a23105e525a9d5bdab27242b5f"
           grep -Fq 'source_manifest_path' src-tauri/src/vyron_bridge.rs
           grep -Fq 'selected_project_ids' src-tauri/src/vyron_bridge.rs

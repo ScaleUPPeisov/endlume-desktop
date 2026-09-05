@@ -26,13 +26,13 @@ jobs:
           P="$(find "$ROOT" -maxdepth 3 -type f -name '*project.json' -print -quit)"
           if [[ -n "$P" ]]; then
             python3 - "$P" <<'PY'
-import json,sys
-p=sys.argv[1];d=json.load(open(p))
-print('PROJECT_JSON=',p)
-print('settings=',json.dumps(d.get('settings',{}),ensure_ascii=False))
-print('effects=',json.dumps(d.get('effects',[]),ensure_ascii=False,indent=2))
-print('subscribes=',json.dumps(d.get('subscribes',[]),ensure_ascii=False,indent=2))
-PY
+          import json,sys
+          p=sys.argv[1];d=json.load(open(p))
+          print('PROJECT_JSON=',p)
+          print('settings=',json.dumps(d.get('settings',{}),ensure_ascii=False))
+          print('effects=',json.dumps(d.get('effects',[]),ensure_ascii=False,indent=2))
+          print('subscribes=',json.dumps(d.get('subscribes',[]),ensure_ascii=False,indent=2))
+          PY
           fi
           echo '=== subscribe diagnostic lines ==='
           find "$ROOT" -maxdepth 3 -type f -name '*render-diagnostic.log' -exec grep -E '\[subscribe\]|MANIFEST_READY|segment [0-9]+/' {} \; | tail -n 300 || true

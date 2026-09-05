@@ -1,7 +1,7 @@
 use chrono::Utc;
 use serde::{Deserialize,Serialize};
 use serde_json::Value;
-use std::{collections::{HashMap,HashSet},fs,path::{Path,PathBuf},sync::{Mutex,OnceLock}};
+use std::{collections::{HashMap,HashSet},fs,path::{Path,PathBuf},sync::{Mutex,OnceLock},time::{Duration,SystemTime}};
 use tauri::{AppHandle,Manager};
 
 static STATUS_LOCK:OnceLock<Mutex<()>>=OnceLock::new();
@@ -17,6 +17,22 @@ fn atomic_write(path:&Path,value:&Value)->Result<(),String>{
 fn read_value(path:&Path)->Result<Value,String>{serde_json::from_slice(&fs::read(path).map_err(|e|format!("{}: {e}",path.display()))?).map_err(|e|format!("JSON {}: {e}",path.display()))}
 fn string(v:&Value,key:&str)->Result<String,String>{v.get(key).and_then(Value::as_str).filter(|x|!x.trim().is_empty()).map(str::to_string).ok_or_else(||format!("batch.json: поле {key} отсутствует"))}
 fn canonical_string(path:&str)->Result<String,String>{Ok(PathBuf::from(path).canonicalize().map_err(|_|format!("Путь не найден: {path}"))?.to_string_lossy().into_owned())}
+fn push_unique(items:&mut Vec<PathBuf>,path:PathBuf){if !items.iter().any(|x|x==&path){items.push(path)}}
+fn normalize_manifest_hint(raw:&str)->PathBuf{
+  let mut s=raw.trim().trim_matches('"').to_string();
+  if let Some(rest)=s.strip_prefix("file://"){s=rest.to_string()}
+  s=s.replace("%20"," ");
+  if let Some(rest)=s.strip_prefix("~/"){if let Some(home)=std::env::var_os("HOME"){return PathBuf::from(home).join(rest)}}
+  PathBuf::from(s)
+}
+fn candidate_is_matching_manifest(path:&Path,batch_id:&str)->bool{
+  if !path.is_file(){return false}
+  let Ok(value)=read_value(path) else{return false};
+  let source=value.get("source").and_then(Value::as_str).unwrap_or("");
+  if !source.starts_with("VYRON Production Manager"){return false}
+  let id=value.get("batchId").and_then(Value::as_str).unwrap_or("");
+  batch_id.trim().is_empty()||id==batch_id
+}
 
 #[derive(Clone,Debug,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]
@@ -24,6 +40,38 @@ pub struct VyronBatchRequest{pub batch_id:String,pub manifest_path:String,pub re
 #[derive(Clone,Debug,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]
 pub struct VyronBatchInfo{pub batch_id:String,pub channel_id:String,pub channel_name:String,pub project_count:usize,pub tracks_assigned:usize,pub root_path:String,pub output_dir:String,pub status_path:String,pub manifest_path:String,pub project_paths:Vec<String>}
+
+pub(crate) fn resolve_vyron_manifest_for_request(req:&VyronBatchRequest)->Result<String,String>{
+  let hint=normalize_manifest_hint(&req.manifest_path);let mut candidates=Vec::new();
+  push_unique(&mut candidates,hint.clone());
+  if hint.is_dir(){push_unique(&mut candidates,hint.join("batch.json"))}
+  if let Some(parent)=hint.parent(){
+    push_unique(&mut candidates,parent.join("batch.json"));
+    push_unique(&mut candidates,parent.join(&req.batch_id).join("batch.json"));
+    if let Some(grand)=parent.parent(){push_unique(&mut candidates,grand.join(&req.batch_id).join("batch.json"))}
+  }
+  for anc in hint.ancestors().take(6){push_unique(&mut candidates,anc.join(&req.batch_id).join("batch.json"))}
+
+  let mut roots=Vec::new();
+  if let Some(home)=std::env::var_os("HOME"){
+    let h=PathBuf::from(home);roots.push(h.clone());roots.push(h.join("Documents"));roots.push(h.join("Downloads"));
+  }
+  if let Ok(vols)=fs::read_dir("/Volumes"){for e in vols.flatten(){let p=e.path();if p.is_dir(){roots.push(p)}}}
+  for root in roots{
+    for rel in [
+      PathBuf::from("ВАЙРОН").join("ProductionManager").join("Batches").join(&req.batch_id).join("batch.json"),
+      PathBuf::from("VYRON").join("ProductionManager").join("Batches").join(&req.batch_id).join("batch.json"),
+      PathBuf::from("ProductionManager").join("Batches").join(&req.batch_id).join("batch.json"),
+      PathBuf::from("Batches").join(&req.batch_id).join("batch.json")
+    ]{push_unique(&mut candidates,root.join(rel))}
+  }
+  for candidate in candidates{
+    if candidate_is_matching_manifest(&candidate,&req.batch_id){return candidate.canonicalize().map(|p|p.to_string_lossy().into_owned()).map_err(|e|e.to_string())}
+  }
+  Err(format!("VYRON batch.json не найден для batch {}. Переданный путь: {}",req.batch_id,req.manifest_path))
+}
+
+fn request_age(path:&Path)->Duration{fs::metadata(path).ok().and_then(|m|m.modified().ok()).and_then(|t|SystemTime::now().duration_since(t).ok()).unwrap_or(Duration::ZERO)}
 
 fn validate_manifest(path:&str)->Result<(Value,PathBuf,PathBuf),String>{
   let manifest=PathBuf::from(path).canonicalize().map_err(|_|"VYRON batch.json не найден".to_string())?;if !manifest.is_file(){return Err("VYRON manifest должен быть файлом".into())}
@@ -37,10 +85,18 @@ fn validate_manifest(path:&str)->Result<(Value,PathBuf,PathBuf),String>{
 pub fn consume_vyron_batch_request(app:AppHandle)->Result<Option<VyronBatchRequest>,String>{
   let inbox=app.path().app_data_dir().map_err(|e|e.to_string())?.join("VYRON Inbox");fs::create_dir_all(&inbox).map_err(|e|e.to_string())?;
   let mut files=fs::read_dir(&inbox).map_err(|e|e.to_string())?.filter_map(Result::ok).map(|e|e.path()).filter(|p|p.is_file()&&p.extension().and_then(|x|x.to_str())==Some("json")).collect::<Vec<_>>();
-  files.sort_by_key(|p|fs::metadata(p).ok().and_then(|m|m.modified().ok()));
+  files.sort_by_key(|p|std::cmp::Reverse(fs::metadata(p).ok().and_then(|m|m.modified().ok())));
   for p in files{
-    let req:VyronBatchRequest=match serde_json::from_slice(&fs::read(&p).map_err(|e|e.to_string())?){Ok(v)=>v,Err(_)=>{let _=fs::remove_file(&p);continue}};
-    validate_manifest(&req.manifest_path)?;let _=fs::remove_file(&p);return Ok(Some(req));
+    let mut req:VyronBatchRequest=match serde_json::from_slice(&fs::read(&p).map_err(|e|e.to_string())?){Ok(v)=>v,Err(_)=>{let _=fs::remove_file(&p);continue}};
+    match resolve_vyron_manifest_for_request(&req){
+      Ok(manifest)=>{req.manifest_path=manifest;validate_manifest(&req.manifest_path)?;let _=fs::remove_file(&p);return Ok(Some(req))}
+      Err(_)=>{
+        // A stale request must never block newer VYRON selections. Keep only a very fresh
+        // request briefly in case VYRON is still finishing its atomic batch.json write.
+        if request_age(&p)>=Duration::from_secs(5){let _=fs::remove_file(&p)}
+        continue
+      }
+    }
   }
   Ok(None)
 }

@@ -15,53 +15,33 @@ jobs:
           clean: true
           fetch-depth: 1
           persist-credentials: false
-      - name: Inspect exact user output and ENDLUME/VYRON state
+      - name: Inspect current real ENDLUME/VYRON state
         shell: bash
         run: |
           set -Eeuo pipefail
           UUID='2e0e14ba-d97a-48d5-ab32-2fb2b27754bf'
-          OUT="$(find '/Volumes/TOSHIBA EXT' -type f -path "*${UUID}*" -name '001 — Ready Videos.mov' -print -quit 2>/dev/null || true)"
-          if test -z "$OUT"; then
-            echo 'Exact basename not found; candidates:'
-            find '/Volumes/TOSHIBA EXT' -type f -path "*${UUID}*" \( -name '*.mov' -o -name '*.mp4' \) -maxdepth 12 -print 2>/dev/null | head -50 || true
-            OUT="$(find '/Volumes/TOSHIBA EXT' -type f -path "*${UUID}*" \( -name '*.mov' -o -name '*.mp4' \) -print -quit 2>/dev/null || true)"
-          fi
+          echo '--- VOLUMES ---'
+          /bin/ls -la /Volumes || true
+          echo '--- UUID CANDIDATES ---'
+          find /Volumes -maxdepth 10 -path "*${UUID}*" -print 2>/dev/null | head -120 || true
+          OUT="$(find /Volumes -maxdepth 14 -type f -path "*${UUID}*" \( -name '*.mov' -o -name '*.mp4' \) -print -quit 2>/dev/null || true)"
           echo "OUT=$OUT"
-          test -n "$OUT" -a -f "$OUT"
-          FFP="$HOME/.endlume-local-builder/endlume-desktop-8.40-bootstrap/src-tauri/binaries/ffprobe-aarch64-apple-darwin"
-          if ! test -x "$FFP"; then FFP="$(command -v ffprobe)"; fi
-          "$FFP" -v error -show_entries format=duration,size,bit_rate:stream=index,codec_type,codec_name,bit_rate,width,height,avg_frame_rate,sample_rate,channels -of json "$OUT"
-          ROOT="$(dirname "$(dirname "$OUT")")"
-          echo "ROOT=$ROOT"
-          echo '--- BATCH FILES ---'
-          find "$ROOT" -maxdepth 3 -type f \( -name 'batch.json' -o -name 'status.json' -o -name '*render*.json' -o -name '*render*.log' -o -name '*.txt' \) -print | sed 's#^#FILE #'
-          python3 - "$ROOT" <<'PY'
-          import json,sys,pathlib
-          root=pathlib.Path(sys.argv[1])
-          for name in ('batch.json','status.json'):
-              p=root/name
-              if p.exists():
-                  print(f'--- {name} ---')
-                  try:
-                      d=json.loads(p.read_text())
-                      if name=='batch.json':
-                          print('batchId=',d.get('batchId'),'projectCount=',d.get('projectCount'),'outputDir=',d.get('outputDir'))
-                          for pr in d.get('projects',[]):
-                              if str(pr.get('projectId')) in ('001','1') or str(pr.get('folderPath','')).endswith('/001'):
-                                  print('project=',json.dumps(pr,ensure_ascii=False,indent=2))
-                      else:
-                          print(json.dumps(d,ensure_ascii=False,indent=2)[:12000])
-                  except Exception as e: print('ERR',e)
-          PY
+          if test -n "$OUT" -a -f "$OUT"; then
+            FFP="$HOME/.endlume-local-builder/endlume-desktop-8.40-bootstrap/src-tauri/binaries/ffprobe-aarch64-apple-darwin"
+            if ! test -x "$FFP"; then FFP="$(command -v ffprobe)"; fi
+            "$FFP" -v error -show_entries format=duration,size,bit_rate:stream=index,codec_type,codec_name,bit_rate,width,height,avg_frame_rate,sample_rate,channels -of json "$OUT" || true
+            ROOT="$(dirname "$(dirname "$OUT")")"
+            echo "ROOT=$ROOT"
+            find "$ROOT" -maxdepth 3 -type f \( -name 'batch.json' -o -name 'status.json' -o -name '*render*.json' -o -name '*render*.log' -o -name '*.txt' \) -print | sed 's#^#FILE #' || true
+          fi
           echo '--- ENDLUME APP DATA CANDIDATES ---'
           find "$HOME/Library/Application Support" -maxdepth 5 -type f \( -name 'library.json' -o -name 'queue.json' -o -name 'recovery.json' -o -name 'session.json' \) 2>/dev/null | grep -Ei 'endlume|studio\.endlume' || true
           python3 - <<'PY'
           import json,pathlib,os
           base=pathlib.Path.home()/'Library'/'Application Support'
-          files=[]
+          def relevant(p): return 'endlume' in str(p).lower()
           for p in base.rglob('library.json'):
-              if 'endlume' in str(p).lower(): files.append(p)
-          for p in files:
+              if not relevant(p): continue
               print('--- LIBRARY',p,'---')
               try:
                   d=json.loads(p.read_text())
@@ -70,7 +50,7 @@ jobs:
                       for x in d.get(kind,[]):
                           e=x.get('effect',x)
                           print(json.dumps({
-                            'id':e.get('id'),'enabled':e.get('enabled'),'source':os.path.basename(str(e.get('source',''))),
+                            'id':e.get('id'),'name':e.get('name'),'enabled':e.get('enabled'),'source':os.path.basename(str(e.get('source',''))),
                             'mode':e.get('mode'),'startSec':e.get('startSec'),'endSec':e.get('endSec'),
                             'repeatEverySec':x.get('repeatEverySec'),'firstAtSec':x.get('firstAtSec'),'secondAtSec':x.get('secondAtSec')
                           },ensure_ascii=False))
@@ -78,11 +58,20 @@ jobs:
               except Exception as e: print('ERR',e)
           for name in ('queue.json','recovery.json'):
               for p in base.rglob(name):
-                  if 'endlume' not in str(p).lower(): continue
+                  if not relevant(p): continue
                   print('---',name,p,'---')
                   try:
                       d=json.loads(p.read_text())
-                      txt=json.dumps(d,ensure_ascii=False,indent=2)
-                      print(txt[:24000])
+                      def slim_job(j):
+                          if not isinstance(j,dict): return j
+                          return {
+                            'project':j.get('project'),
+                            'settings':j.get('settings'),
+                            'effects':j.get('effects'),
+                            'subscribes':j.get('subscribes'),
+                            'ambient':j.get('ambient')
+                          }
+                      out={'active':slim_job(d.get('active')),'pending':[slim_job(x) for x in d.get('pending',[])[:3]],'interrupted':d.get('interrupted')}
+                      print(json.dumps(out,ensure_ascii=False,indent=2)[:40000])
                   except Exception as e: print('ERR',e)
           PY

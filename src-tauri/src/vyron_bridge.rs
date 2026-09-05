@@ -18,9 +18,7 @@ fn read_value(path:&Path)->Result<Value,String>{serde_json::from_slice(&fs::read
 fn string(v:&Value,key:&str)->Result<String,String>{v.get(key).and_then(Value::as_str).filter(|x|!x.trim().is_empty()).map(str::to_string).ok_or_else(||format!("batch.json: поле {key} отсутствует"))}
 fn canonical_string(path:&str)->Result<String,String>{Ok(PathBuf::from(path).canonicalize().map_err(|_|format!("Путь не найден: {path}"))?.to_string_lossy().into_owned())}
 fn push_unique(items:&mut Vec<PathBuf>,path:PathBuf){if !items.iter().any(|x|x==&path){items.push(path)}}
-fn push_child_manifests(items:&mut Vec<PathBuf>,dir:&Path){
-  if let Ok(rd)=fs::read_dir(dir){for e in rd.flatten(){let p=e.path();if p.is_dir(){push_unique(items,p.join("batch.json"))}}}
-}
+fn push_child_manifests(items:&mut Vec<PathBuf>,dir:&Path){if let Ok(rd)=fs::read_dir(dir){for e in rd.flatten(){let p=e.path();if p.is_dir(){push_unique(items,p.join("batch.json"))}}}}
 fn normalize_manifest_hint(raw:&str)->PathBuf{
   let mut s=raw.trim().trim_matches('"').to_string();
   if let Some(rest)=s.strip_prefix("file://"){s=rest.to_string()}
@@ -28,50 +26,60 @@ fn normalize_manifest_hint(raw:&str)->PathBuf{
   if let Some(rest)=s.strip_prefix("~/"){if let Some(home)=std::env::var_os("HOME"){return PathBuf::from(home).join(rest)}}
   PathBuf::from(s)
 }
-fn candidate_is_matching_manifest(path:&Path,batch_id:&str)->bool{
+fn candidate_is_vyron_manifest(path:&Path)->bool{
   if !path.is_file(){return false}
   let Ok(value)=read_value(path) else{return false};
-  let source=value.get("source").and_then(Value::as_str).unwrap_or("");
-  if !source.starts_with("VYRON Production Manager"){return false}
-  let id=value.get("batchId").and_then(Value::as_str).unwrap_or("");
-  batch_id.trim().is_empty()||id==batch_id
+  value.get("source").and_then(Value::as_str).map(|s|s.starts_with("VYRON Production Manager")).unwrap_or(false)
+}
+fn handoff_source(path:&Path)->Option<PathBuf>{
+  let value=read_value(path).ok()?;
+  value.get("sourceManifestPath").and_then(Value::as_str).filter(|s|!s.trim().is_empty()).map(normalize_manifest_hint)
+}
+fn handoff_selected(path:&Path)->Vec<String>{
+  read_value(path).ok().and_then(|v|v.get("selectedProjectIds").and_then(Value::as_array).cloned()).unwrap_or_default().into_iter().filter_map(|v|v.as_str().map(str::to_string)).collect()
 }
 
 #[derive(Clone,Debug,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]
-pub struct VyronBatchRequest{pub batch_id:String,pub manifest_path:String,pub requested_at:Option<String>}
+pub struct VyronBatchRequest{
+  pub batch_id:String,
+  pub manifest_path:String,
+  pub requested_at:Option<String>,
+  #[serde(default)] pub handoff_id:Option<String>,
+  #[serde(default)] pub selected_project_ids:Vec<String>,
+  #[serde(default)] pub source_manifest_path:Option<String>,
+  #[serde(default)] pub schema_version:Option<u32>
+}
 #[derive(Clone,Debug,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]
 pub struct VyronBatchInfo{pub batch_id:String,pub channel_id:String,pub channel_name:String,pub project_count:usize,pub tracks_assigned:usize,pub root_path:String,pub output_dir:String,pub status_path:String,pub manifest_path:String,pub project_paths:Vec<String>}
 
 pub(crate) fn resolve_vyron_manifest_for_request(req:&VyronBatchRequest)->Result<String,String>{
   let hint=normalize_manifest_hint(&req.manifest_path);let mut candidates=Vec::new();let mut batch_dirs=Vec::new();
+  if let Some(source)=req.source_manifest_path.as_deref(){push_unique(&mut candidates,normalize_manifest_hint(source))}
+  if hint.is_file(){if let Some(source)=handoff_source(&hint){push_unique(&mut candidates,source)}}
   push_unique(&mut candidates,hint.clone());
   if hint.is_dir(){push_unique(&mut candidates,hint.join("batch.json"));push_unique(&mut batch_dirs,hint.clone())}
   if let Some(parent)=hint.parent(){
     push_unique(&mut candidates,parent.join("batch.json"));push_unique(&mut batch_dirs,parent.to_path_buf());
-    let by_id=parent.join(&req.batch_id);push_unique(&mut candidates,by_id.join("batch.json"));push_unique(&mut batch_dirs,by_id);
-    if let Some(grand)=parent.parent(){let by_id=grand.join(&req.batch_id);push_unique(&mut candidates,by_id.join("batch.json"));push_unique(&mut batch_dirs,by_id)}
+    if let Some(grand)=parent.parent(){push_unique(&mut batch_dirs,grand.to_path_buf())}
   }
-  for anc in hint.ancestors().take(6){let by_id=anc.join(&req.batch_id);push_unique(&mut candidates,by_id.join("batch.json"));push_unique(&mut batch_dirs,by_id)}
 
   let mut roots=Vec::new();
-  if let Some(home)=std::env::var_os("HOME"){
-    let h=PathBuf::from(home);roots.push(h.clone());roots.push(h.join("Documents"));roots.push(h.join("Downloads"));
-  }
+  if let Some(home)=std::env::var_os("HOME"){let h=PathBuf::from(home);roots.push(h.clone());roots.push(h.join("Documents"));roots.push(h.join("Downloads"));}
   if let Ok(vols)=fs::read_dir("/Volumes"){for e in vols.flatten(){let p=e.path();if p.is_dir(){roots.push(p)}}}
   for root in roots{
     for base in [
-      root.join("ВАЙРОН").join("ProductionManager").join("Batches").join(&req.batch_id),
-      root.join("VYRON").join("ProductionManager").join("Batches").join(&req.batch_id),
-      root.join("ProductionManager").join("Batches").join(&req.batch_id),
-      root.join("Batches").join(&req.batch_id)
-    ]{push_unique(&mut candidates,base.join("batch.json"));push_unique(&mut batch_dirs,base)}
+      root.join("ВАЙРОН").join("ProductionManager").join("Batches"),
+      root.join("VYRON").join("ProductionManager").join("Batches"),
+      root.join("ProductionManager").join("Batches"),
+      root.join("Batches")
+    ]{
+      if base.is_dir(){push_unique(&mut batch_dirs,base.clone());push_unique(&mut batch_dirs,base.join(&req.batch_id));}
+    }
   }
   for dir in batch_dirs{push_child_manifests(&mut candidates,&dir)}
-  for candidate in candidates{
-    if candidate_is_matching_manifest(&candidate,&req.batch_id){return candidate.canonicalize().map(|p|p.to_string_lossy().into_owned()).map_err(|e|e.to_string())}
-  }
+  for candidate in candidates{if candidate_is_vyron_manifest(&candidate){return candidate.canonicalize().map(|p|p.to_string_lossy().into_owned()).map_err(|e|e.to_string())}}
   Err(format!("VYRON batch.json не найден для batch {}. Переданный путь: {}",req.batch_id,req.manifest_path))
 }
 
@@ -92,11 +100,13 @@ pub fn consume_vyron_batch_request(app:AppHandle)->Result<Option<VyronBatchReque
   files.sort_by_key(|p|std::cmp::Reverse(fs::metadata(p).ok().and_then(|m|m.modified().ok())));
   for p in files{
     let mut req:VyronBatchRequest=match serde_json::from_slice(&fs::read(&p).map_err(|e|e.to_string())?){Ok(v)=>v,Err(_)=>{let _=fs::remove_file(&p);continue}};
+    let handoff=normalize_manifest_hint(&req.manifest_path);
+    if req.selected_project_ids.is_empty()&&handoff.is_file(){req.selected_project_ids=handoff_selected(&handoff)}
     match resolve_vyron_manifest_for_request(&req){
-      Ok(manifest)=>{req.manifest_path=manifest;validate_manifest(&req.manifest_path)?;let _=fs::remove_file(&p);return Ok(Some(req))}
+      Ok(manifest)=>{req.source_manifest_path=Some(manifest.clone());req.manifest_path=manifest;validate_manifest(&req.manifest_path)?;let _=fs::remove_file(&p);return Ok(Some(req))}
       Err(_)=>{
-        // A stale request must never block newer VYRON selections. Keep only a very fresh
-        // request briefly in case VYRON is still finishing its atomic batch.json write.
+        // Old failed handoffs must never block the newest selection. VYRON writes the
+        // handoff/source manifest before ENDLUME polls; five seconds is only a race grace.
         if request_age(&p)>=Duration::from_secs(5){let _=fs::remove_file(&p)}
         continue
       }
@@ -106,23 +116,26 @@ pub fn consume_vyron_batch_request(app:AppHandle)->Result<Option<VyronBatchReque
 }
 
 #[tauri::command]
-pub fn load_vyron_batch_manifest(manifest_path:String)->Result<VyronBatchInfo,String>{
+pub fn load_vyron_batch_manifest(manifest_path:String,selected_project_ids:Option<Vec<String>>)->Result<VyronBatchInfo,String>{
   let(v,manifest,root)=validate_manifest(&manifest_path)?;let projects=v.get("projects").and_then(Value::as_array).ok_or_else(||"batch.json: projects отсутствует".to_string())?;
   let declared=v.get("projectCount").and_then(Value::as_u64).unwrap_or(projects.len() as u64) as usize;if declared!=projects.len(){return Err(format!("VYRON batch: projectCount {declared}, фактически {}",projects.len()))}
+  let selected=selected_project_ids.unwrap_or_default().into_iter().collect::<HashSet<_>>();
   let mut folders=HashSet::new();let mut tracks=0usize;let mut project_paths=Vec::new();
   for p in projects{
+    let project_id=p.get("projectId").and_then(Value::as_str).unwrap_or("");if !selected.is_empty()&&!selected.contains(project_id){continue}
     let folder=PathBuf::from(string(p,"folderPath")?).canonicalize().map_err(|_|"VYRON project folder не найден".to_string())?;
     if !folder.starts_with(&root){return Err("Проект VYRON находится вне batch root".into())}
     if !folders.insert(folder.clone()){return Err("VYRON batch содержит повтор папки проекта".into())}
     project_paths.push(folder.to_string_lossy().into_owned());tracks+=p.get("tracks").and_then(Value::as_array).map(|x|x.len()).unwrap_or(0);
   }
+  if !selected.is_empty()&&project_paths.is_empty(){return Err("Выбранные VYRON проекты не найдены в batch.json".into())}
   let output=PathBuf::from(string(&v,"outputDir")?);fs::create_dir_all(&output).map_err(|e|format!("Output dir: {e}"))?;let output=output.canonicalize().map_err(|e|e.to_string())?;if !output.starts_with(&root){return Err("Output VYRON находится вне batch root".into())}
   let status=PathBuf::from(string(&v,"statusPath")?);let status_parent=status.parent().ok_or_else(||"statusPath некорректен".to_string())?.canonicalize().map_err(|e|e.to_string())?;if status_parent!=root{return Err("statusPath VYRON находится вне batch root".into())}
   let manifest_string=manifest.to_string_lossy().into_owned();{
     let mut map=project_map().lock().map_err(|_|"VYRON project map lock".to_string())?;
     for path in &project_paths{map.insert(path.clone(),manifest_string.clone());}
   }
-  Ok(VyronBatchInfo{batch_id:string(&v,"batchId")?,channel_id:string(&v,"channelId")?,channel_name:string(&v,"channelName")?,project_count:projects.len(),tracks_assigned:tracks,root_path:root.to_string_lossy().into_owned(),output_dir:output.to_string_lossy().into_owned(),status_path:status.to_string_lossy().into_owned(),manifest_path:manifest_string,project_paths})
+  Ok(VyronBatchInfo{batch_id:string(&v,"batchId")?,channel_id:string(&v,"channelId")?,channel_name:string(&v,"channelName")?,project_count:project_paths.len(),tracks_assigned:tracks,root_path:root.to_string_lossy().into_owned(),output_dir:output.to_string_lossy().into_owned(),status_path:status.to_string_lossy().into_owned(),manifest_path:manifest_string,project_paths})
 }
 
 #[tauri::command]

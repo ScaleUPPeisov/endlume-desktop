@@ -1,11 +1,11 @@
 {
   "enabled": true,
-  "generation": 33,
+  "generation": 34,
   "app": "endlume",
   "channel": "stable",
-  "version": "1.0.0-alpha.8.53",
-  "builder": "BUILD_ENDLUME_853_VYRON_HOTFIX.command",
-  "notes": "ENDLUME STUDIO 8.53 is a VYRON acceptance hotfix only, pinned to candidate 3609028e2540d85b64a02c169fe5203735ae3a1c. Restores the native VYRON Inbox receiver, batch.json loader/status bridge, frontend invoke surface and invisible VyronBatchBridge mount so projects selected in VYRON are accepted by an already-open ENDLUME instance. The 8.52 render core is byte-identical (render.rs blob 9e011adc207872a23105e525a9d5bdab27242b5f): 1920x1080, 60 FPS, H.265, Effects/Subscribe, whole-track audio, zero-copy periodic manifest pipeline, updater identity and signing are unchanged. The hotfix passed frontend compile, native compile, VYRON manifest/status roundtrip tests and unchanged-render guards before promotion.",
+  "version": "1.0.0-alpha.8.54",
+  "builder": "BUILD_ENDLUME_854_VYRON_HANDOFF_HOTFIX.command",
+  "notes": "ENDLUME STUDIO 8.54 fixes only the live VYRON -> ENDLUME handoff contract, pinned to exact source bd6343a11d614fd7f4f656e924fdc78c73f44e91. Live diagnostics proved current VYRON writes manifestPath to a .vyron-handoff-*.json file and provides the real batch.json in sourceManifestPath with selectedProjectIds. 8.54 resolves sourceManifestPath/current handoff JSON, imports only selected projects, consumes newest requests first, and removes stale broken handoffs so an old missing file cannot block the inbox. The render engine is byte-identical to 8.52/8.53 (render.rs blob 9e011adc207872a23105e525a9d5bdab27242b5f): exact 1920x1080, 60 FPS, H.265, Effects/Subscribe, whole-track audio and zero-copy manifest render are unchanged. Final M1 gate passed frontend build, cargo check, VYRON handoff tests and MP4 manifest tests before promotion.",
   "platforms": [
     "darwin-aarch64"
   ]

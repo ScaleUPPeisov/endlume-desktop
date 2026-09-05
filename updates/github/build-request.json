@@ -1,11 +1,11 @@
 {
   "enabled": true,
-  "generation": 30,
+  "generation": 31,
   "app": "endlume",
   "channel": "stable",
-  "version": "1.0.0-alpha.8.51",
-  "builder": "BUILD_ENDLUME_851_PROMOTE.command",
-  "notes": "ENDLUME STUDIO PEISOV 8.51 final stable release pinned to 20f01b492a32aa03a1a1c2b2048fb12d6e256121. Exact 1920x1080, CFR30/60, whole-track audio, Effects/Subscribe, VYRON, watchdog and bounded metadata FFprobe preserved. VideoToolbox q100/500k hardware-first with libx265 CRF18/500k fallback. Physical production gate measured SSIM 0.999987, cold 27.858s, warm 2.623s and 697.5MB for 2h05. Final migration fixes the assemble_visual replacement boundary so synchronous release helpers FinalProbe, final_verify_error and write_side_files are preserved. Hard gates remain SSIM >=0.995, 500-700MB, cold <=75s and warm <=30s. Old candidate artifacts are invalidated before promotion.",
+  "version": "1.0.0-alpha.8.52",
+  "builder": "BUILD_ENDLUME_852_PROMOTE.command",
+  "notes": "ENDLUME STUDIO 8.52 stable release pinned to exact source 03399cf0f12b912a846144cd4d060755b5260cc5. Preserves exact 1920x1080, 60 FPS one-image fidelity lock, whole-track audio, Effects/Subscribe, VYRON, watchdog, updater identity studio.endlume.desktop and signed in-app updater. VideoToolbox q100/500k remains hardware-first with libx265 CRF18/500k fallback. 8.52 adds periodic zero-copy MP4 expansion for recurring Subscribe/effect timelines so long one-image videos do not physically encode unchanged hours. Release builder hard-gates Rust compile/tests, FFprobe timeline and frame count, audio decode, repeated-frame identity, zero-copy byte growth, AVFoundation readability, a 2h05/60fps 450000-frame manifest-scale gate, ARM64 bundle identity, strict codesign and Tauri updater signature before publication.",
   "platforms": [
     "darwin-aarch64"
   ]

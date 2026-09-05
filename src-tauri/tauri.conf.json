@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "ENDLUME Studio",
-  "version": "1.0.0-alpha.8.41",
+  "productName": "ENDLUME STUDIO PEISOV",
+  "version": "1.0.0-alpha.8.52",
   "identifier": "studio.endlume.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "ENDLUME Studio",
+        "title": "ENDLUME STUDIO PEISOV",
         "width": 1280,
         "height": 860,
         "minWidth": 980,

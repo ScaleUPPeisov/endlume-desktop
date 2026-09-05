@@ -1,4 +1,4 @@
-use crate::vyron_bridge::{load_vyron_batch_manifest,report_vyron_render};
+use crate::vyron_bridge::{load_vyron_batch_manifest,report_vyron_render,resolve_vyron_manifest_for_request,VyronBatchRequest};
 use serde_json::json;
 use std::{fs,path::PathBuf};
 use uuid::Uuid;
@@ -37,4 +37,21 @@ fn vyron_manifest_rejects_project_outside_batch_root(){
   let mut v:serde_json::Value=serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();v["projects"][0]["folderPath"]=json!(outside.to_string_lossy());fs::write(&manifest,serde_json::to_vec_pretty(&v).unwrap()).unwrap();
   let err=load_vyron_batch_manifest(manifest.to_string_lossy().into_owned()).unwrap_err();assert!(err.contains("вне batch root"));
   let _=root;fs::remove_dir_all(base).unwrap();
+}
+
+#[test]
+fn vyron_request_recovers_batch_json_from_wrong_filename_in_same_folder(){
+  let(base,manifest,_)=fixture();let wrong=manifest.with_file_name("VYRON batch.json");
+  let req=VyronBatchRequest{batch_id:"NEON_BATCH_TEST".into(),manifest_path:wrong.to_string_lossy().into_owned(),requested_at:None};
+  let resolved=resolve_vyron_manifest_for_request(&req).unwrap();
+  assert_eq!(PathBuf::from(resolved).canonicalize().unwrap(),manifest.canonicalize().unwrap());
+  fs::remove_dir_all(base).unwrap();
+}
+
+#[test]
+fn vyron_request_rejects_manifest_from_other_batch(){
+  let(base,manifest,_)=fixture();
+  let req=VyronBatchRequest{batch_id:"OTHER_BATCH".into(),manifest_path:manifest.to_string_lossy().into_owned(),requested_at:None};
+  assert!(resolve_vyron_manifest_for_request(&req).is_err());
+  fs::remove_dir_all(base).unwrap();
 }

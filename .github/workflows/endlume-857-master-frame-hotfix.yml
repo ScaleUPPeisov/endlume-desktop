@@ -24,7 +24,7 @@ jobs:
           mkdir -p src-tauri/binaries
           rsync -a "$FOUNDATION/src-tauri/binaries/" src-tauri/binaries/
           chmod +x src-tauri/binaries/ffmpeg* src-tauri/binaries/ffprobe* || true
-      - name: Apply 8.56 then frame-only 8.57 hotfix
+      - name: Apply 8.56 then 8.57 hotfix
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -35,7 +35,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           BASE=23cb01908604cf7583843c1b1bf74eafa7205a69
-          git diff --exit-code "$BASE" -- src-tauri/src/vyron_bridge.rs src-tauri/src/vyron_bridge_tests.rs src/components/VyronBatchBridge.tsx src/tauri.ts src/pages/App.tsx src/pages/ProjectPage.tsx src/pages/RenderPage.tsx src/pages/SettingsPage.tsx src/store.ts
+          git diff --exit-code "$BASE" -- src-tauri/src/vyron_bridge.rs src-tauri/src/vyron_bridge_tests.rs src/components/VyronBatchBridge.tsx src/tauri.ts src/pages/App.tsx src/pages/ProjectPage.tsx src/pages/RenderPage.tsx src/store.ts
           grep -Fq 'shortest=0:repeatlast=1:eof_action=repeat' src-tauri/src/render.rs
           ! grep -Fq "strict-prealpha" src-tauri/src/render.rs || true
           grep -Fq 'let max_attempts=if smart_repeat_project(job){1}else{2};' src-tauri/src/render.rs
@@ -47,6 +47,9 @@ jobs:
           grep -Fq 'source_manifest_path' src-tauri/src/vyron_bridge.rs
           grep -Fq 'selected_project_ids' src-tauri/src/vyron_bridge.rs
           grep -Fq '<VyronBatchBridge/>' src/pages/App.tsx
+          grep -Fq 'ENDLUME Studio 1.0.0-alpha.8.57' src/pages/SettingsPage.tsx
+          grep -Fq "version:'1.0.0-alpha.8.57'" src/components/ReleaseHistory.tsx
+          grep -Fq 'current:true' src/components/ReleaseHistory.tsx
           python3 - <<'PY'
           import json,re,subprocess
           assert json.load(open('package.json'))['version']=='1.0.0-alpha.8.57'
@@ -68,6 +71,8 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
+          METRICS="$GITHUB_WORKSPACE/857-master-metrics.json"
+          rm -f "$METRICS"
           UUID='2e0e14ba-d97a-48d5-ab32-2fb2b27754bf'
           BASE="$(find /Volumes -type d -name "$UUID" -print -quit 2>/dev/null || true)"; test -d "$BASE"
           SIDE="$(find "$BASE" -type f -path '*/Rendered/logs/*' -name '*project.json' -print -quit 2>/dev/null || true)"; test -f "$SIDE"
@@ -89,9 +94,11 @@ jobs:
           FRAMES="$($FFP -v error -select_streams v:0 -count_frames -show_entries stream=nb_read_frames -of csv=p=0 "$TMP/master.mp4")"
           RATE="$($FFP -v error -select_streams v:0 -show_entries stream=width,height,avg_frame_rate -of csv=p=0 "$TMP/master.mp4")"
           DUR="$($FFP -v error -show_entries format=duration -of csv=p=0 "$TMP/master.mp4")"
-          python3 - "$t0" "$t1" "$FRAMES" "$RATE" "$DUR" <<'PY'
-          import sys
-          dt=float(sys.argv[2])-float(sys.argv[1]); frames=int(sys.argv[3]); rate=sys.argv[4]; dur=float(sys.argv[5])
+          python3 - "$t0" "$t1" "$FRAMES" "$RATE" "$DUR" "$METRICS" <<'PY'
+          import json,sys
+          dt=float(sys.argv[2])-float(sys.argv[1]); frames=int(sys.argv[3]); rate=sys.argv[4]; dur=float(sys.argv[5]); path=sys.argv[6]
+          data={'seconds':round(dt,3),'frames':frames,'rate':rate,'duration':round(dur,6)}
+          json.dump(data,open(path,'w'),indent=2)
           print('REAL_857_MASTER_SEC',round(dt,3),'FRAMES',frames,'RATE',rate,'DURATION',round(dur,3))
           assert frames==3381,frames
           assert rate=='1920,1080,60/1',rate
@@ -99,3 +106,10 @@ jobs:
           assert dt<=24.0,dt
           PY
           echo 'PASS: exact real Strict master is 3381 frames, 1920x1080/60 and within render budget'
+      - name: Upload exact-master metrics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: endlume-857-master-metrics
+          path: 857-master-metrics.json
+          if-no-files-found: warn

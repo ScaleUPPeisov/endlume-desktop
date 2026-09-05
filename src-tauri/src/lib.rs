@@ -11,6 +11,7 @@ mod queue;
 mod cache;
 mod system;
 mod updater_local;
+mod mp4_manifest;
 
 use std::sync::Arc;
 use tauri::Manager;

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ENDLUME 8.57 durable real-fixture locator; CI trigger 2026-09-05.
 import copy
 import json
 import os

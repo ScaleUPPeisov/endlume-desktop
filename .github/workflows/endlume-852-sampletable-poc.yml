@@ -56,7 +56,7 @@ jobs:
             sem.signal()
           }
           sem.wait()
-SWIFT
+          SWIFT
           xcrun swift "$TMP/check.swift" "$TMP/repeat.mp4"
           BASE_SIZE="$(stat -f%z "$TMP/base.mp4")"; REP_SIZE="$(stat -f%z "$TMP/repeat.mp4")"
           python3 -c "b=int('$BASE_SIZE');r=int('$REP_SIZE');assert r < b*1.35,(b,r);print('PASS_ZERO_COPY_SIZE base=',b,'repeat=',r)"

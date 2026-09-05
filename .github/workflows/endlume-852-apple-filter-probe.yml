@@ -1,0 +1,29 @@
+name: ENDLUME 8.52 Apple Filter Probe
+on:
+  push:
+    branches: [candidate/endlume-852-build]
+    paths: ['.github/workflows/endlume-852-apple-filter-probe.yml']
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: candidate/endlume-852-build
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Inspect acceleration/filter capabilities
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          WORK="$HOME/.endlume-local-builder/endlume-desktop-8.40-bootstrap"
+          FFMPEG="$(find "$WORK/src-tauri/binaries" -maxdepth 1 -type f -name 'ffmpeg*' -perm -111 -print -quit)"
+          "$FFMPEG" -hide_banner -filters 2>&1 | grep -Ei 'metal|videotoolbox|overlay|colorkey|chromakey' || true
+          echo '=== hwaccels ==='
+          "$FFMPEG" -hide_banner -hwaccels || true
+          echo '=== build config ==='
+          "$FFMPEG" -hide_banner -buildconf 2>&1 | head -80

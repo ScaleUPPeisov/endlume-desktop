@@ -1,0 +1,37 @@
+name: ENDLUME 8.52 Apply Source
+on:
+  push:
+    branches: [candidate/endlume-852-effective-source]
+    paths: ['.github/workflows/endlume-852-apply-source.yml']
+permissions:
+  contents: write
+jobs:
+  apply:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: candidate/endlume-852-effective-source
+          clean: true
+          fetch-depth: 1
+      - name: Apply 8.52 production patch
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/apply-periodic-zero-copy-8-52.py
+          python3 scripts/apply-periodic-zero-copy-8-52.py .
+          grep -F 'Periodic852Plan' src-tauri/src/render.rs
+          grep -F '1.0.0-alpha.8.52' package.json src-tauri/tauri.conf.json src-tauri/Cargo.toml
+          cargo check --manifest-path src-tauri/Cargo.toml
+          cargo test --manifest-path src-tauri/Cargo.toml mp4_manifest::tests -- --nocapture
+      - name: Commit patched production source
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git config user.name 'ScaleUPPeisov'
+          git config user.email 'peisov.business@gmail.com'
+          git add src-tauri/src/render.rs src-tauri/src/mp4_manifest.rs src-tauri/src/lib.rs src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/tauri.conf.json package.json package-lock.json
+          if git diff --cached --quiet; then echo 'No patch delta'; exit 0; fi
+          git commit -m 'feat(8.52): periodic zero-copy rendering at q100'
+          git push origin HEAD:candidate/endlume-852-effective-source

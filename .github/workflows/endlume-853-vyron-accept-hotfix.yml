@@ -1,0 +1,58 @@
+name: ENDLUME 8.53 VYRON Acceptance Hotfix
+on:
+  push:
+    branches: [candidate/endlume-853-vyron-accept-hotfix]
+permissions:
+  contents: read
+jobs:
+  gate:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: candidate/endlume-853-vyron-accept-hotfix
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Restore embedded FFmpeg sidecars
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          FOUNDATION="$HOME/.endlume-local-builder/endlume-desktop-8.40-bootstrap"
+          test -d "$FOUNDATION/src-tauri/binaries"
+          mkdir -p src-tauri/binaries
+          rsync -a "$FOUNDATION/src-tauri/binaries/" src-tauri/binaries/
+      - name: Prove only VYRON acceptance integration changed
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git fetch --no-tags --depth=1 origin 03399cf0f12b912a846144cd4d060755b5260cc5
+          git diff --exit-code 03399cf0f12b912a846144cd4d060755b5260cc5 HEAD -- src-tauri/src/render.rs src-tauri/src/queue.rs src-tauri/src/scan.rs src-tauri/src/mp4_manifest.rs
+          grep -Fq 'mod vyron_bridge;' src-tauri/src/lib.rs
+          grep -Fq 'vyron_bridge::consume_vyron_batch_request' src-tauri/src/lib.rs
+          grep -Fq "consumeVyronBatch:()=>invoke<VyronBatchRequest|null>('consume_vyron_batch_request')" src/tauri.ts
+          grep -Fq '<VyronBatchBridge/>' src/pages/App.tsx
+          grep -Fq "join(\"VYRON Inbox\")" src-tauri/src/vyron_bridge.rs
+          python3 - <<'PY'
+          import json,re,pathlib
+          assert json.load(open('package.json'))['version']=='1.0.0-alpha.8.53'
+          assert json.load(open('src-tauri/tauri.conf.json'))['version']=='1.0.0-alpha.8.53'
+          c=pathlib.Path('src-tauri/Cargo.toml').read_text()
+          assert re.search(r'^version\s*=\s*"1\.0\.0-alpha\.8\.53"$',c,re.M)
+          PY
+      - name: Frontend compile
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          npm ci
+          npm run check
+          npm run build
+      - name: Native compile and VYRON roundtrip
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cargo check --manifest-path src-tauri/Cargo.toml
+          cargo test --manifest-path src-tauri/Cargo.toml vyron_manifest_ -- --nocapture
+          cargo test --manifest-path src-tauri/Cargo.toml mp4_manifest::tests -- --nocapture
+          echo 'PASS: ENDLUME 8.53 VYRON acceptance hotfix; render pipeline unchanged'

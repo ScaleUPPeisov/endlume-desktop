@@ -1,0 +1,37 @@
+name: ENDLUME 8.52 Source FPS Probe
+on:
+  push:
+    branches: [candidate/endlume-852-build]
+    paths: ['.github/workflows/endlume-852-source-fps-probe.yml']
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: candidate/endlume-852-build
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Probe exact source/output frame cadence
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          WORK="$HOME/.endlume-local-builder/endlume-desktop-8.40-bootstrap"
+          FFMPEG="$(find "$WORK/src-tauri/binaries" -maxdepth 1 -type f -name 'ffmpeg*' -perm -111 -print -quit)"
+          FFPROBE="$(find "$WORK/src-tauri/binaries" -maxdepth 1 -type f -name 'ffprobe*' -perm -111 -print -quit)"
+          FX1="$HOME/Library/Application Support/studio.endlume.desktop/library-assets/effects/3c501bb14fd159efad59285bb11bd197.mp4"
+          FX2="$HOME/Library/Application Support/studio.endlume.desktop/library-assets/effects/e8054c2afef438886500ce4e6e27fda0.mp4"
+          SUB="$HOME/Library/Application Support/studio.endlume.desktop/library-assets/subscribe/a59e63f4e9390c89a15053eb3d96239f.mp4"
+          VAR="$HOME/Library/Caches/studio.endlume.desktop/render-v1-fidelity-849/variant-7c3f453554e0150b370b9975738e9985.mp4"
+          for P in "$FX1" "$FX2" "$SUB" "$VAR"; do
+            echo "=== $P ==="
+            "$FFPROBE" -v error -select_streams v:0 -show_entries stream=codec_name,width,height,r_frame_rate,avg_frame_rate,nb_frames,duration -of default=nw=1 "$P"
+          done
+          echo '=== duplicate analysis, first 12 seconds current variant ==='
+          "$FFMPEG" -hide_banner -loglevel info -i "$VAR" -t 12 -vf "mpdecimate,showinfo" -an -f null - 2>&1 | grep 'showinfo.* n:' | tail -1 || true
+          echo '=== total decoded current variant frames first 12s ==='
+          "$FFMPEG" -hide_banner -loglevel info -i "$VAR" -t 12 -vf "showinfo" -an -f null - 2>&1 | grep 'showinfo.* n:' | tail -1 || true

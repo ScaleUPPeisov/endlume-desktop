@@ -26,24 +26,26 @@ jobs:
           FFP="$HOME/.endlume-local-builder/endlume-desktop-8.40-bootstrap/src-tauri/binaries/ffprobe-aarch64-apple-darwin"
           test -x "$FFM"; test -x "$FFP"; test -f "$SIDE"
           echo '=== AUDIO EXACT ==='
-          python3 - "$SIDE" "$FFP" <<'PY'
-          import json,subprocess,sys,os
+          python3 -u - "$SIDE" "$FFP" <<'PY' || true
+          import json,subprocess,sys,os,traceback
           side,ffp=sys.argv[1:]
           d=json.load(open(side)); tracks=d['project']['audio']; rows=[]
-          for p in tracks:
-              q=subprocess.run([ffp,'-v','error','-select_streams','a:0','-show_entries','format=duration,size:stream=codec_name,bit_rate,sample_rate,channels','-of','json',p],capture_output=True,text=True)
-              if q.returncode:
-                  print('PROBE_FAIL',os.path.basename(p),q.stderr.strip()); continue
-              x=json.loads(q.stdout); f=x.get('format',{}); s=(x.get('streams') or [{}])[0]
-              dur=float(f.get('duration') or 0); size=int(f.get('size') or os.path.getsize(p)); br=int(s.get('bit_rate') or 0)
-              rows.append((p,dur,size,br,s.get('codec_name'),s.get('sample_rate'),s.get('channels')))
-          for i,r in enumerate(rows,1): print('TRACK',i,round(r[1],3),r[2],r[3],r[4],r[5],r[6])
-          assert len(rows)==15, len(rows)
-          target=7200.0;t=0.0;i=0;bytes_est=0
-          while t<target:
-              r=rows[i%len(rows)];t+=r[1];bytes_est+=r[2];i+=1
-          print('TRACKS_PLAYED',i,'FINAL_WHOLE_TRACK_SECONDS',round(t,3),'OVERSHOOT',round(t-target,3))
-          print('SOURCE_AUDIO_BYTES_EST',bytes_est,'MiB',round(bytes_est/1048576,2),'MB',round(bytes_est/1e6,2))
+          for n,p in enumerate(tracks,1):
+              try:
+                  q=subprocess.run([ffp,'-v','error','-select_streams','a:0','-show_entries','format=duration,size:stream=codec_name,bit_rate,sample_rate,channels','-of','json',p],capture_output=True,text=True,timeout=12)
+                  if q.returncode: raise RuntimeError(q.stderr.strip() or f'rc={q.returncode}')
+                  x=json.loads(q.stdout); f=x.get('format',{}); s=(x.get('streams') or [{}])[0]
+                  dur=float(f.get('duration') or 0); size=int(f.get('size') or os.path.getsize(p)); br=int(s.get('bit_rate') or 0)
+                  rows.append((p,dur,size,br,s.get('codec_name'),s.get('sample_rate'),s.get('channels')))
+                  print('TRACK',n,round(dur,3),size,br,s.get('codec_name'),s.get('sample_rate'),s.get('channels'),flush=True)
+              except Exception as e: print('PROBE_FAIL',n,os.path.basename(p),repr(e),flush=True)
+          if len(rows)==15:
+              target=7200.0;t=0.0;i=0;bytes_est=0
+              while t<target:
+                  r=rows[i%len(rows)];t+=r[1];bytes_est+=r[2];i+=1
+              print('TRACKS_PLAYED',i,'FINAL_WHOLE_TRACK_SECONDS',round(t,3),'OVERSHOOT',round(t-target,3),flush=True)
+              print('SOURCE_AUDIO_BYTES_EST',bytes_est,'MiB',round(bytes_est/1048576,2),'MB',round(bytes_est/1e6,2),flush=True)
+          else: print('AUDIO_ROWS',len(rows),'OF 15',flush=True)
           PY
           echo '=== VISUAL EXACT ==='
           python3 - "$SIDE" <<'PY' > /tmp/endlume855.env

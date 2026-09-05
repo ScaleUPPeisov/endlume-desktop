@@ -12,6 +12,8 @@ mod cache;
 mod system;
 mod updater_local;
 mod mp4_manifest;
+#[cfg(test)]
+mod mp4_manifest_probe_tests;
 
 use std::sync::Arc;
 use tauri::Manager;

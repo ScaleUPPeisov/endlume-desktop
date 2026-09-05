@@ -136,7 +136,6 @@ function UpdateNotice({update,onLater}:{update:any;onLater:()=>void}){
     <div className="updateNoticeHead"><span className="updateNoticeDot"/><div><b>Вышло новое обновление</b><small>ENDLUME {update.version}{update.date?` • ${formatUpdateDate(update.date)}`:''}</small></div></div>
     <p>{shortUpdateText(update.body)}</p>
     {progress!==null&&<div className="updateNoticeProgress"><i style={{width:`${progress}%`}}/><span>{progress<100?`Обновляю ${progress.toFixed(0)}%`:'Перезапускаю…'}</span></div>}
-    {stage&&installing&&<small>{stage}</small>}
     {error&&<div className="updateNoticeError">{error}</div>}
     <div className="updateNoticeActions">
       <button className="later" disabled={installing} onClick={onLater}>НАПОМНИТЬ ЧЕРЕЗ ЧАС</button>

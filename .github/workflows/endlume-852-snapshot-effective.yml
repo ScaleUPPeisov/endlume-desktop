@@ -34,14 +34,17 @@ jobs:
           if test -d "$WORK/src-tauri/capabilities"; then mkdir -p src-tauri/capabilities; rsync -a --delete "$WORK/src-tauri/capabilities/" src-tauri/capabilities/; fi
           git status --short
           grep -F 'Smart Fidelity: Effects/Subscribe из оригиналов' src-tauri/src/render.rs
-          grep -F '1.0.0-alpha.8.51' src-tauri/tauri.conf.json package.json || true
       - name: Commit exact effective source
         shell: bash
         run: |
           set -Eeuo pipefail
           git config user.name 'ScaleUPPeisov'
           git config user.email 'peisov.business@gmail.com'
-          git add src src-tauri/src src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/tauri.conf.json src-tauri/build.rs src-tauri/capabilities package.json package-lock.json tsconfig.json tsconfig.node.json vite.config.ts index.html 2>/dev/null || true
+          git add -A src src-tauri
+          for f in package.json package-lock.json tsconfig.json tsconfig.node.json vite.config.ts index.html; do
+            if test -e "$f"; then git add "$f"; fi
+          done
+          git status --short
           if git diff --cached --quiet; then echo 'No source changes to snapshot'; exit 0; fi
           git commit -m 'snapshot(8.51): exact effective production source for 8.52'
           git push origin HEAD:candidate/endlume-852-effective-source

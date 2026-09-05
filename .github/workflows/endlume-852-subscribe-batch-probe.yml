@@ -1,0 +1,44 @@
+name: ENDLUME 8.52 Subscribe Batch Probe
+
+on:
+  push:
+    branches: [candidate/endlume-852-production-speed-size]
+    paths:
+      - '.github/workflows/endlume-852-subscribe-batch-probe.yml'
+      - 'scripts/probe-subscribe-batch-8-52.sh'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-852-subscribe-batch-probe
+  cancel-in-progress: true
+
+jobs:
+  subscribe-batch:
+    name: macOS ARM64 • exact multi-phase Subscribe batch
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: candidate/endlume-852-production-speed-size
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Resolve embedded tools
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          WORK="$HOME/.endlume-local-builder/endlume-desktop-8.40-bootstrap"
+          FFMPEG="$(find "$WORK/src-tauri/binaries" -maxdepth 1 -type f -name 'ffmpeg*' -perm -111 -print -quit)"
+          FFPROBE="$(find "$WORK/src-tauri/binaries" -maxdepth 1 -type f -name 'ffprobe*' -perm -111 -print -quit)"
+          test -x "$FFMPEG"; test -x "$FFPROBE"
+          echo "FFMPEG=$FFMPEG" >> "$GITHUB_ENV"
+          echo "FFPROBE=$FFPROBE" >> "$GITHUB_ENV"
+      - name: Compare serial vs exact batch
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          chmod +x scripts/probe-subscribe-batch-8-52.sh
+          scripts/probe-subscribe-batch-8-52.sh "$FFMPEG" "$FFPROBE"

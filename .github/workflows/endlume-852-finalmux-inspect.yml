@@ -1,0 +1,28 @@
+name: ENDLUME 8.52 Final Mux Inspect
+on:
+  push:
+    branches: [candidate/endlume-852-build]
+    paths:
+      - '.github/workflows/endlume-852-finalmux-inspect.yml'
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: candidate/endlume-852-build
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Dump final mux and render attempt scopes
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          R="$HOME/.endlume-local-builder/endlume-desktop-8.40-bootstrap/src-tauri/src/render.rs"
+          echo '===== final mux markers ====='
+          grep -n -E 'VisualSource::|AudioSource::|final_verify|write_side_files|render_attempt|итог|mux|FinalProbe' "$R" | tail -n 160 || true
+          echo '===== tail render.rs ====='
+          tail -n 240 "$R"

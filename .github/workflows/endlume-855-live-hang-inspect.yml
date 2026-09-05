@@ -1,0 +1,31 @@
+name: ENDLUME 8.55 Live Hang Inspect
+on:
+  push:
+    branches: [diagnose/endlume-855-real-job]
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 8
+    steps:
+      - name: Inspect live ENDLUME/FFmpeg state
+        shell: bash
+        run: |
+          set -u
+          echo '=== TIME ==='; date
+          echo '=== ENDLUME / FFMPEG PROCESSES ==='
+          ps -axo pid,ppid,etime,%cpu,%mem,command | egrep 'ENDLUME|ffmpeg|ffprobe|libx265|videotoolbox' | grep -v egrep || true
+          echo '=== TOSHIBA WORK DIRS ==='
+          find '/Volumes/TOSHIBA EXT' -type d -name '.ENDLUME-work' -print 2>/dev/null | head -20 || true
+          echo '=== RECENT WORK FILES ==='
+          find '/Volumes/TOSHIBA EXT' -path '*/.ENDLUME-work/*' -type f -mmin -30 -print0 2>/dev/null | xargs -0 ls -lhT 2>/dev/null | tail -80 || true
+          echo '=== RECENT PROJECT JSON / LOGS ==='
+          find '/Volumes/TOSHIBA EXT' -type f \( -name '*project.json' -o -name '*render-diagnostic.log' \) -mmin -180 -print 2>/dev/null | tail -30 || true
+          echo '=== STRICT MASTER PROBES ==='
+          while IFS= read -r f; do
+            echo "--- $f"; ls -lh "$f"; 
+            FOUNDATION="$HOME/.endlume-local-builder/endlume-desktop-8.40-bootstrap"
+            FFP="$(find "$FOUNDATION/src-tauri/binaries" -maxdepth 1 -type f -name 'ffprobe*' -perm -111 -print -quit 2>/dev/null || true)"
+            if [ -n "$FFP" ]; then "$FFP" -v error -show_entries format=duration,size,bit_rate:stream=codec_name,width,height,avg_frame_rate,nb_frames,bit_rate -of json "$f" || true; fi
+          done < <(find '/Volumes/TOSHIBA EXT' -type f \( -name 'strict-855-master.mp4' -o -name 'strict-855-seed.mov' -o -name 'strict-855-final.mov' \) -mmin -60 -print 2>/dev/null | tail -20)

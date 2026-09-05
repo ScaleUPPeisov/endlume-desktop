@@ -45,27 +45,7 @@ jobs:
             echo '=== subscribe/visual/cache timing lines ==='
             grep -E '\[(subscribe|visual|render-cache|final-mux)\]|MANIFEST_READY|segment |STORE|HIT|SUCCESS pid=' "$LOG" | tail -n 500 || true
             echo '=== phase counts ==='
-            python3 - "$LOG" <<'PY'
-from pathlib import Path
-import re,sys,collections
-s=Path(sys.argv[1]).read_text(errors='replace').splitlines()
-starts=[]; success=[]
-for ln in s:
-    if '[subscribe]' in ln or '[visual]' in ln:
-        if 'START pid=' in ln: starts.append(ln)
-        if 'SUCCESS pid=' in ln: success.append(ln)
-print('VISUAL_SUB_FFMPEG_STARTS=',len(starts))
-print('VISUAL_SUB_FFMPEG_SUCCESSES=',len(success))
-el=[]
-for ln in success:
-    m=re.search(r'elapsed=([0-9.]+)s',ln)
-    if m: el.append(float(m.group(1)))
-print('VISUAL_SUB_ENCODE_ELAPSED_SUM=',round(sum(el),3))
-print('VISUAL_SUB_ENCODE_MAX=',round(max(el),3) if el else 0)
-for ln in s:
-    if '8.51 manifest=' in ln or 'MANIFEST_READY' in ln:
-        print('PLAN:',ln)
-PY
+            python3 -c 'from pathlib import Path; import re,sys; s=Path(sys.argv[1]).read_text(errors="replace").splitlines(); starts=[x for x in s if ("[subscribe]" in x or "[visual]" in x) and "START pid=" in x]; succ=[x for x in s if ("[subscribe]" in x or "[visual]" in x) and "SUCCESS pid=" in x]; el=[float(m.group(1)) for x in succ if (m:=re.search(r"elapsed=([0-9.]+)s",x))]; print("VISUAL_SUB_FFMPEG_STARTS=",len(starts)); print("VISUAL_SUB_FFMPEG_SUCCESSES=",len(succ)); print("VISUAL_SUB_ENCODE_ELAPSED_SUM=",round(sum(el),3)); print("VISUAL_SUB_ENCODE_MAX=",round(max(el),3) if el else 0); [print("PLAN:",x) for x in s if "8.51 manifest=" in x or "MANIFEST_READY" in x]' "$LOG"
           else
             echo 'NO_RENDER_DIAGNOSTIC_FOUND'
           fi

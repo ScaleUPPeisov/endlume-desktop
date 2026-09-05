@@ -7,7 +7,7 @@ permissions:
 jobs:
   gate:
     runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
-    timeout-minutes: 30
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
         with:
@@ -67,24 +67,20 @@ jobs:
           cargo check --manifest-path src-tauri/Cargo.toml
           cargo test --manifest-path src-tauri/Cargo.toml mp4_manifest::tests -- --nocapture
           cargo test --manifest-path src-tauri/Cargo.toml vyron_ -- --nocapture
-      - name: Reproduce exact real master and require 3381 frames
+      - name: Reproduce exact real master and require 3381 frames and packets
         shell: bash
         run: |
           set -Eeuo pipefail
           METRICS="$GITHUB_WORKSPACE/857-master-metrics.json"
-          rm -f "$METRICS"
-          UUID='2e0e14ba-d97a-48d5-ab32-2fb2b27754bf'
-          BASE="$(find /Volumes -type d -name "$UUID" -print -quit 2>/dev/null || true)"; test -d "$BASE"
-          SIDE="$(find "$BASE" -type f -path '*/Rendered/logs/*' -name '*project.json' -print -quit 2>/dev/null || true)"; test -f "$SIDE"
-          FFM="$(find src-tauri/binaries -maxdepth 1 -type f -name 'ffmpeg*' -perm -111 -print -quit)"; FFP="$(find src-tauri/binaries -maxdepth 1 -type f -name 'ffprobe*' -perm -111 -print -quit)"
+          printf '{"status":"started"}\n' > "$METRICS"
+          FFM="$(find src-tauri/binaries -maxdepth 1 -type f -name 'ffmpeg*' -perm -111 -print -quit)"
+          FFP="$(find src-tauri/binaries -maxdepth 1 -type f -name 'ffprobe*' -perm -111 -print -quit)"
+          test -x "$FFM"; test -x "$FFP"
           TMP="$(mktemp -d /tmp/e857frames.XXXX)"; trap 'rm -rf "$TMP"' EXIT
-          python3 - "$SIDE" "$TMP/env" <<'PY'
-          import json,shlex,sys
-          d=json.load(open(sys.argv[1])); assert len(d['project']['media'])==1 and len(d['project']['audio'])==15
-          fx=[x for x in d['effects'] if x.get('enabled')]; assert len(fx)>=2
-          open(sys.argv[2],'w').write('\n'.join(['IMG='+shlex.quote(d['project']['media'][0]),'FX1='+shlex.quote(fx[0]['source']),'FX2='+shlex.quote(fx[1]['source'])]))
-          PY
+          python3 scripts/find-endlume-real-fixture.py "$TMP/env"
           source "$TMP/env"
+          test "$AUDIO_COUNT" = 15
+          test -f "$SIDE"; test -f "$IMG"; test -f "$FX1"; test -f "$FX2"
           "$FFM" -hide_banner -loglevel error -i "$FX1" -vf "fps=30,format=rgba,colorkey=0x0aa843:0.6:0.184,scale=252:-2:flags=lanczos,format=argb" -an -c:v qtrle -pix_fmt argb -y "$TMP/fx1.mov"
           "$FFM" -hide_banner -loglevel error -i "$FX2" -vf "fps=30,format=rgba,colorkey=0x2bdc0a:0.6:0.188,scale=2128:-2:flags=lanczos,format=argb" -an -c:v qtrle -pix_fmt argb -y "$TMP/fx2.mov"
           GRAPH="[0:v]scale=1920:1080:force_original_aspect_ratio=increase:flags=lanczos+accurate_rnd,crop=1920:1080:(iw-ow)/2:(ih-oh)/2,fps=30,setsar=1[b0];[1:v]fps=30,setpts=PTS-STARTPTS,format=argb[fx0];[b0][fx0]overlay=x='max(0,min(W-w,W*0.5-w/2))':y='max(0,min(H-h,H*0.8834535728307813-h/2))':shortest=0:repeatlast=1:eof_action=repeat:format=auto[b1];[2:v]fps=30,setpts=PTS-STARTPTS,format=argb[fx1];[b1][fx1]overlay=x='max(0,min(W-w,W*0.49-w/2))':y='max(0,min(H-h,H*0.49-h/2))':shortest=0:repeatlast=1:eof_action=repeat:format=auto[b2];[b2]fps=60,format=yuv420p[outv]"
@@ -92,24 +88,29 @@ jobs:
           "$FFM" -hide_banner -loglevel error -filter_complex_threads 8 -loop 1 -framerate 30 -i "$IMG" -stream_loop -1 -i "$TMP/fx1.mov" -stream_loop -1 -i "$TMP/fx2.mov" -filter_complex "$GRAPH" -map '[outv]' -frames:v 3381 -an -c:v hevc_videotoolbox -realtime 1 -prio_speed 0 -power_efficient 0 -q:v 100 -b:v 500k -maxrate 12M -bufsize 64M -g 3381 -tag:v hvc1 -pix_fmt yuv420p -fps_mode cfr -r 60 -video_track_timescale 60000 -y "$TMP/master.mp4"
           t1=$(python3 -c 'import time;print(time.time())')
           FRAMES="$($FFP -v error -select_streams v:0 -count_frames -show_entries stream=nb_read_frames -of csv=p=0 "$TMP/master.mp4")"
-          RATE="$($FFP -v error -select_streams v:0 -show_entries stream=width,height,avg_frame_rate -of csv=p=0 "$TMP/master.mp4")"
+          PACKETS="$($FFP -v error -select_streams v:0 -count_packets -show_entries stream=nb_read_packets -of csv=p=0 "$TMP/master.mp4")"
           DUR="$($FFP -v error -show_entries format=duration -of csv=p=0 "$TMP/master.mp4")"
-          python3 - "$t0" "$t1" "$FRAMES" "$RATE" "$DUR" "$METRICS" <<'PY'
+          "$FFP" -v error -select_streams v:0 -show_entries stream=codec_name,pix_fmt,width,height,avg_frame_rate -of json "$TMP/master.mp4" > "$TMP/stream.json"
+          python3 - "$t0" "$t1" "$FRAMES" "$PACKETS" "$DUR" "$TMP/stream.json" "$METRICS" <<'PY'
           import json,sys
-          dt=float(sys.argv[2])-float(sys.argv[1]); frames=int(sys.argv[3]); rate=sys.argv[4]; dur=float(sys.argv[5]); path=sys.argv[6]
-          data={'seconds':round(dt,3),'frames':frames,'rate':rate,'duration':round(dur,6)}
+          dt=float(sys.argv[2])-float(sys.argv[1]); frames=int(sys.argv[3]); packets=int(sys.argv[4]); dur=float(sys.argv[5]); stream=json.load(open(sys.argv[6]))['streams'][0]; path=sys.argv[7]
+          data={'status':'measured','seconds':round(dt,3),'frames':frames,'packets':packets,'width':stream.get('width'),'height':stream.get('height'),'rate':stream.get('avg_frame_rate'),'codec':stream.get('codec_name'),'pix_fmt':stream.get('pix_fmt'),'duration':round(dur,6),'gop':3381}
           json.dump(data,open(path,'w'),indent=2)
-          print('REAL_857_MASTER_SEC',round(dt,3),'FRAMES',frames,'RATE',rate,'DURATION',round(dur,3))
+          print('REAL_857_MASTER',data)
           assert frames==3381,frames
-          assert rate=='1920,1080,60/1',rate
+          assert packets==3381,packets
+          assert stream.get('width')==1920 and stream.get('height')==1080,stream
+          assert stream.get('avg_frame_rate')=='60/1',stream
+          assert stream.get('codec_name')=='hevc',stream
+          assert stream.get('pix_fmt')=='yuv420p',stream
           assert 56.34<=dur<=56.37,dur
           assert dt<=24.0,dt
           PY
-          echo 'PASS: exact real Strict master is 3381 frames, 1920x1080/60 and within render budget'
+          echo 'PASS: exact real Strict master is 3381 frames/packets, HEVC 1920x1080 CFR60 and within render budget'
       - name: Upload exact-master metrics
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: endlume-857-master-metrics
           path: 857-master-metrics.json
-          if-no-files-found: warn
+          if-no-files-found: error

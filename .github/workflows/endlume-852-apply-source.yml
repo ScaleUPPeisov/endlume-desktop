@@ -8,7 +8,7 @@ permissions:
 jobs:
   apply:
     runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
         with:
@@ -19,8 +19,13 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-          python3 -m py_compile scripts/apply-periodic-zero-copy-8-52.py
+          WORK="$HOME/.endlume-local-builder/endlume-desktop-8.40-bootstrap"
+          test -d "$WORK/src-tauri/binaries"
+          mkdir -p src-tauri/binaries
+          rsync -a "$WORK/src-tauri/binaries/" src-tauri/binaries/
+          python3 -m py_compile scripts/apply-periodic-zero-copy-8-52.py scripts/fix-version-8-52.py
           python3 scripts/apply-periodic-zero-copy-8-52.py .
+          python3 scripts/fix-version-8-52.py
           grep -F 'Periodic852Plan' src-tauri/src/render.rs
           grep -F '1.0.0-alpha.8.52' package.json src-tauri/tauri.conf.json src-tauri/Cargo.toml
           cargo check --manifest-path src-tauri/Cargo.toml

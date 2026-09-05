@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { Topbar } from '../components/shell';
 import { RecoveryModal } from '../components/recovery';
+import { VyronBatchBridge } from '../components/VyronBatchBridge';
 import { useApp } from '../store';
 import { api } from '../tauri';
 import { installMotionRuntime } from '../motion';
@@ -119,7 +120,7 @@ export function App(){
   if(!license.valid)return <ActivationScreen onActivated={setLicense}/>;
 
   const pageView=page==='project'?<ProjectPage/>:page==='render'?<RenderPage/>:page==='library'?<LibraryPage/>:<SettingsPage/>;
-  return <div className="appShell"><Topbar/><div className="content"><div key={page} className="pageScene">{pageView}</div></div>{editor&&<EditorRouter/>}{recovery&&<RecoveryModal data={recovery} onClose={()=>setRecovery(undefined)}/>} {availableUpdate&&<UpdateNotice update={availableUpdate} onLater={()=>{snoozeUntil.current=Date.now()+60*60*1000;setAvailableUpdate(null)}}/>}</div>
+  return <div className="appShell"><VyronBatchBridge/><Topbar/><div className="content"><div key={page} className="pageScene">{pageView}</div></div>{editor&&<EditorRouter/>}{recovery&&<RecoveryModal data={recovery} onClose={()=>setRecovery(undefined)}/>} {availableUpdate&&<UpdateNotice update={availableUpdate} onLater={()=>{snoozeUntil.current=Date.now()+60*60*1000;setAvailableUpdate(null)}}/>}</div>
 }
 
 function ActivationScreen({onActivated}:{onActivated:(v:LicenseStatus)=>void}){
@@ -135,6 +136,7 @@ function UpdateNotice({update,onLater}:{update:any;onLater:()=>void}){
     <div className="updateNoticeHead"><span className="updateNoticeDot"/><div><b>Вышло новое обновление</b><small>ENDLUME {update.version}{update.date?` • ${formatUpdateDate(update.date)}`:''}</small></div></div>
     <p>{shortUpdateText(update.body)}</p>
     {progress!==null&&<div className="updateNoticeProgress"><i style={{width:`${progress}%`}}/><span>{progress<100?`Обновляю ${progress.toFixed(0)}%`:'Перезапускаю…'}</span></div>}
+    {stage&&installing&&<small>{stage}</small>}
     {error&&<div className="updateNoticeError">{error}</div>}
     <div className="updateNoticeActions">
       <button className="later" disabled={installing} onClick={onLater}>НАПОМНИТЬ ЧЕРЕЗ ЧАС</button>

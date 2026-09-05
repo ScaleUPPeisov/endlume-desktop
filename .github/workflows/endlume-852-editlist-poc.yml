@@ -1,0 +1,61 @@
+name: ENDLUME 8.52 EditList POC
+on:
+  push:
+    branches: [candidate/endlume-852-build]
+    paths:
+      - 'scripts/endlume-editlist-poc.py'
+      - '.github/workflows/endlume-852-editlist-poc.yml'
+permissions:
+  contents: read
+jobs:
+  poc:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: candidate/endlume-852-build
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Verify repeated MP4 edit list in FFmpeg and AVFoundation
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          WORK="$HOME/.endlume-local-builder/endlume-desktop-8.40-bootstrap"
+          FFMPEG="$(find "$WORK/src-tauri/binaries" -maxdepth 1 -type f -name 'ffmpeg*' -perm -111 -print -quit)"
+          FFPROBE="$(find "$WORK/src-tauri/binaries" -maxdepth 1 -type f -name 'ffprobe*' -perm -111 -print -quit)"
+          TMP="$(mktemp -d /tmp/endlume-editlist.XXXXXX)"; trap 'rm -rf "$TMP"' EXIT
+          "$FFMPEG" -hide_banner -loglevel error -f lavfi -i 'testsrc2=size=640x360:rate=2' -t 2 -an -c:v libx264 -preset ultrafast -bf 0 -g 4 -pix_fmt yuv420p -y "$TMP/base.mp4"
+          python3 scripts/endlume-editlist-poc.py "$TMP/base.mp4" "$TMP/repeat.mp4" --repeats 4
+          echo '=== ffprobe base ==='
+          "$FFPROBE" -v error -show_entries format=duration,size:stream=duration,nb_frames,r_frame_rate,avg_frame_rate -of default=nw=1 "$TMP/base.mp4"
+          echo '=== ffprobe repeat ==='
+          "$FFPROBE" -v error -show_entries format=duration,size:stream=duration,nb_frames,r_frame_rate,avg_frame_rate -of default=nw=1 "$TMP/repeat.mp4"
+          echo '=== decoded frame count ==='
+          "$FFMPEG" -hide_banner -loglevel info -i "$TMP/repeat.mp4" -map 0:v:0 -f null - 2>&1 | tail -20
+          "$FFMPEG" -hide_banner -loglevel error -ss 1 -i "$TMP/base.mp4" -frames:v 1 -f framemd5 - > "$TMP/base1.md5"
+          "$FFMPEG" -hide_banner -loglevel error -ss 3 -i "$TMP/repeat.mp4" -frames:v 1 -f framemd5 - > "$TMP/repeat3.md5"
+          grep -E '^[0-9]' "$TMP/base1.md5" | tail -1 > "$TMP/a"
+          grep -E '^[0-9]' "$TMP/repeat3.md5" | tail -1 > "$TMP/b"
+          echo BASE_ONE="$(cat "$TMP/a")"
+          echo REPEAT_THREE="$(cat "$TMP/b")"
+          python3 -c "a=open('$TMP/a').read().split(',')[-1].strip();b=open('$TMP/b').read().split(',')[-1].strip();assert a==b,(a,b);print('PASS_FFMPEG_REPEAT_FRAME')"
+          cat > "$TMP/check.swift" <<'SWIFT'
+          import Foundation
+          import AVFoundation
+          let u=URL(fileURLWithPath:CommandLine.arguments[1])
+          let a=AVURLAsset(url:u)
+          let sem=DispatchSemaphore(value:0)
+          Task {
+            do {
+              let d=try await a.load(.duration)
+              let tracks=try await a.loadTracks(withMediaType:.video)
+              print("AV_DURATION=\(CMTimeGetSeconds(d)) VIDEO_TRACKS=\(tracks.count)")
+            } catch { print("AV_ERROR=\(error)"); exit(3) }
+            sem.signal()
+          }
+          sem.wait()
+SWIFT
+          xcrun swift "$TMP/check.swift" "$TMP/repeat.mp4"
+          echo 'PASS_EDITLIST_POC'

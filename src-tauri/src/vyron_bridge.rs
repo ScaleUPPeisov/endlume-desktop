@@ -18,6 +18,9 @@ fn read_value(path:&Path)->Result<Value,String>{serde_json::from_slice(&fs::read
 fn string(v:&Value,key:&str)->Result<String,String>{v.get(key).and_then(Value::as_str).filter(|x|!x.trim().is_empty()).map(str::to_string).ok_or_else(||format!("batch.json: поле {key} отсутствует"))}
 fn canonical_string(path:&str)->Result<String,String>{Ok(PathBuf::from(path).canonicalize().map_err(|_|format!("Путь не найден: {path}"))?.to_string_lossy().into_owned())}
 fn push_unique(items:&mut Vec<PathBuf>,path:PathBuf){if !items.iter().any(|x|x==&path){items.push(path)}}
+fn push_child_manifests(items:&mut Vec<PathBuf>,dir:&Path){
+  if let Ok(rd)=fs::read_dir(dir){for e in rd.flatten(){let p=e.path();if p.is_dir(){push_unique(items,p.join("batch.json"))}}}
+}
 fn normalize_manifest_hint(raw:&str)->PathBuf{
   let mut s=raw.trim().trim_matches('"').to_string();
   if let Some(rest)=s.strip_prefix("file://"){s=rest.to_string()}
@@ -42,15 +45,15 @@ pub struct VyronBatchRequest{pub batch_id:String,pub manifest_path:String,pub re
 pub struct VyronBatchInfo{pub batch_id:String,pub channel_id:String,pub channel_name:String,pub project_count:usize,pub tracks_assigned:usize,pub root_path:String,pub output_dir:String,pub status_path:String,pub manifest_path:String,pub project_paths:Vec<String>}
 
 pub(crate) fn resolve_vyron_manifest_for_request(req:&VyronBatchRequest)->Result<String,String>{
-  let hint=normalize_manifest_hint(&req.manifest_path);let mut candidates=Vec::new();
+  let hint=normalize_manifest_hint(&req.manifest_path);let mut candidates=Vec::new();let mut batch_dirs=Vec::new();
   push_unique(&mut candidates,hint.clone());
-  if hint.is_dir(){push_unique(&mut candidates,hint.join("batch.json"))}
+  if hint.is_dir(){push_unique(&mut candidates,hint.join("batch.json"));push_unique(&mut batch_dirs,hint.clone())}
   if let Some(parent)=hint.parent(){
-    push_unique(&mut candidates,parent.join("batch.json"));
-    push_unique(&mut candidates,parent.join(&req.batch_id).join("batch.json"));
-    if let Some(grand)=parent.parent(){push_unique(&mut candidates,grand.join(&req.batch_id).join("batch.json"))}
+    push_unique(&mut candidates,parent.join("batch.json"));push_unique(&mut batch_dirs,parent.to_path_buf());
+    let by_id=parent.join(&req.batch_id);push_unique(&mut candidates,by_id.join("batch.json"));push_unique(&mut batch_dirs,by_id);
+    if let Some(grand)=parent.parent(){let by_id=grand.join(&req.batch_id);push_unique(&mut candidates,by_id.join("batch.json"));push_unique(&mut batch_dirs,by_id)}
   }
-  for anc in hint.ancestors().take(6){push_unique(&mut candidates,anc.join(&req.batch_id).join("batch.json"))}
+  for anc in hint.ancestors().take(6){let by_id=anc.join(&req.batch_id);push_unique(&mut candidates,by_id.join("batch.json"));push_unique(&mut batch_dirs,by_id)}
 
   let mut roots=Vec::new();
   if let Some(home)=std::env::var_os("HOME"){
@@ -58,13 +61,14 @@ pub(crate) fn resolve_vyron_manifest_for_request(req:&VyronBatchRequest)->Result
   }
   if let Ok(vols)=fs::read_dir("/Volumes"){for e in vols.flatten(){let p=e.path();if p.is_dir(){roots.push(p)}}}
   for root in roots{
-    for rel in [
-      PathBuf::from("ВАЙРОН").join("ProductionManager").join("Batches").join(&req.batch_id).join("batch.json"),
-      PathBuf::from("VYRON").join("ProductionManager").join("Batches").join(&req.batch_id).join("batch.json"),
-      PathBuf::from("ProductionManager").join("Batches").join(&req.batch_id).join("batch.json"),
-      PathBuf::from("Batches").join(&req.batch_id).join("batch.json")
-    ]{push_unique(&mut candidates,root.join(rel))}
+    for base in [
+      root.join("ВАЙРОН").join("ProductionManager").join("Batches").join(&req.batch_id),
+      root.join("VYRON").join("ProductionManager").join("Batches").join(&req.batch_id),
+      root.join("ProductionManager").join("Batches").join(&req.batch_id),
+      root.join("Batches").join(&req.batch_id)
+    ]{push_unique(&mut candidates,base.join("batch.json"));push_unique(&mut batch_dirs,base)}
   }
+  for dir in batch_dirs{push_child_manifests(&mut candidates,&dir)}
   for candidate in candidates{
     if candidate_is_matching_manifest(&candidate,&req.batch_id){return candidate.canonicalize().map(|p|p.to_string_lossy().into_owned()).map_err(|e|e.to_string())}
   }

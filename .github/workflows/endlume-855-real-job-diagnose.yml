@@ -27,21 +27,21 @@ jobs:
           test -x "$FFM"; test -x "$FFP"; test -f "$SIDE"
           echo '=== AUDIO EXACT ==='
           python3 - "$SIDE" "$FFP" <<'PY'
-          import json,subprocess,sys
+          import json,subprocess,sys,os
           side,ffp=sys.argv[1:]
-          d=json.load(open(side)); tracks=d['project']['audio']
-          rows=[]
+          d=json.load(open(side)); tracks=d['project']['audio']; rows=[]
           for p in tracks:
-              q=subprocess.check_output([ffp,'-v','error','-select_streams','a:0','-show_entries','format=duration,size:stream=codec_name,bit_rate,sample_rate,channels','-of','json',p],text=True)
-              x=json.loads(q); f=x.get('format',{}); s=(x.get('streams') or [{}])[0]
-              rows.append((p,float(f.get('duration') or 0),int(f.get('size') or 0),int(s.get('bit_rate') or 0),s.get('codec_name'),s.get('sample_rate'),s.get('channels')))
-          for i,r in enumerate(rows,1): print(i,round(r[1],3),r[2],r[3],r[4],r[5],r[6])
-          target=7200.0;t=0.0;i=0
+              q=subprocess.run([ffp,'-v','error','-select_streams','a:0','-show_entries','format=duration,size:stream=codec_name,bit_rate,sample_rate,channels','-of','json',p],capture_output=True,text=True)
+              if q.returncode:
+                  print('PROBE_FAIL',os.path.basename(p),q.stderr.strip()); continue
+              x=json.loads(q.stdout); f=x.get('format',{}); s=(x.get('streams') or [{}])[0]
+              dur=float(f.get('duration') or 0); size=int(f.get('size') or os.path.getsize(p)); br=int(s.get('bit_rate') or 0)
+              rows.append((p,dur,size,br,s.get('codec_name'),s.get('sample_rate'),s.get('channels')))
+          for i,r in enumerate(rows,1): print('TRACK',i,round(r[1],3),r[2],r[3],r[4],r[5],r[6])
+          assert len(rows)==15, len(rows)
+          target=7200.0;t=0.0;i=0;bytes_est=0
           while t<target:
-              t+=rows[i%len(rows)][1];i+=1
-          # packet copy estimate scales source bytes by complete-track playlist repetitions
-          full=i//len(rows); rem=i%len(rows)
-          bytes_est=full*sum(r[2] for r in rows)+sum(r[2] for r in rows[:rem])
+              r=rows[i%len(rows)];t+=r[1];bytes_est+=r[2];i+=1
           print('TRACKS_PLAYED',i,'FINAL_WHOLE_TRACK_SECONDS',round(t,3),'OVERSHOOT',round(t-target,3))
           print('SOURCE_AUDIO_BYTES_EST',bytes_est,'MiB',round(bytes_est/1048576,2),'MB',round(bytes_est/1e6,2))
           PY
@@ -49,28 +49,24 @@ jobs:
           python3 - "$SIDE" <<'PY' > /tmp/endlume855.env
           import json,sys,shlex
           d=json.load(open(sys.argv[1])); p=d['project']; fx=d['effects']
-          print('IMG='+shlex.quote(p['media'][0]))
-          print('FX1='+shlex.quote(fx[0]['source']))
-          print('FX2='+shlex.quote(fx[1]['source']))
+          print('IMG='+shlex.quote(p['media'][0]));print('FX1='+shlex.quote(fx[0]['source']));print('FX2='+shlex.quote(fx[1]['source']))
           PY
           source /tmp/endlume855.env
           TMP="$(mktemp -d /tmp/endlume855-bench.XXXXXX)"; trap 'rm -rf "$TMP"' EXIT
-          # Geometry copied exactly from the real job sidecar.
           REF="[0:v]scale=1920:1080:force_original_aspect_ratio=increase:flags=lanczos+accurate_rnd,crop=1920:1080:(iw-ow)/2:(ih-oh)/2,fps=60,setsar=1[b0];[1:v]fps=60,format=rgba,colorkey=0x0aa843:0.6:0.184,scale=252:-2:flags=lanczos[fx0];[b0][fx0]overlay=x='max(0,min(W-w,W*0.5-w/2))':y='max(0,min(H-h,H*0.8834535728307813-h/2))':shortest=1:eof_action=repeat:format=auto[b1];[2:v]fps=60,format=rgba,colorkey=0x2bdc0a:0.6:0.188,scale=2128:-2:flags=lanczos[fx1];[b1][fx1]overlay=x='max(0,min(W-w,W*0.49-w/2))':y='max(0,min(H-h,H*0.49-h/2))':shortest=1:eof_action=repeat:format=auto[b2];[b2]format=yuv420p[outv]"
           CAND="[0:v]scale=1920:1080:force_original_aspect_ratio=increase:flags=lanczos+accurate_rnd,crop=1920:1080:(iw-ow)/2:(ih-oh)/2,fps=30,setsar=1[b0];[1:v]fps=30,format=rgba,colorkey=0x0aa843:0.6:0.184,scale=252:-2:flags=lanczos[fx0];[b0][fx0]overlay=x='max(0,min(W-w,W*0.5-w/2))':y='max(0,min(H-h,H*0.8834535728307813-h/2))':shortest=1:eof_action=repeat:format=auto[b1];[2:v]fps=30,format=rgba,colorkey=0x2bdc0a:0.6:0.188,scale=2128:-2:flags=lanczos[fx1];[b1][fx1]overlay=x='max(0,min(W-w,W*0.49-w/2))':y='max(0,min(H-h,H*0.49-h/2))':shortest=1:eof_action=repeat:format=auto[b2];[b2]fps=60,format=yuv420p[outv]"
-          echo '-- 8s 60fps reference --'
+          echo '-- 8s reference/candidate --'
           T0=$(python3 -c 'import time;print(time.time())')
           "$FFM" -hide_banner -loglevel error -filter_complex_threads 4 -loop 1 -framerate 60 -i "$IMG" -stream_loop -1 -i "$FX1" -stream_loop -1 -i "$FX2" -filter_complex "$REF" -map '[outv]' -t 8 -an -c:v hevc_videotoolbox -realtime 1 -prio_speed 0 -power_efficient 0 -q:v 100 -b:v 500k -maxrate 12M -bufsize 64M -g 480 -tag:v hvc1 -pix_fmt yuv420p -r 60 -y "$TMP/ref.mp4"
           T1=$(python3 -c 'import time;print(time.time())'); python3 - "$T0" "$T1" <<'PY'
           import sys;print('REF8_SEC',round(float(sys.argv[2])-float(sys.argv[1]),3))
           PY
-          echo '-- 8s 30fps unique -> 60fps candidate --'
           T0=$(python3 -c 'import time;print(time.time())')
           "$FFM" -hide_banner -loglevel error -filter_complex_threads 4 -loop 1 -framerate 30 -i "$IMG" -stream_loop -1 -i "$FX1" -stream_loop -1 -i "$FX2" -filter_complex "$CAND" -map '[outv]' -t 8 -an -c:v hevc_videotoolbox -realtime 1 -prio_speed 0 -power_efficient 0 -q:v 100 -b:v 500k -maxrate 12M -bufsize 64M -g 480 -tag:v hvc1 -pix_fmt yuv420p -r 60 -y "$TMP/cand8.mp4"
           T1=$(python3 -c 'import time;print(time.time())'); python3 - "$T0" "$T1" <<'PY'
           import sys;print('CAND8_SEC',round(float(sys.argv[2])-float(sys.argv[1]),3))
           PY
-          "$FFM" -hide_banner -i "$TMP/ref.mp4" -i "$TMP/cand8.mp4" -lavfi '[0:v][1:v]ssim' -f null - 2>&1 | grep 'SSIM' | tail -1
+          "$FFM" -hide_banner -i "$TMP/ref.mp4" -i "$TMP/cand8.mp4" -lavfi '[0:v][1:v]ssim' -f null - 2>&1 | grep 'SSIM' | tail -1 || true
           echo '-- full 56.355s candidate --'
           T0=$(python3 -c 'import time;print(time.time())')
           "$FFM" -hide_banner -loglevel error -filter_complex_threads 4 -loop 1 -framerate 30 -i "$IMG" -stream_loop -1 -i "$FX1" -stream_loop -1 -i "$FX2" -filter_complex "$CAND" -map '[outv]' -t 56.355011 -an -c:v hevc_videotoolbox -realtime 1 -prio_speed 0 -power_efficient 0 -q:v 100 -b:v 500k -maxrate 12M -bufsize 64M -g 3381 -tag:v hvc1 -pix_fmt yuv420p -r 60 -y "$TMP/cand56.mp4"

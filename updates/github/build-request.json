@@ -1,11 +1,11 @@
 {
   "enabled": true,
-  "generation": 34,
+  "generation": 35,
   "app": "endlume",
   "channel": "stable",
-  "version": "1.0.0-alpha.8.54",
-  "builder": "BUILD_ENDLUME_854_VYRON_HANDOFF_HOTFIX.command",
-  "notes": "ENDLUME STUDIO 8.54 fixes only the live VYRON -> ENDLUME handoff contract, pinned to exact source bd6343a11d614fd7f4f656e924fdc78c73f44e91. Live diagnostics proved current VYRON writes manifestPath to a .vyron-handoff-*.json file and provides the real batch.json in sourceManifestPath with selectedProjectIds. 8.54 resolves sourceManifestPath/current handoff JSON, imports only selected projects, consumes newest requests first, and removes stale broken handoffs so an old missing file cannot block the inbox. The render engine is byte-identical to 8.52/8.53 (render.rs blob 9e011adc207872a23105e525a9d5bdab27242b5f): exact 1920x1080, 60 FPS, H.265, Effects/Subscribe, whole-track audio and zero-copy manifest render are unchanged. Final M1 gate passed frontend build, cargo check, VYRON handoff tests and MP4 manifest tests before promotion. Production publication trigger confirmed for generation 34.",
+  "version": "1.0.0-alpha.8.55",
+  "builder": "BUILD_ENDLUME_855_STRICT_RENDER.command",
+  "notes": "ENDLUME STUDIO 8.55 strict render release, pinned to exact gated source 23cb01908604cf7583843c1b1bf74eafa7205a69. For the one-image workflow it locks exact 1920x1080, 60 FPS and H.265; forces whole-track duration so a song already playing at the nominal 2-hour boundary always finishes; disables crossfade, normalization and ambient processing; requires original MP3 bitstream-copy and refuses the strict path if source MP3 parameters cannot be preserved. It fixes the zero-Subscribe regression that forced the slow physical 2-3GB fallback by adding a 30-second zero-copy master path, keeps the existing periodic Subscribe zero-copy path, and enforces the 400-700 MB container envelope without modifying audio/video packets. The VYRON handoff implementation is preserved and re-tested, including selectedProjectIds, sourceManifestPath, newest-first inbox handling and status reporting. The M1 candidate gate passed TypeScript/Vite build, cargo check, MP4 manifest tests and all five VYRON bridge tests before promotion. No unrelated application functionality is intentionally changed.",
   "platforms": [
     "darwin-aarch64"
   ]

@@ -1,0 +1,71 @@
+name: ENDLUME 8.52 Real Output Diagnose
+
+on:
+  push:
+    branches: [candidate/endlume-852-production-speed-size]
+    paths:
+      - '.github/workflows/endlume-852-real-output-diagnose.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    name: macOS ARM64 • inspect user's exact 4m15 output
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: candidate/endlume-852-production-speed-size
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Probe exact output and render diagnostic
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          OUT='/Volumes/TOSHIBA EXT/ВАЙРОН/ProductionManager/Batches/2e0e14ba-d97a-48d5-ab32-2fb2b27754bf/Neon Drive FM_BATCH_2026-09-05_001/Rendered/001 — Ready Videos.mov'
+          DIR="$(dirname "$OUT")"
+          WORK="$HOME/.endlume-local-builder/endlume-desktop-8.40-bootstrap"
+          FFPROBE="$(find "$WORK/src-tauri/binaries" -maxdepth 1 -type f -name 'ffprobe*' -perm -111 -print -quit)"
+          echo '=== exact user output ==='
+          if [[ ! -s "$OUT" ]]; then
+            echo "OUTPUT_MISSING=$OUT"
+            ls -la "$DIR" 2>/dev/null || true
+            exit 2
+          fi
+          stat -f 'BYTES=%z' "$OUT"
+          "$FFPROBE" -v error -show_entries format=duration,size,bit_rate:stream=index,codec_name,codec_type,width,height,r_frame_rate,avg_frame_rate,bit_rate -of json "$OUT"
+          echo '=== diagnostics candidates ==='
+          find "$DIR" -maxdepth 2 -type f \( -name '*render-diagnostic.log' -o -name '*.log' \) -print | sort
+          LOG="$(find "$DIR/logs" -maxdepth 1 -type f -name '*render-diagnostic.log' -print -quit 2>/dev/null || true)"
+          if [[ -n "$LOG" ]]; then
+            echo "DIAGNOSTIC=$LOG"
+            echo '=== subscribe/visual/cache timing lines ==='
+            grep -E '\[(subscribe|visual|render-cache|final-mux)\]|MANIFEST_READY|segment |STORE|HIT|SUCCESS pid=' "$LOG" | tail -n 500 || true
+            echo '=== phase counts ==='
+            python3 - "$LOG" <<'PY'
+from pathlib import Path
+import re,sys,collections
+s=Path(sys.argv[1]).read_text(errors='replace').splitlines()
+starts=[]; success=[]
+for ln in s:
+    if '[subscribe]' in ln or '[visual]' in ln:
+        if 'START pid=' in ln: starts.append(ln)
+        if 'SUCCESS pid=' in ln: success.append(ln)
+print('VISUAL_SUB_FFMPEG_STARTS=',len(starts))
+print('VISUAL_SUB_FFMPEG_SUCCESSES=',len(success))
+el=[]
+for ln in success:
+    m=re.search(r'elapsed=([0-9.]+)s',ln)
+    if m: el.append(float(m.group(1)))
+print('VISUAL_SUB_ENCODE_ELAPSED_SUM=',round(sum(el),3))
+print('VISUAL_SUB_ENCODE_MAX=',round(max(el),3) if el else 0)
+for ln in s:
+    if '8.51 manifest=' in ln or 'MANIFEST_READY' in ln:
+        print('PLAN:',ln)
+PY
+          else
+            echo 'NO_RENDER_DIAGNOSTIC_FOUND'
+          fi

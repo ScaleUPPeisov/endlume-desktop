@@ -16,14 +16,6 @@ jobs:
           clean: true
           fetch-depth: 1
           persist-credentials: false
-      - name: Inspect acceleration/filter capabilities
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          WORK="$HOME/.endlume-local-builder/endlume-desktop-8.40-bootstrap"
-          FFMPEG="$(find "$WORK/src-tauri/binaries" -maxdepth 1 -type f -name 'ffmpeg*' -perm -111 -print -quit)"
-          "$FFMPEG" -hide_banner -filters 2>&1 | grep -Ei 'metal|videotoolbox|overlay|colorkey|chromakey' || true
-          "$FFMPEG" -hide_banner -hwaccels || true
       - name: Exact user Effects profile sweep
         shell: bash
         run: |
@@ -41,14 +33,10 @@ jobs:
           echo 'PROFILE SECONDS VIDEO_KBPS SSIM_TO_Q100 PROJECTED_MB'
           for SPEC in 'q99 99' 'q97 97' 'q95 95' 'q92 92' 'q90 90'; do
             set -- $SPEC; NAME="$1"; Q="$2"; OUT="$TMP/$NAME.mp4"
-            T0="$(date +%s%N)"
+            T0="$(python3 -c 'import time;print(time.time())')"
             "$FFMPEG" -hide_banner -loglevel error -loop 1 -framerate 60 -i "$IMG" -stream_loop -1 -i "$FX1" -stream_loop -1 -i "$FX2" -filter_complex "$GRAPH" -map '[outv]' -t 12 -an -c:v hevc_videotoolbox -realtime 1 -prio_speed 0 -power_efficient 0 -q:v "$Q" -b:v 500k -maxrate 12M -bufsize 64M -g 720 -tag:v hvc1 -pix_fmt yuv420p -y "$OUT"
-            T1="$(date +%s%N)"
+            T1="$(python3 -c 'import time;print(time.time())')"
             KB="$($FFPROBE -v error -select_streams v:0 -show_entries stream=bit_rate -of default=nw=1:nk=1 "$OUT" | awk '{printf "%.0f",$1/1000}')"
             SS="$($FFMPEG -hide_banner -loglevel info -i "$REF" -i "$OUT" -filter_complex "[0:v]trim=duration=12,setpts=PTS-STARTPTS,format=yuv420p[a];[1:v]setpts=PTS-STARTPTS,format=yuv420p[b];[a][b]ssim" -t 12 -f null - 2>&1 | grep -oE 'All:[0-9.]+' | tail -1 | cut -d: -f2)"
-            python3 - "$NAME" "$T0" "$T1" "$KB" "$SS" <<'PY'
-import sys
-n=sys.argv[1]; sec=(int(sys.argv[3])-int(sys.argv[2]))/1e9; kb=float(sys.argv[4]); ss=float(sys.argv[5]); mb=(kb+329.5)*1000*7502.892/8/1e6
-print(f'{n} {sec:.3f} {kb:.0f} {ss:.6f} {mb:.1f}')
-PY
+            python3 -c "n='$NAME';sec=float('$T1')-float('$T0');kb=float('$KB');ss=float('$SS');mb=(kb+329.5)*1000*7502.892/8/1e6;print(f'{n} {sec:.3f} {kb:.0f} {ss:.6f} {mb:.1f}')"
           done

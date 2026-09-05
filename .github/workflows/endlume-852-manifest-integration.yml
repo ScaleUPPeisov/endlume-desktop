@@ -44,7 +44,9 @@ jobs:
           FRAMES="$($FFPROBE -v error -select_streams v:0 -show_entries stream=nb_frames -of default=nw=1:nk=1 "$TMP/final.mov")"
           python3 -c "d=float('$DUR');f=int('$FRAMES');assert abs(d-8.0)<0.08,(d,f);assert f==16,(d,f);print('PASS_RUST_MANIFEST_TIMELINE',d,f)"
           "$FFMPEG" -hide_banner -loglevel error -i "$TMP/final.mov" -map 0:a:0 -t 8 -f null -
-          "$FFMPEG" -hide_banner -loglevel error -ss 1 -i "$TMP/video.mp4" -frames:v 1 -f framemd5 - > "$TMP/base.md5"
+          # At 2 fps with prefix=4 and cycle=4, output 3.0s and 5.0s are the
+          # same source sample (seed frame 6 / 3.0s). Compare those directly.
+          "$FFMPEG" -hide_banner -loglevel error -ss 3 -i "$TMP/final.mov" -frames:v 1 -f framemd5 - > "$TMP/base.md5"
           "$FFMPEG" -hide_banner -loglevel error -ss 5 -i "$TMP/final.mov" -frames:v 1 -f framemd5 - > "$TMP/repeat.md5"
           grep -E '^[0-9]' "$TMP/base.md5" | tail -1 > "$TMP/a"; grep -E '^[0-9]' "$TMP/repeat.md5" | tail -1 > "$TMP/b"
           python3 -c "g=lambda p:open(p).read().split(',')[-1].strip();a=g('$TMP/a');b=g('$TMP/b');assert a==b,(a,b);print('PASS_RUST_MANIFEST_REPEAT_FRAME')"

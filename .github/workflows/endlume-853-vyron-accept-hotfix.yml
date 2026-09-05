@@ -13,7 +13,7 @@ jobs:
         with:
           ref: candidate/endlume-853-vyron-accept-hotfix
           clean: true
-          fetch-depth: 1
+          fetch-depth: 0
           persist-credentials: false
       - name: Restore embedded FFmpeg sidecars
         shell: bash
@@ -27,7 +27,7 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-          git fetch --no-tags --depth=1 origin 03399cf0f12b912a846144cd4d060755b5260cc5
+          git cat-file -e 03399cf0f12b912a846144cd4d060755b5260cc5^{commit}
           git diff --exit-code 03399cf0f12b912a846144cd4d060755b5260cc5 HEAD -- src-tauri/src/render.rs src-tauri/src/queue.rs src-tauri/src/scan.rs src-tauri/src/mp4_manifest.rs
           grep -Fq 'mod vyron_bridge;' src-tauri/src/lib.rs
           grep -Fq 'vyron_bridge::consume_vyron_batch_request' src-tauri/src/lib.rs

@@ -16,7 +16,7 @@ export function VyronBatchBridge(){
       if(!live||busy)return;busy=true;
       try{
         const req=await api.consumeVyronBatch();if(!req)return;
-        const info=await api.loadVyronBatch(req.manifestPath);
+        const info=await api.loadVyronBatch(req.manifestPath,req.selectedProjectIds||[]);
         const valid:RenderProject[]=[];const invalid:Array<{name:string;path:string;error:string}>=[];
         for(const path of info.projectPaths){
           try{

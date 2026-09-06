@@ -1,0 +1,70 @@
+name: ENDLUME 8.58 Runtime Diagnose
+
+on:
+  push:
+    branches:
+      - candidate/endlume-858-runtime-diagnose
+
+concurrency:
+  group: endlume-858-runtime-diagnose
+  cancel-in-progress: true
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, macOS, ARM64]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Inspect live ENDLUME queue and outputs
+        shell: /bin/bash --noprofile --norc -e -o pipefail {0}
+        run: |
+          set -Eeuo pipefail
+          echo "=== MACHINE ==="
+          echo "$(scutil --get ComputerName 2>/dev/null || hostname) / $(uname -m)"
+          echo "=== RUNNING ENDLUME ==="
+          pgrep -afil 'ENDLUME STUDIO PEISOV|/endlume' || true
+          echo "=== APP DATA QUEUE FILES ==="
+          mapfile -t QFILES < <(find "$HOME/Library/Application Support" -maxdepth 5 -type f -name queue.json 2>/dev/null | grep -Ei 'endlume|studio\.endlume' || true)
+          printf '%s\n' "${QFILES[@]:-}"
+          if [ "${#QFILES[@]}" -eq 0 ]; then
+            echo "NO_QUEUE_JSON"
+            exit 0
+          fi
+          for Q in "${QFILES[@]}"; do
+            echo "--- QUEUE: $Q ---"
+            cat "$Q" || true
+            OUT="$(python3 - "$Q" <<'PY'
+import json,sys
+try:
+ d=json.load(open(sys.argv[1]))
+ jobs=[]
+ if isinstance(d.get('active'),dict): jobs.append(d['active'])
+ jobs += [x for x in d.get('pending',[]) if isinstance(x,dict)]
+ for j in jobs:
+  s=j.get('settings') or {}
+  p=s.get('outputDir') or s.get('output_dir')
+  if p:
+   print(p); break
+except Exception: pass
+PY
+)"
+            if [ -n "$OUT" ] && [ -d "$OUT" ]; then
+              echo "=== OUTPUT DIR: $OUT ==="
+              find "$OUT" -maxdepth 2 -type f \( -iname '*Ready Videos*.mp4' -o -iname '*error*.txt' -o -iname '*.mov' \) -print0 2>/dev/null | xargs -0 -I{} stat -f '%m %z %N' '{}' 2>/dev/null | sort -nr | head -80 || true
+              echo "=== RECENT ERROR LOGS ==="
+              find "$OUT" -maxdepth 2 -type f -iname '*error*.txt' -mtime -1 -print0 2>/dev/null | while IFS= read -r -d '' F; do
+                echo "--- $F ---"
+                tail -80 "$F" || true
+              done
+              echo "=== WORK DIRS ==="
+              find "$OUT/.ENDLUME-work" -maxdepth 2 -type f -print 2>/dev/null | head -120 || true
+            else
+              echo "OUTPUT_DIR_NOT_RESOLVED: $OUT"
+            fi
+          done

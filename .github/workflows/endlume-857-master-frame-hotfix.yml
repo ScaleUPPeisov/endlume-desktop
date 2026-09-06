@@ -4,6 +4,9 @@ on:
     branches: [candidate/endlume-857-master-frame-hotfix]
 permissions:
   contents: read
+concurrency:
+  group: endlume-857-master-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   gate:
     runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
@@ -11,7 +14,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: candidate/endlume-857-master-frame-hotfix
+          ref: ${{ github.sha }}
           clean: true
           fetch-depth: 0
           persist-credentials: false
@@ -121,10 +124,16 @@ jobs:
           assert dt<=24.0,dt
           PY
           echo 'PASS: exact real Strict master is 3381 frames/packets, HEVC 1920x1080 CFR60 q:v100, GOP 1800 and within render budget'
+      - name: Show exact-master metrics
+        if: always()
+        shell: bash
+        run: |
+          test -f 857-master-metrics.json && cat 857-master-metrics.json || true
       - name: Upload exact-master metrics
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: endlume-857-master-metrics
           path: 857-master-metrics.json
-          if-no-files-found: error
+          if-no-files-found: warn

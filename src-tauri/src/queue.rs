@@ -1,7 +1,7 @@
 use crate::{model::{EffectPreset,ProjectScanItem,QueueJob,RenderSettings,SubscribePreset},persistence,render};
 use parking_lot::Mutex;
 use serde_json::{json,Value};
-use std::{collections::{HashSet,VecDeque},fs,path::{Path,PathBuf},sync::{Arc,atomic::{AtomicBool,Ordering}},time::UNIX_EPOCH};
+use std::{collections::{HashSet,VecDeque},fs,path::PathBuf,sync::{Arc,atomic::{AtomicBool,Ordering}},time::UNIX_EPOCH};
 use tauri::{AppHandle,Emitter,State};
 
 #[derive(Default)]

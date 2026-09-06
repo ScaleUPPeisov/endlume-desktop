@@ -1,0 +1,71 @@
+name: ENDLUME 8.57 Subscribe ON
+on:
+  push:
+    branches: [candidate/endlume-857-master-frame-hotfix]
+    paths:
+      - '.github/workflows/endlume-857-subscribe-on.yml'
+      - 'scripts/run-endlume-857-subscribe-on.py'
+      - 'scripts/find-endlume-real-subscribe.py'
+      - 'scripts/find-endlume-real-fixture.py'
+      - 'scripts/apply-render-isolation-8-56.py'
+      - 'scripts/apply-master-frame-hotfix-8-57.py'
+      - 'src-tauri/src/mp4_manifest.rs'
+      - 'src-tauri/src/mp4_manifest_probe_tests.rs'
+permissions:
+  contents: read
+concurrency:
+  group: endlume-857-subscribe-on-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  subscribe-on:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Restore FFmpeg
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          FOUNDATION="$HOME/.endlume-local-builder/endlume-desktop-8.40-bootstrap"
+          mkdir -p src-tauri/binaries
+          rsync -a "$FOUNDATION/src-tauri/binaries/" src-tauri/binaries/
+          chmod +x src-tauri/binaries/ffmpeg* src-tauri/binaries/ffprobe*
+      - name: Apply production migrations
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/apply-render-isolation-8-56.py
+          python3 scripts/apply-master-frame-hotfix-8-57.py
+          grep -Fq 'const STRICT_857_MAX_GOP_FRAMES:u32=1800;' src-tauri/src/render.rs
+      - name: Stage exact real fixture and real Subscribe preset
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          TMP="$(mktemp -d /tmp/e857subfixture.XXXXXX)"
+          python3 scripts/find-endlume-real-fixture.py "$TMP/env"
+          cat "$TMP/env" >> "$GITHUB_ENV"
+          python3 scripts/find-endlume-real-subscribe.py "$GITHUB_WORKSPACE/857-subscribe-preset.json"
+          cat 857-subscribe-preset.json
+      - name: Precompile sample-table expander
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cargo test --manifest-path src-tauri/Cargo.toml external_prefix_cycle_manifest_if_requested --no-run
+      - name: Physical real Subscribe-ON gate
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          FFM="$(find src-tauri/binaries -maxdepth 1 -type f -name 'ffmpeg*' -perm -111 -print -quit)"
+          FFP="$(find src-tauri/binaries -maxdepth 1 -type f -name 'ffprobe*' -perm -111 -print -quit)"
+          python3 scripts/run-endlume-857-subscribe-on.py "$SIDE" 857-subscribe-preset.json "$FFM" "$FFP" "$GITHUB_WORKSPACE/857-subscribe-on.json"
+      - name: Show Subscribe-ON metrics
+        if: always()
+        shell: bash
+        run: |
+          echo '=== 857 SUBSCRIBE ON ==='
+          test -f 857-subscribe-on.json && cat 857-subscribe-on.json || true

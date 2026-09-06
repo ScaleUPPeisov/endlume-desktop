@@ -37,17 +37,27 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-          grep -Fq 'fn safe_channel_folder' src-tauri/src/vyron_bridge.rs
-          grep -Fq 'fn vyron_workspace_root' src-tauri/src/vyron_bridge.rs
-          grep -Fq 'workspace.join("Render").join(safe_channel_folder(channel_name))' src-tauri/src/vyron_bridge.rs
-          grep -Fq 'let output=resolve_render_output(&v,&root,&channel_name)?;' src-tauri/src/vyron_bridge.rs
-          grep -Fq 'st.patchSettings({outputDir:info.outputDir})' src/components/VyronBatchBridge.tsx
-          grep -Fq "'Completed',e.payload?.resultPath||null" src/components/VyronBatchBridge.tsx
-          grep -Fq 'let out_dir=PathBuf::from(&job.settings.output_dir)' src-tauri/src/render.rs
-          grep -Fq 'vyron_render_library_sanitizes_channel_folder' src-tauri/src/vyron_bridge_tests.rs
-          grep -Fq 'join("Render").join("NEON")' src-tauri/src/vyron_bridge_tests.rs
-          grep -Fq 'source_manifest_path' src-tauri/src/vyron_bridge.rs
-          grep -Fq 'selected_project_ids' src-tauri/src/vyron_bridge.rs
+          assert_contains() {
+            local file="$1" pattern="$2" label="$3"
+            if ! grep -Fq "$pattern" "$file"; then
+              echo "FAIL: $label"
+              echo "  file: $file"
+              echo "  expected: $pattern"
+              exit 1
+            fi
+            echo "PASS: $label"
+          }
+          assert_contains src-tauri/src/vyron_bridge.rs 'fn safe_channel_folder' 'channel folder sanitization exists'
+          assert_contains src-tauri/src/vyron_bridge.rs 'fn vyron_workspace_root' 'VYRON workspace resolver exists'
+          assert_contains src-tauri/src/vyron_bridge.rs 'workspace.join("Render").join(safe_channel_folder(channel_name))' 'central Render/<channel> path exists'
+          assert_contains src-tauri/src/vyron_bridge.rs 'let output=resolve_render_output(&v,&root,&channel_name)?;' 'manifest import uses central output resolver'
+          assert_contains src/components/VyronBatchBridge.tsx 'st.patchSettings({outputDir:info.outputDir})' 'frontend applies bridge outputDir'
+          assert_contains src/components/VyronBatchBridge.tsx "'Completed',e.payload?.resultPath||null" 'ENDLUME reports completed output path to VYRON'
+          assert_contains src-tauri/src/render.rs 'let requested_out_dir=PathBuf::from(&job.settings.output_dir);let out_dir=resolve_output_dir(app,&requested_out_dir)?;' 'renderer consumes configured output directory with writable fallback'
+          assert_contains src-tauri/src/vyron_bridge_tests.rs 'vyron_render_library_sanitizes_channel_folder' 'channel sanitization regression test exists'
+          assert_contains src-tauri/src/vyron_bridge_tests.rs 'join("Render").join("NEON")' 'central NEON render-library regression assertion exists'
+          assert_contains src-tauri/src/vyron_bridge.rs 'source_manifest_path' 'handoff source manifest contract preserved'
+          assert_contains src-tauri/src/vyron_bridge.rs 'selected_project_ids' 'selected-project handoff contract preserved'
       - name: Frontend production gate
         shell: bash
         run: |

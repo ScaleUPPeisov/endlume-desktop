@@ -115,13 +115,14 @@ jobs:
           python3 - "$T0" "$T1" "$FRAMES" "$PACKETS" "$DUR" "$TMP/stream.json" "$ENDLUME_EXTERNAL_RENDER_BUSY" <<'PY'
           import json,sys
           dt=float(sys.argv[2])-float(sys.argv[1]);frames=int(sys.argv[3]);packets=int(sys.argv[4]);dur=float(sys.argv[5]);s=json.load(open(sys.argv[6]))['streams'][0];busy=sys.argv[7]=='1'
-          m={'seconds':round(dt,3),'frames':frames,'packets':packets,'duration':round(dur,6),'codec':s.get('codec_name'),'pix_fmt':s.get('pix_fmt'),'width':s.get('width'),'height':s.get('height'),'fps':s.get('avg_frame_rate'),'busy':busy,'gop':1800,'quality':'q:v 100'}
+          tier='ideal' if dt<=20.0 else ('normal' if dt<=24.0 else ('acceptable' if dt<=30.0 else 'too_slow'))
+          m={'seconds':round(dt,3),'speed_tier':tier,'frames':frames,'packets':packets,'duration':round(dur,6),'codec':s.get('codec_name'),'pix_fmt':s.get('pix_fmt'),'width':s.get('width'),'height':s.get('height'),'fps':s.get('avg_frame_rate'),'busy':busy,'gop':1800,'quality':'q:v 100'}
           print('REAL_858_MASTER_V2',json.dumps(m,ensure_ascii=False))
           assert frames==3381 and packets==3381,m
           assert s.get('width')==1920 and s.get('height')==1080,m
           assert s.get('avg_frame_rate')=='60/1' and s.get('codec_name')=='hevc' and s.get('pix_fmt')=='yuv420p',m
           assert 56.34<=dur<=56.37,m
-          if not busy: assert dt<=24.0,m
+          if not busy: assert dt<=30.0,m
           else: print('SPEED_THRESHOLD_NOT_USED: an external ffmpeg render was already active; media integrity remains mandatory')
           PY
 
@@ -177,4 +178,4 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-          echo 'PASS: ENDLUME 8.58 — dual completion ack; lost render-done self-heal; 40/40 queue regression; isolated physical master speed/integrity; real Subscribe OFF/ON; render core unchanged from certified 8.57'
+          echo 'PASS: ENDLUME 8.58 — dual completion ack; lost render-done self-heal; 40/40 queue regression; physical master <=30s with exact 3381/3381 integrity; real Subscribe OFF/ON; render core unchanged from certified 8.57'

@@ -1,13 +1,14 @@
 use crate::{model::{EffectPreset,ProjectScanItem,QueueJob,RenderSettings,SubscribePreset},persistence,render};
 use parking_lot::Mutex;
 use serde_json::{json,Value};
-use std::{collections::{HashSet,VecDeque},fs,path::PathBuf,sync::{Arc,atomic::{AtomicBool,Ordering}}};
+use std::{collections::{HashSet,VecDeque},fs,path::{Path,PathBuf},sync::{Arc,atomic::{AtomicBool,Ordering}},time::UNIX_EPOCH};
 use tauri::{AppHandle,Emitter,State};
 
 #[derive(Default)]
 pub struct QueueRuntime{
   pending:Mutex<VecDeque<QueueJob>>,
   active:Mutex<Option<QueueJob>>,
+  finished:Mutex<VecDeque<Value>>,
   running:AtomicBool,
   cancelled:Mutex<HashSet<String>>,
   active_cancel:Mutex<Option<Arc<AtomicBool>>>,
@@ -15,13 +16,44 @@ pub struct QueueRuntime{
 
 impl QueueRuntime{
   fn snapshot(&self)->(Option<QueueJob>,Vec<QueueJob>){(self.active.lock().clone(),self.pending.lock().iter().cloned().collect())}
+  fn terminal_snapshot(&self)->Vec<Value>{self.finished.lock().iter().cloned().collect()}
+  fn remember_terminal(&self,payload:Value){
+    let id=payload.get("id").and_then(Value::as_str).unwrap_or("").to_string();
+    let mut done=self.finished.lock();
+    if !id.is_empty(){done.retain(|v|v.get("id").and_then(Value::as_str)!=Some(id.as_str()));}
+    done.push_back(payload);
+    while done.len()>500{done.pop_front();}
+  }
+  fn clear_terminal(&self,id:&str){self.finished.lock().retain(|v|v.get("id").and_then(Value::as_str)!=Some(id));}
   fn persist(&self,app:&AppHandle){let (active,pending)=self.snapshot();let _=persistence::save_queue_state(app,active.as_ref(),&pending);}
+}
+
+fn queue_safe_name(name:&str)->String{name.chars().map(|c|if ['/', '\\', ':', '*', '?', '"', '<', '>', '|'].contains(&c){'_'}else{c}).collect()}
+
+fn latest_result_for_job(job:&QueueJob)->(Option<String>,Option<u64>){
+  let dir=PathBuf::from(&job.settings.output_dir);let prefix=format!("{} — Ready Videos",queue_safe_name(&job.project.name));
+  let mut best:Option<(u128,PathBuf,u64)>=None;
+  let Ok(entries)=fs::read_dir(&dir)else{return (None,None)};
+  for e in entries.flatten(){
+    let p=e.path();if !p.is_file(){continue}
+    let ext=p.extension().and_then(|x|x.to_str()).unwrap_or("").to_ascii_lowercase();if ext!="mp4"&&ext!="mov"{continue}
+    let name=p.file_stem().and_then(|x|x.to_str()).unwrap_or("");if !name.starts_with(&prefix){continue}
+    let Ok(meta)=e.metadata()else{continue};let bytes=meta.len();
+    let modified=meta.modified().ok().and_then(|t|t.duration_since(UNIX_EPOCH).ok()).map(|d|d.as_nanos()).unwrap_or(0);
+    if best.as_ref().map(|x|modified>x.0).unwrap_or(true){best=Some((modified,p,bytes));}
+  }
+  match best{Some((_,p,b))=>(Some(p.to_string_lossy().into_owned()),Some(b)),None=>(None,None)}
+}
+
+fn done_fallback_payload(job:&QueueJob)->Value{
+  let (result_path,result_bytes)=latest_result_for_job(job);
+  json!({"id":job.project.id,"project":job.project,"status":"done","progress":100.0,"stage":"Готово","etaSec":0.0,"resultPath":result_path,"resultBytes":result_bytes})
 }
 
 #[tauri::command]
 pub async fn enqueue_projects(app:AppHandle,runtime:State<'_,Arc<QueueRuntime>>,projects:Vec<ProjectScanItem>,settings:RenderSettings,effects:Vec<EffectPreset>,subscribes:Vec<SubscribePreset>,ambient:Option<String>)->Result<(),String>{
   if settings.output_dir.trim().is_empty(){return Err("Не выбрана папка результата".into())}
-  {let mut q=runtime.pending.lock();for project in projects.into_iter().filter(|p|p.valid){q.push_back(QueueJob{project,settings:settings.clone(),effects:effects.clone(),subscribes:subscribes.clone(),ambient:ambient.clone()});}}
+  {let mut q=runtime.pending.lock();for project in projects.into_iter().filter(|p|p.valid){runtime.clear_terminal(&project.id);q.push_back(QueueJob{project,settings:settings.clone(),effects:effects.clone(),subscribes:subscribes.clone(),ambient:ambient.clone()});}}
   runtime.persist(&app);let _=app.emit("queue-changed",queue_snapshot_value(runtime.inner().as_ref()));start_worker_if_needed(app,runtime.inner().clone());Ok(())
 }
 
@@ -57,10 +89,17 @@ fn start_worker_if_needed(app:AppHandle,runtime:Arc<QueueRuntime>){
     loop{
       let next={runtime.pending.lock().pop_front()};let Some(job)=next else{break};*runtime.active.lock()=Some(job.clone());runtime.persist(&app);let _=app.emit("queue-changed",queue_snapshot_value(runtime.as_ref()));
       let id=job.project.id.clone();let cancel=Arc::new(AtomicBool::new(false));*runtime.active_cancel.lock()=Some(cancel.clone());let outcome=render::render_job(&app,&job,cancel).await;*runtime.active_cancel.lock()=None;
-      if runtime.cancelled.lock().remove(&id){let _=app.emit("render-error",json!({"id":id,"status":"error","progress":100.0,"stage":"Остановлено пользователем"}));}
-      else if let Err(error)=outcome{
-        let log_path=save_error_log(&job,&error);let friendly=friendly_error(&error);let detail=useful_detail(&error);
-        let _=app.emit("render-error",json!({"id":id,"status":"error","progress":100.0,"stage":format!("Ошибка: {friendly}"),"error":friendly,"errorDetail":detail,"logPath":log_path}));
+      let cancelled=runtime.cancelled.lock().remove(&id);
+      if cancelled{
+        let payload=json!({"id":id,"project":job.project,"status":"error","progress":100.0,"stage":"Остановлено пользователем","etaSec":0.0});runtime.remember_terminal(payload.clone());let _=app.emit("render-error",payload);
+      }else{
+        match outcome{
+          Ok(())=>{runtime.remember_terminal(done_fallback_payload(&job));}
+          Err(error)=>{
+            let log_path=save_error_log(&job,&error);let friendly=friendly_error(&error);let detail=useful_detail(&error);
+            let payload=json!({"id":id,"project":job.project,"status":"error","progress":100.0,"stage":format!("Ошибка: {friendly}"),"error":friendly,"errorDetail":detail,"logPath":log_path,"etaSec":0.0});runtime.remember_terminal(payload.clone());let _=app.emit("render-error",payload);
+          }
+        }
       }
       *runtime.active.lock()=None;runtime.persist(&app);let _=app.emit("queue-changed",queue_snapshot_value(runtime.as_ref()));
     }
@@ -68,7 +107,7 @@ fn start_worker_if_needed(app:AppHandle,runtime:Arc<QueueRuntime>){
   });
 }
 
-fn queue_snapshot_value(runtime:&QueueRuntime)->Value{let (active,pending)=runtime.snapshot();json!({"active":active,"pending":pending,"running":runtime.running.load(Ordering::SeqCst)})}
+fn queue_snapshot_value(runtime:&QueueRuntime)->Value{let (active,pending)=runtime.snapshot();let finished=runtime.terminal_snapshot();json!({"active":active,"pending":pending,"finished":finished,"running":runtime.running.load(Ordering::SeqCst)})}
 #[tauri::command] pub fn queue_snapshot(runtime:State<'_,Arc<QueueRuntime>>)->Value{queue_snapshot_value(runtime.inner().as_ref())}
 
 #[tauri::command]
@@ -90,6 +129,6 @@ pub fn resume_recovery(app:AppHandle,runtime:State<'_,Arc<QueueRuntime>>)->Resul
   let value=persistence::read_value(&app,"recovery.json");if !value.get("interrupted").and_then(Value::as_bool).unwrap_or(false){return Ok(())}
   let mut jobs=Vec::new();if let Some(active)=value.get("active").filter(|v|!v.is_null()){if let Ok(job)=serde_json::from_value::<QueueJob>(active.clone()){jobs.push(job)}}
   if let Some(pending)=value.get("pending").and_then(Value::as_array){for v in pending{if let Ok(job)=serde_json::from_value::<QueueJob>(v.clone()){jobs.push(job)}}}
-  let recovered_projects=jobs.iter().map(|j|j.project.clone()).collect::<Vec<_>>();{let mut q=runtime.pending.lock();for job in jobs{q.push_back(job)}}
+  let recovered_projects=jobs.iter().map(|j|j.project.clone()).collect::<Vec<_>>();{let mut q=runtime.pending.lock();for job in jobs{runtime.clear_terminal(&job.project.id);q.push_back(job)}}
   let _=app.emit("queue-recovered",json!({"projects":recovered_projects}));let _=persistence::write_value(&app,"recovery.json",&json!({"interrupted":false}));runtime.persist(&app);start_worker_if_needed(app,runtime.inner().clone());Ok(())
 }

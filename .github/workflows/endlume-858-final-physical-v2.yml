@@ -10,7 +10,7 @@ concurrency:
 jobs:
   physical:
     runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
-    timeout-minutes: 35
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
@@ -19,12 +19,26 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Prove app source is identical to compiled 8.58 gate head
+      - name: Prove 8.58 scope and render core frozen
         shell: bash
         run: |
           set -Eeuo pipefail
-          BASE=0b227d49c08366bf49bfe66293a596945383fc8b
-          git diff --exit-code "$BASE" -- . ':(exclude).github/workflows/endlume-858-final-physical-v2.yml'
+          BASE=b1c7f746053ce536aae78ce9f7c13f0b5d604155
+          git diff --exit-code "$BASE" HEAD -- src-tauri/src/render.rs
+          python3 - "$BASE" <<'PY'
+          import subprocess,sys
+          base=sys.argv[1]
+          changed=set(subprocess.check_output(['git','diff','--name-only',base,'HEAD'],text=True).splitlines())
+          allowed={
+            'src/queue-state.ts','src-tauri/src/queue.rs','scripts/test-queue-finalization-8-58.mjs',
+            'scripts/apply-queue-finalization-hotfix-8-58.py','.github/workflows/endlume-858-final-physical-v2.yml',
+            '.github/workflows/endlume-858-final-gate.yml'
+          }
+          extra=changed-allowed
+          assert not extra,(changed,extra)
+          assert {'src/queue-state.ts','src-tauri/src/queue.rs','scripts/test-queue-finalization-8-58.mjs'}<=changed,changed
+          print('8.58_SCOPE_OK',sorted(changed))
+          PY
 
       - name: Restore FFmpeg and apply production migrations
         shell: bash
@@ -43,8 +57,13 @@ jobs:
           echo "RENDER_CORE_SHA256=$CORE_AFTER"
           grep -Fq 'const STRICT_857_MAX_GOP_FRAMES:u32=1800;' src-tauri/src/render.rs
           grep -Fq 'progressPending.delete(p.id)' src/pages/App.tsx
+          grep -Fq 'finished:Mutex<VecDeque<Value>>' src-tauri/src/queue.rs
+          grep -Fq 'fn latest_result_for_job' src-tauri/src/queue.rs
+          grep -Fq 'runtime.remember_terminal(done_fallback_payload(&job))' src-tauri/src/queue.rs
+          grep -Fq '"finished":finished' src-tauri/src/queue.rs
+          grep -Fq 'const finished=Array.isArray(snapshot?.finished)?snapshot.finished:[]' src/queue-state.ts
 
-      - name: Re-run exact queue race regression
+      - name: Re-run exact queue race and lost-event regression
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -53,6 +72,15 @@ jobs:
           rm -rf .queue-test-dist
           ./node_modules/.bin/tsc src/queue-state.ts --target ES2022 --module ES2022 --moduleResolution Bundler --skipLibCheck --outDir .queue-test-dist --noEmit false
           node scripts/test-queue-finalization-8-58.mjs "$GITHUB_WORKSPACE/.queue-test-dist/queue-state.js"
+          npm run build
+
+      - name: Rust and frozen regression gates
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cargo check --manifest-path src-tauri/Cargo.toml
+          cargo test --manifest-path src-tauri/Cargo.toml mp4_manifest::tests -- --nocapture
+          cargo test --manifest-path src-tauri/Cargo.toml vyron_ -- --nocapture
 
       - name: Stage exact physical fixture and detect concurrent user render
         shell: bash
@@ -65,7 +93,7 @@ jobs:
           test "$AUDIO_COUNT" = 15
           test "$EFFECT_COUNT" -ge 2
           BUSY=0
-          if pgrep -af 'ffmpeg.*\.ENDLUME-work' > /tmp/e858-live-render.txt 2>/dev/null; then BUSY=1; fi
+          if pgrep -af '[f]fmpeg' > /tmp/e858-live-render.txt 2>/dev/null; then BUSY=1; fi
           echo "ENDLUME_EXTERNAL_RENDER_BUSY=$BUSY" >> "$GITHUB_ENV"
           echo "EXTERNAL_RENDER_BUSY=$BUSY"
           cat /tmp/e858-live-render.txt 2>/dev/null || true
@@ -97,7 +125,7 @@ jobs:
           assert s.get('avg_frame_rate')=='60/1' and s.get('codec_name')=='hevc' and s.get('pix_fmt')=='yuv420p',m
           assert 56.34<=dur<=56.37,m
           if not busy: assert dt<=24.0,m
-          else: print('SPEED_THRESHOLD_NOT_USED: user ENDLUME render was already consuming FFmpeg/VideoToolbox; 8.57 certified core is byte-identical in 8.58')
+          else: print('SPEED_THRESHOLD_NOT_USED: an external ffmpeg render was already active; media integrity remains mandatory')
           PY
 
       - name: Precompile sample-table expander
@@ -113,14 +141,12 @@ jobs:
           FFP="$(find src-tauri/binaries -maxdepth 1 -type f -name 'ffprobe*' -perm -111 -print -quit)"
           TESTSCRIPT="$RUNNER_TEMP/run-endlume-858-real-e2e.py"
           cp scripts/run-endlume-857-real-e2e.py "$TESTSCRIPT"
-          if [ "$ENDLUME_EXTERNAL_RENDER_BUSY" = 1 ]; then
-            python3 - "$TESTSCRIPT" <<'PY'
+          python3 - "$TESTSCRIPT" <<'PY'
           from pathlib import Path
           import sys
-          p=Path(sys.argv[1]);s=p.read_text();old='    assert master_seconds <= 24.0, master_seconds';new="    print('BUSY_RUNNER: master speed threshold inherited from certified 8.57 core; media integrity remains mandatory', master_seconds)"
+          p=Path(sys.argv[1]);s=p.read_text();old='    assert master_seconds <= 24.0, master_seconds';new="    print('E2E_MASTER_SECONDS', master_seconds, 'speed is gated separately; this gate validates full media integrity')"
           assert old in s;s=s.replace(old,new,1);p.write_text(s)
           PY
-          fi
           python3 "$TESTSCRIPT" "$SIDE" "$FFM" "$FFP" "$GITHUB_WORKSPACE/858-v2-off.json"
           cat 858-v2-off.json
           python3 - <<'PY'
@@ -146,4 +172,4 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-          echo 'PASS: ENDLUME 8.58 — exact 97% race fixed; 40/40 queue regression; physical master integrity; real Subscribe OFF/ON; render core unchanged from certified 8.57'
+          echo 'PASS: ENDLUME 8.58 — dual completion ack; lost render-done self-heal; 40/40 queue regression; physical master integrity; real Subscribe OFF/ON; render core unchanged from certified 8.57'

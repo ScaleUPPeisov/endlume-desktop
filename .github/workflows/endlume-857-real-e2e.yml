@@ -1,0 +1,96 @@
+name: ENDLUME 8.57 Real Full E2E
+on:
+  push:
+    branches: [candidate/endlume-857-master-frame-hotfix]
+    paths:
+      - '.github/workflows/endlume-857-real-e2e.yml'
+      - 'scripts/run-endlume-857-real-e2e.py'
+      - 'scripts/find-endlume-real-fixture.py'
+      - 'scripts/apply-render-isolation-8-56.py'
+      - 'scripts/apply-master-frame-hotfix-8-57.py'
+      - 'src-tauri/src/render.rs'
+      - 'src-tauri/src/mp4_manifest.rs'
+      - 'src-tauri/src/mp4_manifest_probe_tests.rs'
+permissions:
+  contents: read
+concurrency:
+  group: endlume-857-real-e2e-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  real-e2e:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Restore embedded FFmpeg sidecars
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          FOUNDATION="$HOME/.endlume-local-builder/endlume-desktop-8.40-bootstrap"
+          test -d "$FOUNDATION/src-tauri/binaries"
+          mkdir -p src-tauri/binaries
+          rsync -a "$FOUNDATION/src-tauri/binaries/" src-tauri/binaries/
+          chmod +x src-tauri/binaries/ffmpeg* src-tauri/binaries/ffprobe* || true
+
+      - name: Apply exact production 8.56 plus 8.57 migrations
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/apply-render-isolation-8-56.py
+          python3 scripts/apply-master-frame-hotfix-8-57.py
+          grep -Fq 'const STRICT_857_MAX_GOP_FRAMES:u32=1800;' src-tauri/src/render.rs
+          grep -Fq 'shortest=0:repeatlast=1:eof_action=repeat' src-tauri/src/render.rs
+          grep -Fq 'resolved_job.settings.duration_mode="whole-track".into();' src-tauri/src/render.rs
+          grep -Fq 'resolved_job.settings.crossfade_sec=0.0;' src-tauri/src/render.rs
+          grep -Fq 'verify_strict_857_result' src-tauri/src/render.rs
+
+      - name: Refresh and stage exact physical fixture
+        id: fixture
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          TMP="$(mktemp -d /tmp/e857fixture.XXXXXX)"
+          python3 scripts/find-endlume-real-fixture.py "$TMP/env"
+          cat "$TMP/env" >> "$GITHUB_ENV"
+          source "$TMP/env"
+          test "$AUDIO_COUNT" = 15
+          test "$EFFECT_COUNT" -ge 2
+          test -f "$SIDE"; test -f "$IMG"
+          echo "REAL_FIXTURE project=$PROJECT_NAME audio=$AUDIO_COUNT effects=$EFFECT_COUNT active_subscribes=$SUBSCRIBE_COUNT duration_hours=$DURATION_HOURS"
+
+      - name: Precompile exact Rust sample-table expander
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cargo test --manifest-path src-tauri/Cargo.toml external_prefix_cycle_manifest_if_requested --no-run
+
+      - name: Full physical Subscribe-OFF media E2E
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          FFM="$(find src-tauri/binaries -maxdepth 1 -type f -name 'ffmpeg*' -perm -111 -print -quit)"
+          FFP="$(find src-tauri/binaries -maxdepth 1 -type f -name 'ffprobe*' -perm -111 -print -quit)"
+          test -x "$FFM"; test -x "$FFP"; test -f "$SIDE"
+          python3 scripts/run-endlume-857-real-e2e.py "$SIDE" "$FFM" "$FFP" "$GITHUB_WORKSPACE/857-real-e2e.json"
+
+      - name: Show full E2E metrics
+        if: always()
+        shell: bash
+        run: |
+          echo '=== 857 REAL E2E METRICS ==='
+          test -f 857-real-e2e.json && cat 857-real-e2e.json || true
+
+      - name: Upload full E2E metrics
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: endlume-857-real-e2e-metrics
+          path: 857-real-e2e.json
+          if-no-files-found: warn

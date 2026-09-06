@@ -74,14 +74,6 @@ jobs:
           node scripts/test-queue-finalization-8-58.mjs "$GITHUB_WORKSPACE/.queue-test-dist/queue-state.js"
           npm run build
 
-      - name: Rust and frozen regression gates
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          cargo check --manifest-path src-tauri/Cargo.toml
-          cargo test --manifest-path src-tauri/Cargo.toml mp4_manifest::tests -- --nocapture
-          cargo test --manifest-path src-tauri/Cargo.toml vyron_ -- --nocapture
-
       - name: Stage exact physical fixture and detect concurrent user render
         shell: bash
         run: |
@@ -97,8 +89,13 @@ jobs:
           echo "ENDLUME_EXTERNAL_RENDER_BUSY=$BUSY" >> "$GITHUB_ENV"
           echo "EXTERNAL_RENDER_BUSY=$BUSY"
           cat /tmp/e858-live-render.txt 2>/dev/null || true
+          echo 'THERMAL_STATE_BEFORE_MASTER:'
+          pmset -g therm 2>/dev/null || true
+          echo 'LOAD_BEFORE_MASTER:'
+          uptime || true
+          sleep 10
 
-      - name: Exact real master integrity with contention-aware speed gate
+      - name: Exact real master integrity and isolated speed gate
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -127,6 +124,14 @@ jobs:
           if not busy: assert dt<=24.0,m
           else: print('SPEED_THRESHOLD_NOT_USED: an external ffmpeg render was already active; media integrity remains mandatory')
           PY
+
+      - name: Rust and frozen regression gates
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cargo check --manifest-path src-tauri/Cargo.toml
+          cargo test --manifest-path src-tauri/Cargo.toml mp4_manifest::tests -- --nocapture
+          cargo test --manifest-path src-tauri/Cargo.toml vyron_ -- --nocapture
 
       - name: Precompile sample-table expander
         shell: bash
@@ -172,4 +177,4 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-          echo 'PASS: ENDLUME 8.58 — dual completion ack; lost render-done self-heal; 40/40 queue regression; physical master integrity; real Subscribe OFF/ON; render core unchanged from certified 8.57'
+          echo 'PASS: ENDLUME 8.58 — dual completion ack; lost render-done self-heal; 40/40 queue regression; isolated physical master speed/integrity; real Subscribe OFF/ON; render core unchanged from certified 8.57'

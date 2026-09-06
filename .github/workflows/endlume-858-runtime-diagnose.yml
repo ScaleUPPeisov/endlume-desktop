@@ -1,28 +1,25 @@
 name: ENDLUME 8.58 Runtime Diagnose
-
 on:
   push:
-    branches:
-      - candidate/endlume-858-runtime-diagnose
-
+    branches: [candidate/endlume-858-runtime-diagnose]
+permissions:
+  contents: read
 concurrency:
-  group: endlume-858-runtime-diagnose
+  group: endlume-858-runtime-diagnose-${{ github.ref }}
   cancel-in-progress: true
-
 jobs:
   diagnose:
-    runs-on: [self-hosted, macOS, ARM64]
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 10
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
           clean: true
           fetch-depth: 1
           persist-credentials: false
-
       - name: Inspect live ENDLUME queue and outputs
-        shell: /bin/bash --noprofile --norc -e -o pipefail {0}
+        shell: bash
         run: |
           set -Eeuo pipefail
           echo "=== MACHINE ==="
@@ -30,13 +27,15 @@ jobs:
           echo "=== RUNNING ENDLUME ==="
           pgrep -afil 'ENDLUME STUDIO PEISOV|/endlume' || true
           echo "=== APP DATA QUEUE FILES ==="
-          mapfile -t QFILES < <(find "$HOME/Library/Application Support" -maxdepth 5 -type f -name queue.json 2>/dev/null | grep -Ei 'endlume|studio\.endlume' || true)
-          printf '%s\n' "${QFILES[@]:-}"
-          if [ "${#QFILES[@]}" -eq 0 ]; then
+          QLIST="$(mktemp)"
+          find "$HOME/Library/Application Support" -maxdepth 5 -type f -name queue.json 2>/dev/null | grep -Ei 'endlume|studio\.endlume' > "$QLIST" || true
+          cat "$QLIST" || true
+          if [ ! -s "$QLIST" ]; then
             echo "NO_QUEUE_JSON"
             exit 0
           fi
-          for Q in "${QFILES[@]}"; do
+          while IFS= read -r Q; do
+            [ -n "$Q" ] || continue
             echo "--- QUEUE: $Q ---"
             cat "$Q" || true
             OUT="$(python3 - "$Q" <<'PY'
@@ -51,7 +50,8 @@ try:
   p=s.get('outputDir') or s.get('output_dir')
   if p:
    print(p); break
-except Exception: pass
+except Exception:
+ pass
 PY
 )"
             if [ -n "$OUT" ] && [ -d "$OUT" ]; then
@@ -67,4 +67,5 @@ PY
             else
               echo "OUTPUT_DIR_NOT_RESOLVED: $OUT"
             fi
-          done
+          done < "$QLIST"
+          rm -f "$QLIST"

@@ -6,6 +6,7 @@ import { VyronBatchBridge } from '../components/VyronBatchBridge';
 import { useApp } from '../store';
 import { api } from '../tauri';
 import { installMotionRuntime } from '../motion';
+import { applyProjectPatch,applyQueueSnapshot } from '../queue-state';
 import type { LicenseStatus, RecoveryPayload } from '../types';
 import { ProjectPage } from './ProjectPage';
 import { RenderPage } from './RenderPage';
@@ -14,23 +15,7 @@ import { SettingsPage } from './SettingsPage';
 import { EditorRouter } from './Editors';
 
 function syncQueueSnapshot(snapshot:any){
-  const active=snapshot?.active;
-  const pending=Array.isArray(snapshot?.pending)?snapshot.pending:[];
-  useApp.setState(state=>{
-    const next=[...state.projects];
-    const upsert=(job:any,status:'rendering'|'queued')=>{
-      const project=job?.project;
-      if(!project?.id)return;
-      let idx=next.findIndex(x=>x.id===project.id);
-      if(idx<0)idx=next.findIndex(x=>x.path===project.path&&!['done','error'].includes(x.status));
-      const old=idx>=0?next[idx]:undefined;
-      const merged:any={...project,...old,status,progress:old?.progress||0,stage:old?.stage||(status==='rendering'?'Запускаю рендер':'Ожидает в очереди'),elapsedSec:old?.elapsedSec||0};
-      if(idx>=0)next[idx]=merged;else next.push(merged);
-    };
-    if(active)upsert(active,'rendering');
-    pending.forEach((job:any)=>upsert(job,'queued'));
-    return {projects:next};
-  });
+  useApp.setState(state=>({projects:applyQueueSnapshot(state.projects,snapshot)}));
 }
 
 function compactPayload<T extends Record<string,any>>(value:T):Partial<T>{
@@ -100,12 +85,20 @@ export function App(){
     window.addEventListener('focus',onFocus);document.addEventListener('visibilitychange',onVisibility);
 
     const progressPending=new Map<string,any>();let progressRaf:number|undefined;
-    const flushRenderProgress=()=>{progressRaf=undefined;if(progressPending.size===0)return;const batch=new Map(progressPending);progressPending.clear();useApp.setState(state=>({projects:state.projects.map(p=>{const next=batch.get(p.id);return next?{...p,...compactPayload(next)}:p})}));};
+    const flushRenderProgress=()=>{
+      progressRaf=undefined;if(progressPending.size===0)return;
+      const batch=new Map(progressPending);progressPending.clear();
+      useApp.setState(state=>{
+        let projects:any[]=state.projects;
+        for(const next of batch.values())projects=applyProjectPatch(projects,next.id,compactPayload(next));
+        return {projects};
+      });
+    };
     const off:Promise<()=>void>[]=[];
     off.push(listen<any>('queue-changed',e=>syncQueueSnapshot(e.payload)));
     off.push(listen<any>('render-progress',e=>{const p=e.payload;if(!p?.id)return;progressPending.set(p.id,p);if(progressRaf===undefined)progressRaf=requestAnimationFrame(flushRenderProgress)}));
-    off.push(listen<any>('render-done',e=>patchProject(e.payload.id,compactPayload(e.payload))));
-    off.push(listen<any>('render-error',e=>patchProject(e.payload.id,compactPayload(e.payload))));
+    off.push(listen<any>('render-done',e=>{const p=e.payload;if(!p?.id)return;progressPending.delete(p.id);patchProject(p.id,{...compactPayload(p),status:'done',progress:100,stage:'Готово',etaSec:0})}));
+    off.push(listen<any>('render-error',e=>{const p=e.payload;if(!p?.id)return;progressPending.delete(p.id);patchProject(p.id,{...compactPayload(p),status:'error',progress:100,etaSec:0})}));
     off.push(listen<any>('queue-recovered',e=>{const p=(e.payload?.projects||[]).map((x:any)=>({...x,status:'queued',progress:0,stage:'Восстановлено после сбоя',elapsedSec:0}));appendProjects(p)}));
     off.push(listen<any>('engine-timing',e=>{const {id,key,seconds}=e.payload||{};if(id&&key)patchProject(id,{engineTimings:{...(useApp.getState().projects.find(p=>p.id===id)?.engineTimings||{}),[key]:seconds}})}));
     off.push(listen<any>('engine-profile',e=>{const {id,...rest}=e.payload||{};if(id)patchProject(id,compactPayload(rest))}));

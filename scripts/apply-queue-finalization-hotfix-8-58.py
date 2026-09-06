@@ -71,4 +71,19 @@ if anchor not in h: raise SystemExit('8.58: ReleaseHistory list anchor missing')
 h=h.replace(anchor,entry,1)
 H.write_text(h)
 
+# CI-only harness relocation guard. The physical workflow copies the E2E script to
+# RUNNER_TEMP to change only its speed assertion. Without this override, the script
+# derives ROOT from its temporary path and cargo cannot find src-tauri/Cargo.toml.
+# Outside GitHub Actions GITHUB_WORKSPACE is absent, so the original repo-relative
+# behaviour is preserved. This modifies test harness code only, never render.rs.
+E2E=ROOT/'scripts/run-endlume-857-real-e2e.py'
+if E2E.is_file():
+    e2e=E2E.read_text()
+    old_root='ROOT = Path(__file__).resolve().parents[1]'
+    new_root='ROOT = Path(os.environ.get("GITHUB_WORKSPACE") or Path(__file__).resolve().parents[1]).resolve()'
+    if old_root in e2e:
+        e2e=e2e.replace(old_root,new_root,1);E2E.write_text(e2e)
+    elif new_root not in e2e:
+        raise SystemExit('8.58: physical E2E ROOT anchor missing')
+
 print('PASS: ENDLUME 8.58 queue finalization + backend terminal snapshot hotfix applied; render core untouched')

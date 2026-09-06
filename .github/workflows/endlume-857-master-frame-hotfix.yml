@@ -50,7 +50,7 @@ jobs:
           grep -Fq 'software fallback отключён' src-tauri/src/render.rs
           grep -Fq 'resolved_job.settings.duration_mode="whole-track".into();' src-tauri/src/render.rs
           grep -Fq 'resolved_job.settings.crossfade_sec=0.0;' src-tauri/src/render.rs
-          grep -Fq 'STRICT_856_MIN_BYTES:u64=400_000_000' src-tauri/src/render.rs
+          grep -Fq 'STRICT_856_MIN_BYTES:u64=500_000_000' src-tauri/src/render.rs
           grep -Fq 'STRICT_856_MAX_BYTES:u64=700_000_000' src-tauri/src/render.rs
           grep -Fq 'source_manifest_path' src-tauri/src/vyron_bridge.rs
           grep -Fq 'selected_project_ids' src-tauri/src/vyron_bridge.rs

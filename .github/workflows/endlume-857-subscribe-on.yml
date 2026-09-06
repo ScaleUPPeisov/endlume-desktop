@@ -19,7 +19,7 @@ concurrency:
 jobs:
   subscribe-on:
     runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
-    timeout-minutes: 25
+    timeout-minutes: 26
     steps:
       - uses: actions/checkout@v4
         with:

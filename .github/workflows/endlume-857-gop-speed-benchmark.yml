@@ -4,6 +4,9 @@ on:
     branches: [candidate/endlume-857-master-frame-hotfix]
 permissions:
   contents: read
+concurrency:
+  group: endlume-857-gop-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   benchmark:
     runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
@@ -11,7 +14,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: candidate/endlume-857-master-frame-hotfix
+          ref: ${{ github.sha }}
           clean: true
           fetch-depth: 0
           persist-credentials: false
@@ -102,10 +105,16 @@ jobs:
           else
             echo 'PASS: physical VideoToolbox GOP diagnostic; release gate remains unsatisfied without the exact real fixture.'
           fi
+      - name: Show GOP benchmark metrics
+        if: always()
+        shell: bash
+        run: |
+          test -f 857-gop-benchmark.json && cat 857-gop-benchmark.json || true
       - name: Upload GOP benchmark metrics
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: endlume-857-gop-benchmark
           path: 857-gop-benchmark.json
-          if-no-files-found: error
+          if-no-files-found: warn

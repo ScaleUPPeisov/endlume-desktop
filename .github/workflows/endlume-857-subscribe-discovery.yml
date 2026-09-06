@@ -1,0 +1,30 @@
+name: ENDLUME 8.57 Subscribe Discovery
+on:
+  push:
+    branches: [candidate/endlume-857-master-frame-hotfix]
+    paths:
+      - '.github/workflows/endlume-857-subscribe-discovery.yml'
+      - 'scripts/find-endlume-real-subscribe.py'
+permissions:
+  contents: read
+concurrency:
+  group: endlume-857-subscribe-discovery-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  discover:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Find real Subscribe preset and source
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -d '/Volumes/TOSHIBA EXT'
+          python3 scripts/find-endlume-real-subscribe.py 857-subscribe-preset.json
+          cat 857-subscribe-preset.json

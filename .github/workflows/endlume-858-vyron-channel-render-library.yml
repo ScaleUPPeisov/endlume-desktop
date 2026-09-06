@@ -1,0 +1,72 @@
+name: ENDLUME 8.58 VYRON Channel Render Library
+on:
+  push:
+    branches: [candidate/endlume-858-vyron-channel-render-library]
+permissions:
+  contents: read
+concurrency:
+  group: endlume-858-vyron-render-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  gate:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Restore embedded FFmpeg sidecars
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          FOUNDATION="$HOME/.endlume-local-builder/endlume-desktop-8.40-bootstrap"
+          test -d "$FOUNDATION/src-tauri/binaries"
+          mkdir -p src-tauri/binaries
+          rsync -a "$FOUNDATION/src-tauri/binaries/" src-tauri/binaries/
+          chmod +x src-tauri/binaries/ffmpeg* src-tauri/binaries/ffprobe* || true
+      - name: Apply frozen 8.57 render source
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/apply-render-isolation-8-56.py
+          python3 scripts/apply-master-frame-hotfix-8-57.py
+      - name: Prove VYRON render-library contract
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          grep -Fq 'fn safe_channel_folder' src-tauri/src/vyron_bridge.rs
+          grep -Fq 'fn vyron_workspace_root' src-tauri/src/vyron_bridge.rs
+          grep -Fq 'workspace.join("Render").join(safe_channel_folder(channel_name))' src-tauri/src/vyron_bridge.rs
+          grep -Fq 'let output=resolve_render_output(&v,&root,&channel_name)?;' src-tauri/src/vyron_bridge.rs
+          grep -Fq 'st.patchSettings({outputDir:info.outputDir})' src/components/VyronBatchBridge.tsx
+          grep -Fq "'Completed',e.payload?.resultPath||null" src/components/VyronBatchBridge.tsx
+          grep -Fq 'let out_dir=PathBuf::from(&job.settings.output_dir)' src-tauri/src/render.rs
+          grep -Fq 'vyron_render_library_sanitizes_channel_folder' src-tauri/src/vyron_bridge_tests.rs
+          grep -Fq 'join("Render").join("NEON")' src-tauri/src/vyron_bridge_tests.rs
+          grep -Fq 'source_manifest_path' src-tauri/src/vyron_bridge.rs
+          grep -Fq 'selected_project_ids' src-tauri/src/vyron_bridge.rs
+      - name: Frontend production gate
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          npm ci
+          npm run check
+          npm run build
+      - name: Rust full regression gate
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cargo check --manifest-path src-tauri/Cargo.toml
+          cargo test --manifest-path src-tauri/Cargo.toml -- --nocapture
+      - name: VYRON focused regression gate
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cargo test --manifest-path src-tauri/Cargo.toml vyron_ -- --nocapture
+      - name: Candidate gate summary
+        shell: bash
+        run: |
+          echo 'PASS: VYRON imports route to <workspace>/Render/<channel>; legacy manifests retain declared outputDir; manual ENDLUME output remains settings-driven; frontend production build and full Rust tests passed.'

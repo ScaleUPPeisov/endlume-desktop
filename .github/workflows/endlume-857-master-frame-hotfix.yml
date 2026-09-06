@@ -30,15 +30,19 @@ jobs:
           set -Eeuo pipefail
           python3 scripts/apply-render-isolation-8-56.py
           python3 scripts/apply-master-frame-hotfix-8-57.py
-      - name: Prove frozen contracts
+      - name: Prove frozen contracts and 8.57 integrity guards
         shell: bash
         run: |
           set -Eeuo pipefail
           BASE=23cb01908604cf7583843c1b1bf74eafa7205a69
           git diff --exit-code "$BASE" -- src-tauri/src/vyron_bridge.rs src-tauri/src/vyron_bridge_tests.rs src/components/VyronBatchBridge.tsx src/tauri.ts src/pages/App.tsx src/pages/ProjectPage.tsx src/pages/RenderPage.tsx src/store.ts
           grep -Fq 'shortest=0:repeatlast=1:eof_action=repeat' src-tauri/src/render.rs
-          grep -Fq 'let g=frames.min(1800).to_string();' src-tauri/src/render.rs
-          ! grep -Fq "strict-prealpha" src-tauri/src/render.rs || true
+          grep -Fq 'const STRICT_857_MAX_GOP_FRAMES:u32=1800;' src-tauri/src/render.rs
+          grep -Fq 'encoder=="hevc_videotoolbox"{frames.min(STRICT_857_MAX_GOP_FRAMES)}else{frames}' src-tauri/src/render.rs
+          grep -Fq 'async fn probe_video_packets_857' src-tauri/src/render.rs
+          grep -Fq 'let packets=probe_video_packets_857(app,&master).await?' src-tauri/src/render.rs
+          grep -Fq 'got!=master_frames||packets!=master_frames' src-tauri/src/render.rs
+          grep -Fq 'Strict 8.57 master integrity' src-tauri/src/render.rs
           grep -Fq 'let max_attempts=if smart_repeat_project(job){1}else{2};' src-tauri/src/render.rs
           grep -Fq 'software fallback отключён' src-tauri/src/render.rs
           grep -Fq 'resolved_job.settings.duration_mode="whole-track".into();' src-tauri/src/render.rs
@@ -49,6 +53,7 @@ jobs:
           grep -Fq 'selected_project_ids' src-tauri/src/vyron_bridge.rs
           grep -Fq '<VyronBatchBridge/>' src/pages/App.tsx
           grep -Fq 'ENDLUME Studio 1.0.0-alpha.8.57' src/pages/SettingsPage.tsx
+          grep -Fq 'Обновлено <b>06.09.2026</b>' src/pages/SettingsPage.tsx
           grep -Fq "version:'1.0.0-alpha.8.57'" src/components/ReleaseHistory.tsx
           grep -Fq 'current:true' src/components/ReleaseHistory.tsx
           python3 - <<'PY'
@@ -73,12 +78,19 @@ jobs:
         run: |
           set -Eeuo pipefail
           METRICS="$GITHUB_WORKSPACE/857-master-metrics.json"
-          printf '{"status":"started"}\n' > "$METRICS"
+          printf '{"status":"started","release_gate":false}\n' > "$METRICS"
           FFM="$(find src-tauri/binaries -maxdepth 1 -type f -name 'ffmpeg*' -perm -111 -print -quit)"
           FFP="$(find src-tauri/binaries -maxdepth 1 -type f -name 'ffprobe*' -perm -111 -print -quit)"
           test -x "$FFM"; test -x "$FFP"
           TMP="$(mktemp -d /tmp/e857frames.XXXX)"; trap 'rm -rf "$TMP"' EXIT
-          python3 scripts/find-endlume-real-fixture.py "$TMP/env"
+          if ! python3 scripts/find-endlume-real-fixture.py "$TMP/env"; then
+            python3 - "$METRICS" <<'PY'
+          import json,sys
+          json.dump({'status':'blocked','release_gate':False,'reason':'real_fixture_offline','required':'1 image + 15 audio + >=2 enabled effects'},open(sys.argv[1],'w'),indent=2)
+          PY
+            echo 'BLOCKED: exact real-project gate requires the mounted/staged ENDLUME fixture; synthetic input is forbidden here.'
+            exit 3
+          fi
           source "$TMP/env"
           test "$AUDIO_COUNT" = 15
           test -f "$SIDE"; test -f "$IMG"; test -f "$FX1"; test -f "$FX2"
@@ -95,9 +107,10 @@ jobs:
           python3 - "$t0" "$t1" "$FRAMES" "$PACKETS" "$DUR" "$TMP/stream.json" "$METRICS" <<'PY'
           import json,sys
           dt=float(sys.argv[2])-float(sys.argv[1]); frames=int(sys.argv[3]); packets=int(sys.argv[4]); dur=float(sys.argv[5]); stream=json.load(open(sys.argv[6]))['streams'][0]; path=sys.argv[7]
-          data={'status':'measured','seconds':round(dt,3),'frames':frames,'packets':packets,'width':stream.get('width'),'height':stream.get('height'),'rate':stream.get('avg_frame_rate'),'codec':stream.get('codec_name'),'pix_fmt':stream.get('pix_fmt'),'duration':round(dur,6),'gop':1800}
+          data={'status':'measured','release_gate':True,'seconds':round(dt,3),'frames':frames,'packets':packets,'width':stream.get('width'),'height':stream.get('height'),'rate':stream.get('avg_frame_rate'),'codec':stream.get('codec_name'),'pix_fmt':stream.get('pix_fmt'),'duration':round(dur,6),'gop':1800,'quality':'q:v 100'}
           json.dump(data,open(path,'w'),indent=2)
           print('REAL_857_MASTER',data)
+          assert data['gop']==1800,data
           assert frames==3381,frames
           assert packets==3381,packets
           assert stream.get('width')==1920 and stream.get('height')==1080,stream
@@ -107,7 +120,7 @@ jobs:
           assert 56.34<=dur<=56.37,dur
           assert dt<=24.0,dt
           PY
-          echo 'PASS: exact real Strict master is 3381 frames/packets, HEVC 1920x1080 CFR60, GOP 1800 and within render budget'
+          echo 'PASS: exact real Strict master is 3381 frames/packets, HEVC 1920x1080 CFR60 q:v100, GOP 1800 and within render budget'
       - name: Upload exact-master metrics
         if: always()
         uses: actions/upload-artifact@v4

@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type { EffectPreset, LibraryPayload, Page, RenderProject, RenderSettings, SubscribePreset } from './types';
+import { applyProjectPatch } from './queue-state';
 
 type Editor = null | {kind:'effects'|'subscribe'; id?:string};
 interface State {
@@ -51,10 +52,10 @@ export const useApp=create<State>()(persist((set)=>({
     const incomingIds=new Set(incoming.map(p=>p.id));
     const oldById=new Map(s.projects.map(p=>[p.id,p]));
     const terminal=s.projects.filter(p=>['done','error'].includes(p.status)&&!incomingIds.has(p.id));
-    const live=incoming.map(p=>{const old=oldById.get(p.id);if(!old)return p;return {...old,...p,progress:p.status==='rendering'?Math.max(old.progress||0,p.progress||0):p.progress,stage:p.status==='rendering'&&old.stage?old.stage:p.stage,elapsedSec:p.status==='rendering'?Math.max(old.elapsedSec||0,p.elapsedSec||0):p.elapsedSec}});
+    const live=incoming.map(p=>{const old=oldById.get(p.id);if(!old)return p;if(['done','error'].includes(old.status))return old;return {...old,...p,progress:p.status==='rendering'?Math.max(old.progress||0,p.progress||0):p.progress,stage:p.status==='rendering'&&old.stage?old.stage:p.stage,elapsedSec:p.status==='rendering'?Math.max(old.elapsedSec||0,p.elapsedSec||0):p.elapsedSec}});
     return {projects:[...terminal,...live]};
   }),
-  patchProject:(id,patch)=>set(s=>({projects:s.projects.map(p=>p.id===id?{...p,...patch}:p)})),
+  patchProject:(id,patch)=>set(s=>({projects:applyProjectPatch(s.projects,id,patch) as RenderProject[]})),
   removeProject:(id)=>set(s=>({projects:s.projects.filter(p=>p.id!==id)})),
   clearFinished:()=>set(s=>({projects:s.projects.filter(p=>!['done','error'].includes(p.status))})),
   setInvalidProjects:(invalidProjects)=>set({invalidProjects}),

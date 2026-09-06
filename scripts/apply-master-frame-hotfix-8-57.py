@@ -28,6 +28,10 @@ old='let frames=(s.fps.max(1) as f64*duration.max(2.0)).round().max(1.0) as u32;
 new='let frames=(s.fps.max(1) as f64*duration.max(2.0)).round().max(1.0) as u32;\n  let g=if encoder=="hevc_videotoolbox"{frames.min(STRICT_857_MAX_GOP_FRAMES)}else{frames}.to_string();'
 s=once(s,old,new,'VideoToolbox-only safe GOP cap')
 
+# Fix 2b: production output contract is 500-700 MB. 8.56 allowed a 400 MB
+# lower bound, which could let a naturally 400-499 MB result bypass padding.
+s=once(s,'const STRICT_856_MIN_BYTES:u64=400_000_000;','const STRICT_856_MIN_BYTES:u64=500_000_000;','500 MB production minimum')
+
 # Fix 3: packet-count integrity is required in addition to decoded-frame count.
 frames_probe='''async fn probe_video_frames_852(app:&AppHandle,path:&Path)->Result<usize,String>{\n  let args=vec!["-v","error","-count_frames","-select_streams","v:0","-show_entries","stream=nb_read_frames","-of","default=nw=1:nk=1",path.to_string_lossy().as_ref()].into_iter().map(String::from).collect();\n  let (o,_)=output(app,"ffprobe",args).await?;String::from_utf8_lossy(&o).trim().parse::<usize>().map_err(|_|format!("Не удалось посчитать кадры: {}",path.display()))\n}\n'''
 packets_probe=frames_probe+'''\nasync fn probe_video_packets_857(app:&AppHandle,path:&Path)->Result<usize,String>{\n  let args=vec!["-v","error","-count_packets","-select_streams","v:0","-show_entries","stream=nb_read_packets","-of","default=nw=1:nk=1",path.to_string_lossy().as_ref()].into_iter().map(String::from).collect();\n  let (o,_)=output(app,"ffprobe",args).await?;String::from_utf8_lossy(&o).trim().parse::<usize>().map_err(|_|format!("Не удалось посчитать video packets: {}",path.display()))\n}\n'''
@@ -54,7 +58,7 @@ s=once(s,old,new,'periodic seed integrity')
 
 # Fix 4: the final Strict output used to verify only duration, audio presence,
 # dimensions and FPS. Verify the actual delivery contract too: HEVC/yuv420p,
-# original MP3 codec, 400-700 MB envelope, tight duration, and random-access
+# original MP3 codec, 500-700 MB envelope, tight duration, and random-access
 # decodability at beginning/middle/tail. This catches broken zero-copy sample
 # tables and corrupt tails before render-done is emitted.
 periodic_anchor='''\n\n#[derive(Clone)]\nstruct Periodic852Plan'''
@@ -62,7 +66,7 @@ strict_verify=r'''
 
 async fn verify_strict_857_result(app:&AppHandle,out:&Path,expected:f64)->Result<(),String>{
   let bytes=std::fs::metadata(out).map_err(|e|format!("Strict 8.57 final stat: {e}"))?.len();
-  if bytes<400_000_000||bytes>700_000_000{return Err(format!("Strict 8.57 final size: {} MB вне 400-700 MB",bytes/1_000_000))}
+  if bytes<500_000_000||bytes>700_000_000{return Err(format!("Strict 8.57 final size: {} MB вне 500-700 MB",bytes/1_000_000))}
   let d=probe_duration(app,out.to_string_lossy().as_ref()).await?;
   if (d-expected).abs()>1.0{return Err(format!("Strict 8.57 final duration: {:.3} вместо {:.3}",d,expected))}
   let args=vec!["-v","error","-show_entries","stream=codec_type,codec_name,pix_fmt,width,height,avg_frame_rate,sample_rate,channels","-of","json",out.to_string_lossy().as_ref()].into_iter().map(String::from).collect();
@@ -123,7 +127,7 @@ insert="""const releases:Release[]=[
     'Физическая диагностика Apple Silicon выявила отдельный HEVC VideoToolbox дефект длинного GOP: GOP 3381 записывал 3381 packets, но декодировались только 2048 frames с RPS/POC errors.',
     'Для HEVC VideoToolbox keyframe interval ограничен 1800 кадрами; полный master остаётся 3381 кадров, 1920×1080/60 FPS и q:v 100.',
     'Strict runtime проверяет decoded frames и encoded packets для master, Subscribe-сегментов и seed до zero-copy expansion.',
-    'Перед render-done итог дополнительно проверяется: HEVC/yuv420p, 1920×1080/60, untouched MP3, 400–700 МБ, точная длительность и seek/decode в начале, середине и хвосте.',
+    'Перед render-done итог дополнительно проверяется: HEVC/yuv420p, 1920×1080/60, untouched MP3, 500–700 МБ, точная длительность и seek/decode в начале, середине и хвосте.',
     'Экран Обновления и О программе синхронизирован с текущей версией 8.57; VYRON bridge и updater identity сохранены.'
   ]},
   {version:'1.0.0-alpha.8.56',date:'05.09.2026',current:false,title:'Render Isolation • Strict Output Contract',items:[
@@ -135,4 +139,4 @@ insert="""const releases:Release[]=[
 h=once(h,anchor,insert,'release history current version')
 H.write_text(h)
 
-print('PASS: ENDLUME 8.57 Effects lifetime + safe VideoToolbox GOP + frame/packet/seek final integrity hotfix applied')
+print('PASS: ENDLUME 8.57 Effects lifetime + safe VideoToolbox GOP + 500-700 MB + frame/packet/seek final integrity hotfix applied')

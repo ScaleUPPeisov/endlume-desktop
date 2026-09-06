@@ -39,6 +39,32 @@ fn handoff_selected(path:&Path)->Vec<String>{
   read_value(path).ok().and_then(|v|v.get("selectedProjectIds").and_then(Value::as_array).cloned()).unwrap_or_default().into_iter().filter_map(|v|v.as_str().map(str::to_string)).collect()
 }
 
+fn safe_channel_folder(name:&str)->String{
+  let cleaned=name.chars().map(|c|if c.is_control()||['/','\\',':','*','?','"','<','>','|'].contains(&c){'_'}else{c}).collect::<String>();
+  let trimmed=cleaned.trim().trim_matches('.').trim();
+  let safe=if trimmed.is_empty()||trimmed=="."||trimmed==".."{"Channel"}else{trimmed};
+  safe.chars().take(120).collect()
+}
+fn vyron_workspace_root(batch_root:&Path)->Option<PathBuf>{
+  batch_root.ancestors().find(|p|p.file_name().and_then(|x|x.to_str()).map(|x|x.eq_ignore_ascii_case("ProductionManager")).unwrap_or(false)).and_then(Path::parent).map(Path::to_path_buf)
+}
+fn resolve_render_output(v:&Value,batch_root:&Path,channel_name:&str)->Result<PathBuf,String>{
+  if let Some(workspace)=vyron_workspace_root(batch_root){
+    let output=workspace.join("Render").join(safe_channel_folder(channel_name));
+    fs::create_dir_all(&output).map_err(|e|format!("Render/<channel>: {e}"))?;
+    let workspace=workspace.canonicalize().map_err(|e|format!("VYRON workspace: {e}"))?;
+    let output=output.canonicalize().map_err(|e|format!("Render/<channel>: {e}"))?;
+    if !output.starts_with(&workspace){return Err("Render VYRON находится вне workspace".into())}
+    return Ok(output)
+  }
+  // Backward compatibility for old/non-standard manifests that predate the
+  // ProductionManager workspace layout. Their declared outputDir remains valid.
+  let output=PathBuf::from(string(v,"outputDir")?);fs::create_dir_all(&output).map_err(|e|format!("Output dir: {e}"))?;
+  let output=output.canonicalize().map_err(|e|e.to_string())?;
+  if !output.starts_with(batch_root){return Err("Output VYRON находится вне batch root".into())}
+  Ok(output)
+}
+
 #[derive(Clone,Debug,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]
 pub struct VyronBatchRequest{
@@ -129,13 +155,14 @@ pub fn load_vyron_batch_manifest(manifest_path:String,selected_project_ids:Optio
     project_paths.push(folder.to_string_lossy().into_owned());tracks+=p.get("tracks").and_then(Value::as_array).map(|x|x.len()).unwrap_or(0);
   }
   if !selected.is_empty()&&project_paths.is_empty(){return Err("Выбранные VYRON проекты не найдены в batch.json".into())}
-  let output=PathBuf::from(string(&v,"outputDir")?);fs::create_dir_all(&output).map_err(|e|format!("Output dir: {e}"))?;let output=output.canonicalize().map_err(|e|e.to_string())?;if !output.starts_with(&root){return Err("Output VYRON находится вне batch root".into())}
+  let channel_name=string(&v,"channelName")?;
+  let output=resolve_render_output(&v,&root,&channel_name)?;
   let status=PathBuf::from(string(&v,"statusPath")?);let status_parent=status.parent().ok_or_else(||"statusPath некорректен".to_string())?.canonicalize().map_err(|e|e.to_string())?;if status_parent!=root{return Err("statusPath VYRON находится вне batch root".into())}
   let manifest_string=manifest.to_string_lossy().into_owned();{
     let mut map=project_map().lock().map_err(|_|"VYRON project map lock".to_string())?;
     for path in &project_paths{map.insert(path.clone(),manifest_string.clone());}
   }
-  Ok(VyronBatchInfo{batch_id:string(&v,"batchId")?,channel_id:string(&v,"channelId")?,channel_name:string(&v,"channelName")?,project_count:project_paths.len(),tracks_assigned:tracks,root_path:root.to_string_lossy().into_owned(),output_dir:output.to_string_lossy().into_owned(),status_path:status.to_string_lossy().into_owned(),manifest_path:manifest_string,project_paths})
+  Ok(VyronBatchInfo{batch_id:string(&v,"batchId")?,channel_id:string(&v,"channelId")?,channel_name,project_count:project_paths.len(),tracks_assigned:tracks,root_path:root.to_string_lossy().into_owned(),output_dir:output.to_string_lossy().into_owned(),status_path:status.to_string_lossy().into_owned(),manifest_path:manifest_string,project_paths})
 }
 
 #[tauri::command]

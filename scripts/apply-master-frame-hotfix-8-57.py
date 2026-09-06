@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# FINAL_RELEASE_GATE_TRIGGER: 2026-09-06; no runtime effect.
 from pathlib import Path
 import json,re
 

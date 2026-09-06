@@ -143,6 +143,6 @@ with tempfile.TemporaryDirectory(prefix='endlume857-sub-') as td:
     # Decode around all critical schedule classes: before/inside/after first, second, recurring and final tail.
     points=[max(0,first0-.25),first0+.25,anchor-.25,anchor+.25,anchor+repeat-.25,anchor+repeat+.25,final_duration/2,max(0,final_duration-2)]
     for p in points: run([FFM,'-hide_banner','-loglevel','error','-ss',f'{p:.3f}','-i',final,'-map','0:v:0','-frames:v','2','-f','null','-'])
-    run([FFM,'-hide_banner','-loglevel','error','-ss',f'{max(0,final_duration-2):.3f}','-i',final,'-map','0:a:0','-t','.25','-f','null','-'])
+    run([FFM,'-hide_banner','-loglevel','error','-ss',f'{max(0,final_duration-2):.3f}','-i',final,'-map','0:a:0','-t','0.25','-f','null','-'])
     metrics.update({'status':'passed','release_gate':True,'subscribe_on_gate':True,'subscribe_source_duration':round(sd,6),'master_seconds':round(master_elapsed,3),'master_frames':master_frames,'master_packets':master_frames,'seed_frames':expected,'prefix_frames':anchor_frames,'repeat_frames':repeat_frames,'final_duration':round(fd,6),'final_bytes':size,'final_mb_decimal':round(size/1e6,3),'audio_codec':'mp3','resolution':'1920x1080','fps':'60/1','quality':'hevc_videotoolbox q:v 100','whole_track':True,'decode_schedule_points':points,'media_pipeline_seconds':round(time.time()-t_all,3)})
     METRICS.write_text(json.dumps(metrics,ensure_ascii=False,indent=2));log('PASS',json.dumps(metrics,ensure_ascii=False))

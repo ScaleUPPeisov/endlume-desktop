@@ -142,13 +142,15 @@ jobs:
           set -Eeuo pipefail
           FFM="$(find src-tauri/binaries -maxdepth 1 -type f -name 'ffmpeg*' -perm -111 -print -quit)"
           FFP="$(find src-tauri/binaries -maxdepth 1 -type f -name 'ffprobe*' -perm -111 -print -quit)"
-          python3 scripts/run-endlume-857-real-subscribe.py "$SIDE" "$GITHUB_WORKSPACE/e860-subscribe.json" "$FFM" "$FFP" "$GITHUB_WORKSPACE/e860-on.json"
+          python3 scripts/run-endlume-860-real-subscribe.py "$SIDE" "$GITHUB_WORKSPACE/e860-subscribe.json" "$FFM" "$FFP" "$GITHUB_WORKSPACE/e860-on.json"
           cat e860-on.json
           python3 - <<'PY'
           import json
           x=json.load(open('e860-on.json'))
           assert x.get('status')=='passed' and x.get('release_gate') is True and x.get('subscribe_on_gate') is True,x
           assert x.get('master_seconds',999)<=30.0,x
+          assert x.get('resolution')=='1920x1080' and x.get('fps')=='60/1' and x.get('audio_codec')=='mp3',x
+          assert x.get('in_place_manifest') is True and x.get('whole_track') is True,x
           assert 500_000_000<=x.get('final_bytes',0)<=700_000_000,x
           PY
 

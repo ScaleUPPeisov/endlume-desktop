@@ -12,7 +12,7 @@ concurrency:
 jobs:
   external-stability:
     runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
-    timeout-minutes: 80
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
         with:
@@ -20,6 +20,21 @@ jobs:
           clean: true
           fetch-depth: 0
           persist-credentials: false
+
+      - name: Wait until user ENDLUME render is idle
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          for i in $(seq 1 240); do
+            if ! pgrep -af '[f]fmpeg' >/tmp/e861-user-render.txt 2>/dev/null; then
+              echo "USER_RENDER_IDLE after $i checks"
+              exit 0
+            fi
+            echo "User render active; CI will not compete with ENDLUME"
+            sleep 5
+          done
+          cat /tmp/e861-user-render.txt || true
+          exit 3
 
       - name: Apply 8.61 exact production migrations
         shell: bash
@@ -67,20 +82,6 @@ jobs:
           test -d "$VOLUME"
           echo "TOSHIBA_VOLUME=$VOLUME" >> "$GITHUB_ENV"
           echo "REAL_FIXTURE=$SIDE"
-
-      - name: Wait for exclusive FFmpeg VideoToolbox
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          for i in $(seq 1 180); do
-            if ! pgrep -af '[f]fmpeg' >/tmp/e861-live.txt 2>/dev/null; then
-              echo "FFMPEG_IDLE after $i checks"
-              exit 0
-            fi
-            sleep 5
-          done
-          cat /tmp/e861-live.txt || true
-          exit 3
 
       - name: Five sequential real strict masters
         shell: bash

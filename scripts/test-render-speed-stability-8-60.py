@@ -20,9 +20,12 @@ for x in required: assert x in s,x
 for x in ['hevc_videotoolbox','verify_strict_857_result']: assert x in s,x
 for x in ['fn chromakey_params_859','strict-860|','let (similarity,blend)=chromakey_params_859(e);','color(&e.key_color),similarity,blend']:
   assert x in c,x
-assert json.load(open(root/'package.json'))['version']=='1.0.0-alpha.8.60'
-assert json.load(open(root/'src-tauri/tauri.conf.json'))['version']=='1.0.0-alpha.8.60'
-ct=(root/'src-tauri/Cargo.toml').read_text();assert re.search(r'^version\s*=\s*"1\.0\.0-alpha\.8\.60"$',ct,re.M)
-assert '1.0.0-alpha.8.60' in (root/'src/pages/SettingsPage.tsx').read_text()
-assert "version:'1.0.0-alpha.8.60'" in (root/'src/components/ReleaseHistory.tsx').read_text()
-print('PASS: ENDLUME 8.60 speed/equalizer/version/in-place manifest anchors')
+pkg=json.load(open(root/'package.json'))['version']
+tauri=json.load(open(root/'src-tauri/tauri.conf.json'))['version']
+assert pkg in {'1.0.0-alpha.8.60','1.0.0-alpha.8.61'},pkg
+assert tauri==pkg,(tauri,pkg)
+ct=(root/'src-tauri/Cargo.toml').read_text();assert re.search(r'^version\s*=\s*"'+re.escape(pkg)+r'"$',ct,re.M),pkg
+assert pkg in (root/'src/pages/SettingsPage.tsx').read_text()
+h=(root/'src/components/ReleaseHistory.tsx').read_text();assert "version:'1.0.0-alpha.8.60'" in h
+if pkg.endswith('8.61'): assert "version:'1.0.0-alpha.8.61'" in h
+print('PASS: ENDLUME 8.60 render-speed/equalizer/in-place-manifest contracts preserved under',pkg)

@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 from pathlib import Path
-import sys
+import json,re,sys
 
 root=Path(sys.argv[1]) if len(sys.argv)>1 else Path.cwd()
 s=(root/'src-tauri/src/render.rs').read_text(encoding='utf-8')
+c=(root/'src-tauri/src/cache.rs').read_text(encoding='utf-8')
 required=[
   'const STRICT_857_MAX_GOP_FRAMES:u32=1800;',
   'strict-860-base.png',
@@ -12,9 +13,16 @@ required=[
   '"-q:v","100","-b:v","500k","-maxrate","12M","-bufsize","64M"',
   'resolved_job.settings.width=1920;',
   'resolved_job.settings.height=1080;',
+  'expand_video_prefix_cycle(&seed,&seed,0,master_frames,total_frames)',
+  'expand_video_prefix_cycle(&seed,&seed,plan.anchor_frames,plan.repeat_frames,total_frames)',
 ]
-for x in required:
-  assert x in s,x
-assert 'hevc_videotoolbox' in s
-assert 'verify_strict_857_result' in s
-print('PASS: ENDLUME 8.60 static-base speed stability anchors')
+for x in required: assert x in s,x
+for x in ['hevc_videotoolbox','verify_strict_857_result']: assert x in s,x
+for x in ['fn chromakey_params_859','strict-860|','let (similarity,blend)=chromakey_params_859(e);','color(&e.key_color),similarity,blend']:
+  assert x in c,x
+assert json.load(open(root/'package.json'))['version']=='1.0.0-alpha.8.60'
+assert json.load(open(root/'src-tauri/tauri.conf.json'))['version']=='1.0.0-alpha.8.60'
+ct=(root/'src-tauri/Cargo.toml').read_text();assert re.search(r'^version\s*=\s*"1\.0\.0-alpha\.8\.60"$',ct,re.M)
+assert '1.0.0-alpha.8.60' in (root/'src/pages/SettingsPage.tsx').read_text()
+assert "version:'1.0.0-alpha.8.60'" in (root/'src/components/ReleaseHistory.tsx').read_text()
+print('PASS: ENDLUME 8.60 speed/equalizer/version/in-place manifest anchors')

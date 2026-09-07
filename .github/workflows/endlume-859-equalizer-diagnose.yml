@@ -44,18 +44,23 @@ jobs:
           FFP="$(find src-tauri/binaries -maxdepth 1 -type f -name 'ffprobe*' -perm -111 -print -quit)"
           mkdir -p equalizer-diagnose
           python3 - "$SIDE" "$FFM" "$FFP" "$GITHUB_WORKSPACE/equalizer-diagnose" <<'PY'
-          import json,sys,subprocess,os,statistics
+          import json,sys,subprocess,os
           side,ffm,ffp,outdir=sys.argv[1:5]
           data=json.load(open(side))
           effects=data.get('effects') or data.get('effectPresets') or []
           print('PROJECT_NAME',data.get('name') or data.get('project',{}).get('name'))
           print('EFFECT_COUNT_JSON',len(effects))
+          def keyhex(key):
+            s=str(key).strip()
+            if s.startswith('#'): s=s[1:]
+            if s.lower().startswith('0x'): s=s[2:]
+            return s.zfill(6)
           def probe(src):
             o=subprocess.check_output([ffp,'-v','error','-select_streams','v:0','-show_entries','stream=width,height:format=duration','-of','json',src],text=True)
             j=json.loads(o); s=j['streams'][0]; d=float(j.get('format',{}).get('duration') or 1.0)
             return int(s['width']),int(s['height']),d
           def rgba(src,key,sim,blend,t):
-            vf=f"format=rgba,colorkey=0x{key.lstrip('#').lstrip('0x')}:{sim}:{blend},format=rgba"
+            vf=f"format=rgba,colorkey=0x{keyhex(key)}:{sim}:{blend},format=rgba"
             return subprocess.check_output([ffm,'-hide_banner','-loglevel','error','-ss',f'{t:.3f}','-i',src,'-frames:v','1','-vf',vf,'-f','rawvideo','-pix_fmt','rgba','pipe:1'])
           def stats(raw):
             a=raw[3::4]
@@ -63,11 +68,7 @@ jobs:
             nz=[x for x in a if x>0]
             opaque=sum(x>=250 for x in a)
             semi=sum(0<x<250 for x in a)
-            return {
-              'pixels':len(a),'nonzero_pct':round(100*len(nz)/len(a),4),
-              'opaque_pct':round(100*opaque/len(a),4),'semi_pct':round(100*semi/len(a),4),
-              'mean_alpha_nonzero':round(sum(nz)/len(nz),2) if nz else 0
-            }
+            return {'pixels':len(a),'nonzero_pct':round(100*len(nz)/len(a),4),'opaque_pct':round(100*opaque/len(a),4),'semi_pct':round(100*semi/len(a),4),'mean_alpha_nonzero':round(sum(nz)/len(nz),2) if nz else 0}
           for i,e in enumerate(effects):
             src=e.get('source',''); name=e.get('name',''); mode=e.get('mode','')
             print('EFFECT_PRESET',json.dumps({k:e.get(k) for k in ['id','name','source','enabled','mode','keyColor','similarity','blend','despill','saturation','x','y','scale','fullscreen','startSec','endSec']},ensure_ascii=False))
@@ -85,7 +86,7 @@ jobs:
               st=stats(raw)
               print('ALPHA_PROFILE',i,name,label,'similarity',ss,'blend',bb,json.dumps(st,ensure_ascii=False))
               png=os.path.join(outdir,f'{i:02d}-{label}.png')
-              vf=f"format=rgba,colorkey=0x{key.lstrip('#').lstrip('0x')}:{ss}:{bb},format=rgba"
+              vf=f"format=rgba,colorkey=0x{keyhex(key)}:{ss}:{bb},format=rgba"
               subprocess.run([ffm,'-hide_banner','-loglevel','error','-ss',f'{t:.3f}','-i',src,'-frames:v','1','-vf',vf,'-y',png],check=True)
           PY
 

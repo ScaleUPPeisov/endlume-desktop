@@ -1,0 +1,63 @@
+name: ENDLUME 8.61 VT Speed Probe
+
+on:
+  push:
+    branches: [candidate/endlume-861-vt-speed-probe]
+  workflow_dispatch:
+
+concurrency:
+  group: endlume-861-vt-speed-probe
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Wait for ENDLUME idle
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          for i in $(seq 1 240); do
+            if ! pgrep -af '[f]fmpeg' >/tmp/e861-vt-user-render.txt 2>/dev/null; then
+              echo "USER_RENDER_IDLE after $i checks"
+              exit 0
+            fi
+            sleep 5
+          done
+          cat /tmp/e861-vt-user-render.txt || true
+          exit 3
+
+      - name: Stage binaries and real fixture
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          FOUNDATION="$HOME/.endlume-local-builder/endlume-desktop-8.40-bootstrap"
+          mkdir -p src-tauri/binaries
+          rsync -a "$FOUNDATION/src-tauri/binaries/" src-tauri/binaries/
+          chmod +x src-tauri/binaries/ffmpeg* src-tauri/binaries/ffprobe*
+          TMP="$(mktemp -d /tmp/e861-vt.XXXXXX)"
+          python3 scripts/find-endlume-real-fixture.py "$TMP/env"
+          cat "$TMP/env" >> "$GITHUB_ENV"
+          source "$TMP/env"
+          test "$AUDIO_COUNT" = 15
+          test "$EFFECT_COUNT" -ge 2
+          FFM="$(find src-tauri/binaries -maxdepth 1 -type f -name 'ffmpeg*' -perm -111 -print -quit)"
+          FFP="$(find src-tauri/binaries -maxdepth 1 -type f -name 'ffprobe*' -perm -111 -print -quit)"
+          echo "FFM=$FFM" >> "$GITHUB_ENV"
+          echo "FFP=$FFP" >> "$GITHUB_ENV"
+          "$FFM" -hide_banner -h encoder=hevc_videotoolbox 2>&1 | grep -E 'realtime|prio_speed|power_efficient' || true
+
+      - name: Probe VideoToolbox variants
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/run-endlume-861-vt-speed-probe.py "$SIDE" "$FFM" "$FFP" "$GITHUB_WORKSPACE/e861-vt-speed.json"
+          cat e861-vt-speed.json

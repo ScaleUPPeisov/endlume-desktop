@@ -1,0 +1,99 @@
+name: ENDLUME 8.59 Equalizer Diagnose
+on:
+  push:
+    branches: [candidate/endlume-859-equalizer-diagnose]
+permissions:
+  contents: read
+concurrency:
+  group: endlume-859-equalizer-diagnose-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  diagnose:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Restore FFmpeg and stage exact real fixture
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          FOUNDATION="$HOME/.endlume-local-builder/endlume-desktop-8.40-bootstrap"
+          test -d "$FOUNDATION/src-tauri/binaries"
+          mkdir -p src-tauri/binaries
+          rsync -a "$FOUNDATION/src-tauri/binaries/" src-tauri/binaries/
+          chmod +x src-tauri/binaries/ffmpeg* src-tauri/binaries/ffprobe*
+          TMP="$(mktemp -d /tmp/e859eqfixture.XXXXXX)"
+          python3 scripts/find-endlume-real-fixture.py "$TMP/env"
+          cat "$TMP/env" >> "$GITHUB_ENV"
+          source "$TMP/env"
+          test "$AUDIO_COUNT" = 15
+          test "$EFFECT_COUNT" -ge 2
+          echo "FIXTURE=$SIDE"
+
+      - name: Inspect effect presets and alpha retention
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          FFM="$(find src-tauri/binaries -maxdepth 1 -type f -name 'ffmpeg*' -perm -111 -print -quit)"
+          FFP="$(find src-tauri/binaries -maxdepth 1 -type f -name 'ffprobe*' -perm -111 -print -quit)"
+          mkdir -p equalizer-diagnose
+          python3 - "$SIDE" "$FFM" "$FFP" "$GITHUB_WORKSPACE/equalizer-diagnose" <<'PY'
+          import json,sys,subprocess,os,statistics
+          side,ffm,ffp,outdir=sys.argv[1:5]
+          data=json.load(open(side))
+          effects=data.get('effects') or data.get('effectPresets') or []
+          print('PROJECT_NAME',data.get('name') or data.get('project',{}).get('name'))
+          print('EFFECT_COUNT_JSON',len(effects))
+          def probe(src):
+            o=subprocess.check_output([ffp,'-v','error','-select_streams','v:0','-show_entries','stream=width,height:format=duration','-of','json',src],text=True)
+            j=json.loads(o); s=j['streams'][0]; d=float(j.get('format',{}).get('duration') or 1.0)
+            return int(s['width']),int(s['height']),d
+          def rgba(src,key,sim,blend,t):
+            vf=f"format=rgba,colorkey=0x{key.lstrip('#').lstrip('0x')}:{sim}:{blend},format=rgba"
+            return subprocess.check_output([ffm,'-hide_banner','-loglevel','error','-ss',f'{t:.3f}','-i',src,'-frames:v','1','-vf',vf,'-f','rawvideo','-pix_fmt','rgba','pipe:1'])
+          def stats(raw):
+            a=raw[3::4]
+            if not a:return {'pixels':0}
+            nz=[x for x in a if x>0]
+            opaque=sum(x>=250 for x in a)
+            semi=sum(0<x<250 for x in a)
+            return {
+              'pixels':len(a),'nonzero_pct':round(100*len(nz)/len(a),4),
+              'opaque_pct':round(100*opaque/len(a),4),'semi_pct':round(100*semi/len(a),4),
+              'mean_alpha_nonzero':round(sum(nz)/len(nz),2) if nz else 0
+            }
+          for i,e in enumerate(effects):
+            src=e.get('source',''); name=e.get('name',''); mode=e.get('mode','')
+            print('EFFECT_PRESET',json.dumps({k:e.get(k) for k in ['id','name','source','enabled','mode','keyColor','similarity','blend','despill','saturation','x','y','scale','fullscreen','startSec','endSec']},ensure_ascii=False))
+            if not src or not os.path.isfile(src):
+              print('EFFECT_FILE_MISSING',i,name,src); continue
+            w,h,d=probe(src); t=min(max(d*0.33,0.15),max(d-0.1,0.15))
+            print('EFFECT_MEDIA',i,name,w,h,round(d,3),'sample',round(t,3))
+            if mode in ('screen','luma','prealpha'):
+              print('EFFECT_ALPHA_SKIP',i,name,'mode',mode); continue
+            key=str(e.get('keyColor') or '#00ff00')
+            sim=float(e.get('similarity') or 0.001); blend=float(e.get('blend') or 0.001)
+            profiles=[('current',sim,blend),('protected',min(sim,0.18),min(blend,0.03)),('tight',min(sim,0.10),min(blend,0.015))]
+            for label,ss,bb in profiles:
+              raw=rgba(src,key,ss,bb,t)
+              st=stats(raw)
+              print('ALPHA_PROFILE',i,name,label,'similarity',ss,'blend',bb,json.dumps(st,ensure_ascii=False))
+              png=os.path.join(outdir,f'{i:02d}-{label}.png')
+              vf=f"format=rgba,colorkey=0x{key.lstrip('#').lstrip('0x')}:{ss}:{bb},format=rgba"
+              subprocess.run([ffm,'-hide_banner','-loglevel','error','-ss',f'{t:.3f}','-i',src,'-frames:v','1','-vf',vf,'-y',png],check=True)
+          PY
+
+      - name: Upload diagnostic frames
+        uses: actions/upload-artifact@v4
+        continue-on-error: true
+        with:
+          name: endlume-859-equalizer-diagnose
+          path: equalizer-diagnose/*.png
+          if-no-files-found: warn
+          retention-days: 1

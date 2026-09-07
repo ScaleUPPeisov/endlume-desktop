@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 BASE_DIR="$(cd "$(dirname "$0")" && pwd)"
 BASE="$BASE_DIR/BUILD_ENDLUME_858_FINAL_INTEGRATED.command"
-TMP="$(mktemp /tmp/endlume-860-speed-stability.XXXXXX.command)"
+TMP="$(mktemp "$BASE_DIR/.endlume-860-speed-stability.XXXXXX.command")"
 cleanup(){ rm -f "$TMP" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 [[ -f "$BASE" ]] || { echo '❌ ENDLUME 8.60: 8.58 production builder missing' >&2; exit 1; }

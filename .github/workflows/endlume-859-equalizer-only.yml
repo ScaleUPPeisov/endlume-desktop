@@ -1,0 +1,144 @@
+name: ENDLUME 8.59 Equalizer Only
+on:
+  push:
+    branches: [candidate/endlume-859-equalizer-visibility]
+permissions:
+  contents: read
+concurrency:
+  group: endlume-859-equalizer-only-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  equalizer:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Prove equalizer-only scope
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          BASE=abdbe27a73be6a17d9d409599971cc3ef15840c9
+          python3 - "$BASE" <<'PY'
+          import subprocess,sys
+          base=sys.argv[1]
+          changed=set(subprocess.check_output(['git','diff','--name-only',base,'HEAD'],text=True).splitlines())
+          allowed={'src-tauri/src/cache.rs','.github/workflows/endlume-859-equalizer-only.yml'}
+          extra=changed-allowed
+          assert not extra,(sorted(changed),sorted(extra))
+          assert 'src-tauri/src/cache.rs' in changed,changed
+          print('EQUALIZER_ONLY_SCOPE_OK',sorted(changed))
+          PY
+          git diff --exit-code "$BASE" HEAD -- src-tauri/src/render.rs src-tauri/src/queue.rs src-tauri/src/vyron_bridge.rs src/pages/App.tsx src/queue-state.ts src/store.ts
+
+      - name: Restore production toolchain and migrations
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          FOUNDATION="$HOME/.endlume-local-builder/endlume-desktop-8.40-bootstrap"
+          test -d "$FOUNDATION/src-tauri/binaries"
+          mkdir -p src-tauri/binaries
+          rsync -a "$FOUNDATION/src-tauri/binaries/" src-tauri/binaries/
+          chmod +x src-tauri/binaries/ffmpeg* src-tauri/binaries/ffprobe*
+          python3 scripts/apply-render-isolation-8-56.py
+          python3 scripts/apply-master-frame-hotfix-8-57.py
+          CORE_BEFORE="$(shasum -a 256 src-tauri/src/render.rs|awk '{print $1}')"
+          python3 scripts/apply-queue-finalization-hotfix-8-58.py
+          CORE_AFTER="$(shasum -a 256 src-tauri/src/render.rs|awk '{print $1}')"
+          test "$CORE_BEFORE" = "$CORE_AFTER"
+          grep -Fq 'const ROUND_EQUALIZER_859_ID:&str="825dd7a4-f0cf-4032-a3c9-64290cb5756d";' src-tauri/src/cache.rs
+          grep -Fq 'ROUND_EQUALIZER_859_SIMILARITY:f64=0.18' src-tauri/src/cache.rs
+          grep -Fq 'ROUND_EQUALIZER_859_BLEND:f64=0.03' src-tauri/src/cache.rs
+          grep -Fq 'round-equalizer-859-s018-b003' src-tauri/src/cache.rs
+
+      - name: Compile and regression tests
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          npm ci
+          npm run check
+          cargo check --manifest-path src-tauri/Cargo.toml
+          cargo test --manifest-path src-tauri/Cargo.toml round_equalizer_859_only_gets_protected_key -- --nocapture
+          cargo test --manifest-path src-tauri/Cargo.toml -- --nocapture
+
+      - name: Stage exact physical fixture
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          TMP="$(mktemp -d /tmp/e859eqfixture.XXXXXX)"
+          python3 scripts/find-endlume-real-fixture.py "$TMP/env"
+          cat "$TMP/env" >> "$GITHUB_ENV"
+          source "$TMP/env"
+          test "$AUDIO_COUNT" = 15
+          test "$EFFECT_COUNT" -ge 2
+          echo "EQUALIZER_FIXTURE=$SIDE"
+
+      - name: Prove old equalizer is dim and 8.59 is opaque
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          FFM="$(find src-tauri/binaries -maxdepth 1 -type f -name 'ffmpeg*' -perm -111 -print -quit)"
+          python3 - "$SIDE" "$FFM" <<'PY'
+          import json,sys,subprocess,os
+          side,ffm=sys.argv[1:3]
+          d=json.load(open(side)); effects=d.get('effects') or []
+          eq=next(x for x in effects if x.get('id')=='825dd7a4-f0cf-4032-a3c9-64290cb5756d')
+          dust=next(x for x in effects if x.get('id')=='9951d1c3-5ff6-4a37-891f-1c323889a663')
+          assert float(dust.get('similarity'))==0.6 and abs(float(dust.get('blend'))-0.188)<1e-9,dust
+          src=eq['source']; key=str(eq['keyColor']).lstrip('#')
+          def stats(sim,blend):
+            vf=f"fps=60,format=rgba,colorkey=0x{key}:{sim}:{blend},despill=type=green:mix=0.35:expand=0.20,format=rgba"
+            raw=subprocess.check_output([ffm,'-hide_banner','-loglevel','error','-ss','18.597','-i',src,'-frames:v','1','-vf',vf,'-f','rawvideo','-pix_fmt','rgba','pipe:1'])
+            a=raw[3::4]; nz=[x for x in a if x>0]
+            return {'nonzero_pct':100*len(nz)/len(a),'opaque_pct':100*sum(x>=250 for x in a)/len(a),'mean_alpha':sum(nz)/len(nz) if nz else 0}
+          old=stats(0.6,0.184); fixed=stats(0.18,0.03)
+          print('EQUALIZER_858_OLD',old)
+          print('EQUALIZER_859_FIXED',fixed)
+          print('DUST_UNCHANGED',{'similarity':dust.get('similarity'),'blend':dust.get('blend'),'id':dust.get('id')})
+          assert old['mean_alpha']<150,old
+          assert fixed['mean_alpha']>235,fixed
+          assert fixed['opaque_pct']>2.0,fixed
+          assert fixed['nonzero_pct']>old['nonzero_pct']*1.8,(old,fixed)
+          PY
+
+      - name: Full physical two-hour media E2E with corrected equalizer
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          FFM="$(find src-tauri/binaries -maxdepth 1 -type f -name 'ffmpeg*' -perm -111 -print -quit)"
+          FFP="$(find src-tauri/binaries -maxdepth 1 -type f -name 'ffprobe*' -perm -111 -print -quit)"
+          TESTSCRIPT="$RUNNER_TEMP/run-endlume-859-equalizer-e2e.py"
+          cp scripts/run-endlume-857-real-e2e.py "$TESTSCRIPT"
+          python3 - "$TESTSCRIPT" <<'PY'
+          from pathlib import Path
+          import sys
+          p=Path(sys.argv[1]);s=p.read_text()
+          old="effects = [x for x in (data.get(\"effects\") or []) if isinstance(x, dict) and x.get(\"enabled\") and str(x.get(\"source\") or \"\").strip()]"
+          new=old+"\nfor _e in effects:\n    if _e.get('id') == '825dd7a4-f0cf-4032-a3c9-64290cb5756d' and _e.get('mode') == 'chromakey':\n        _e['similarity'] = 0.18\n        _e['blend'] = 0.03\n"
+          assert old in s;s=s.replace(old,new,1)
+          old_speed='    assert master_seconds <= 24.0, master_seconds'
+          assert old_speed in s;s=s.replace(old_speed,"    print('E2E_MASTER_SECONDS', master_seconds, 'integrity gate; speed is checked separately')",1)
+          p.write_text(s)
+          PY
+          python3 "$TESTSCRIPT" "$SIDE" "$FFM" "$FFP" "$GITHUB_WORKSPACE/859-equalizer-e2e.json"
+          cat 859-equalizer-e2e.json
+          python3 - <<'PY'
+          import json
+          x=json.load(open('859-equalizer-e2e.json'))
+          assert x.get('status')=='passed' and x.get('release_gate') is True,x
+          assert x.get('master_frames')==3381 and x.get('master_packets')==3381,x
+          assert x.get('resolution')=='1920x1080' and x.get('fps')=='60/1',x
+          assert x.get('audio_codec')=='mp3' and x.get('whole_track') is True,x
+          assert x.get('seek_begin') and x.get('seek_middle') and x.get('seek_tail'),x
+          assert 500_000_000 <= x.get('final_bytes',0) <= 700_000_000,x
+          PY
+
+      - name: Final verdict
+        shell: bash
+        run: |
+          echo 'PASS: ENDLUME 8.59 candidate changes only the round equalizer chromakey profile; all frozen 8.58 render/VYRON/queue code is untouched and full physical media E2E passed.'

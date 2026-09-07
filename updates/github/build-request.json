@@ -1,11 +1,11 @@
 {
   "enabled": true,
-  "generation": 38,
+  "generation": 39,
   "app": "endlume",
   "channel": "stable",
-  "version": "1.0.0-alpha.8.58",
-  "builder": "BUILD_ENDLUME_858_FINAL_INTEGRATED.command",
-  "notes": "ENDLUME STUDIO 8.58 final integrated release, pinned to exact M1-gated candidate abdbe27a73be6a17d9d409599971cc3ef15840c9. The final integrated physical workflow passed completely on kirill-mac-endlume: frozen 8.57 render core, VYRON Render/<channel> contract, frontend build, 40/40 queue terminal regression, full Rust/VYRON regression, exact real master integrity/speed, sample-table expander, full Subscribe-OFF E2E, real Subscribe-ON E2E and final verdict. 8.58 fixes the Render Center terminal-state race so late progress=97 cannot overwrite done=100 and adds backend terminal snapshot self-heal with resultPath/resultBytes recovery if render-done is delayed or lost. It also integrates the VYRON central render library with sanitized per-channel output folders while preserving the existing handoff schema. The certified media core remains unchanged from 8.57: HEVC VideoToolbox q:v 100, GOP 1800, 1920x1080 CFR 60, exact 3381/3381 master frame+packet integrity, whole-song original MP3 bitstream-copy with crossfade 0 and no normalization, Effects lifetime fix, real Subscribe scheduling, strict 500-700 MB envelope, beginning/middle/tail seek/decode verification, zero-copy sample-table expansion, no libx265 retry in the strict one-image production path, and the approved transparent ENDLUME infinity icon.",
+  "version": "1.0.0-alpha.8.60",
+  "builder": "BUILD_ENDLUME_860_SPEED_STABILITY.command",
+  "notes": "ENDLUME STUDIO 8.60 render-speed-stability release, pinned to exact final physical-gated candidate b710f67090a0eebc9a87eeb45c5e52078b37a7a3. Final self-hosted MacBook-Air-Kirill release gate 34132837789 passed completely: exact production migrations, full frontend/Rust/VYRON/queue regression, real TOSHIBA fixture, protected bright round equalizer while preserving the other Effect, exclusive VideoToolbox, five sequential real strict masters all <=30 seconds, full real two-hour Subscribe-OFF E2E, full real two-hour Subscribe-ON E2E and final verdict. 8.60 pre-scales/crops the single static 1920x1080 still once per project and performs sample-table manifest expansion in-place to remove repeated large MOV rewrites. It preserves HEVC VideoToolbox q:v100, GOP1800, CFR60, whole-song original MP3 packet-copy, crossfade 0, no normalization, 500-700 MB envelope, Effects/Subscribe, VYRON handoff, queue terminal self-heal and the approved ENDLUME icon.",
   "platforms": [
     "darwin-aarch64"
   ]

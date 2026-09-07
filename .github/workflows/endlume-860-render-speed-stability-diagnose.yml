@@ -1,0 +1,150 @@
+name: ENDLUME 8.60 Render Speed Stability Diagnose
+on:
+  push:
+    branches: [candidate/endlume-860-render-speed-stability-diagnose]
+permissions:
+  contents: read
+concurrency:
+  group: endlume-860-speed-diagnose-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  diagnose:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Prove diagnostic-only scope
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          BASE=79f9bd535b4df6126ef612884e70ceeea76322c7
+          changed="$(git diff --name-only "$BASE" HEAD)"
+          printf '%s\n' "$changed"
+          test "$changed" = ".github/workflows/endlume-860-render-speed-stability-diagnose.yml"
+
+      - name: Restore FFmpeg and stage exact real fixture
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          FOUNDATION="$HOME/.endlume-local-builder/endlume-desktop-8.40-bootstrap"
+          mkdir -p src-tauri/binaries
+          rsync -a "$FOUNDATION/src-tauri/binaries/" src-tauri/binaries/
+          chmod +x src-tauri/binaries/ffmpeg* src-tauri/binaries/ffprobe*
+          TMP="$(mktemp -d /tmp/e860fixture.XXXXXX)"
+          python3 scripts/find-endlume-real-fixture.py "$TMP/env"
+          cat "$TMP/env" >> "$GITHUB_ENV"
+          source "$TMP/env"
+          test "$AUDIO_COUNT" = 15
+          test "$EFFECT_COUNT" -ge 2
+          echo 'THERMAL_AT_START:'
+          pmset -g therm 2>/dev/null || true
+          echo 'LOAD_AT_START:'
+          uptime || true
+
+      - name: Wait for external ENDLUME FFmpeg to be idle
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          for i in $(seq 1 120); do
+            if ! pgrep -af '[f]fmpeg' >/tmp/e860-ffmpeg.txt 2>/dev/null; then
+              echo "FFMPEG_IDLE after $i checks"
+              exit 0
+            fi
+            echo "WAIT_EXTERNAL_FFMPEG $i"
+            cat /tmp/e860-ffmpeg.txt || true
+            sleep 5
+          done
+          echo 'External ffmpeg stayed busy for 10 minutes; diagnostic would be contaminated.'
+          exit 3
+
+      - name: Sustained VideoToolbox and filter-thread sweep
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          FFM="$(find src-tauri/binaries -maxdepth 1 -type f -name 'ffmpeg*' -perm -111 -print -quit)"
+          FFP="$(find src-tauri/binaries -maxdepth 1 -type f -name 'ffprobe*' -perm -111 -print -quit)"
+          python3 - "$SIDE" "$FFM" "$FFP" "$GITHUB_WORKSPACE/e860-speed.json" <<'PY'
+          import json,subprocess,sys,tempfile,time,statistics
+          from pathlib import Path
+          side,ffm,ffp,out_json=sys.argv[1:5]
+          data=json.load(open(side,errors='replace'))
+          img=Path(data['project']['media'][0])
+          effects=[e for e in data.get('effects',[]) if isinstance(e,dict) and e.get('enabled') and str(e.get('source') or '').strip()]
+          assert img.is_file() and len(effects)>=2,(img,effects)
+          W,H,FPS,WORK=1920,1080,60,30
+          EQ='825dd7a4-f0cf-4032-a3c9-64290cb5756d'
+          def run(a,**kw):
+            print('RUN',' '.join(map(str,a[:14])),flush=True)
+            return subprocess.run(list(map(str,a)),check=True,**kw)
+          def out(a): return subprocess.check_output(list(map(str,a)),text=True).strip()
+          def even(x):
+            n=max(2,int(round(x)));return n if n%2==0 else n+1
+          def clamp(x,a,b): return max(a,min(b,float(x)))
+          def c(e): return '0x'+str(e.get('keyColor') or '00ff00').lstrip('#')
+          def therm():
+            try:return subprocess.check_output(['pmset','-g','therm'],text=True,stderr=subprocess.STDOUT).strip()
+            except Exception:return ''
+          results=[]
+          with tempfile.TemporaryDirectory(prefix='e860-speed-') as td:
+            d=Path(td);cached=[];dur=[]
+            for i,e in enumerate(effects[:2],1):
+              src=Path(e['source']); assert src.is_file(),src
+              sim=0.18 if e.get('id')==EQ else clamp(e.get('similarity',.1),.001,.60)
+              blend=0.03 if e.get('id')==EQ else clamp(e.get('blend',.05),.001,.35)
+              target=even(W*clamp(e.get('scale',1),.05,1.5))
+              scale=(f'scale={W}:{H}:force_original_aspect_ratio=decrease,pad={W}:{H}:(ow-iw)/2:(oh-ih)/2:color=black@0' if e.get('fullscreen') else f'scale={target}:-2:flags=lanczos')
+              vf=f'fps={WORK},format=rgba,colorkey={c(e)}:{sim}:{blend},{scale},format=argb'
+              dst=d/f'fx{i}.mov'
+              run([ffm,'-hide_banner','-loglevel','error','-i',src,'-vf',vf,'-an','-c:v','qtrle','-pix_fmt','argb','-y',dst])
+              cached.append((dst,e))
+              try: dur.append(float(out([ffp,'-v','error','-show_entries','format=duration','-of','csv=p=0',src])))
+              except Exception: dur.append(12.0)
+            master_duration=max([12.0]+[max(2.0,min(60.0,x)) for x in dur])
+            frames=max(1,int(round(master_duration*FPS)))
+            print('MASTER_DURATION',master_duration,'FRAMES',frames,flush=True)
+            graph=f'[0:v]scale={W}:{H}:force_original_aspect_ratio=increase:flags=lanczos+accurate_rnd,crop={W}:{H}:(iw-ow)/2:(ih-oh)/2,fps={WORK},setsar=1[b0]';base='b0'
+            for i,(p,e) in enumerate(cached,1):
+              x=f"max(0,min(W-w,W*{clamp(e.get('x',.5),0,1)}-w/2))"; y=f"max(0,min(H-h,H*{clamp(e.get('y',.5),0,1)}-h/2))"
+              graph+=f";[{i}:v]fps={WORK},setpts=PTS-STARTPTS,format=argb[fx{i}];[{base}][fx{i}]overlay=x='{x}':y='{y}':shortest=0:repeatlast=1:eof_action=repeat:format=auto[b{i}]";base=f'b{i}'
+            graph+=f';[{base}]fps={FPS},format=yuv420p[outv]'
+            def check(path):
+              fr=int(out([ffp,'-v','error','-select_streams','v:0','-count_frames','-show_entries','stream=nb_read_frames','-of','csv=p=0',path]))
+              pk=int(out([ffp,'-v','error','-select_streams','v:0','-count_packets','-show_entries','stream=nb_read_packets','-of','csv=p=0',path]))
+              st=json.loads(out([ffp,'-v','error','-select_streams','v:0','-show_entries','stream=codec_name,pix_fmt,width,height,avg_frame_rate','-of','json',path]))['streams'][0]
+              assert fr==frames and pk==frames,(fr,pk,frames)
+              assert st.get('codec_name')=='hevc' and st.get('pix_fmt')=='yuv420p' and st.get('width')==W and st.get('height')==H and st.get('avg_frame_rate')=='60/1',st
+              return fr,pk
+            def encode_real(threads,idx):
+              p=d/f'real-t{threads}-{idx}.mp4';a=[ffm,'-hide_banner','-loglevel','error','-filter_complex_threads',str(threads),'-loop','1','-framerate',str(WORK),'-i',img]
+              for cp,_ in cached:a += ['-stream_loop','-1','-i',cp]
+              a += ['-filter_complex',graph,'-map','[outv]','-frames:v',str(frames),'-an','-c:v','hevc_videotoolbox','-realtime','1','-prio_speed','0','-power_efficient','0','-q:v','100','-b:v','500k','-maxrate','12M','-bufsize','64M','-g','1800','-tag:v','hvc1','-pix_fmt','yuv420p','-fps_mode','cfr','-r','60','-video_track_timescale','60000','-y',p]
+              t=time.time();run(a);dt=time.time()-t;check(p);p.unlink(missing_ok=True);return dt
+            def encode_synth(idx):
+              p=d/f'synth-{idx}.mp4';a=[ffm,'-hide_banner','-loglevel','error','-f','lavfi','-i',f'color=c=black:s={W}x{H}:r={FPS}','-frames:v',str(frames),'-an','-c:v','hevc_videotoolbox','-realtime','1','-prio_speed','0','-power_efficient','0','-q:v','100','-b:v','500k','-maxrate','12M','-bufsize','64M','-g','1800','-tag:v','hvc1','-pix_fmt','yuv420p','-fps_mode','cfr','-r','60','-video_track_timescale','60000','-y',p]
+              t=time.time();run(a);dt=time.time()-t;check(p);p.unlink(missing_ok=True);return dt
+            for i in range(1,4):
+              dt=encode_synth(i);results.append({'kind':'synthetic-vt','iteration':i,'seconds':round(dt,3),'thermal':therm()});print('MEASURE',results[-1],flush=True)
+            time.sleep(15)
+            for threads in (8,4,2):
+              seq=[]
+              for i in range(1,5):
+                dt=encode_real(threads,i);seq.append(dt);results.append({'kind':'real','threads':threads,'iteration':i,'seconds':round(dt,3),'thermal':therm()});print('MEASURE',results[-1],flush=True)
+                time.sleep(1)
+              print('SERIES',threads,[round(x,3) for x in seq],'median',round(statistics.median(seq),3),'slope',round(seq[-1]-seq[0],3),flush=True)
+              time.sleep(20)
+          doc={'status':'measured','master_duration':master_duration,'frames':frames,'results':results}
+          Path(out_json).write_text(json.dumps(doc,ensure_ascii=False,indent=2))
+          print(json.dumps(doc,ensure_ascii=False,indent=2))
+          PY
+
+      - name: Show measurements
+        if: always()
+        shell: bash
+        run: |
+          test -f e860-speed.json && cat e860-speed.json || true

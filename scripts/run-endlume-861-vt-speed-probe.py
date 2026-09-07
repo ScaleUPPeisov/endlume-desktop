@@ -16,10 +16,11 @@ def col(e): return '0x'+str(e.get('keyColor') or '00ff00').lstrip('#')
 
 variants=[
  ('baseline_rt1_prio0_t8',1,0,8),
- ('rt0_prio1_t8',0,1,8),
+ ('rt0_prio0_t8',0,0,8),
+ ('rt0_prio0_t4',0,0,4),
+ ('rt0_prio0_t2',0,0,2),
  ('rt1_prio1_t8',1,1,8),
- ('rt0_prio1_t4',0,1,4),
- ('rt0_prio1_t2',0,1,2),
+ ('rt0_prio1_t8',0,1,8),
 ]
 with tempfile.TemporaryDirectory(prefix='e861-vt-probe-') as td:
     td=Path(td);base=td/'base.png'
@@ -37,7 +38,7 @@ with tempfile.TemporaryDirectory(prefix='e861-vt-probe-') as td:
     graph='[0:v]fps=30,setsar=1[b0]';last='b0'
     for i,(_,e) in enumerate(cached,1):
         x=f"max(0,min(W-w,W*{clamp(e.get('x',.5),0,1)}-w/2))";y=f"max(0,min(H-h,H*{clamp(e.get('y',.5),0,1)}-h/2))"
-        graph+=f";[{i}:v]fps=30,setpts=PTS-STARTPTS,format=argb[fx{i}];[{last}][fx{i}]overlay=x='{x}':y='{y}':shortest=0:repeatlast=1:eof_action=repeat:format=auto[b{i}]";last=f'b{i}'
+        graph+=f";[{i}:v]fps=30,setpts=PTS-STARTPTS,format=argb[fx{i}];[{last}][fx{i}]overlay=x='{x}':y='{y}':shortest=0:repeatlast=1:eof_action=repeat:format=auto:eval=init[b{i}]";last=f'b{i}'
     graph+=f';[{last}]fps=60,format=yuv420p[outv]'
     records=[]
     for name,rt,prio,threads in variants:
@@ -52,5 +53,6 @@ with tempfile.TemporaryDirectory(prefix='e861-vt-probe-') as td:
         assert st.get('codec_name')=='hevc' and st.get('pix_fmt')=='yuv420p' and st.get('width')==1920 and st.get('height')==1080 and st.get('avg_frame_rate')=='60/1',rec
         records.append(rec);p.unlink(missing_ok=True);time.sleep(2)
     fastest=min(records,key=lambda x:x['seconds'])
-    doc={'status':'passed','frames':frames,'master_duration':seconds,'records':records,'fastest':fastest}
-    OUT.write_text(json.dumps(doc,ensure_ascii=False,indent=2));print('FASTEST',json.dumps(fastest,ensure_ascii=False),flush=True)
+    safe=min([x for x in records if 'prio0' in x['name']],key=lambda x:x['seconds'])
+    doc={'status':'passed','frames':frames,'master_duration':seconds,'records':records,'fastest':fastest,'fastest_no_quality_tradeoff':safe}
+    OUT.write_text(json.dumps(doc,ensure_ascii=False,indent=2));print('FASTEST_SAFE',json.dumps(safe,ensure_ascii=False),flush=True)

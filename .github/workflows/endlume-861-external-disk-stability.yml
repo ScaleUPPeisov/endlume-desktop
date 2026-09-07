@@ -49,7 +49,7 @@ jobs:
           python3 scripts/apply-master-frame-hotfix-8-57.py
           python3 scripts/apply-queue-finalization-hotfix-8-58.py
           python3 scripts/apply-render-speed-stability-8-60.py
-          python3 scripts/apply-local-scratch-stability-8-61.py
+          python3 scripts/apply-local-scratch-stability-8-61-v2.py
           python3 scripts/test-render-speed-stability-8-60.py .
           python3 scripts/test-local-scratch-stability-8-61.py .
           python3 scripts/apply-e2e-harness-8-60.py

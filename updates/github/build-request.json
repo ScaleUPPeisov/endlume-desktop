@@ -1,11 +1,11 @@
 {
   "enabled": true,
-  "generation": 39,
+  "generation": 40,
   "app": "endlume",
   "channel": "stable",
   "version": "1.0.0-alpha.8.60",
   "builder": "BUILD_ENDLUME_860_SPEED_STABILITY.command",
-  "notes": "ENDLUME STUDIO 8.60 render-speed-stability release, pinned to exact final physical-gated candidate b710f67090a0eebc9a87eeb45c5e52078b37a7a3. Final self-hosted MacBook-Air-Kirill release gate 34132837789 passed completely: exact production migrations, full frontend/Rust/VYRON/queue regression, real TOSHIBA fixture, protected bright round equalizer while preserving the other Effect, exclusive VideoToolbox, five sequential real strict masters all <=30 seconds, full real two-hour Subscribe-OFF E2E, full real two-hour Subscribe-ON E2E and final verdict. 8.60 pre-scales/crops the single static 1920x1080 still once per project and performs sample-table manifest expansion in-place to remove repeated large MOV rewrites. It preserves HEVC VideoToolbox q:v100, GOP1800, CFR60, whole-song original MP3 packet-copy, crossfade 0, no normalization, 500-700 MB envelope, Effects/Subscribe, VYRON handoff, queue terminal self-heal and the approved ENDLUME icon.",
+  "notes": "ENDLUME STUDIO 8.60 revalidated production rebuild, pinned to exact tested source b710f67090a0eebc9a87eeb45c5e52078b37a7a3. Fresh self-hosted physical gate run 34132837789 attempt 2 completed success on real MacBookAir + TOSHIBA: exact production migrations, frontend/Rust/VYRON/queue regression, real fixture with 1 image + exactly 15 MP3 + 2 Effects, protected bright round equalizer, exclusive VideoToolbox, five sequential strict masters 21.325/18.980/18.464/18.413/18.416s with 3381/3381 frames+packets at 1920x1080 CFR60 HEVC, full two-hour Subscribe OFF E2E, full Subscribe ON E2E, whole-track MP3 packet-copy, crossfade 0, no normalization, seek/decode at beginning/middle/tail, final duration 7468.083333s and 500000000-byte output. This generation republishes the exact same tested 8.60 runtime with no functional code changes after the green physical gate.",
   "platforms": [
     "darwin-aarch64"
   ]

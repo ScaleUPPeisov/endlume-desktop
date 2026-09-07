@@ -35,6 +35,7 @@ jobs:
           python3 scripts/apply-master-frame-hotfix-8-57.py
           python3 scripts/apply-queue-finalization-hotfix-8-58.py
           python3 scripts/apply-render-speed-stability-8-60.py
+          python3 scripts/test-render-speed-stability-8-60.py .
           grep -Fq 'const STRICT_857_MAX_GOP_FRAMES:u32=1800;' src-tauri/src/render.rs
           grep -Fq 'strict-860-base.png' src-tauri/src/render.rs
           grep -Fq 'periodic-860-base.png' src-tauri/src/render.rs

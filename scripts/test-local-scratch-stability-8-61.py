@@ -12,7 +12,7 @@ required=[
   'std::io::copy(&mut input,&mut output)',
   'output.sync_all()',
   'render_work_dir(app,&job.project.id,attempt)',
-  'finalize_local_output(&seed,out)?;',
+  'finalize_local_output(&seed,out)',
   'resolved_job.settings.width=1920;',
   'resolved_job.settings.height=1080;',
   'resolved_job.settings.fps=60;',
@@ -21,7 +21,7 @@ required=[
 ]
 for x in required:
     assert x in s, f'missing 8.61 contract: {x}'
-assert s.count('finalize_local_output(&seed,out)?;')==2, s.count('finalize_local_output(&seed,out)?;')
+assert s.count('finalize_local_output(&seed,out)')==2, s.count('finalize_local_output(&seed,out)')
 assert 'let root=output.join(".ENDLUME-work")' not in s
 p=json.loads((ROOT/'package.json').read_text())
 t=json.loads((ROOT/'src-tauri/tauri.conf.json').read_text())

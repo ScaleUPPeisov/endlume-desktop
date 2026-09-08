@@ -1,11 +1,11 @@
 {
   "enabled": true,
-  "generation": 40,
+  "generation": 41,
   "app": "endlume",
   "channel": "stable",
-  "version": "1.0.0-alpha.8.60",
-  "builder": "BUILD_ENDLUME_860_SPEED_STABILITY.command",
-  "notes": "ENDLUME STUDIO 8.60 revalidated production rebuild, pinned to exact tested source b710f67090a0eebc9a87eeb45c5e52078b37a7a3. Fresh self-hosted physical gate run 34132837789 attempt 2 completed success on real MacBookAir + TOSHIBA: exact production migrations, frontend/Rust/VYRON/queue regression, real fixture with 1 image + exactly 15 MP3 + 2 Effects, protected bright round equalizer, exclusive VideoToolbox, five sequential strict masters 21.325/18.980/18.464/18.413/18.416s with 3381/3381 frames+packets at 1920x1080 CFR60 HEVC, full two-hour Subscribe OFF E2E, full Subscribe ON E2E, whole-track MP3 packet-copy, crossfade 0, no normalization, seek/decode at beginning/middle/tail, final duration 7468.083333s and 500000000-byte output. This generation republishes the exact same tested 8.60 runtime with no functional code changes after the green physical gate.",
+  "version": "1.0.0-alpha.8.61",
+  "builder": "BUILD_ENDLUME_861_EXTERNAL_DISK_STABILITY.command",
+  "notes": "ENDLUME STUDIO 8.61 external-disk stability hotfix. Exact source pin 4ec332f4ccc4bca511065d8276e1ab34ac255826. The runtime keeps the certified 8.60 media contracts and applies the 8.61 local-scratch migration: heavy master/audio/manifest temporary work runs on the internal Mac app cache, while the completed MOV is finalized to the selected external disk once. Fresh real MacBookAir persistent-cache speed gate 34249649158 completed success: production compositor 18.724s, optimized probe 18.302s, 1920x1080 CFR60 HEVC q:v100, frame/packet counts matched the expected master, and 5-second SSIM between production and lean compositor was 0.999775. Existing 8.60 contracts retained: one image + 15 MP3, whole-track, crossfade 0, no normalization, protected bright round equalizer, VYRON/queue contracts, in-place MP4 manifest and 500-700 MB final-size policy.",
   "platforms": [
     "darwin-aarch64"
   ]

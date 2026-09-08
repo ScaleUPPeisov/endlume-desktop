@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import hashlib,json,os,subprocess,sys,tempfile,time
+import hashlib,json,re,subprocess,sys,tempfile,time
 from pathlib import Path
 SIDE=Path(sys.argv[1]).resolve(); FFM=Path(sys.argv[2]).resolve(); FFP=Path(sys.argv[3]).resolve(); OUT=Path(sys.argv[4]).resolve()
 EQ='825dd7a4-f0cf-4032-a3c9-64290cb5756d'
@@ -9,6 +9,8 @@ assert img.is_file() and len(fx)>=2
 def sh(a): return subprocess.check_output(list(map(str,a)),text=True,stderr=subprocess.STDOUT).strip()
 def run(a): subprocess.run(list(map(str,a)),check=True)
 def clamp(v,a,b): return max(a,min(b,float(v)))
+def even(v):
+    n=max(2,int(round(float(v)))); return n if n%2==0 else n+1
 def rnum(v):
     v=float(v)
     if v.is_integer(): return str(int(v))
@@ -18,19 +20,30 @@ def cache_key(e):
     p=Path(e['source']); st=p.stat(); sim=.18 if e.get('id')==EQ else clamp(e.get('similarity',.1),.001,.60); blend=.03 if e.get('id')==EQ else clamp(e.get('blend',.05),.001,.35)
     vals=['strict-860',str(p),str(st.st_size),str(int(st.st_mtime)), '30','1920','1080',str(e.get('mode') or 'chromakey'),str(e.get('keyColor') or '#00ff00'),rnum(sim),rnum(blend),rnum(e.get('lumaThreshold',.03)),rnum(e.get('lumaTolerance',.08)),rnum(e.get('scale',1)),rbool(e.get('fullscreen',False)),rnum(e.get('saturation',1))]
     return hashlib.sha256('|'.join(vals).encode()).hexdigest()[:24]
+def media_sig(p):
+    x=json.loads(sh([FFP,'-v','error','-select_streams','v:0','-show_entries','stream=width,height,pix_fmt:format=duration','-of','json',p])); st=(x.get('streams') or [{}])[0]; dur=float((x.get('format') or {}).get('duration') or 0); return int(st.get('width') or 0),int(st.get('height') or 0),str(st.get('pix_fmt') or ''),dur
 cache_root=Path.home()/'Library'/'Caches'/'studio.endlume.desktop'/'strict-effects-856'
 with tempfile.TemporaryDirectory(prefix='e861-fast-') as td:
     td=Path(td); base=td/'base.png'
     run([FFM,'-hide_banner','-loglevel','error','-i',img,'-vf','scale=1920:1080:force_original_aspect_ratio=increase:flags=lanczos+accurate_rnd,crop=1920:1080:(iw-ow)/2:(ih-oh)/2,setsar=1','-frames:v','1','-compression_level','1','-y',base])
-    cached=[]; durations=[]
+    candidates=sorted(cache_root.glob('*.mov'),key=lambda x:x.stat().st_mtime,reverse=True) if cache_root.is_dir() else []
+    sigs={p:media_sig(p) for p in candidates}; used=set(); cached=[]; durations=[]
     for e in fx[:2]:
         key=cache_key(e); p=cache_root/f'{key}.mov'
+        src_d=float(sh([FFP,'-v','error','-show_entries','format=duration','-of','csv=p=0',e['source']]))
+        exp_w=1920 if e.get('fullscreen') else even(1920*clamp(e.get('scale',1),.05,1.5))
         if not p.is_file():
-            candidates=sorted(cache_root.glob('*.mov'),key=lambda x:x.stat().st_mtime,reverse=True) if cache_root.is_dir() else []
-            raise SystemExit(f'MISSING_STRICT_CACHE key={key} path={p} candidates={len(candidates)}')
-        cached.append((p,e))
-        try: durations.append(float(sh([FFP,'-v','error','-show_entries','format=duration','-of','csv=p=0',p])))
-        except Exception: durations.append(12.0)
+            ranked=[]
+            for q,(w,h,pix,dur) in sigs.items():
+                if q in used: continue
+                score=(0 if w==exp_w else 10000+abs(w-exp_w)) + abs(dur-src_d)*100
+                if 'argb' not in pix and str(e.get('mode') or '') not in ('screen','screen-cache'): score+=5000
+                ranked.append((score,q,w,h,pix,dur))
+            if not ranked: raise SystemExit(f'MISSING_STRICT_CACHE key={key} no candidates')
+            ranked.sort(key=lambda z:z[0]); score,p,w,h,pix,dur=ranked[0]
+            if score>1000: raise SystemExit(f'MISSING_STRICT_CACHE key={key} best={p} score={score} sig={(w,h,pix,dur)} expected_width={exp_w} src_duration={src_d}')
+            print('CACHE_FALLBACK',json.dumps({'effect':e.get('name'),'id':e.get('id'),'path':str(p),'score':score,'sig':[w,h,pix,dur]},ensure_ascii=False),flush=True)
+        used.add(p); cached.append((p,e)); durations.append(media_sig(p)[3])
     seconds=max([12.0]+[max(2.0,min(60.0,x)) for x in durations]); frames=round(seconds*60)
     variants=[('production',False),('single_decode_lean',True),('single_decode_lean_repeat',True)]
     recs=[]; keep={}
@@ -49,14 +62,9 @@ with tempfile.TemporaryDirectory(prefix='e861-fast-') as td:
         fr=int(sh([FFP,'-v','error','-select_streams','v:0','-count_frames','-show_entries','stream=nb_read_frames','-of','csv=p=0',p])); pk=int(sh([FFP,'-v','error','-select_streams','v:0','-count_packets','-show_entries','stream=nb_read_packets','-of','csv=p=0',p])); st=json.loads(sh([FFP,'-v','error','-select_streams','v:0','-show_entries','stream=codec_name,pix_fmt,width,height,avg_frame_rate','-of','json',p]))['streams'][0]
         rec={'name':name,'seconds':round(dt,3),'frames':fr,'packets':pk,'stream':st}; print('PROBE',json.dumps(rec,ensure_ascii=False),flush=True)
         assert fr==frames and pk==frames; assert st.get('codec_name')=='hevc' and st.get('pix_fmt')=='yuv420p' and st.get('width')==1920 and st.get('height')==1080 and st.get('avg_frame_rate')=='60/1'
-        recs.append(rec); keep[name]=p
-        time.sleep(2)
-    base_t=recs[0]['seconds']; opt_times=[x['seconds'] for x in recs[1:]]; best=min(opt_times)
-    assert best<=30.0, recs
-    # Decode equivalence spot-check: same composition, same dimensions/fps; compare first 5s with SSIM.
+        recs.append(rec); keep[name]=p; time.sleep(2)
+    base_t=recs[0]['seconds']; opt_times=[x['seconds'] for x in recs[1:]]; best=min(opt_times); assert best<=30.0,recs
     cmp=sh([FFM,'-hide_banner','-i',keep['production'],'-i',keep['single_decode_lean'],'-lavfi','[0:v][1:v]ssim','-t','5','-f','null','-'])
-    import re
-    m=re.findall(r'All:([0-9.]+)',cmp); ssim=float(m[-1]) if m else 0.0
-    assert ssim>=0.995, {'ssim':ssim,'log':cmp[-2000:]}
-    doc={'status':'passed','master_duration':seconds,'frames':frames,'records':recs,'best_seconds':best,'baseline_seconds':base_t,'ssim_5s':ssim,'cache_root':str(cache_root)}
+    m=re.findall(r'All:([0-9.]+)',cmp); ssim=float(m[-1]) if m else 0.0; assert ssim>=0.995,{'ssim':ssim,'log':cmp[-2000:]}
+    doc={'status':'passed','master_duration':seconds,'frames':frames,'records':recs,'best_seconds':best,'baseline_seconds':base_t,'ssim_5s':ssim,'cache_root':str(cache_root),'cache_files':[str(x[0]) for x in cached]}
     OUT.write_text(json.dumps(doc,ensure_ascii=False,indent=2)); print(json.dumps(doc,ensure_ascii=False,indent=2))

@@ -16,108 +16,86 @@ jobs:
       - name: Checkout diagnostics branch
         uses: actions/checkout@v4
 
-      - name: Locate VYRON source safely
+      - name: Locate VYRON 2.0.13 source and archives safely
         shell: bash
         run: |
           set -euo pipefail
 
-          REPORT="$RUNNER_TEMP/vyron-source-locator.txt"
-          : > "$REPORT"
+          echo "=== VYRON 2.0.13 SOURCE LOCATOR / PASS 2 ==="
+          echo "runner=$RUNNER_NAME arch=$RUNNER_ARCH"
 
-          echo "VYRON source locator" >> "$REPORT"
-          echo "runner_os=$RUNNER_OS runner_arch=$RUNNER_ARCH" >> "$REPORT"
-          echo "workspace=$GITHUB_WORKSPACE" >> "$REPORT"
-          echo >> "$REPORT"
+          roots=(
+            "$HOME/.endlume-local-builder"
+            "$(dirname "$RUNNER_WORKSPACE")"
+            "$RUNNER_WORKSPACE"
+            "$HOME/Desktop"
+            "$HOME/Documents"
+            "$HOME/Downloads"
+            "$HOME/Developer"
+            "$HOME/Projects"
+            "$HOME/code"
+            "$HOME/dev"
+          )
 
-          roots=()
-          add_root() {
-            local p="$1"
-            if [[ -n "$p" && -d "$p" ]]; then
-              for existing in "${roots[@]:-}"; do
-                [[ "$existing" == "$p" ]] && return 0
-              done
-              roots+=("$p")
-            fi
-          }
-
-          add_root "$HOME/.endlume-local-builder"
-          add_root "$(dirname "$RUNNER_WORKSPACE")"
-          add_root "$RUNNER_WORKSPACE"
-          add_root "$HOME/actions-runner/_work"
-          add_root "$HOME/_work"
-
-          echo "SAFE ROOTS" >> "$REPORT"
-          printf '%s\n' "${roots[@]}" >> "$REPORT"
-          echo >> "$REPORT"
-
-          echo "PATHS NAMED *VYRON*" >> "$REPORT"
+          echo "--- exact-ish filename/archive candidates ---"
           for root in "${roots[@]}"; do
-            find "$root" -maxdepth 8 \
-              \( -name node_modules -o -name target -o -name dist -o -name build -o -name .git \) -prune -o \
-              -iname '*vyron*' -print 2>/dev/null || true
-          done | sort -u >> "$REPORT"
-          echo >> "$REPORT"
+            [[ -d "$root" ]] || continue
+            find "$root" -maxdepth 10 \
+              \( -name Library -o -name .Trash -o -name node_modules -o -name target -o -name dist -o -name build -o -name .git -o -name Pods \) -prune -o \
+              -type f \( \
+                -iname '*vyron*' -o \
+                -iname '*2.0.13*' -o \
+                -iname '*2_0_13*' -o \
+                -iname '*2-0-13*' -o \
+                -iname '*source*.tar.gz' -o \
+                -iname '*source*.tgz' -o \
+                -iname '*source*.zip' \
+              \) -print 2>/dev/null || true
+          done | sort -u | head -n 500
 
-          echo "TAURI / PACKAGE CANDIDATES" >> "$REPORT"
-          tmpfiles="$RUNNER_TEMP/vyron-candidate-files.txt"
-          : > "$tmpfiles"
+          echo "--- directories named like VYRON ---"
           for root in "${roots[@]}"; do
+            [[ -d "$root" ]] || continue
             find "$root" -maxdepth 9 \
-              \( -name node_modules -o -name target -o -name dist -o -name build -o -name .git \) -prune -o \
-              -type f \( -name package.json -o -name tauri.conf.json -o -name Cargo.toml -o -name latest.json \) -print 2>/dev/null || true
-          done | sort -u > "$tmpfiles"
+              \( -name Library -o -name .Trash -o -name node_modules -o -name target -o -name dist -o -name build -o -name .git -o -name Pods \) -prune -o \
+              -type d -iname '*vyron*' -print 2>/dev/null || true
+          done | sort -u | head -n 300
+
+          echo "--- Tauri manifests identifying VYRON / 2.0.13 ---"
+          manifests="$RUNNER_TEMP/vyron-manifests.txt"
+          : > "$manifests"
+          for root in "${roots[@]}"; do
+            [[ -d "$root" ]] || continue
+            find "$root" -maxdepth 10 \
+              \( -name Library -o -name .Trash -o -name node_modules -o -name target -o -name dist -o -name build -o -name .git -o -name Pods \) -prune -o \
+              -type f \( -name package.json -o -name tauri.conf.json -o -name Cargo.toml \) -print 2>/dev/null || true
+          done | sort -u > "$manifests"
 
           while IFS= read -r f; do
             [[ -f "$f" ]] || continue
-            case "$(basename "$f")" in
-              package.json)
-                meta=$(node -e 'const fs=require("fs"); try { const p=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); console.log(`name=${p.name||""} version=${p.version||""}`) } catch(e) { console.log("unparseable") }' "$f" 2>/dev/null || true)
-                printf '%s | %s\n' "$f" "$meta" >> "$REPORT"
-                ;;
-              tauri.conf.json)
-                meta=$(node -e 'const fs=require("fs"); try { const p=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); console.log(`productName=${p.productName||p.package?.productName||""} version=${p.version||p.package?.version||""} identifier=${p.identifier||p.tauri?.bundle?.identifier||""}`) } catch(e) { console.log("unparseable") }' "$f" 2>/dev/null || true)
-                printf '%s | %s\n' "$f" "$meta" >> "$REPORT"
-                ;;
-              Cargo.toml)
-                if grep -Eiq 'vyron|name[[:space:]]*=.*vyron' "$f" 2>/dev/null; then
-                  printf '%s | contains-vyron-marker\n' "$f" >> "$REPORT"
-                fi
-                ;;
-              latest.json)
-                if grep -Eiq '2\.0\.13|vyron' "$f" 2>/dev/null; then
-                  printf '%s | contains-vyron-or-2.0.13\n' "$f" >> "$REPORT"
-                fi
-                ;;
-            esac
-          done < "$tmpfiles"
-          echo >> "$REPORT"
+            if grep -Eiq 'vyron|2\.0\.13|com\..*vyron|studio\..*vyron' "$f" 2>/dev/null; then
+              case "$(basename "$f")" in
+                package.json)
+                  meta=$(node -e 'const fs=require("fs"); try{const p=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); console.log(`name=${p.name||""} version=${p.version||""}`)}catch(e){console.log("unparseable")}' "$f" 2>/dev/null || true)
+                  ;;
+                tauri.conf.json)
+                  meta=$(node -e 'const fs=require("fs"); try{const p=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); console.log(`productName=${p.productName||p.package?.productName||""} version=${p.version||p.package?.version||""} identifier=${p.identifier||p.tauri?.bundle?.identifier||""}`)}catch(e){console.log("unparseable")}' "$f" 2>/dev/null || true)
+                  ;;
+                *) meta="contains VYRON/2.0.13 marker" ;;
+              esac
+              printf '%s | %s\n' "$f" "$meta"
+            fi
+          done < "$manifests"
 
-          echo "SOURCE MARKER MATCHES (PATHS ONLY)" >> "$REPORT"
+          echo "--- marker source files (paths only) ---"
           for root in "${roots[@]}"; do
+            [[ -d "$root" ]] || continue
             grep -RIlE \
-              --exclude='*.env' --exclude='.env*' --exclude='*.pem' --exclude='*.key' --exclude='*.p12' --exclude='*.cer' --exclude='*.mobileprovision' \
-              --exclude-dir=.git --exclude-dir=node_modules --exclude-dir=target --exclude-dir=dist --exclude-dir=build \
-              'getChannelScheduleState|humanizeError\(|Shorts Factory|publishAt|Error Center' \
+              --include='*.ts' --include='*.tsx' --include='*.js' --include='*.jsx' --include='*.rs' --include='*.json' \
+              --exclude='*.env' --exclude='.env*' --exclude='*.pem' --exclude='*.key' --exclude='*.p12' --exclude='*.cer' \
+              --exclude-dir=.git --exclude-dir=node_modules --exclude-dir=target --exclude-dir=dist --exclude-dir=build --exclude-dir=Library \
+              'getChannelScheduleState|humanizeError\(|publishAt|Shorts Factory|Error Center' \
               "$root" 2>/dev/null || true
-          done | sort -u | head -n 500 >> "$REPORT"
-          echo >> "$REPORT"
+          done | sort -u | head -n 500
 
-          echo "GIT REPOSITORIES UNDER SAFE ROOTS" >> "$REPORT"
-          for root in "${roots[@]}"; do
-            while IFS= read -r gitdir; do
-              repo="${gitdir%/.git}"
-              head=$(git -C "$repo" rev-parse HEAD 2>/dev/null || true)
-              branch=$(git -C "$repo" branch --show-current 2>/dev/null || true)
-              printf '%s | branch=%s head=%s\n' "$repo" "$branch" "$head" >> "$REPORT"
-            done < <(find "$root" -maxdepth 8 -type d -name .git -print 2>/dev/null || true)
-          done
-
-          echo "----- SAFE LOCATOR REPORT -----"
-          cat "$REPORT"
-
-      - name: Upload locator report
-        uses: actions/upload-artifact@v4
-        with:
-          name: vyron-source-locator
-          path: ${{ runner.temp }}/vyron-source-locator.txt
-          if-no-files-found: error
+          echo "=== END LOCATOR ==="

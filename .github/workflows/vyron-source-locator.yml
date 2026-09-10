@@ -11,50 +11,83 @@ permissions:
 jobs:
   locate:
     runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - name: Checkout diagnostics branch
         uses: actions/checkout@v4
 
-      - name: Inspect installed VYRON bundle metadata
+      - name: Recover and inspect VYRON 2.0.13 source release
         shell: bash
         run: |
-          set -u
-          echo "=== VYRON BUNDLE INSPECTION ==="
-          apps="$RUNNER_TEMP/vyron-apps.txt"
-          : > "$apps"
-          for base in /Applications "$HOME/Applications"; do
-            [[ -d "$base" ]] || continue
-            find "$base" -maxdepth 2 -type d -iname '*vyron*.app' -print 2>/dev/null >> "$apps" || true
-          done
-          sort -u "$apps" -o "$apps"
+          set -euo pipefail
+          BASE="https://github.com/ScaleUPPeisov/scaleup-dashboards/releases/download/v2.0.13"
+          ARC="$RUNNER_TEMP/VYRON-2.0.13-source.tar.gz"
+          SRC="$RUNNER_TEMP/vyron-2.0.13-source"
+          rm -rf "$SRC"
+          mkdir -p "$SRC"
 
-          if [[ ! -s "$apps" ]]; then
-            echo "installed_vyron_app=none"
-            exit 0
+          echo "=== DOWNLOAD SOURCE ==="
+          curl --fail --location --retry 3 --retry-delay 2 \
+            "$BASE/VYRON-2.0.13-source.tar.gz" -o "$ARC"
+          echo "source_bytes=$(stat -f%z "$ARC")"
+          echo "source_sha256=$(shasum -a 256 "$ARC" | awk '{print $1}')"
+
+          echo "=== PUBLISHED SOURCE SHA ==="
+          curl --fail --location --retry 2 \
+            "$BASE/SOURCE_SHA256.txt" -o "$RUNNER_TEMP/SOURCE_SHA256.txt" || true
+          if [[ -s "$RUNNER_TEMP/SOURCE_SHA256.txt" ]]; then
+            cat "$RUNNER_TEMP/SOURCE_SHA256.txt"
+          else
+            echo "SOURCE_SHA256.txt unavailable"
           fi
 
-          while IFS= read -r app; do
-            echo "APP=$app"
-            plist="$app/Contents/Info.plist"
-            if [[ -f "$plist" ]]; then
-              echo "bundle_name=$(defaults read "$plist" CFBundleName 2>/dev/null || true)"
-              echo "bundle_id=$(defaults read "$plist" CFBundleIdentifier 2>/dev/null || true)"
-              echo "version=$(defaults read "$plist" CFBundleShortVersionString 2>/dev/null || true)"
-              echo "build=$(defaults read "$plist" CFBundleVersion 2>/dev/null || true)"
-              exe_name=$(defaults read "$plist" CFBundleExecutable 2>/dev/null || true)
-              echo "executable=$exe_name"
-              exe="$app/Contents/MacOS/$exe_name"
-              if [[ -f "$exe" ]]; then
-                echo "binary_arch=$(file "$exe" 2>/dev/null || true)"
-                echo "binary_sha256=$(shasum -a 256 "$exe" 2>/dev/null | awk '{print $1}')"
-                echo "release/update URL strings:"
-                strings "$exe" 2>/dev/null | grep -Eo 'https://[^[:space:]"<>]+' | grep -Ei 'github|latest\.json|releases|update' | sort -u > "$RUNNER_TEMP/vyron-urls.txt" || true
-                sed -n '1,80p' "$RUNNER_TEMP/vyron-urls.txt"
-              fi
-            fi
-            echo "resource metadata files:"
-            find "$app/Contents/Resources" -maxdepth 3 -type f \( -name '*.json' -o -name '*.map' -o -name '*.toml' \) -print 2>/dev/null | sort > "$RUNNER_TEMP/vyron-resource-meta.txt" || true
-            sed -n '1,100p' "$RUNNER_TEMP/vyron-resource-meta.txt"
-          done < "$apps"
-          echo "=== END BUNDLE INSPECTION ==="
+          echo "=== EXTRACT ==="
+          tar -xzf "$ARC" -C "$SRC"
+          root="$SRC"
+          entries=("$SRC"/*)
+          if [[ ${#entries[@]} -eq 1 && -d "${entries[0]}" ]]; then
+            root="${entries[0]}"
+          fi
+          echo "source_root=$root"
+
+          echo "=== SOURCE METADATA ==="
+          find "$root" -maxdepth 4 -type f \( -name package.json -o -name tauri.conf.json -o -name Cargo.toml \) \
+            ! -path '*/node_modules/*' ! -path '*/target/*' -print | sort > "$RUNNER_TEMP/vyron-manifests.txt"
+          while IFS= read -r f; do
+            case "$(basename "$f")" in
+              package.json)
+                node -e 'const fs=require("fs");const f=process.argv[1];const p=JSON.parse(fs.readFileSync(f,"utf8"));console.log(`${f} | name=${p.name||""} version=${p.version||""}`)' "$f"
+                ;;
+              tauri.conf.json)
+                node -e 'const fs=require("fs");const f=process.argv[1];const p=JSON.parse(fs.readFileSync(f,"utf8"));console.log(`${f} | productName=${p.productName||p.package?.productName||""} version=${p.version||p.package?.version||""} identifier=${p.identifier||""}`)' "$f"
+                ;;
+              Cargo.toml)
+                name=$(awk -F= '/^[[:space:]]*name[[:space:]]*=/{gsub(/[ \t\"]/,"",$2);print $2;exit}' "$f" || true)
+                ver=$(awk -F= '/^[[:space:]]*version[[:space:]]*=/{gsub(/[ \t\"]/,"",$2);print $2;exit}' "$f" || true)
+                echo "$f | cargo_name=$name version=$ver"
+                ;;
+            esac
+          done < "$RUNNER_TEMP/vyron-manifests.txt"
+
+          echo "=== TARGET SOURCE FILES ==="
+          grep -RIlE \
+            --include='*.ts' --include='*.tsx' --include='*.js' --include='*.jsx' --include='*.rs' \
+            --exclude-dir=.git --exclude-dir=node_modules --exclude-dir=target --exclude-dir=dist \
+            'getChannelScheduleState|humanizeError\(|publishAt|Error Center|Shorts Factory|shorts' \
+            "$root" | sort -u > "$RUNNER_TEMP/vyron-target-files.txt" || true
+          sed -n '1,250p' "$RUNNER_TEMP/vyron-target-files.txt"
+
+          echo "=== TARGET SYMBOL LOCATIONS ==="
+          grep -RInE \
+            --include='*.ts' --include='*.tsx' --include='*.js' --include='*.jsx' --include='*.rs' \
+            --exclude-dir=.git --exclude-dir=node_modules --exclude-dir=target --exclude-dir=dist \
+            'getChannelScheduleState|humanizeError\(|publishAt|clear.*error|error.*clear|shorts|Shorts' \
+            "$root" | sed -n '1,350p' || true
+
+          echo "=== TEST / BUILD SCRIPTS ==="
+          pkg=$(find "$root" -maxdepth 2 -type f -name package.json -print -quit)
+          if [[ -n "${pkg:-}" ]]; then
+            node -e 'const fs=require("fs");const p=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));console.log(JSON.stringify(p.scripts||{},null,2))' "$pkg"
+          fi
+
+          echo "=== SOURCE RECOVERY COMPLETE ==="

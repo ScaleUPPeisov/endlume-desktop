@@ -16,60 +16,87 @@ jobs:
       - name: Checkout diagnostics branch
         uses: actions/checkout@v4
 
-      - name: Inspect dedicated VYRON workspace
+      - name: Inspect VYRON data folder and GitHub runner workspaces
         shell: bash
         run: |
-          set -euo pipefail
-          ROOT="$HOME/Documents/VYRON"
-          echo "=== VYRON WORKSPACE INSPECTION ==="
-          if [[ ! -d "$ROOT" ]]; then
-            echo "VYRON_DIR_MISSING"
-            exit 2
+          set -u
+          DATA="$HOME/Documents/VYRON"
+          RUNNERS="$HOME/.github-runners"
+
+          echo "=== VYRON LOCATOR PASS 4 ==="
+          echo "runner=$RUNNER_NAME arch=$RUNNER_ARCH"
+
+          echo "--- VYRON data classification ---"
+          if [[ -d "$DATA" ]]; then
+            echo "data_dir_exists=yes"
+            echo "package_manifests=$(find "$DATA" -type f -name package.json ! -path '*/node_modules/*' 2>/dev/null | wc -l | tr -d ' ')"
+            echo "tauri_manifests=$(find "$DATA" -type f -name tauri.conf.json ! -path '*/target/*' 2>/dev/null | wc -l | tr -d ' ')"
+            echo "cargo_manifests=$(find "$DATA" -type f -name Cargo.toml ! -path '*/target/*' 2>/dev/null | wc -l | tr -d ' ')"
+            echo "ts_rs_source_files=$(find "$DATA" -type f \( -name '*.ts' -o -name '*.tsx' -o -name '*.rs' \) ! -path '*/node_modules/*' ! -path '*/target/*' 2>/dev/null | wc -l | tr -d ' ')"
+            echo "git_roots=$(find "$DATA" -type d -name .git 2>/dev/null | wc -l | tr -d ' ')"
+            echo "top_level_dirs:"
+            find "$DATA" -mindepth 1 -maxdepth 2 -type d -print 2>/dev/null | sort > "$RUNNER_TEMP/vyron-data-dirs.txt" || true
+            sed -n '1,60p' "$RUNNER_TEMP/vyron-data-dirs.txt"
+          else
+            echo "data_dir_exists=no"
           fi
 
-          echo "root=$ROOT"
-          echo "--- file tree (safe names only) ---"
-          find "$ROOT" -maxdepth 6 \
-            \( -name node_modules -o -name target -o -name dist -o -name build -o -name .git -o -name .env -o -name '.env.*' -o -name secrets -o -name credentials \) -prune -o \
-            -type f \
-            ! -name '*.pem' ! -name '*.key' ! -name '*.p12' ! -name '*.cer' ! -name '*.mobileprovision' \
-            -print 2>/dev/null | sort | head -n 1000
-
-          echo "--- git roots ---"
+          echo "--- runner git workspaces ---"
+          gits="$RUNNER_TEMP/runner-gits.txt"
+          : > "$gits"
+          if [[ -d "$RUNNERS" ]]; then
+            find "$RUNNERS" -maxdepth 10 -type d -name .git -print 2>/dev/null | sort -u > "$gits" || true
+          fi
           while IFS= read -r gd; do
+            [[ -n "$gd" ]] || continue
             repo="${gd%/.git}"
             printf '%s | branch=%s | head=%s\n' "$repo" "$(git -C "$repo" branch --show-current 2>/dev/null || true)" "$(git -C "$repo" rev-parse HEAD 2>/dev/null || true)"
-          done < <(find "$ROOT" -maxdepth 6 -type d -name .git -print 2>/dev/null || true)
+          done < "$gits"
 
-          echo "--- package/tauri metadata ---"
+          echo "--- runner manifests mentioning VYRON or 2.0.13 ---"
+          manifests="$RUNNER_TEMP/runner-manifests.txt"
+          : > "$manifests"
+          if [[ -d "$RUNNERS" ]]; then
+            find "$RUNNERS" -maxdepth 12 \
+              \( -name node_modules -o -name target -o -name dist -o -name build \) -prune -o \
+              -type f \( -name package.json -o -name tauri.conf.json -o -name Cargo.toml \) -print 2>/dev/null | sort -u > "$manifests" || true
+          fi
           while IFS= read -r f; do
-            case "$(basename "$f")" in
-              package.json)
-                node -e 'const fs=require("fs"); const f=process.argv[1]; try{const p=JSON.parse(fs.readFileSync(f,"utf8")); console.log(`${f} | name=${p.name||""} version=${p.version||""}`)}catch(e){console.log(`${f} | unparseable`)}' "$f" || true
-                ;;
-              tauri.conf.json)
-                node -e 'const fs=require("fs"); const f=process.argv[1]; try{const p=JSON.parse(fs.readFileSync(f,"utf8")); console.log(`${f} | productName=${p.productName||p.package?.productName||""} version=${p.version||p.package?.version||""} identifier=${p.identifier||p.tauri?.bundle?.identifier||""}`)}catch(e){console.log(`${f} | unparseable`)}' "$f" || true
-                ;;
-              Cargo.toml)
-                pkg=$(awk 'BEGIN{s=0} /^\[package\]/{s=1;next} /^\[/{if(s)exit} s && ($1=="name" || $1=="version") {gsub(/^[^=]*=[[:space:]]*/,""); gsub(/\"/,""); printf "%s ",$0}' "$f" 2>/dev/null || true)
-                printf '%s | package=%s\n' "$f" "$pkg"
-                ;;
-            esac
-          done < <(find "$ROOT" -maxdepth 8 -type f \( -name package.json -o -name tauri.conf.json -o -name Cargo.toml \) \
-            ! -path '*/node_modules/*' ! -path '*/target/*' ! -path '*/dist/*' ! -path '*/build/*' 2>/dev/null | sort)
+            [[ -f "$f" ]] || continue
+            if grep -Eiq 'vyron|2\.0\.13' "$f" 2>/dev/null; then
+              echo "$f"
+              case "$(basename "$f")" in
+                package.json)
+                  node -e 'const fs=require("fs");const f=process.argv[1];try{const p=JSON.parse(fs.readFileSync(f,"utf8"));console.log(`  name=${p.name||""} version=${p.version||""}`)}catch(e){}' "$f" 2>/dev/null || true
+                  ;;
+                tauri.conf.json)
+                  node -e 'const fs=require("fs");const f=process.argv[1];try{const p=JSON.parse(fs.readFileSync(f,"utf8"));console.log(`  productName=${p.productName||p.package?.productName||""} version=${p.version||p.package?.version||""} identifier=${p.identifier||""}`)}catch(e){}' "$f" 2>/dev/null || true
+                  ;;
+              esac
+            fi
+          done < "$manifests"
 
-          echo "--- source markers with line snippets (non-secret source files only) ---"
-          matches="$RUNNER_TEMP/vyron-marker-files.txt"
-          grep -RIlE \
-            --include='*.ts' --include='*.tsx' --include='*.js' --include='*.jsx' --include='*.rs' \
-            --exclude-dir=.git --exclude-dir=node_modules --exclude-dir=target --exclude-dir=dist --exclude-dir=build \
-            'getChannelScheduleState|humanizeError\(|publishAt|Shorts Factory|Error Center|shorts' \
-            "$ROOT" 2>/dev/null | sort -u > "$matches" || true
-          cat "$matches"
-
-          echo "--- archive inventory ---"
-          find "$ROOT" -maxdepth 8 -type f \( -iname '*.tar.gz' -o -iname '*.tgz' -o -iname '*.zip' -o -iname '*.tar' \) -print 2>/dev/null | sort | while IFS= read -r a; do
+          echo "--- runner archive candidates ---"
+          archives="$RUNNER_TEMP/runner-archives.txt"
+          : > "$archives"
+          if [[ -d "$RUNNERS" ]]; then
+            find "$RUNNERS" -maxdepth 12 -type f \( -iname '*vyron*.tar.gz' -o -iname '*vyron*.zip' -o -iname '*2.0.13*.tar.gz' -o -iname '*2.0.13*.zip' -o -iname '*source*.tar.gz' \) -print 2>/dev/null | sort -u > "$archives" || true
+          fi
+          while IFS= read -r a; do
+            [[ -f "$a" ]] || continue
             printf '%s | bytes=%s | sha256=%s\n' "$a" "$(stat -f%z "$a" 2>/dev/null || echo '?')" "$(shasum -a 256 "$a" 2>/dev/null | awk '{print $1}')"
-          done
+          done < "$archives"
 
-          echo "=== END VYRON WORKSPACE INSPECTION ==="
+          echo "--- runner source marker paths ---"
+          markers="$RUNNER_TEMP/runner-markers.txt"
+          : > "$markers"
+          if [[ -d "$RUNNERS" ]]; then
+            grep -RIlE \
+              --include='*.ts' --include='*.tsx' --include='*.js' --include='*.jsx' --include='*.rs' \
+              --exclude-dir=.git --exclude-dir=node_modules --exclude-dir=target --exclude-dir=dist --exclude-dir=build \
+              'getChannelScheduleState|humanizeError\(|Shorts Factory|publishAt' \
+              "$RUNNERS" 2>/dev/null | sort -u > "$markers" || true
+          fi
+          sed -n '1,250p' "$markers"
+
+          echo "=== END PASS 4 ==="

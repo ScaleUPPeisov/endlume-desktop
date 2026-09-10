@@ -16,87 +16,77 @@ jobs:
       - name: Checkout diagnostics branch
         uses: actions/checkout@v4
 
-      - name: Inspect VYRON data folder and GitHub runner workspaces
+      - name: Inspect Desktop Downloads Documents for VYRON source
         shell: bash
         run: |
           set -u
-          DATA="$HOME/Documents/VYRON"
-          RUNNERS="$HOME/.github-runners"
+          OUT="$RUNNER_TEMP/vyron-dev-search"
+          mkdir -p "$OUT"
+          : > "$OUT/git.txt"
+          : > "$OUT/manifests.txt"
+          : > "$OUT/archives.txt"
+          : > "$OUT/markers.txt"
 
-          echo "=== VYRON LOCATOR PASS 4 ==="
-          echo "runner=$RUNNER_NAME arch=$RUNNER_ARCH"
+          echo "=== VYRON LOCATOR PASS 5 ==="
+          for root in "$HOME/Desktop" "$HOME/Downloads" "$HOME/Documents"; do
+            [[ -d "$root" ]] || continue
+            echo "scan_root=$root"
 
-          echo "--- VYRON data classification ---"
-          if [[ -d "$DATA" ]]; then
-            echo "data_dir_exists=yes"
-            echo "package_manifests=$(find "$DATA" -type f -name package.json ! -path '*/node_modules/*' 2>/dev/null | wc -l | tr -d ' ')"
-            echo "tauri_manifests=$(find "$DATA" -type f -name tauri.conf.json ! -path '*/target/*' 2>/dev/null | wc -l | tr -d ' ')"
-            echo "cargo_manifests=$(find "$DATA" -type f -name Cargo.toml ! -path '*/target/*' 2>/dev/null | wc -l | tr -d ' ')"
-            echo "ts_rs_source_files=$(find "$DATA" -type f \( -name '*.ts' -o -name '*.tsx' -o -name '*.rs' \) ! -path '*/node_modules/*' ! -path '*/target/*' 2>/dev/null | wc -l | tr -d ' ')"
-            echo "git_roots=$(find "$DATA" -type d -name .git 2>/dev/null | wc -l | tr -d ' ')"
-            echo "top_level_dirs:"
-            find "$DATA" -mindepth 1 -maxdepth 2 -type d -print 2>/dev/null | sort > "$RUNNER_TEMP/vyron-data-dirs.txt" || true
-            sed -n '1,60p' "$RUNNER_TEMP/vyron-data-dirs.txt"
-          else
-            echo "data_dir_exists=no"
-          fi
+            find "$root" -maxdepth 10 \
+              \( -path "$HOME/Documents/VYRON/ProductionManager" -o -name node_modules -o -name target -o -name dist -o -name build -o -name .Trash \) -prune -o \
+              -type d -name .git -print 2>/dev/null >> "$OUT/git.txt" || true
 
-          echo "--- runner git workspaces ---"
-          gits="$RUNNER_TEMP/runner-gits.txt"
-          : > "$gits"
-          if [[ -d "$RUNNERS" ]]; then
-            find "$RUNNERS" -maxdepth 10 -type d -name .git -print 2>/dev/null | sort -u > "$gits" || true
-          fi
+            find "$root" -maxdepth 10 \
+              \( -path "$HOME/Documents/VYRON/ProductionManager" -o -name node_modules -o -name target -o -name dist -o -name build -o -name .Trash \) -prune -o \
+              -type f \( -name package.json -o -name tauri.conf.json -o -name Cargo.toml \) -print 2>/dev/null >> "$OUT/manifests.txt" || true
+
+            find "$root" -maxdepth 10 \
+              \( -path "$HOME/Documents/VYRON/ProductionManager" -o -name node_modules -o -name target -o -name .Trash \) -prune -o \
+              -type f \( -iname '*vyron*.tar.gz' -o -iname '*vyron*.tgz' -o -iname '*vyron*.zip' -o -iname '*2.0.13*.tar.gz' -o -iname '*2.0.13*.zip' -o -iname '*source*.tar.gz' \) -print 2>/dev/null >> "$OUT/archives.txt" || true
+
+            grep -RIlE \
+              --include='*.ts' --include='*.tsx' --include='*.js' --include='*.jsx' --include='*.rs' \
+              --exclude-dir=.git --exclude-dir=node_modules --exclude-dir=target --exclude-dir=dist --exclude-dir=build --exclude-dir=ProductionManager \
+              'getChannelScheduleState|humanizeError\(|publishAt|Shorts Factory' \
+              "$root" 2>/dev/null >> "$OUT/markers.txt" || true
+          done
+
+          sort -u "$OUT/git.txt" -o "$OUT/git.txt"
+          sort -u "$OUT/manifests.txt" -o "$OUT/manifests.txt"
+          sort -u "$OUT/archives.txt" -o "$OUT/archives.txt"
+          sort -u "$OUT/markers.txt" -o "$OUT/markers.txt"
+
+          echo "--- git roots ---"
           while IFS= read -r gd; do
             [[ -n "$gd" ]] || continue
             repo="${gd%/.git}"
             printf '%s | branch=%s | head=%s\n' "$repo" "$(git -C "$repo" branch --show-current 2>/dev/null || true)" "$(git -C "$repo" rev-parse HEAD 2>/dev/null || true)"
-          done < "$gits"
+          done < "$OUT/git.txt"
 
-          echo "--- runner manifests mentioning VYRON or 2.0.13 ---"
-          manifests="$RUNNER_TEMP/runner-manifests.txt"
-          : > "$manifests"
-          if [[ -d "$RUNNERS" ]]; then
-            find "$RUNNERS" -maxdepth 12 \
-              \( -name node_modules -o -name target -o -name dist -o -name build \) -prune -o \
-              -type f \( -name package.json -o -name tauri.conf.json -o -name Cargo.toml \) -print 2>/dev/null | sort -u > "$manifests" || true
-          fi
+          echo "--- manifests with VYRON / 2.0.13 markers ---"
           while IFS= read -r f; do
             [[ -f "$f" ]] || continue
             if grep -Eiq 'vyron|2\.0\.13' "$f" 2>/dev/null; then
-              echo "$f"
               case "$(basename "$f")" in
                 package.json)
-                  node -e 'const fs=require("fs");const f=process.argv[1];try{const p=JSON.parse(fs.readFileSync(f,"utf8"));console.log(`  name=${p.name||""} version=${p.version||""}`)}catch(e){}' "$f" 2>/dev/null || true
+                  node -e 'const fs=require("fs");const f=process.argv[1];try{const p=JSON.parse(fs.readFileSync(f,"utf8"));console.log(`${f} | package name=${p.name||""} version=${p.version||""}`)}catch(e){console.log(`${f} | unparseable`)}' "$f" 2>/dev/null || true
                   ;;
                 tauri.conf.json)
-                  node -e 'const fs=require("fs");const f=process.argv[1];try{const p=JSON.parse(fs.readFileSync(f,"utf8"));console.log(`  productName=${p.productName||p.package?.productName||""} version=${p.version||p.package?.version||""} identifier=${p.identifier||""}`)}catch(e){}' "$f" 2>/dev/null || true
+                  node -e 'const fs=require("fs");const f=process.argv[1];try{const p=JSON.parse(fs.readFileSync(f,"utf8"));console.log(`${f} | tauri productName=${p.productName||p.package?.productName||""} version=${p.version||p.package?.version||""} identifier=${p.identifier||""}`)}catch(e){console.log(`${f} | unparseable`)}' "$f" 2>/dev/null || true
+                  ;;
+                Cargo.toml)
+                  echo "$f | contains VYRON/2.0.13 marker"
                   ;;
               esac
             fi
-          done < "$manifests"
+          done < "$OUT/manifests.txt"
 
-          echo "--- runner archive candidates ---"
-          archives="$RUNNER_TEMP/runner-archives.txt"
-          : > "$archives"
-          if [[ -d "$RUNNERS" ]]; then
-            find "$RUNNERS" -maxdepth 12 -type f \( -iname '*vyron*.tar.gz' -o -iname '*vyron*.zip' -o -iname '*2.0.13*.tar.gz' -o -iname '*2.0.13*.zip' -o -iname '*source*.tar.gz' \) -print 2>/dev/null | sort -u > "$archives" || true
-          fi
+          echo "--- archive candidates ---"
           while IFS= read -r a; do
             [[ -f "$a" ]] || continue
             printf '%s | bytes=%s | sha256=%s\n' "$a" "$(stat -f%z "$a" 2>/dev/null || echo '?')" "$(shasum -a 256 "$a" 2>/dev/null | awk '{print $1}')"
-          done < "$archives"
+          done < "$OUT/archives.txt"
 
-          echo "--- runner source marker paths ---"
-          markers="$RUNNER_TEMP/runner-markers.txt"
-          : > "$markers"
-          if [[ -d "$RUNNERS" ]]; then
-            grep -RIlE \
-              --include='*.ts' --include='*.tsx' --include='*.js' --include='*.jsx' --include='*.rs' \
-              --exclude-dir=.git --exclude-dir=node_modules --exclude-dir=target --exclude-dir=dist --exclude-dir=build \
-              'getChannelScheduleState|humanizeError\(|Shorts Factory|publishAt' \
-              "$RUNNERS" 2>/dev/null | sort -u > "$markers" || true
-          fi
-          sed -n '1,250p' "$markers"
-
-          echo "=== END PASS 4 ==="
+          echo "--- exact source marker paths ---"
+          sed -n '1,300p' "$OUT/markers.txt"
+          echo "=== END PASS 5 ==="

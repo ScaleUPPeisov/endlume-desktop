@@ -16,86 +16,60 @@ jobs:
       - name: Checkout diagnostics branch
         uses: actions/checkout@v4
 
-      - name: Locate VYRON 2.0.13 source and archives safely
+      - name: Inspect dedicated VYRON workspace
         shell: bash
         run: |
           set -euo pipefail
+          ROOT="$HOME/Documents/VYRON"
+          echo "=== VYRON WORKSPACE INSPECTION ==="
+          if [[ ! -d "$ROOT" ]]; then
+            echo "VYRON_DIR_MISSING"
+            exit 2
+          fi
 
-          echo "=== VYRON 2.0.13 SOURCE LOCATOR / PASS 2 ==="
-          echo "runner=$RUNNER_NAME arch=$RUNNER_ARCH"
+          echo "root=$ROOT"
+          echo "--- file tree (safe names only) ---"
+          find "$ROOT" -maxdepth 6 \
+            \( -name node_modules -o -name target -o -name dist -o -name build -o -name .git -o -name .env -o -name '.env.*' -o -name secrets -o -name credentials \) -prune -o \
+            -type f \
+            ! -name '*.pem' ! -name '*.key' ! -name '*.p12' ! -name '*.cer' ! -name '*.mobileprovision' \
+            -print 2>/dev/null | sort | head -n 1000
 
-          roots=(
-            "$HOME/.endlume-local-builder"
-            "$(dirname "$RUNNER_WORKSPACE")"
-            "$RUNNER_WORKSPACE"
-            "$HOME/Desktop"
-            "$HOME/Documents"
-            "$HOME/Downloads"
-            "$HOME/Developer"
-            "$HOME/Projects"
-            "$HOME/code"
-            "$HOME/dev"
-          )
+          echo "--- git roots ---"
+          while IFS= read -r gd; do
+            repo="${gd%/.git}"
+            printf '%s | branch=%s | head=%s\n' "$repo" "$(git -C "$repo" branch --show-current 2>/dev/null || true)" "$(git -C "$repo" rev-parse HEAD 2>/dev/null || true)"
+          done < <(find "$ROOT" -maxdepth 6 -type d -name .git -print 2>/dev/null || true)
 
-          echo "--- exact-ish filename/archive candidates ---"
-          for root in "${roots[@]}"; do
-            [[ -d "$root" ]] || continue
-            find "$root" -maxdepth 10 \
-              \( -name Library -o -name .Trash -o -name node_modules -o -name target -o -name dist -o -name build -o -name .git -o -name Pods \) -prune -o \
-              -type f \( \
-                -iname '*vyron*' -o \
-                -iname '*2.0.13*' -o \
-                -iname '*2_0_13*' -o \
-                -iname '*2-0-13*' -o \
-                -iname '*source*.tar.gz' -o \
-                -iname '*source*.tgz' -o \
-                -iname '*source*.zip' \
-              \) -print 2>/dev/null || true
-          done | sort -u | head -n 500
-
-          echo "--- directories named like VYRON ---"
-          for root in "${roots[@]}"; do
-            [[ -d "$root" ]] || continue
-            find "$root" -maxdepth 9 \
-              \( -name Library -o -name .Trash -o -name node_modules -o -name target -o -name dist -o -name build -o -name .git -o -name Pods \) -prune -o \
-              -type d -iname '*vyron*' -print 2>/dev/null || true
-          done | sort -u | head -n 300
-
-          echo "--- Tauri manifests identifying VYRON / 2.0.13 ---"
-          manifests="$RUNNER_TEMP/vyron-manifests.txt"
-          : > "$manifests"
-          for root in "${roots[@]}"; do
-            [[ -d "$root" ]] || continue
-            find "$root" -maxdepth 10 \
-              \( -name Library -o -name .Trash -o -name node_modules -o -name target -o -name dist -o -name build -o -name .git -o -name Pods \) -prune -o \
-              -type f \( -name package.json -o -name tauri.conf.json -o -name Cargo.toml \) -print 2>/dev/null || true
-          done | sort -u > "$manifests"
-
+          echo "--- package/tauri metadata ---"
           while IFS= read -r f; do
-            [[ -f "$f" ]] || continue
-            if grep -Eiq 'vyron|2\.0\.13|com\..*vyron|studio\..*vyron' "$f" 2>/dev/null; then
-              case "$(basename "$f")" in
-                package.json)
-                  meta=$(node -e 'const fs=require("fs"); try{const p=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); console.log(`name=${p.name||""} version=${p.version||""}`)}catch(e){console.log("unparseable")}' "$f" 2>/dev/null || true)
-                  ;;
-                tauri.conf.json)
-                  meta=$(node -e 'const fs=require("fs"); try{const p=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); console.log(`productName=${p.productName||p.package?.productName||""} version=${p.version||p.package?.version||""} identifier=${p.identifier||p.tauri?.bundle?.identifier||""}`)}catch(e){console.log("unparseable")}' "$f" 2>/dev/null || true)
-                  ;;
-                *) meta="contains VYRON/2.0.13 marker" ;;
-              esac
-              printf '%s | %s\n' "$f" "$meta"
-            fi
-          done < "$manifests"
+            case "$(basename "$f")" in
+              package.json)
+                node -e 'const fs=require("fs"); const f=process.argv[1]; try{const p=JSON.parse(fs.readFileSync(f,"utf8")); console.log(`${f} | name=${p.name||""} version=${p.version||""}`)}catch(e){console.log(`${f} | unparseable`)}' "$f" || true
+                ;;
+              tauri.conf.json)
+                node -e 'const fs=require("fs"); const f=process.argv[1]; try{const p=JSON.parse(fs.readFileSync(f,"utf8")); console.log(`${f} | productName=${p.productName||p.package?.productName||""} version=${p.version||p.package?.version||""} identifier=${p.identifier||p.tauri?.bundle?.identifier||""}`)}catch(e){console.log(`${f} | unparseable`)}' "$f" || true
+                ;;
+              Cargo.toml)
+                pkg=$(awk 'BEGIN{s=0} /^\[package\]/{s=1;next} /^\[/{if(s)exit} s && ($1=="name" || $1=="version") {gsub(/^[^=]*=[[:space:]]*/,""); gsub(/\"/,""); printf "%s ",$0}' "$f" 2>/dev/null || true)
+                printf '%s | package=%s\n' "$f" "$pkg"
+                ;;
+            esac
+          done < <(find "$ROOT" -maxdepth 8 -type f \( -name package.json -o -name tauri.conf.json -o -name Cargo.toml \) \
+            ! -path '*/node_modules/*' ! -path '*/target/*' ! -path '*/dist/*' ! -path '*/build/*' 2>/dev/null | sort)
 
-          echo "--- marker source files (paths only) ---"
-          for root in "${roots[@]}"; do
-            [[ -d "$root" ]] || continue
-            grep -RIlE \
-              --include='*.ts' --include='*.tsx' --include='*.js' --include='*.jsx' --include='*.rs' --include='*.json' \
-              --exclude='*.env' --exclude='.env*' --exclude='*.pem' --exclude='*.key' --exclude='*.p12' --exclude='*.cer' \
-              --exclude-dir=.git --exclude-dir=node_modules --exclude-dir=target --exclude-dir=dist --exclude-dir=build --exclude-dir=Library \
-              'getChannelScheduleState|humanizeError\(|publishAt|Shorts Factory|Error Center' \
-              "$root" 2>/dev/null || true
-          done | sort -u | head -n 500
+          echo "--- source markers with line snippets (non-secret source files only) ---"
+          matches="$RUNNER_TEMP/vyron-marker-files.txt"
+          grep -RIlE \
+            --include='*.ts' --include='*.tsx' --include='*.js' --include='*.jsx' --include='*.rs' \
+            --exclude-dir=.git --exclude-dir=node_modules --exclude-dir=target --exclude-dir=dist --exclude-dir=build \
+            'getChannelScheduleState|humanizeError\(|publishAt|Shorts Factory|Error Center|shorts' \
+            "$ROOT" 2>/dev/null | sort -u > "$matches" || true
+          cat "$matches"
 
-          echo "=== END LOCATOR ==="
+          echo "--- archive inventory ---"
+          find "$ROOT" -maxdepth 8 -type f \( -iname '*.tar.gz' -o -iname '*.tgz' -o -iname '*.zip' -o -iname '*.tar' \) -print 2>/dev/null | sort | while IFS= read -r a; do
+            printf '%s | bytes=%s | sha256=%s\n' "$a" "$(stat -f%z "$a" 2>/dev/null || echo '?')" "$(shasum -a 256 "$a" 2>/dev/null | awk '{print $1}')"
+          done
+
+          echo "=== END VYRON WORKSPACE INSPECTION ==="

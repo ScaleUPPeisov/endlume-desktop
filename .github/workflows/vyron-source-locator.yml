@@ -11,82 +11,50 @@ permissions:
 jobs:
   locate:
     runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
       - name: Checkout diagnostics branch
         uses: actions/checkout@v4
 
-      - name: Inspect Desktop Downloads Documents for VYRON source
+      - name: Inspect installed VYRON bundle metadata
         shell: bash
         run: |
           set -u
-          OUT="$RUNNER_TEMP/vyron-dev-search"
-          mkdir -p "$OUT"
-          : > "$OUT/git.txt"
-          : > "$OUT/manifests.txt"
-          : > "$OUT/archives.txt"
-          : > "$OUT/markers.txt"
-
-          echo "=== VYRON LOCATOR PASS 5 ==="
-          for root in "$HOME/Desktop" "$HOME/Downloads" "$HOME/Documents"; do
-            [[ -d "$root" ]] || continue
-            echo "scan_root=$root"
-
-            find "$root" -maxdepth 10 \
-              \( -path "$HOME/Documents/VYRON/ProductionManager" -o -name node_modules -o -name target -o -name dist -o -name build -o -name .Trash \) -prune -o \
-              -type d -name .git -print 2>/dev/null >> "$OUT/git.txt" || true
-
-            find "$root" -maxdepth 10 \
-              \( -path "$HOME/Documents/VYRON/ProductionManager" -o -name node_modules -o -name target -o -name dist -o -name build -o -name .Trash \) -prune -o \
-              -type f \( -name package.json -o -name tauri.conf.json -o -name Cargo.toml \) -print 2>/dev/null >> "$OUT/manifests.txt" || true
-
-            find "$root" -maxdepth 10 \
-              \( -path "$HOME/Documents/VYRON/ProductionManager" -o -name node_modules -o -name target -o -name .Trash \) -prune -o \
-              -type f \( -iname '*vyron*.tar.gz' -o -iname '*vyron*.tgz' -o -iname '*vyron*.zip' -o -iname '*2.0.13*.tar.gz' -o -iname '*2.0.13*.zip' -o -iname '*source*.tar.gz' \) -print 2>/dev/null >> "$OUT/archives.txt" || true
-
-            grep -RIlE \
-              --include='*.ts' --include='*.tsx' --include='*.js' --include='*.jsx' --include='*.rs' \
-              --exclude-dir=.git --exclude-dir=node_modules --exclude-dir=target --exclude-dir=dist --exclude-dir=build --exclude-dir=ProductionManager \
-              'getChannelScheduleState|humanizeError\(|publishAt|Shorts Factory' \
-              "$root" 2>/dev/null >> "$OUT/markers.txt" || true
+          echo "=== VYRON BUNDLE INSPECTION ==="
+          apps="$RUNNER_TEMP/vyron-apps.txt"
+          : > "$apps"
+          for base in /Applications "$HOME/Applications"; do
+            [[ -d "$base" ]] || continue
+            find "$base" -maxdepth 2 -type d -iname '*vyron*.app' -print 2>/dev/null >> "$apps" || true
           done
+          sort -u "$apps" -o "$apps"
 
-          sort -u "$OUT/git.txt" -o "$OUT/git.txt"
-          sort -u "$OUT/manifests.txt" -o "$OUT/manifests.txt"
-          sort -u "$OUT/archives.txt" -o "$OUT/archives.txt"
-          sort -u "$OUT/markers.txt" -o "$OUT/markers.txt"
+          if [[ ! -s "$apps" ]]; then
+            echo "installed_vyron_app=none"
+            exit 0
+          fi
 
-          echo "--- git roots ---"
-          while IFS= read -r gd; do
-            [[ -n "$gd" ]] || continue
-            repo="${gd%/.git}"
-            printf '%s | branch=%s | head=%s\n' "$repo" "$(git -C "$repo" branch --show-current 2>/dev/null || true)" "$(git -C "$repo" rev-parse HEAD 2>/dev/null || true)"
-          done < "$OUT/git.txt"
-
-          echo "--- manifests with VYRON / 2.0.13 markers ---"
-          while IFS= read -r f; do
-            [[ -f "$f" ]] || continue
-            if grep -Eiq 'vyron|2\.0\.13' "$f" 2>/dev/null; then
-              case "$(basename "$f")" in
-                package.json)
-                  node -e 'const fs=require("fs");const f=process.argv[1];try{const p=JSON.parse(fs.readFileSync(f,"utf8"));console.log(`${f} | package name=${p.name||""} version=${p.version||""}`)}catch(e){console.log(`${f} | unparseable`)}' "$f" 2>/dev/null || true
-                  ;;
-                tauri.conf.json)
-                  node -e 'const fs=require("fs");const f=process.argv[1];try{const p=JSON.parse(fs.readFileSync(f,"utf8"));console.log(`${f} | tauri productName=${p.productName||p.package?.productName||""} version=${p.version||p.package?.version||""} identifier=${p.identifier||""}`)}catch(e){console.log(`${f} | unparseable`)}' "$f" 2>/dev/null || true
-                  ;;
-                Cargo.toml)
-                  echo "$f | contains VYRON/2.0.13 marker"
-                  ;;
-              esac
+          while IFS= read -r app; do
+            echo "APP=$app"
+            plist="$app/Contents/Info.plist"
+            if [[ -f "$plist" ]]; then
+              echo "bundle_name=$(defaults read "$plist" CFBundleName 2>/dev/null || true)"
+              echo "bundle_id=$(defaults read "$plist" CFBundleIdentifier 2>/dev/null || true)"
+              echo "version=$(defaults read "$plist" CFBundleShortVersionString 2>/dev/null || true)"
+              echo "build=$(defaults read "$plist" CFBundleVersion 2>/dev/null || true)"
+              exe_name=$(defaults read "$plist" CFBundleExecutable 2>/dev/null || true)
+              echo "executable=$exe_name"
+              exe="$app/Contents/MacOS/$exe_name"
+              if [[ -f "$exe" ]]; then
+                echo "binary_arch=$(file "$exe" 2>/dev/null || true)"
+                echo "binary_sha256=$(shasum -a 256 "$exe" 2>/dev/null | awk '{print $1}')"
+                echo "release/update URL strings:"
+                strings "$exe" 2>/dev/null | grep -Eo 'https://[^[:space:]"<>]+' | grep -Ei 'github|latest\.json|releases|update' | sort -u > "$RUNNER_TEMP/vyron-urls.txt" || true
+                sed -n '1,80p' "$RUNNER_TEMP/vyron-urls.txt"
+              fi
             fi
-          done < "$OUT/manifests.txt"
-
-          echo "--- archive candidates ---"
-          while IFS= read -r a; do
-            [[ -f "$a" ]] || continue
-            printf '%s | bytes=%s | sha256=%s\n' "$a" "$(stat -f%z "$a" 2>/dev/null || echo '?')" "$(shasum -a 256 "$a" 2>/dev/null | awk '{print $1}')"
-          done < "$OUT/archives.txt"
-
-          echo "--- exact source marker paths ---"
-          sed -n '1,300p' "$OUT/markers.txt"
-          echo "=== END PASS 5 ==="
+            echo "resource metadata files:"
+            find "$app/Contents/Resources" -maxdepth 3 -type f \( -name '*.json' -o -name '*.map' -o -name '*.toml' \) -print 2>/dev/null | sort > "$RUNNER_TEMP/vyron-resource-meta.txt" || true
+            sed -n '1,100p' "$RUNNER_TEMP/vyron-resource-meta.txt"
+          done < "$apps"
+          echo "=== END BUNDLE INSPECTION ==="

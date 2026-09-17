@@ -1,0 +1,33 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "ENDLUME Studio",
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "ENDLUME Studio",
+        "width": 1280,
+        "height": 860,
+        "minWidth": 980,
+        "minHeight": 700,
+        "center": true,
+        "resizable": true,
+        "decorations": true,
+        "transparent": false,
+        "backgroundThrottling": "disabled",
+        "backgroundColor": "#070914"
+      }
+    ]
+  },
+  "bundle": {
+    "targets": ["nsis"],
+    "publisher": "ScaleUP",
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "displayLanguageSelector": true,
+        "languages": ["Russian", "English"]
+      }
+    }
+  }
+}

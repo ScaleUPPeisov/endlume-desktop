@@ -24,6 +24,7 @@ env:
   ENDLUME_VERSION: 1.0.0-alpha.8.61
   FINAL_INSTALLER: ENDLUME-YT-Studio-PEISOV-Setup-1.0.0-alpha.8.61-x64.exe
   RELEASE_TAG: endlume-v1.0.0-alpha.8.61-windows-rc
+  RC_ARTIFACT: ENDLUME-YT-Studio-PEISOV-Setup-1.0.0-alpha.8.61-x64-RC-cross
 
 jobs:
   windows-cross-rc:
@@ -78,7 +79,6 @@ jobs:
 
           brew list nsis >/dev/null 2>&1 || brew install nsis
           brew list llvm >/dev/null 2>&1 || brew install llvm
-          command -v gh >/dev/null 2>&1 || brew install gh
 
           LLVM_BIN="$(brew --prefix llvm)/bin"
           echo "$LLVM_BIN" >> "$GITHUB_PATH"
@@ -91,7 +91,6 @@ jobs:
 
           makensis -VERSION
           cargo xwin --version
-          gh --version | head -1
 
       - name: Stage pinned Windows FFmpeg sidecars
         shell: bash
@@ -209,10 +208,8 @@ jobs:
           LLVM_BIN="$(brew --prefix llvm)/bin"
           export PATH="$LLVM_BIN:$PATH"
 
-          # RC-only workspace override: the production config stays unchanged with
-          # createUpdaterArtifacts=true. Cross-built NSIS cannot legitimately sign
-          # updater artifacts without the production private key, so this RC lane
-          # builds only the installer and leaves updater signing to the native gate.
+          # RC-only workspace override. Production source remains updater-enabled;
+          # native Windows promotion is still responsible for updater signing.
           python3 - <<'PY'
           import json
           from pathlib import Path
@@ -249,7 +246,7 @@ jobs:
           from pathlib import Path
           import sys
           p = Path(sys.argv[1])
-          assert p.stat().st_size > 0
+          assert p.stat().st_size > 1_000_000
           with p.open('rb') as f:
               assert f.read(2) == b'MZ', 'NSIS installer is not PE/MZ'
           print(f'RC installer: {p}')
@@ -261,15 +258,54 @@ jobs:
           echo 'HARDWARE_E2E_VERIFIED=false'
 
       - name: Upload Windows NSIS Release Candidate
-        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
-          name: ENDLUME-YT-Studio-PEISOV-Setup-1.0.0-alpha.8.61-x64-RC-cross
+          name: ${{ env.RC_ARTIFACT }}
           path: |
             src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/ENDLUME-YT-Studio-PEISOV-Setup-1.0.0-alpha.8.61-x64.exe
             src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/ENDLUME-YT-Studio-PEISOV-Setup-1.0.0-alpha.8.61-x64.exe.sha256
           if-no-files-found: error
+          compression-level: 0
           retention-days: 30
+
+  publish-rc:
+    name: Windows x64 • GitHub-hosted • Publish RC
+    needs: windows-cross-rc
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Download verified Windows RC
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.RC_ARTIFACT }}
+          path: rc
+
+      - name: Reverify exact installer after handoff
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          FINAL="rc/$FINAL_INSTALLER"
+          SHA_FILE="$FINAL.sha256"
+          test -s "$FINAL"
+          test -s "$SHA_FILE"
+
+          python3 - "$FINAL" <<'PY'
+          from pathlib import Path
+          import sys
+          p = Path(sys.argv[1])
+          assert p.stat().st_size > 1_000_000
+          with p.open('rb') as f:
+              assert f.read(2) == b'MZ', 'installer is not PE/MZ'
+          print(f'HOSTED_PUBLISH_INSTALLER_BYTES={p.stat().st_size}')
+          PY
+
+          EXPECTED="$(awk '{print $1; exit}' "$SHA_FILE")"
+          ACTUAL="$(sha256sum "$FINAL" | awk '{print $1}')"
+          test -n "$EXPECTED"
+          test "$EXPECTED" = "$ACTUAL"
+          echo "HOSTED_PUBLISH_SHA256=$ACTUAL"
+          echo 'HOSTED_PUBLISH_REVERIFY_GREEN'
 
       - name: Publish Windows Release Candidate
         shell: bash
@@ -277,8 +313,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -Eeuo pipefail
-          NSIS_DIR="src-tauri/target/$WINDOWS_TARGET/release/bundle/nsis"
-          FINAL="$NSIS_DIR/$FINAL_INSTALLER"
+          FINAL="rc/$FINAL_INSTALLER"
+          SHA_FILE="$FINAL.sha256"
           NOTES="$RUNNER_TEMP/endlume-windows-rc-notes.md"
 
           cat > "$NOTES" <<EOF
@@ -292,15 +328,26 @@ jobs:
           - product name / identifier / PEISOV icon contract checked;
           - Windows FFmpeg / ffprobe sidecars structurally verified as PE/MZ;
           - TypeScript, frontend production build, queue regression, Windows production contract gates, Rust check and Rust tests passed;
-          - exact installer filename and SHA-256 generated.
+          - exact installer filename and SHA-256 generated and reverified after Actions handoff.
 
           HARDWARE E2E VERIFIED: false
 
-          The external self-hosted Windows hardware lane was unavailable at RC publication time. Native Windows install/uninstall smoke, console-flash proof, hardware encoder proof (NVENC/QSV/AMF), and real installed-app production render/license/updater E2E remain native acceptance gates before this RC can be promoted to the final production release.
+          Native Windows install/uninstall smoke, console-flash proof, hardware encoder proof (NVENC/QSV/AMF), and real installed-app production render/license/updater E2E remain native acceptance gates before promotion to final production release.
           EOF
 
+          # A cancelled direct upload can leave a draft for this exact tag.
+          DRAFT_IDS="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq ".[] | select(.tag_name == \"$RELEASE_TAG\" and .draft == true) | .id")"
+          if [ -n "$DRAFT_IDS" ]; then
+            while IFS= read -r DRAFT_ID; do
+              [ -n "$DRAFT_ID" ] || continue
+              echo "Removing stale draft release id=$DRAFT_ID"
+              gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/$DRAFT_ID"
+            done <<< "$DRAFT_IDS"
+          fi
+
           if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$RELEASE_TAG" "$FINAL" "$FINAL.sha256" --clobber --repo "$GITHUB_REPOSITORY"
+            gh release upload "$RELEASE_TAG" "$FINAL" "$SHA_FILE" --clobber --repo "$GITHUB_REPOSITORY"
             gh release edit "$RELEASE_TAG" \
               --repo "$GITHUB_REPOSITORY" \
               --title "ENDLUME YT Studio PEISOV 1.0.0-alpha.8.61 Windows RC" \
@@ -308,7 +355,7 @@ jobs:
               --prerelease
           else
             gh release create "$RELEASE_TAG" \
-              "$FINAL" "$FINAL.sha256" \
+              "$FINAL" "$SHA_FILE" \
               --repo "$GITHUB_REPOSITORY" \
               --target "$GITHUB_SHA" \
               --title "ENDLUME YT Studio PEISOV 1.0.0-alpha.8.61 Windows RC" \
@@ -316,5 +363,6 @@ jobs:
               --prerelease
           fi
 
-          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json url,tagName,isPrerelease
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --json url,tagName,isPrerelease,isDraft
           echo 'WINDOWS_RC_PUBLISHED_GREEN'

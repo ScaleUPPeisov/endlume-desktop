@@ -30,6 +30,8 @@ function newer(candidate,current){
   return false;
 }
 
+function validSha256(value){return typeof value==='string'&&/^[0-9a-fA-F]{64}$/.test(value.trim())}
+
 function b64url(bytes){
   let s='';for(const b of new Uint8Array(bytes))s+=String.fromCharCode(b);
   return btoa(s).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
@@ -59,6 +61,7 @@ export default {
       if(!object)return new Response(null,{status:204,headers:{'cache-control':'no-store'}});
       let manifest;try{manifest=JSON.parse(await object.text())}catch{return json({error:'invalid_manifest'},500)}
       if(!manifest.version||!manifest.object_key||!manifest.signature)return json({error:'incomplete_manifest'},500);
+      if(platform.startsWith('windows-')&&!validSha256(manifest.sha256))return json({error:'windows_manifest_missing_sha256'},500);
       if(!newer(manifest.version,current))return new Response(null,{status:204,headers:{'cache-control':'no-store'}});
       const exp=Math.floor(Date.now()/1000)+600;
       const message=`${manifest.object_key}\n${exp}`;
@@ -67,13 +70,15 @@ export default {
       download.searchParams.set('key',manifest.object_key);
       download.searchParams.set('exp',String(exp));
       download.searchParams.set('sig',sig);
-      return json({
+      const response={
         version:manifest.version,
         notes:manifest.notes||'',
         pub_date:manifest.pub_date||new Date().toISOString(),
         url:download.toString(),
         signature:manifest.signature
-      });
+      };
+      if(validSha256(manifest.sha256))response.sha256=manifest.sha256.trim().toLowerCase();
+      return json(response);
     }
 
     if(url.pathname==='/v1/download'){

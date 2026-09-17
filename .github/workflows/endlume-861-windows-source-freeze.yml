@@ -1,0 +1,65 @@
+name: ENDLUME 8.61 Windows Source Freeze
+
+on:
+  push:
+    branches: [windows/endlume-861-managed-access]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: endlume-861-windows-source-freeze
+  cancel-in-progress: true
+
+jobs:
+  freeze-effective-source:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+
+      - name: Materialize exact effective 8.61 source
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          CURRENT="$(node -p "require('./package.json').version")"
+          if [ "$CURRENT" = "1.0.0-alpha.8.61" ]; then
+            echo "8.61 source already frozen"
+            exit 0
+          fi
+          test "$CURRENT" = "1.0.0-alpha.8.54"
+          python3 scripts/apply-render-isolation-8-56.py
+          python3 scripts/apply-master-frame-hotfix-8-57.py
+          python3 scripts/apply-queue-finalization-hotfix-8-58.py
+          python3 scripts/apply-render-speed-stability-8-60.py
+          python3 scripts/apply-local-scratch-stability-8-61-v2.py
+          python3 scripts/test-render-speed-stability-8-60.py .
+          python3 scripts/test-local-scratch-stability-8-61.py .
+          test "$(node -p "require('./package.json').version")" = "1.0.0-alpha.8.61"
+
+      - name: Commit effective source snapshot
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          if git diff --quiet && git diff --cached --quiet; then
+            echo "No source changes to freeze"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "chore: freeze ENDLUME 8.61 effective source for Windows port"
+          git push origin HEAD:${GITHUB_REF_NAME}
+
+      - name: Verify frozen version
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(node -p "require('./package.json').version")" = "1.0.0-alpha.8.61"
+          grep -q 'version = "1.0.0-alpha.8.61"' src-tauri/Cargo.toml
+          grep -q '"version": "1.0.0-alpha.8.61"' src-tauri/tauri.conf.json
+          echo "ENDLUME_861_WINDOWS_SOURCE_FREEZE_GREEN"

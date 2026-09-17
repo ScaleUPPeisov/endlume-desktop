@@ -1,11 +1,12 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "ENDLUME Studio",
+  "productName": "ENDLUME YT Studio PEISOV",
+  "mainBinaryName": "ENDLUME YT Studio PEISOV",
   "app": {
     "windows": [
       {
         "label": "main",
-        "title": "ENDLUME Studio",
+        "title": "ENDLUME YT Studio PEISOV",
         "width": 1280,
         "height": 860,
         "minWidth": 980,
@@ -21,12 +22,15 @@
   },
   "bundle": {
     "targets": ["nsis"],
-    "publisher": "ScaleUP",
+    "publisher": "PEISOV",
     "windows": {
       "nsis": {
         "installMode": "currentUser",
         "displayLanguageSelector": true,
-        "languages": ["Russian", "English"]
+        "languages": ["Russian", "English"],
+        "installerIcon": "icons/icon.ico",
+        "uninstallerIcon": "icons/icon.ico",
+        "startMenuFolder": "ENDLUME YT Studio PEISOV"
       }
     }
   }

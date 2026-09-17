@@ -6,7 +6,11 @@ on:
     paths:
       - 'scripts/apply-windows-861-strict-port.py'
       - 'scripts/test-windows-861-strict-port.py'
+      - 'scripts/apply-managed-license-render-gate.py'
+      - 'scripts/test-managed-license-render-gate.py'
       - 'src-tauri/src/updater_windows.rs'
+      - 'src-tauri/src/license.rs'
+      - 'src-tauri/src/queue.rs'
       - 'src-tauri/src/lib.rs'
       - '.github/workflows/endlume-861-windows-apply-source.yml'
   workflow_dispatch:
@@ -28,25 +32,27 @@ jobs:
           ref: windows/endlume-861-managed-access
           fetch-depth: 0
 
-      - name: Apply and validate isolated Windows 8.61 strict patch
+      - name: Apply and validate isolated Windows 8.61 strict + managed access patches
         shell: bash
         run: |
           set -Eeuo pipefail
           python3 scripts/apply-windows-861-strict-port.py
           python3 scripts/test-windows-861-strict-port.py
+          python3 scripts/apply-managed-license-render-gate.py
+          python3 scripts/test-managed-license-render-gate.py
 
       - name: Persist patched effective source
         shell: bash
         run: |
           set -Eeuo pipefail
           if git diff --quiet -- src-tauri/src/render.rs; then
-            echo 'Windows strict source already committed'
+            echo 'Windows strict/managed source already committed'
             exit 0
           fi
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add src-tauri/src/render.rs
-          git commit -m 'feat(windows): port strict 8.61 HEVC pipeline'
+          git commit -m 'fix(windows): stop active render on managed license revoke'
           git push origin HEAD:windows/endlume-861-managed-access
 
       - name: Prepare macOS Tauri sidecars for regression

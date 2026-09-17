@@ -1,0 +1,154 @@
+name: ENDLUME 8.61 Windows RC Publish Recovery
+
+on:
+  push:
+    branches: [ci/endlume-861-rc-publish-recovery]
+    paths:
+      - '.github/workflows/endlume-861-windows-rc-publish-recovery.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  SOURCE_SHA: 6b3d85d8e5c2b843a5198092ebd10e3c6d16b07d
+  WINDOWS_TARGET: x86_64-pc-windows-msvc
+  FINAL_INSTALLER: ENDLUME-YT-Studio-PEISOV-Setup-1.0.0-alpha.8.61-x64.exe
+  RELEASE_TAG: endlume-v1.0.0-alpha.8.61-windows-rc
+  HANDOFF_ARTIFACT: endlume-861-windows-rc-publish-handoff
+
+# Deliberately shares the build workflow's concurrency group. This cancels a
+# stuck direct release upload without moving the production source branch.
+concurrency:
+  group: endlume-861-windows-cross-rc
+  cancel-in-progress: true
+
+jobs:
+  stage-existing-rc:
+    name: Stage already-built Windows RC
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 15
+    steps:
+      - name: Verify existing installer from completed cross-build
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          NSIS_DIR="src-tauri/target/$WINDOWS_TARGET/release/bundle/nsis"
+          FINAL="$NSIS_DIR/$FINAL_INSTALLER"
+          test -s "$FINAL"
+          python3 - "$FINAL" <<'PY'
+          from pathlib import Path
+          import sys
+          p = Path(sys.argv[1])
+          assert p.stat().st_size > 1_000_000, p.stat().st_size
+          with p.open('rb') as f:
+              assert f.read(2) == b'MZ', 'installer is not PE/MZ'
+          print(f'RECOVERY_INSTALLER_BYTES={p.stat().st_size}')
+          PY
+          shasum -a 256 "$FINAL" | tee "$FINAL.sha256"
+          echo "RECOVERY_SOURCE_SHA=$SOURCE_SHA"
+          echo 'RECOVERY_EXISTING_NSIS_GREEN'
+
+      - name: Handoff installer to GitHub-hosted publisher
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.HANDOFF_ARTIFACT }}
+          path: |
+            src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/ENDLUME-YT-Studio-PEISOV-Setup-1.0.0-alpha.8.61-x64.exe
+            src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/ENDLUME-YT-Studio-PEISOV-Setup-1.0.0-alpha.8.61-x64.exe.sha256
+          if-no-files-found: error
+          retention-days: 30
+
+  publish-rc:
+    name: Publish Windows RC from GitHub-hosted runner
+    needs: stage-existing-rc
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Download verified handoff
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.HANDOFF_ARTIFACT }}
+          path: rc
+
+      - name: Reverify installer and digest
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          FINAL="rc/$FINAL_INSTALLER"
+          SHA_FILE="$FINAL.sha256"
+          test -s "$FINAL"
+          test -s "$SHA_FILE"
+          python3 - "$FINAL" <<'PY'
+          from pathlib import Path
+          import sys
+          p = Path(sys.argv[1])
+          assert p.stat().st_size > 1_000_000, p.stat().st_size
+          with p.open('rb') as f:
+              assert f.read(2) == b'MZ', 'installer is not PE/MZ'
+          print(f'HOSTED_PUBLISH_INSTALLER_BYTES={p.stat().st_size}')
+          PY
+          EXPECTED="$(awk '{print $1; exit}' "$SHA_FILE")"
+          ACTUAL="$(sha256sum "$FINAL" | awk '{print $1}')"
+          test -n "$EXPECTED"
+          test "$EXPECTED" = "$ACTUAL"
+          echo "HOSTED_PUBLISH_SHA256=$ACTUAL"
+          echo 'HOSTED_PUBLISH_REVERIFY_GREEN'
+
+      - name: Publish clean Windows Release Candidate
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          FINAL="rc/$FINAL_INSTALLER"
+          SHA_FILE="$FINAL.sha256"
+          NOTES="$RUNNER_TEMP/endlume-windows-rc-notes.md"
+
+          cat > "$NOTES" <<EOF
+          # ENDLUME YT Studio PEISOV — Windows 8.61 Release Candidate
+
+          Source commit: $SOURCE_SHA
+
+          BUILD VERIFIED (cross-RC):
+          - Windows x64 MSVC application compiled with cargo-xwin;
+          - NSIS installer bundled;
+          - product name / identifier / PEISOV icon contract checked;
+          - Windows FFmpeg / ffprobe sidecars structurally verified as PE/MZ;
+          - TypeScript, frontend production build, queue regression, Windows production contract gates, Rust check and Rust tests passed;
+          - exact installer filename and SHA-256 generated and reverified after GitHub Actions handoff.
+
+          HARDWARE E2E VERIFIED: false
+
+          Native Windows install/uninstall smoke, console-flash proof, hardware encoder proof (NVENC/QSV/AMF), and real installed-app production render/license/updater E2E remain native acceptance gates before promotion to final production release.
+          EOF
+
+          # A cancelled direct upload can leave an unpublishable draft. Remove only
+          # the draft for this exact tag; never touch an already published release.
+          DRAFT_ID="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq ".[] | select(.tag_name == \"$RELEASE_TAG\" and .draft == true) | .id" | head -1)"
+          if [ -n "$DRAFT_ID" ]; then
+            echo "Removing stale draft release id=$DRAFT_ID"
+            gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/$DRAFT_ID"
+          fi
+
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" "$FINAL" "$SHA_FILE" --clobber --repo "$GITHUB_REPOSITORY"
+            gh release edit "$RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "ENDLUME YT Studio PEISOV 1.0.0-alpha.8.61 Windows RC" \
+              --notes-file "$NOTES" \
+              --prerelease
+          else
+            gh release create "$RELEASE_TAG" \
+              "$FINAL" "$SHA_FILE" \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$SOURCE_SHA" \
+              --title "ENDLUME YT Studio PEISOV 1.0.0-alpha.8.61 Windows RC" \
+              --notes-file "$NOTES" \
+              --prerelease
+          fi
+
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --json url,tagName,isPrerelease,isDraft
+          echo 'WINDOWS_RC_PUBLISHED_GREEN'

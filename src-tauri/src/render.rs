@@ -385,6 +385,7 @@ fn emit_progress(app:&AppHandle,job:&QueueJob,started:i64,timer:&Instant,progres
   let elapsed=timer.elapsed().as_secs_f64();let eta=if progress>1.0{Some(elapsed*(100.0-progress)/progress)}else{None};
   let (cpu,ram,total,available)=metrics.unwrap_or((0.0,0,0,0));
   let _=app.emit("render-progress",Progress{id:job.project.id.clone(),status:"rendering".into(),progress:progress.clamp(0.0,99.9),stage:stage.into(),started_at:Some(started),elapsed_sec:elapsed,eta_sec:eta,result_path:None,result_bytes:None,actual_video_bitrate:None,cpu_pct:metrics.map(|_|cpu),ram_bytes:metrics.map(|_|ram),ram_total_bytes:metrics.map(|_|total),ram_available_bytes:metrics.map(|_|available),gpu_pct:None,encoder:Some(encoder.into()),attempt:Some(attempt)});
+  crate::license::telemetry_render_progress(job,progress.clamp(0.0,99.9),eta,stage,encoder);
 }
 
 async fn run_ffmpeg(app:&AppHandle,job:&QueueJob,started:i64,timer:&Instant,args:Vec<String>,stage:&str,base:f64,span:f64,expected_sec:f64,encoder:&str,attempt:u32,cancel:&AtomicBool)->Result<(),String>{
@@ -392,6 +393,7 @@ async fn run_ffmpeg(app:&AppHandle,job:&QueueJob,started:i64,timer:&Instant,args
   let (mut rx,child)=app.shell().sidecar("ffmpeg").map_err(|e|format!("{stage}: FFmpeg недоступен: {e}"))?.args(args).spawn().map_err(|e|format!("{stage}: не удалось запустить FFmpeg: {e}"))?;
   let pid=child.pid();let mut child=Some(child);let mut last=base;let mut stderr_tail=String::new();let mut sys=System::new_all();let mut metric_tick=Instant::now();
   loop{
+    if crate::license::production_blocked(){if let Some(c)=child.take(){let _=c.kill();}return Err("__ENDLUME_LICENSE_BLOCKED__".into())}
     if cancel.load(Ordering::SeqCst){if let Some(c)=child.take(){let _=c.kill();}return Err(CANCELLED.into())}
     let event=tokio::time::timeout(Duration::from_millis(160),rx.recv()).await;
     if metric_tick.elapsed()>=Duration::from_millis(480){
@@ -831,6 +833,7 @@ async fn render_periodic_zero_copy_852(app:&AppHandle,job:&QueueJob,effects:&[Ef
 }
 
 pub async fn render_job(app:&AppHandle,job:&QueueJob,cancel:Arc<AtomicBool>)->Result<(),String>{
+  if crate::license::production_blocked(){return Err("__ENDLUME_LICENSE_BLOCKED__".into())}
   let mut resolved_job=job.clone();refresh_project_paths(&mut resolved_job);
   if smart_repeat_project(&resolved_job){
     if resolved_job.settings.width!=1920||resolved_job.settings.height!=1080{emit_warning(app,&resolved_job.project.id,"Fidelity Lock: one-image проект выводится строго 1920x1080. Это убирает бессмысленное 4K-сжатие при лимите около 1 ГБ.");}

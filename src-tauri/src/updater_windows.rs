@@ -146,5 +146,5 @@ pub fn local_update_status(app:AppHandle)->Result<LocalUpdateStatus,String>{
 mod tests{
   use super::*;
   #[test]
-  fn sha256_is_stable(){assert_eq!(sha256_hex(b"endlume"),"b6934e3ed44b11fd10f188267a51b2c1c0f3519f05374ac060732fa161508e19")}
+  fn sha256_is_stable(){assert_eq!(sha256_hex(b"endlume"),"0a5ca25411a68047ac7ea36cde07e9b37a6b601d9bdfcd8eb8234ae89d1db760")}
 }

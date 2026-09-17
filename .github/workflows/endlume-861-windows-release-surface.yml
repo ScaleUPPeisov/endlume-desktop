@@ -86,8 +86,9 @@ jobs:
           set -o pipefail
           cargo check --manifest-path src-tauri/Cargo.toml 2>&1 | tee rust-check.log
 
-      - name: Upload Rust check diagnostics
-        if: always()
+      - name: Upload Rust check diagnostics on failure
+        if: failure() && steps.rust_check.outcome == 'failure'
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: endlume-861-rust-check-diagnostics

@@ -24,6 +24,8 @@
   "bundle": {
     "targets": ["nsis"],
     "publisher": "PEISOV",
+    "shortDescription": "ENDLUME YT Studio PEISOV",
+    "longDescription": "ENDLUME YT Studio PEISOV",
     "windows": {
       "nsis": {
         "installMode": "currentUser",

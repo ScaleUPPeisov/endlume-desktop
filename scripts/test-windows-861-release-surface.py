@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 from pathlib import Path
-import json,re
+import json
 root=Path('.')
 main=(root/'src-tauri/src/main.rs').read_text(encoding='utf-8')
 render=(root/'src-tauri/src/render.rs').read_text(encoding='utf-8')
@@ -17,9 +17,13 @@ assert conf['identifier']=='studio.endlume.desktop'
 assert 'ENDLUME YT Studio PEISOV' in brand
 assert 'PRODUCT_NAME' in ui and 'YT STUDIO PEISOV' in ui
 assert 'PRODUCT_NAME' in settings and 'PRODUCT_KICKER' in settings
-# FFmpeg/ffprobe must stay Tauri sidecars: tauri-plugin-shell v2 applies CREATE_NO_WINDOW on Windows.
+# FFmpeg/ffprobe stay Tauri sidecars; tauri-plugin-shell v2 uses CREATE_NO_WINDOW on Windows.
 assert 'app.shell().sidecar(name)' in render
 assert 'app.shell().sidecar("ffmpeg")' in render
+# Native Windows Explorer calls are explicitly hidden too.
+assert 'hidden_windows_command("explorer.exe")' in system
+assert 'creation_flags(0x0800_0000)' in system
+assert 'GetSystemPowerStatus' in system and 'windows_power_status()' in system
 for forbidden in ('Command::new("cmd.exe")','Command::new("powershell")','Command::new("powershell.exe")','Command::new("pwsh")','Command::new("Windows Terminal")'):
     assert forbidden not in render+updater+system, f'visible-console runtime command: {forbidden}'
 assert 'update.install(bytes)' in updater

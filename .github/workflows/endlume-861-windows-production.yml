@@ -33,57 +33,43 @@ jobs:
         with:
           workspaces: src-tauri
 
-      - name: Stage pinned FFmpeg sidecars
-        shell: pwsh
-        run: ./scripts/prepare-windows-sidecars.ps1
-
-      - name: Verify source version and identity
+      - name: Verify Windows product contract
         shell: pwsh
         run: |
           $pkg = Get-Content package.json -Raw | ConvertFrom-Json
-          $tauri = Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json
+          $base = Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json
+          $win = Get-Content src-tauri/tauri.windows.conf.json -Raw | ConvertFrom-Json
           if ($pkg.version -ne '1.0.0-alpha.8.61') { throw "package version drift: $($pkg.version)" }
-          if ($tauri.version -ne '1.0.0-alpha.8.61') { throw "tauri version drift: $($tauri.version)" }
-          if ($tauri.identifier -ne 'studio.endlume.desktop') { throw "identifier drift: $($tauri.identifier)" }
+          if ($base.version -ne '1.0.0-alpha.8.61') { throw "tauri version drift: $($base.version)" }
+          if ($base.identifier -ne 'studio.endlume.desktop') { throw "base identifier drift: $($base.identifier)" }
+          if ($win.identifier -ne 'studio.endlume.desktop') { throw "Windows identifier drift: $($win.identifier)" }
+          if ($win.productName -ne 'ENDLUME YT Studio PEISOV') { throw "Windows productName drift: $($win.productName)" }
+          if ($win.mainBinaryName -ne 'ENDLUME YT Studio PEISOV') { throw "Windows binary name drift: $($win.mainBinaryName)" }
 
-      - name: Install frontend dependencies
-        run: npm ci
+      - name: Build, test and package Windows x64
+        shell: pwsh
+        run: ./scripts/build-windows.ps1
 
-      - name: TypeScript check
-        run: npm run check
-
-      - name: Frontend production build
-        run: npm run build
-
-      - name: Rust check
-        run: cargo check --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-msvc
-
-      - name: Rust tests
-        run: cargo test --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-msvc
-
-      - name: Build NSIS installer
-        run: npm run tauri build -- --target x86_64-pc-windows-msvc --bundles nsis
-
-      - name: Verify Windows artifacts
+      - name: Verify exact production installer
         shell: pwsh
         run: |
           $target = 'x86_64-pc-windows-msvc'
+          $version = '1.0.0-alpha.8.61'
           foreach ($b in @('ffmpeg','ffprobe')) {
             $p = "src-tauri/binaries/$b-$target.exe"
             if (!(Test-Path $p)) { throw "Missing Tauri sidecar $p" }
           }
-          $installer = Get-ChildItem "src-tauri/target/$target/release/bundle/nsis" -Filter '*-setup.exe' -File
-          if (-not $installer) { throw 'NSIS installer missing' }
-          if ($installer.Count -ne 1) { throw "Expected one NSIS installer, found $($installer.Count)" }
-          Write-Host "Installer: $($installer[0].FullName)"
+          $expected = "src-tauri/target/$target/release/bundle/nsis/ENDLUME-YT-Studio-PEISOV-Setup-$version-x64.exe"
+          if (!(Test-Path $expected)) { throw "Exact production installer missing: $expected" }
+          $file = Get-Item $expected
+          if ($file.Length -le 0) { throw 'Production installer is empty' }
+          Write-Host "Installer: $($file.FullName)"
+          Write-Host "Installer bytes: $($file.Length)"
 
       - name: Upload Windows installer
         uses: actions/upload-artifact@v4
         with:
-          name: ENDLUME-Studio-1.0.0-alpha.8.61-Windows-x64
-          path: |
-            src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*-setup.exe
-            src-tauri/binaries/ffmpeg-x86_64-pc-windows-msvc.exe
-            src-tauri/binaries/ffprobe-x86_64-pc-windows-msvc.exe
+          name: ENDLUME-YT-Studio-PEISOV-Setup-1.0.0-alpha.8.61-x64
+          path: src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/ENDLUME-YT-Studio-PEISOV-Setup-1.0.0-alpha.8.61-x64.exe
           if-no-files-found: error
           retention-days: 14

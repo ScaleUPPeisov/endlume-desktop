@@ -49,6 +49,17 @@ jobs:
           git commit -m 'feat(windows): port strict 8.61 HEVC pipeline'
           git push origin HEAD:windows/endlume-861-managed-access
 
+      - name: Prepare macOS Tauri sidecars for regression
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          command -v ffmpeg >/dev/null
+          command -v ffprobe >/dev/null
+          mkdir -p src-tauri/binaries
+          cp "$(command -v ffmpeg)" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp "$(command -v ffprobe)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          chmod +x src-tauri/binaries/ffmpeg-aarch64-apple-darwin src-tauri/binaries/ffprobe-aarch64-apple-darwin
+
       - name: macOS regression guard
         shell: bash
         run: |
@@ -65,9 +76,16 @@ jobs:
           set -Eeuo pipefail
           rustup target add x86_64-pc-windows-msvc
 
+      - name: Prepare Windows sidecar names for cross-check only
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p src-tauri/binaries
+          : > src-tauri/binaries/ffmpeg-x86_64-pc-windows-msvc.exe
+          : > src-tauri/binaries/ffprobe-x86_64-pc-windows-msvc.exe
+
       - name: Cross-check Windows-only Rust paths
         shell: bash
-        continue-on-error: true
         run: |
           set -Eeuo pipefail
           cargo check --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-msvc --tests

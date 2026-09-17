@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: endlume-861-windows-cross-rc
@@ -18,6 +18,7 @@ env:
   WINDOWS_TARGET: x86_64-pc-windows-msvc
   ENDLUME_VERSION: 1.0.0-alpha.8.61
   FINAL_INSTALLER: ENDLUME-YT-Studio-PEISOV-Setup-1.0.0-alpha.8.61-x64.exe
+  RELEASE_TAG: endlume-v1.0.0-alpha.8.61-windows-rc
 
 jobs:
   windows-cross-rc:
@@ -56,7 +57,9 @@ jobs:
           assert win['mainBinaryName'] == expected_name, win['mainBinaryName']
           assert win['bundle']['targets'] == ['nsis'], win['bundle']['targets']
           assert win['bundle']['windows']['nsis']['installerIcon'] == 'icons/icon.ico'
+          assert base['bundle']['createUpdaterArtifacts'] is True
           print('WINDOWS_PRODUCT_CONTRACT_GREEN')
+          print('PRODUCTION_UPDATER_ARTIFACTS_REMAIN_ENABLED=true')
           PY
 
       - name: Install cross-build prerequisites
@@ -70,6 +73,7 @@ jobs:
 
           brew list nsis >/dev/null 2>&1 || brew install nsis
           brew list llvm >/dev/null 2>&1 || brew install llvm
+          command -v gh >/dev/null 2>&1 || brew install gh
 
           LLVM_BIN="$(brew --prefix llvm)/bin"
           echo "$LLVM_BIN" >> "$GITHUB_PATH"
@@ -82,6 +86,7 @@ jobs:
 
           makensis -VERSION
           cargo xwin --version
+          gh --version | head -1
 
       - name: Stage pinned Windows FFmpeg sidecars
         shell: bash
@@ -198,6 +203,22 @@ jobs:
           set -Eeuo pipefail
           LLVM_BIN="$(brew --prefix llvm)/bin"
           export PATH="$LLVM_BIN:$PATH"
+
+          # RC-only workspace override: the production config stays unchanged with
+          # createUpdaterArtifacts=true. Cross-built NSIS cannot legitimately sign
+          # updater artifacts without the production private key, so this RC lane
+          # builds only the installer and leaves updater signing to the native gate.
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p = Path('src-tauri/tauri.conf.json')
+          cfg = json.loads(p.read_text())
+          assert cfg['bundle']['createUpdaterArtifacts'] is True
+          cfg['bundle']['createUpdaterArtifacts'] = False
+          p.write_text(json.dumps(cfg, ensure_ascii=False, indent=2) + '\n')
+          print('CROSS_RC_UPDATER_ARTIFACTS_DISABLED=true')
+          PY
+
           npm run tauri build -- \
             --runner cargo-xwin \
             --target "$WINDOWS_TARGET" \
@@ -243,3 +264,51 @@ jobs:
             src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/ENDLUME-YT-Studio-PEISOV-Setup-1.0.0-alpha.8.61-x64.exe.sha256
           if-no-files-found: error
           retention-days: 30
+
+      - name: Publish Windows Release Candidate
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          NSIS_DIR="src-tauri/target/$WINDOWS_TARGET/release/bundle/nsis"
+          FINAL="$NSIS_DIR/$FINAL_INSTALLER"
+          NOTES="$RUNNER_TEMP/endlume-windows-rc-notes.md"
+
+          cat > "$NOTES" <<EOF
+          # ENDLUME YT Studio PEISOV — Windows 8.61 Release Candidate
+
+          Source commit: $GITHUB_SHA
+
+          BUILD VERIFIED (cross-RC):
+          - Windows x64 MSVC application compiled with cargo-xwin;
+          - NSIS installer bundled;
+          - product name / identifier / PEISOV icon contract checked;
+          - Windows FFmpeg / ffprobe sidecars structurally verified as PE/MZ;
+          - TypeScript, frontend production build, queue regression, Windows production contract gates, Rust check and Rust tests passed;
+          - exact installer filename and SHA-256 generated.
+
+          HARDWARE E2E VERIFIED: false
+
+          The external self-hosted Windows hardware lane was unavailable at RC publication time. Native Windows install/uninstall smoke, console-flash proof, hardware encoder proof (NVENC/QSV/AMF), and real installed-app production render/license/updater E2E remain native acceptance gates before this RC can be promoted to the final production release.
+          EOF
+
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" "$FINAL" "$FINAL.sha256" --clobber --repo "$GITHUB_REPOSITORY"
+            gh release edit "$RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "ENDLUME YT Studio PEISOV 1.0.0-alpha.8.61 Windows RC" \
+              --notes-file "$NOTES" \
+              --prerelease
+          else
+            gh release create "$RELEASE_TAG" \
+              "$FINAL" "$FINAL.sha256" \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "ENDLUME YT Studio PEISOV 1.0.0-alpha.8.61 Windows RC" \
+              --notes-file "$NOTES" \
+              --prerelease
+          fi
+
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json url,tagName,isPrerelease
+          echo 'WINDOWS_RC_PUBLISHED_GREEN'

@@ -66,6 +66,19 @@ jobs:
           set -Eeuo pipefail
           python3 scripts/test-windows-861-release-surface.py
 
+      - name: Stage host sidecars for Rust validation
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          FFMPEG="$(command -v ffmpeg)"
+          FFPROBE="$(command -v ffprobe)"
+          test -x "$FFMPEG"
+          test -x "$FFPROBE"
+          mkdir -p src-tauri/binaries
+          cp "$FFMPEG" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp "$FFPROBE" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          chmod +x src-tauri/binaries/ffmpeg-aarch64-apple-darwin src-tauri/binaries/ffprobe-aarch64-apple-darwin
+
       - name: Rust check
         id: rust_check
         shell: bash

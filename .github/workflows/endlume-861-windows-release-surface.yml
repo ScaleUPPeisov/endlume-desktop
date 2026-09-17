@@ -28,23 +28,56 @@ jobs:
         with:
           ref: windows/endlume-861-managed-access
           fetch-depth: 0
+
       - name: Apply Windows release adapters
         shell: bash
         run: |
           set -Eeuo pipefail
           python3 scripts/apply-windows-861-final-branding.py
           python3 scripts/apply-windows-861-system-adapters.py
-      - name: Frontend and release surface regression
+
+      - name: Install frontend dependencies
         shell: bash
         run: |
           set -Eeuo pipefail
           npm ci
+
+      - name: TypeScript check
+        shell: bash
+        run: |
+          set -Eeuo pipefail
           npm run check
+
+      - name: Frontend production build
+        shell: bash
+        run: |
+          set -Eeuo pipefail
           npm run build
+
+      - name: Windows strict port contract
+        shell: bash
+        run: |
+          set -Eeuo pipefail
           python3 scripts/test-windows-861-strict-port.py
+
+      - name: Windows release surface contract
+        shell: bash
+        run: |
+          set -Eeuo pipefail
           python3 scripts/test-windows-861-release-surface.py
+
+      - name: Rust check
+        shell: bash
+        run: |
+          set -Eeuo pipefail
           cargo check --manifest-path src-tauri/Cargo.toml
+
+      - name: Rust tests
+        shell: bash
+        run: |
+          set -Eeuo pipefail
           cargo test --manifest-path src-tauri/Cargo.toml
+
       - name: Commit applied Windows adapters
         shell: bash
         run: |

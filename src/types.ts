@@ -120,7 +120,19 @@ export interface BenchmarkResult {
 export interface LicenseStatus {
   valid: boolean;
   type?: 'owner-lifetime'|'monthly'|'trial'|'development';
+  plan?: string|null;
+  licenseId?: string|null;
+  licenseStatus?: 'active'|'paused'|'revoked'|'expired'|string|null;
   expiresAt?: string | null;
   maskedKey?: string;
+  deviceId?: string|null;
+  deviceRecordId?: string|null;
+  deviceStatus?: 'active'|'blocked'|'detached'|string|null;
+  realtimeTopic?: string|null;
+  connection?: 'online'|'offline-grace'|'offline-blocked'|'blocked'|'not-activated'|string;
+  connectionError?: string|null;
+  reason?: string|null;
+  code?: string|null;
+  lastServerOkAt?: number|null;
   offlineUntil?: string | null;
 }

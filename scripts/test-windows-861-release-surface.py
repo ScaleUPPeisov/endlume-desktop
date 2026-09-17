@@ -17,6 +17,12 @@ assert 'windows_subsystem = "windows"' in main
 assert conf['productName']=='ENDLUME YT Studio PEISOV'
 assert conf.get('mainBinaryName')=='ENDLUME YT Studio PEISOV'
 assert conf['identifier']=='studio.endlume.desktop'
+assert conf['bundle']['publisher']=='PEISOV'
+assert conf['bundle']['shortDescription']=='ENDLUME YT Studio PEISOV'
+assert conf['bundle']['longDescription']=='ENDLUME YT Studio PEISOV'
+assert conf['bundle']['windows']['nsis']['startMenuFolder']=='ENDLUME YT Studio PEISOV'
+assert conf['bundle']['windows']['nsis']['installerIcon']=='icons/icon.ico'
+assert conf['bundle']['windows']['nsis']['uninstallerIcon']=='icons/icon.ico'
 assert 'ENDLUME YT Studio PEISOV' in brand
 assert 'PRODUCT_NAME' in ui and 'YT STUDIO PEISOV' in ui
 assert 'PRODUCT_NAME' in settings and 'PRODUCT_KICKER' in settings

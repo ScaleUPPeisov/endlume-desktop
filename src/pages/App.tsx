@@ -5,6 +5,7 @@ import { RecoveryModal } from '../components/recovery';
 import { VyronBatchBridge } from '../components/VyronBatchBridge';
 import { useApp } from '../store';
 import { api } from '../tauri';
+import { watchManagedLicenseRealtime } from '../license-realtime';
 import { installMotionRuntime } from '../motion';
 import { applyProjectPatch,applyQueueSnapshot } from '../queue-state';
 import type { LicenseStatus, RecoveryPayload } from '../types';
@@ -96,6 +97,7 @@ export function App(){
     };
     const off:Promise<()=>void>[]=[];
     off.push(listen<any>('queue-changed',e=>syncQueueSnapshot(e.payload)));
+    off.push(listen<LicenseStatus>('license-state-changed',e=>setLicense(e.payload)));
     off.push(listen<any>('render-progress',e=>{const p=e.payload;if(!p?.id)return;progressPending.set(p.id,p);if(progressRaf===undefined)progressRaf=requestAnimationFrame(flushRenderProgress)}));
     off.push(listen<any>('render-done',e=>{const p=e.payload;if(!p?.id)return;progressPending.delete(p.id);patchProject(p.id,{...compactPayload(p),status:'done',progress:100,stage:'Готово',etaSec:0})}));
     off.push(listen<any>('render-error',e=>{const p=e.payload;if(!p?.id)return;progressPending.delete(p.id);patchProject(p.id,{...compactPayload(p),status:'error',progress:100,etaSec:0})}));
@@ -109,7 +111,12 @@ export function App(){
     }
   },[]);
 
-  if(!license)return <div className="bootScreen"><div className="bootPulse"/>ENDLUME</div>;
+  useEffect(()=>{
+    if(!license)return;
+    return watchManagedLicenseRealtime(license,()=>{api.license().then(setLicense).catch(()=>{});});
+  },[license?.valid,license?.realtimeTopic]);
+
+  if(!license)return <div className="bootScreen"><div className="bootPulse"/>{api.isWindows()?'ENDLUME YT Studio PEISOV':'ENDLUME'}</div>;
   if(!license.valid)return <ActivationScreen onActivated={setLicense}/>;
 
   const pageView=page==='project'?<ProjectPage/>:page==='render'?<RenderPage/>:page==='library'?<LibraryPage/>:<SettingsPage/>;
@@ -118,17 +125,20 @@ export function App(){
 
 function ActivationScreen({onActivated}:{onActivated:(v:LicenseStatus)=>void}){
   const [key,setKey]=useState(''),[busy,setBusy]=useState(false),[error,setError]=useState('');
-  return <div className="activationScreen"><div className="activationCard"><div className="activationBrand"><span className="activationInfinity">∞</span><div><b>ENDLUME</b><small>STUDIO</small></div></div><h1>Активация ENDLUME</h1><p>Для запуска введите ключ лицензии. После активации рендер работает локально и не требует постоянного интернета.</p><input autoFocus placeholder="ENDLUME-XXXX-XXXX-XXXX" value={key} onChange={e=>setKey(e.target.value)} onKeyDown={e=>e.key==='Enter'&&document.getElementById('activate')?.click()}/>{error&&<div className="activationError">{error}</div>}<button id="activate" disabled={busy||!key.trim()} onClick={async()=>{setBusy(true);setError('');try{onActivated(await api.activate(key))}catch(e){setError(String(e))}finally{setBusy(false)}}}>{busy?'ПРОВЕРЯЮ КЛЮЧ…':'АКТИВИРОВАТЬ →'}</button><small className="activationFoot">ENDLUME Studio 1.0 • Windows / macOS Apple Silicon</small></div></div>
+  const windows=api.isWindows();
+  const product=windows?'ENDLUME YT Studio PEISOV':'ENDLUME';
+  return <div className="activationScreen"><div className="activationCard"><div className="activationBrand"><span className="activationInfinity">∞</span><div><b>ENDLUME</b><small>{windows?'YT STUDIO PEISOV':'STUDIO'}</small></div></div><h1>Активация {product}</h1><p>Для запуска введите ключ лицензии. После активации рендер работает локально; при временном отсутствии сети действует ограниченный offline grace.</p><input autoFocus placeholder="ENDLUME-XXXX-XXXX-XXXX-XXXX" value={key} onChange={e=>setKey(e.target.value)} onKeyDown={e=>e.key==='Enter'&&document.getElementById('activate')?.click()}/>{error&&<div className="activationError">{error}</div>}<button id="activate" disabled={busy||!key.trim()} onClick={async()=>{setBusy(true);setError('');try{onActivated(await api.activate(key))}catch(e){setError(String(e))}finally{setBusy(false)}}}>{busy?'ПРОВЕРЯЮ КЛЮЧ…':'АКТИВИРОВАТЬ →'}</button><small className="activationFoot">{windows?'ENDLUME YT Studio PEISOV • Windows x64':'ENDLUME Studio • macOS Apple Silicon'}</small></div></div>
 }
 
 function UpdateNotice({update,onLater}:{update:any;onLater:()=>void}){
   const [progress,setProgress]=useState<number|null>(null),[stage,setStage]=useState(''),[error,setError]=useState('');
   const installing=progress!==null;
+  const product=api.isWindows()?'ENDLUME YT Studio PEISOV':'ENDLUME';
   return <aside className="updateNotice" role="status" aria-live="polite">
     <div className="updateNoticeGlow"/>
-    <div className="updateNoticeHead"><span className="updateNoticeDot"/><div><b>Вышло новое обновление</b><small>ENDLUME {update.version}{update.date?` • ${formatUpdateDate(update.date)}`:''}</small></div></div>
+    <div className="updateNoticeHead"><span className="updateNoticeDot"/><div><b>Вышло новое обновление</b><small>{product} {update.version}{update.date?` • ${formatUpdateDate(update.date)}`:''}</small></div></div>
     <p>{shortUpdateText(update.body)}</p>
-    {progress!==null&&<div className="updateNoticeProgress"><i style={{width:`${progress}%`}}/><span>{progress<100?`Обновляю ${progress.toFixed(0)}%`:'Перезапускаю…'}</span></div>}
+    {progress!==null&&<div className="updateNoticeProgress"><i style={{width:`${progress}%`}}/><span>{stage|| (progress<100?`Обновляю ${progress.toFixed(0)}%`:'Перезапускаю…')}</span></div>}
     {error&&<div className="updateNoticeError">{error}</div>}
     <div className="updateNoticeActions">
       <button className="later" disabled={installing} onClick={onLater}>НАПОМНИТЬ ЧЕРЕЗ ЧАС</button>
@@ -137,7 +147,7 @@ function UpdateNotice({update,onLater}:{update:any;onLater:()=>void}){
   </aside>
 }
 function shortUpdateText(body?:string){
-  const t=String(body||'Доступна новая версия ENDLUME Studio. Рекомендуется обновить приложение.').trim();
+  const t=String(body||'Доступна новая версия ENDLUME. Рекомендуется обновить приложение.').trim();
   const first=t.split(/\n+/).filter(Boolean).slice(0,2).join(' • ');
   return first.length>210?first.slice(0,207)+'…':first;
 }

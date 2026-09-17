@@ -35,6 +35,14 @@ async fn choose_fidelity_encoder(app:&AppHandle,attempt:u32)->String{
   {
     if attempt==1&&encoder_works(app,"hevc_videotoolbox").await{return "hevc_videotoolbox".into()}
   }
+  #[cfg(target_os="windows")]
+  {
+    if attempt==1{
+      for encoder in ["hevc_nvenc","hevc_qsv","hevc_amf"]{
+        if encoder_works(app,encoder).await{return encoder.into()}
+      }
+    }
+  }
   "libx265".into()
 }
 
@@ -43,6 +51,9 @@ fn fidelity_video_args(encoder:&str,s:&RenderSettings)->Vec<String>{
   let raw:Vec<&str>=match encoder{
     "hevc_videotoolbox"=>vec!["-c:v","hevc_videotoolbox","-realtime","1","-prio_speed","1","-power_efficient","0","-q:v","95","-g",&g,"-tag:v","hvc1","-pix_fmt","yuv420p"],
     "h264_videotoolbox"=>vec!["-c:v","h264_videotoolbox","-realtime","1","-prio_speed","1","-power_efficient","0","-q:v","95","-g",&g,"-pix_fmt","yuv420p"],
+    "hevc_nvenc"=>vec!["-c:v","hevc_nvenc","-preset","p4","-rc","vbr","-cq","18","-b:v","0","-maxrate","12M","-bufsize","64M","-g",&g,"-tag:v","hvc1","-pix_fmt","yuv420p"],
+    "hevc_qsv"=>vec!["-c:v","hevc_qsv","-global_quality","18","-maxrate","12M","-bufsize","64M","-g",&g,"-tag:v","hvc1","-pix_fmt","nv12"],
+    "hevc_amf"=>vec!["-c:v","hevc_amf","-quality","balanced","-rc","vbr_peak","-qp_i","18","-maxrate","12M","-g",&g,"-tag:v","hvc1","-pix_fmt","yuv420p"],
     "libx265"=>vec!["-c:v","libx265","-preset","ultrafast","-crf","14","-tune","ssim","-g",&g,"-pix_fmt","yuv420p"],
     _=>vec!["-c:v","libx264","-preset","ultrafast","-crf","12","-tune","stillimage","-g",&g,"-keyint_min",&g,"-sc_threshold","0","-pix_fmt","yuv420p"],
   };
@@ -65,22 +76,47 @@ const STRICT_857_MAX_GOP_FRAMES:u32=1800;
 
 fn hybrid_fidelity_args(s:&RenderSettings,encoder:&str,duration:f64)->Vec<String>{
   let frames=(s.fps.max(1) as f64*duration.max(2.0)).round().max(1.0) as u32;
-  let g=if encoder=="hevc_videotoolbox"{frames.min(STRICT_857_MAX_GOP_FRAMES)}else{frames}.to_string();
-  if encoder=="libx265"{
-    let x265=format!("keyint={}:min-keyint={}:scenecut=0:open-gop=0:aq-mode=3:aq-strength=1.0:vbv-init=1.0",g,g);
-    vec!["-c:v","libx265","-preset","ultrafast","-crf","18","-maxrate","500k","-bufsize","4M","-x265-params",&x265,"-tag:v","hvc1","-pix_fmt","yuv420p"].into_iter().map(String::from).collect()
-  }else{
-    vec!["-c:v","hevc_videotoolbox","-realtime","1","-prio_speed","0","-power_efficient","0","-q:v","100","-b:v","500k","-maxrate","12M","-bufsize","64M","-g",&g,"-tag:v","hvc1","-pix_fmt","yuv420p"].into_iter().map(String::from).collect()
+  let hw_g=frames.min(STRICT_857_MAX_GOP_FRAMES).to_string();
+  let sw_g=frames.to_string();
+  match encoder{
+    "libx265"=>{
+      let x265=format!("keyint={}:min-keyint={}:scenecut=0:open-gop=0:aq-mode=3:aq-strength=1.0:vbv-init=1.0",sw_g,sw_g);
+      vec!["-c:v","libx265","-preset","ultrafast","-crf","18","-maxrate","500k","-bufsize","4M","-x265-params",&x265,"-tag:v","hvc1","-pix_fmt","yuv420p"].into_iter().map(String::from).collect()
+    },
+    "hevc_nvenc"=>vec!["-c:v","hevc_nvenc","-preset","p4","-rc","vbr","-cq","18","-b:v","500k","-maxrate","12M","-bufsize","64M","-g",&hw_g,"-tag:v","hvc1","-pix_fmt","yuv420p"].into_iter().map(String::from).collect(),
+    "hevc_qsv"=>vec!["-c:v","hevc_qsv","-global_quality","18","-maxrate","12M","-bufsize","64M","-g",&hw_g,"-tag:v","hvc1","-pix_fmt","nv12"].into_iter().map(String::from).collect(),
+    "hevc_amf"=>vec!["-c:v","hevc_amf","-quality","balanced","-rc","vbr_peak","-b:v","500k","-maxrate","12M","-g",&hw_g,"-tag:v","hvc1","-pix_fmt","yuv420p"].into_iter().map(String::from).collect(),
+    "hevc_videotoolbox"=>vec!["-c:v","hevc_videotoolbox","-realtime","1","-prio_speed","0","-power_efficient","0","-q:v","100","-b:v","500k","-maxrate","12M","-bufsize","64M","-g",&hw_g,"-tag:v","hvc1","-pix_fmt","yuv420p"].into_iter().map(String::from).collect(),
+    _=>hybrid_fidelity_args(s,"libx265",duration),
   }
 }
 
 async fn choose_hybrid_encoder(app:&AppHandle,attempt:u32)->String{
   #[cfg(target_os="macos")]
   {if attempt==1&&encoder_works(app,"hevc_videotoolbox").await{return "hevc_videotoolbox".into()}}
+  #[cfg(target_os="windows")]
+  {
+    if attempt==1{
+      for encoder in ["hevc_nvenc","hevc_qsv","hevc_amf"]{
+        if encoder_works(app,encoder).await{return encoder.into()}
+      }
+    }
+  }
   if encoder_works(app,"libx265").await{return "libx265".into()}
   #[cfg(target_os="macos")]
   {if encoder_works(app,"hevc_videotoolbox").await{return "hevc_videotoolbox".into()}}
   "libx265".into()
+}
+
+// ENDLUME_WINDOWS_861_STRICT_ENCODERS: keep macOS strict semantics intact while
+// allowing the exact 8.61 strict pipeline to use Windows HEVC hardware and x265 fallback.
+fn strict_856_encoder_allowed(encoder:&str)->bool{
+  #[cfg(target_os="macos")]
+  {return encoder=="hevc_videotoolbox"}
+  #[cfg(target_os="windows")]
+  {return matches!(encoder,"hevc_nvenc"|"hevc_qsv"|"hevc_amf"|"libx265")}
+  #[cfg(not(any(target_os="macos",target_os="windows")))]
+  {encoder=="libx265"}
 }
 
 async fn probe_audio_decodes(app:&AppHandle,path:&Path)->bool{
@@ -761,7 +797,7 @@ fn strict_856_pad_size(path:&Path)->Result<(),String>{
 }
 
 async fn render_zero_sub_zero_copy_856(app:&AppHandle,job:&QueueJob,effects:&[EffectPreset],subs:&[SubscribePreset],audio:&AudioSource,master_duration:f64,final_duration:f64,work:&Path,out:&Path,encoder:&str,attempt:u32,cancel:&AtomicBool,started:i64,timer:&Instant)->Result<bool,String>{
-  if !smart_repeat_project(job)||timed_effects(effects,final_duration){return Ok(false)}if subs.iter().any(|x|x.effect.enabled&&!x.effect.source.trim().is_empty()){return Ok(false)}if encoder!="hevc_videotoolbox"{return Err("Strict 8.56: аппаратный HEVC VideoToolbox недоступен; медленный software fallback запрещён".into())}
+  if !smart_repeat_project(job)||timed_effects(effects,final_duration){return Ok(false)}if subs.iter().any(|x|x.effect.enabled&&!x.effect.source.trim().is_empty()){return Ok(false)}if !strict_856_encoder_allowed(encoder){return Err(format!("Strict 8.61: HEVC encoder {encoder} не разрешён strict pipeline"))}
   let fps=60u32;let work_fps=30u32;let duration=master_duration.clamp(12.0,60.0);let master_frames=(duration*fps as f64).round() as usize;let mut ws=job.settings.clone();ws.fps=work_fps;
   let base_still=work.join("strict-860-base.png");
   if !base_still.is_file(){
@@ -815,10 +851,10 @@ pub async fn render_job(app:&AppHandle,job:&QueueJob,cancel:Arc<AtomicBool>)->Re
   let started=chrono::Utc::now().timestamp_millis();let timer=Instant::now();let mut last_error=String::new();
   let requested_out_dir=PathBuf::from(&job.settings.output_dir);let out_dir=resolve_output_dir(app,&requested_out_dir)?;if out_dir!=requested_out_dir{emit_warning(app,&job.project.id,&format!("Выбранная папка недоступна. Результат будет сохранён в {}",out_dir.display()));}
   let out=if smart_repeat_project(job){unique_output_ext(&out_dir,&job.project.name,"mov")}else{unique_output(&out_dir,&job.project.name)};
-  let max_attempts=if smart_repeat_project(job){1}else{2};
+  let max_attempts=if smart_repeat_project(job){if cfg!(target_os="windows"){2}else{1}}else{2};
   for attempt in 1..=max_attempts{
     if cancel.load(Ordering::SeqCst){return Err(CANCELLED.into())}
-    let smart_repeat=smart_repeat_project(job);let _=std::fs::remove_file(&out);let encoder=if smart_repeat{let e=choose_hybrid_encoder(app,1).await;if e!="hevc_videotoolbox"{return Err("Strict 8.56: HEVC VideoToolbox недоступен; software fallback отключён".into())}e}else if attempt==1{choose_encoder(app,&job.settings).await}else{software_encoder(&job.settings)};
+    let smart_repeat=smart_repeat_project(job);let _=std::fs::remove_file(&out);let encoder=if smart_repeat{let e=choose_hybrid_encoder(app,attempt).await;if !strict_856_encoder_allowed(&e){return Err(format!("Strict 8.61: HEVC encoder {e} недоступен для strict pipeline"))}e}else if attempt==1{choose_encoder(app,&job.settings).await}else{software_encoder(&job.settings)};
     let _=app.emit("engine-profile",json!({"id":job.project.id,"smartSize":smart_repeat,"smartRepeat":smart_repeat,"originalFidelity":smart_repeat,"targetVideoKbps":None::<u64>}));
     emit_progress(app,job,started,&timer,1.0,"Анализ файлов",&encoder,attempt,None);let work=render_work_dir(app,&job.project.id,attempt)?;
     let result:Result<(Vec<f64>,f64),String>=async{

@@ -6,6 +6,8 @@ on:
     paths:
       - 'scripts/apply-windows-861-strict-port.py'
       - 'scripts/test-windows-861-strict-port.py'
+      - 'src-tauri/src/updater_windows.rs'
+      - 'src-tauri/src/lib.rs'
       - '.github/workflows/endlume-861-windows-apply-source.yml'
   workflow_dispatch:
 
@@ -19,7 +21,7 @@ concurrency:
 jobs:
   apply-source:
     runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
@@ -37,6 +39,13 @@ jobs:
           npm run build
           cargo check --manifest-path src-tauri/Cargo.toml
           cargo test --manifest-path src-tauri/Cargo.toml
+
+      - name: Cross-check Windows-only Rust paths
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          rustup target add x86_64-pc-windows-msvc
+          cargo check --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-msvc --tests
 
       - name: Commit patched effective source
         shell: bash

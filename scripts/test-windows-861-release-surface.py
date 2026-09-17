@@ -6,10 +6,13 @@ main=(root/'src-tauri/src/main.rs').read_text(encoding='utf-8')
 render=(root/'src-tauri/src/render.rs').read_text(encoding='utf-8')
 updater=(root/'src-tauri/src/updater_windows.rs').read_text(encoding='utf-8')
 system=(root/'src-tauri/src/system.rs').read_text(encoding='utf-8')
+builder=(root/'scripts/build-windows.ps1').read_text(encoding='utf-8')
 conf=json.loads((root/'src-tauri/tauri.windows.conf.json').read_text(encoding='utf-8'))
+package=json.loads((root/'package.json').read_text(encoding='utf-8'))
 ui=(root/'src/components/ui.tsx').read_text(encoding='utf-8')
 settings=(root/'src/pages/SettingsPage.tsx').read_text(encoding='utf-8')
 brand=(root/'src/platform-brand.ts').read_text(encoding='utf-8')
+assert package['version']=='1.0.0-alpha.8.61'
 assert 'windows_subsystem = "windows"' in main
 assert conf['productName']=='ENDLUME YT Studio PEISOV'
 assert conf.get('mainBinaryName')=='ENDLUME YT Studio PEISOV'
@@ -17,6 +20,7 @@ assert conf['identifier']=='studio.endlume.desktop'
 assert 'ENDLUME YT Studio PEISOV' in brand
 assert 'PRODUCT_NAME' in ui and 'YT STUDIO PEISOV' in ui
 assert 'PRODUCT_NAME' in settings and 'PRODUCT_KICKER' in settings
+assert 'ENDLUME-YT-Studio-PEISOV-Setup-$Version-x64.exe' in builder
 # FFmpeg/ffprobe stay Tauri sidecars; tauri-plugin-shell v2 uses CREATE_NO_WINDOW on Windows.
 assert 'app.shell().sidecar(name)' in render
 assert 'app.shell().sidecar("ffmpeg")' in render

@@ -27,6 +27,19 @@ function Invoke-PythonGate {
 
 npm ci
 npm run check
+
+Write-Host 'Running ENDLUME 8.61 queue finalization regression...'
+$QueueTestDir = Join-Path $env:TEMP ("endlume-queue-test-{0}" -f [Guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Force -Path $QueueTestDir | Out-Null
+try {
+    & .\node_modules\.bin\tsc.cmd src\queue-state.ts --target ES2022 --module ES2022 --moduleResolution Bundler --skipLibCheck --outDir $QueueTestDir --noEmit false
+    if ($LASTEXITCODE -ne 0) { throw 'queue-state TypeScript compilation failed' }
+    node scripts\test-queue-finalization-8-58.mjs (Join-Path $QueueTestDir 'queue-state.js')
+    if ($LASTEXITCODE -ne 0) { throw 'queue finalization regression failed' }
+} finally {
+    Remove-Item $QueueTestDir -Recurse -Force -ErrorAction SilentlyContinue
+}
+
 npm run build
 
 Write-Host 'Running ENDLUME 8.61 Windows production contract gates...'

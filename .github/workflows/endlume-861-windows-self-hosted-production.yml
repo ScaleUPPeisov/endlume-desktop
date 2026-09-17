@@ -39,6 +39,11 @@ jobs:
           node-version: '22'
           cache: npm
 
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
       - name: Setup Rust MSVC target
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -50,6 +55,7 @@ jobs:
           if ($env:RUNNER_OS -ne 'Windows') { throw "Expected Windows runner, got $env:RUNNER_OS" }
           node --version
           npm --version
+          python --version
           cargo --version
           rustc --version
           Write-Host "Runner: $env:RUNNER_NAME"

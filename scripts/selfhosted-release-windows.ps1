@@ -34,6 +34,8 @@ $AssetPath = $Sig.FullName.Substring(0, $Sig.FullName.Length - 4)
 if (-not (Test-Path $AssetPath)) { throw "Updater asset missing for $($Sig.FullName)" }
 $Asset = Get-Item $AssetPath
 $Signature = (Get-Content $Sig.FullName -Raw).Trim()
+$Sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $Asset.FullName).Hash.ToLowerInvariant()
+if ($Sha256.Length -ne 64 -or $Sha256 -notmatch '^[0-9a-f]{64}$') { throw 'Invalid SHA-256 generated for Windows updater asset' }
 $ObjectKey = "releases/endlume/stable/windows-x86_64/$Version/$($Asset.Name)"
 
 npx --yes wrangler@4 r2 object put "$Bucket/$ObjectKey" --file "$($Asset.FullName)" --remote
@@ -46,7 +48,9 @@ $Manifest = Join-Path $Art 'windows-x86_64.json'
   pub_date = [DateTime]::UtcNow.ToString('o')
   object_key = $ObjectKey
   signature = $Signature
+  sha256 = $Sha256
 } | ConvertTo-Json -Depth 4 | Set-Content $Manifest -Encoding UTF8
 npx --yes wrangler@4 r2 object put "$Bucket/manifests/endlume/stable/windows-x86_64.json" --file "$Manifest" --remote
 if ($LASTEXITCODE -ne 0) { throw 'R2 manifest upload failed' }
 Write-Host "ENDLUME $Version Windows signed updater published to private R2"
+Write-Host "ENDLUME_WINDOWS_UPDATER_SHA256=$Sha256"

@@ -6,6 +6,11 @@ on:
     paths:
       - 'src/**'
       - 'src-tauri/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'scripts/build-windows.ps1'
+      - 'scripts/selfhosted-release-windows.ps1'
+      - 'infra/cloudflare-update/src/index.js'
       - 'scripts/apply-windows-861-final-branding.py'
       - 'scripts/apply-windows-861-system-adapters.py'
       - 'scripts/test-windows-861-release-surface.py'

@@ -21,8 +21,8 @@ env:
 
 jobs:
   publish-cross-rc:
-    name: Windows x64 • Rebuild NSIS • Publish RC
-    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    name: Windows x64 • Hosted Linux Cross NSIS • Publish RC
+    runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
       - name: Checkout current branch HEAD
@@ -30,6 +30,17 @@ jobs:
         with:
           ref: ${{ github.ref_name }}
           fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
 
       - name: Verify RC source contract
         shell: bash
@@ -53,20 +64,12 @@ jobs:
           print('WINDOWS_RC_SOURCE_CONTRACT_GREEN')
           PY
 
-      - name: Prepare cross-build toolchain and Windows sidecars
+      - name: Prepare Linux cross-build toolchain and Windows sidecars
         shell: bash
         run: |
           set -Eeuo pipefail
-          command -v brew >/dev/null
-          command -v rustup >/dev/null
-          command -v cargo >/dev/null
-          command -v npm >/dev/null
-          command -v gh >/dev/null 2>&1 || brew install gh
-          brew list nsis >/dev/null 2>&1 || brew install nsis
-          brew list llvm >/dev/null 2>&1 || brew install llvm
-          LLVM_BIN="$(brew --prefix llvm)/bin"
-          echo "$LLVM_BIN" >> "$GITHUB_PATH"
-          export PATH="$LLVM_BIN:$PATH"
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang lld llvm nsis unzip curl ca-certificates
           rustup target add "$WINDOWS_TARGET"
           command -v cargo-xwin >/dev/null 2>&1 || cargo install --locked cargo-xwin
 
@@ -79,8 +82,8 @@ jobs:
           DEST='src-tauri/binaries'
           rm -rf "$EXTRACT"
           mkdir -p "$CACHE" "$EXTRACT" "$DEST"
-          if [ ! -s "$ZIP" ]; then curl --fail --location --retry 3 --output "$ZIP" "$URL"; fi
-          ditto -x -k "$ZIP" "$EXTRACT"
+          curl --fail --location --retry 3 --output "$ZIP" "$URL"
+          unzip -q "$ZIP" -d "$EXTRACT"
           FFMPEG="$(find "$EXTRACT" -type f -name ffmpeg.exe -print -quit)"
           FFPROBE="$(find "$EXTRACT" -type f -name ffprobe.exe -print -quit)"
           test -n "$FFMPEG" && test -n "$FFPROBE"
@@ -110,10 +113,11 @@ jobs:
 
       - name: Build exact Windows x64 NSIS RC
         shell: bash
+        env:
+          CC_x86_64_pc_windows_msvc: clang-cl
+          CXX_x86_64_pc_windows_msvc: clang-cl
         run: |
           set -Eeuo pipefail
-          LLVM_BIN="$(brew --prefix llvm)/bin"
-          export PATH="$LLVM_BIN:$PATH"
           python3 - <<'PY'
           import json
           from pathlib import Path
@@ -148,7 +152,7 @@ jobs:
           with p.open('rb') as f: assert f.read(2) == b'MZ'
           print(f'RC_INSTALLER_BYTES={p.stat().st_size}')
           PY
-          shasum -a 256 "$FINAL" | tee "$FINAL.sha256"
+          sha256sum "$FINAL" | tee "$FINAL.sha256"
 
           NOTES="$RUNNER_TEMP/endlume-windows-rc-notes.md"
           cat > "$NOTES" <<EOF
@@ -160,12 +164,12 @@ jobs:
 
           HARDWARE E2E VERIFIED: false
 
-          The external self-hosted Windows hardware lane is still unavailable. Native Windows install/uninstall smoke, zero-console proof, hardware encoder proof (NVENC/QSV/AMF), and real installed-app production render/license/updater E2E remain required before promotion to final production release.
+          Native Windows install/uninstall smoke, zero-console proof, hardware encoder proof (NVENC/QSV/AMF), and real installed-app production render/license/updater E2E remain required before promotion to final production release.
           EOF
 
           if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$RELEASE_TAG" "$FINAL" "$FINAL.sha256" --clobber --repo "$GITHUB_REPOSITORY"
-            gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "ENDLUME YT Studio PEISOV 1.0.0-alpha.8.61 Windows RC" --notes-file "$NOTES" --prerelease
+            gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --title "ENDLUME YT Studio PEISOV 1.0.0-alpha.8.61 Windows RC" --notes-file "$NOTES" --prerelease
           else
             gh release create "$RELEASE_TAG" "$FINAL" "$FINAL.sha256" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "ENDLUME YT Studio PEISOV 1.0.0-alpha.8.61 Windows RC" --notes-file "$NOTES" --prerelease
           fi

@@ -7,6 +7,8 @@ render=(root/'src-tauri/src/render.rs').read_text(encoding='utf-8')
 updater=(root/'src-tauri/src/updater_windows.rs').read_text(encoding='utf-8')
 system=(root/'src-tauri/src/system.rs').read_text(encoding='utf-8')
 builder=(root/'scripts/build-windows.ps1').read_text(encoding='utf-8')
+publisher=(root/'scripts/selfhosted-release-windows.ps1').read_text(encoding='utf-8')
+worker=(root/'infra/cloudflare-update/src/index.js').read_text(encoding='utf-8')
 conf=json.loads((root/'src-tauri/tauri.windows.conf.json').read_text(encoding='utf-8'))
 package=json.loads((root/'package.json').read_text(encoding='utf-8'))
 ui=(root/'src/components/ui.tsx').read_text(encoding='utf-8')
@@ -36,6 +38,11 @@ assert 'creation_flags(0x0800_0000)' in system
 assert 'GetSystemPowerStatus' in system and 'windows_power_status()' in system
 for forbidden in ('Command::new("cmd.exe")','Command::new("powershell")','Command::new("powershell.exe")','Command::new("pwsh")','Command::new("Windows Terminal")'):
     assert forbidden not in render+updater+system, f'visible-console runtime command: {forbidden}'
-assert 'update.install(bytes)' in updater
-assert 'SHA-256' in updater
+# Windows updater is fail-closed end-to-end: signed package + publisher SHA-256 + API passthrough + client verification.
+assert 'update.download(' in updater and 'update.install(bytes)' in updater
+assert 'expected_sha256' in updater and 'sha256_hex(&bytes)' in updater and 'actual!=expected' in updater
+assert 'Get-FileHash -Algorithm SHA256' in publisher
+assert 'sha256 = $Sha256' in publisher
+assert "platform.startsWith('windows-')&&!validSha256(manifest.sha256)" in worker
+assert 'response.sha256=manifest.sha256.trim().toLowerCase()' in worker
 print('ENDLUME_WINDOWS_861_RELEASE_SURFACE_GREEN')

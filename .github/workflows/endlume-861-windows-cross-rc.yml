@@ -5,6 +5,11 @@ on:
     branches: [windows/endlume-861-managed-access]
     paths:
       - '.github/workflows/endlume-861-windows-cross-rc.yml'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'src/**'
+      - 'src-tauri/**'
+      - 'scripts/**'
   workflow_dispatch:
 
 permissions:

@@ -25,7 +25,7 @@ concurrency:
 jobs:
   apply-source:
     runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
-    timeout-minutes: 45
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
         with:
@@ -76,11 +76,14 @@ jobs:
           cargo check --manifest-path src-tauri/Cargo.toml
           cargo test --manifest-path src-tauri/Cargo.toml
 
-      - name: Install Windows Rust target
+      - name: Install Windows Rust target and xwin SDK bridge
         shell: bash
         run: |
           set -Eeuo pipefail
           rustup target add x86_64-pc-windows-msvc
+          if ! cargo xwin --version >/dev/null 2>&1; then
+            cargo install cargo-xwin --locked
+          fi
 
       - name: Prepare Windows sidecar names for cross-check only
         shell: bash
@@ -90,8 +93,8 @@ jobs:
           : > src-tauri/binaries/ffmpeg-x86_64-pc-windows-msvc.exe
           : > src-tauri/binaries/ffprobe-x86_64-pc-windows-msvc.exe
 
-      - name: Cross-check Windows-only Rust paths
+      - name: Cross-check Windows-only Rust paths with Windows SDK
         shell: bash
         run: |
           set -Eeuo pipefail
-          cargo check --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-msvc --tests
+          cargo xwin check --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-msvc --tests

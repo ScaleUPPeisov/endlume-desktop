@@ -7,6 +7,8 @@ on:
       - '.github/workflows/endlume-861-windows-self-hosted-production.yml'
       - 'scripts/build-windows.ps1'
       - 'scripts/prepare-windows-sidecars.ps1'
+      - 'scripts/selfhosted-release-windows.ps1'
+      - 'infra/cloudflare-update/src/index.js'
       - 'scripts/test-windows-861-strict-port.py'
       - 'scripts/test-windows-861-release-surface.py'
       - 'scripts/test-local-scratch-stability-8-61.py'

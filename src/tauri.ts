@@ -26,6 +26,11 @@ export type SingleAppStatus={
 export type LivePreviewAssetPaths={basePath:string;baseKind:'image'|'video';overlayPath:string};
 export type VyronBatchRequest={batchId:string;manifestPath:string;requestedAt?:string|null;handoffId?:string|null;selectedProjectIds?:string[];sourceManifestPath?:string|null;schemaVersion?:number|null};
 export type VyronBatchInfo={batchId:string;channelId:string;channelName:string;projectCount:number;tracksAssigned:number;rootPath:string;outputDir:string;statusPath:string;manifestPath:string;projectPaths:string[]};
+type WindowsUpdateInfo={supported:boolean;available:boolean;current:string;version?:string|null;notes?:string|null;date?:string|null;reason?:string|null};
+type WindowsUpdateStatus={state:string;stage?:string|null;progress:number;message?:string|null;logPath?:string|null};
+
+const isWindowsRuntime=()=>/Windows/i.test(navigator.userAgent);
+const productTitle=()=>isWindowsRuntime()?'ENDLUME YT Studio PEISOV':'ENDLUME Studio';
 
 async function withTimeout<T>(promise:Promise<T>,ms:number,label:string):Promise<T>{
   let timer:number|undefined;
@@ -37,7 +42,32 @@ async function importManagedAsset(source:string,kind:'effects'|'subscribe'|'ambi
   return invoke<string>('import_library_asset',{source,kind});
 }
 
+async function windowsUpdateInstall(onProgress?:(percent:number,stage?:string)=>void){
+  onProgress?.(1,'Подготавливаю подписанное обновление');
+  let stopped=false;
+  const poll=async()=>{
+    while(!stopped){
+      try{
+        const s=await invoke<WindowsUpdateStatus>('local_update_status');
+        onProgress?.(Math.max(0,Math.min(100,Number(s.progress)||0)),s.stage||undefined);
+        if(s.state==='failed')throw new Error(s.message||'Windows update failed');
+        if(s.state==='success')return;
+      }catch(e){if(String(e).includes('Windows update failed'))throw e;}
+      await new Promise(r=>window.setTimeout(r,250));
+    }
+  };
+  const install=invoke<WindowsUpdateStatus>('local_update_start');
+  const poller=poll();
+  try{
+    const done=await install;
+    onProgress?.(Math.max(0,Math.min(100,Number(done.progress)||100)),done.stage||'Обновление установлено');
+    stopped=true;
+    await poller.catch(()=>{});
+  }finally{stopped=true;}
+}
+
 export const api = {
+  isWindows:isWindowsRuntime,
   chooseRoots: async()=>{
     const result=await open({directory:true,multiple:true,title:'Выберите папку или несколько папок с проектами'});
     if(!result)return [] as string[];
@@ -84,10 +114,23 @@ export const api = {
   consumeVyronBatch:()=>invoke<VyronBatchRequest|null>('consume_vyron_batch_request'),
   loadVyronBatch:(manifestPath:string,selectedProjectIds:string[]=[])=>invoke<VyronBatchInfo>('load_vyron_batch_manifest',{manifestPath,selectedProjectIds}),
   reportVyronRender:(manifestPath:string,projectPath:string,renderStatus:string,outputFile?:string|null,duration?:number|null,fileSize?:number|null,error?:string|null)=>invoke<void>('report_vyron_render',{manifestPath,projectPath,renderStatus,outputFile:outputFile??null,duration:duration??null,fileSize:fileSize??null,error:error??null}),
-  showError:(text:string)=>message(text,{title:'ENDLUME Studio',kind:'error'}),
-  showInfo:(text:string)=>message(text,{title:'ENDLUME Studio',kind:'info'}),
+  showError:(text:string)=>message(text,{title:productTitle(),kind:'error'}),
+  showInfo:(text:string)=>message(text,{title:productTitle(),kind:'info'}),
   checkUpdate:async()=>{
     const current=await getVersion();
+    if(isWindowsRuntime()){
+      const u=await withTimeout(invoke<WindowsUpdateInfo>('local_update_check'),20000,'Проверка обновлений');
+      if(!u.available||!u.version)return {none:true,current,channel:'windows-signed-sha256',reason:u.reason||undefined};
+      if(u.reason)throw new Error(u.reason);
+      return {
+        version:u.version,
+        date:u.date||'',
+        body:u.notes||'',
+        current,
+        channel:'windows-signed-sha256',
+        install:windowsUpdateInstall
+      };
+    }
     const update=await withTimeout(check(),20000,'Проверка обновлений');
     if(!update)return {none:true,current,channel:'github-signed'};
     return {
@@ -118,5 +161,5 @@ export const api = {
       }
     };
   },
-  updateStatus:async()=>({state:'native',stage:'Tauri signed updater',progress:0})
+  updateStatus:async()=>isWindowsRuntime()?invoke<WindowsUpdateStatus>('local_update_status'):({state:'native',stage:'Tauri signed updater',progress:0})
 };

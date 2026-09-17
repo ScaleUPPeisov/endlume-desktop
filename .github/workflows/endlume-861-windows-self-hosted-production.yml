@@ -12,6 +12,7 @@ on:
       - 'scripts/test-local-scratch-stability-8-61.py'
       - 'scripts/test-managed-license-render-gate.py'
       - 'scripts/test-render-speed-stability-8-60.py'
+      - 'scripts/test-windows-installed-smoke.ps1'
       - 'src/**'
       - 'src-tauri/**'
       - 'package.json'
@@ -84,6 +85,12 @@ jobs:
           if ($installer.Length -le 0) { throw 'Installer is empty' }
           Write-Host "ENDLUME_WINDOWS_NATIVE_INSTALLER_GREEN=$($installer.FullName)"
           Write-Host "ENDLUME_WINDOWS_NATIVE_INSTALLER_BYTES=$($installer.Length)"
+
+      - name: Install launch uninstall reinstall smoke
+        shell: pwsh
+        run: |
+          $installer = 'src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/ENDLUME-YT-Studio-PEISOV-Setup-1.0.0-alpha.8.61-x64.exe'
+          ./scripts/test-windows-installed-smoke.ps1 -Installer $installer
 
       - name: Upload ENDLUME Windows installer
         uses: actions/upload-artifact@v4

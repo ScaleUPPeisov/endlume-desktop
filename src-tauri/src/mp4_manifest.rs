@@ -88,7 +88,19 @@ pub fn expand_video_prefix_cycle(seed:&Path,out:&Path,prefix_frames:usize,cycle_
   let moov=&data[moov_ref.off..moov_ref.off+moov_ref.size];let mvhd=find_child(moov,*b"mvhd")?.ok_or("MP4 manifest: mvhd missing")?;let(movie_ts,old_movie_dur)=timing(&mvhd,*b"mvhd")?;
   let needed=prefix_frames.checked_add(cycle_frames).ok_or("MP4 manifest: frame overflow")?;let mut selected=Vec::with_capacity(total_frames);selected.extend(0..prefix_frames);for i in 0..(total_frames-prefix_frames){selected.push(prefix_frames+(i%cycle_frames))}
   let mut kids=Vec::new();let mut video_dur=None;let mut video_seen=0usize;for b in children(moov)?{if atom_type(&b)==*b"trak"&&handler_type(&b)?==Some(*b"vide"){video_seen+=1;if video_seen>1{return Err("MP4 manifest: multiple video tracks unsupported".into())}let stbl=find_child(&find_child(&find_child(&b,*b"mdia")?.ok_or("MP4: mdia")?,*b"minf")?.ok_or("MP4: minf")?,*b"stbl")?.ok_or("MP4: stbl")?;let count=stsz_sizes(&find_child(&stbl,*b"stsz")?.ok_or("MP4: stsz")?)?.len();if count<needed{return Err(format!("MP4 manifest: seed video has {count} samples; need prefix+cycle {needed}"))}let(x,d,sync0)=rebuild_video_trak(&b,&selected,movie_ts)?;if !sync0{return Err("MP4 manifest: source sample 1 is not sync/keyframe".into())}video_dur=Some(d);kids.push(x)}else{kids.push(b)}}let vd=video_dur.ok_or("MP4 manifest: video track missing")?;let new_movie_dur=old_movie_dur.max(vd);for b in kids.iter_mut(){if atom_type(b)==*b"mvhd"{*b=patch_duration(b,*b"mvhd",new_movie_dur)?}}let new_moov=make_atom(*b"moov",&kids.concat())?;
-  let mut output=Vec::with_capacity(data.len()+new_moov.len().saturating_sub(moov_ref.size));output.extend_from_slice(&data[..moov_ref.off]);output.extend_from_slice(&new_moov);output.extend_from_slice(&data[moov_ref.off+moov_ref.size..]);fs::write(out,&output).map_err(|e|format!("MP4 manifest: write {}: {e}",out.display()))?;Ok(())
+  if seed==out{
+    use std::io::{Seek,Write};
+    let tail=data[moov_ref.off+moov_ref.size..].to_vec();
+    let mut f=std::fs::OpenOptions::new().read(true).write(true).open(seed).map_err(|e|format!("MP4 manifest: open in-place {}: {e}",seed.display()))?;
+    f.set_len(moov_ref.off as u64).map_err(|e|format!("MP4 manifest: truncate in-place {}: {e}",seed.display()))?;
+    f.seek(std::io::SeekFrom::Start(moov_ref.off as u64)).map_err(|e|format!("MP4 manifest: seek in-place {}: {e}",seed.display()))?;
+    f.write_all(&new_moov).map_err(|e|format!("MP4 manifest: write moov in-place {}: {e}",seed.display()))?;
+    f.write_all(&tail).map_err(|e|format!("MP4 manifest: write tail in-place {}: {e}",seed.display()))?;
+    f.sync_all().map_err(|e|format!("MP4 manifest: sync in-place {}: {e}",seed.display()))?;
+    Ok(())
+  }else{
+    let mut output=Vec::with_capacity(data.len()+new_moov.len().saturating_sub(moov_ref.size));output.extend_from_slice(&data[..moov_ref.off]);output.extend_from_slice(&new_moov);output.extend_from_slice(&data[moov_ref.off+moov_ref.size..]);fs::write(out,&output).map_err(|e|format!("MP4 manifest: write {}: {e}",out.display()))?;Ok(())
+  }
 }
 
 #[cfg(test)]

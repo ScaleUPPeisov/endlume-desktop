@@ -48,6 +48,53 @@ fn fingerprint(e:&EffectPreset,fps:u32)->String{
   hex::encode(h.finalize())[..24].to_string()
 }
 
+
+fn strict_cache_dir_856(app:&AppHandle)->Result<PathBuf,String>{
+  let p=app.path().app_cache_dir().map_err(|e|e.to_string())?.join("strict-effects-856");
+  fs::create_dir_all(&p).map_err(|e|format!("Не удалось создать Strict Effects cache: {e}"))?;Ok(p)
+}
+fn strict_fingerprint_856(e:&EffectPreset,fps:u32,width:u32,height:u32)->String{
+  let meta=fs::metadata(&e.source).ok();let modified=meta.as_ref().and_then(|m|m.modified().ok()).and_then(|t|t.duration_since(UNIX_EPOCH).ok()).map(|d|d.as_secs()).unwrap_or(0);let size=meta.as_ref().map(|m|m.len()).unwrap_or(0);
+  let (similarity,blend)=chromakey_params_859(e);let mut h=Sha256::new();h.update(format!("strict-860|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",e.source,size,modified,fps,width,height,e.mode,e.key_color,similarity,blend,e.luma_threshold,e.luma_tolerance,e.scale,e.fullscreen,e.saturation));hex::encode(h.finalize())[..24].to_string()
+}
+
+pub async fn prepare_strict_856(app:&AppHandle,e:&EffectPreset,fps:u32,width:u32,height:u32)->Result<EffectPreset,String>{
+  if !e.enabled||e.source.trim().is_empty(){return Ok(e.clone())}
+  if !Path::new(&e.source).is_file(){return Err(format!("Не найден файл эффекта: {}",e.source))}
+  let key=strict_fingerprint_856(e,fps,width,height);let path=strict_cache_dir_856(app)?.join(format!("{key}.mov"));let lock=path.with_extension("lock");
+  if !path.exists(){
+    match std::fs::OpenOptions::new().write(true).create_new(true).open(&lock){
+      Ok(_guard)=>{
+        let target=((width as f64)*e.scale.clamp(0.05,1.5)).round().max(2.0) as u32;let target=if target%2==0{target}else{target+1};
+        let scale=if e.fullscreen{format!("scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black@0")}else{format!("scale={target}:-2:flags=lanczos")};
+        let (similarity,blend)=chromakey_params_859(e);
+        let vf=match e.mode.as_str(){
+          "luma"=>format!("fps={fps},format=rgba,lumakey=threshold={}:tolerance={}:softness=0.08,{scale},format=argb",e.luma_threshold,e.luma_tolerance),
+          "screen"|"screen-cache"=>format!("fps={fps},format=rgb24,{scale}"),
+          _=>format!("fps={fps},format=rgba,colorkey={}:{}:{},{scale},format=argb",color(&e.key_color),similarity,blend)
+        };
+        let pix=if e.mode=="screen"||e.mode=="screen-cache"{"rgb24"}else{"argb"};let tmp=path.with_extension(format!("{}.tmp.mov",uuid::Uuid::new_v4()));
+        let args=vec!["-hide_banner","-loglevel","error","-i",e.source.as_str(),"-vf",vf.as_str(),"-an","-c:v","qtrle","-pix_fmt",pix,"-y",tmp.to_string_lossy().as_ref()].into_iter().map(String::from).collect::<Vec<_>>();
+        let out=app.shell().sidecar("ffmpeg").map_err(|x|format!("Не найден FFmpeg для Strict Effects: {x}"))?.args(args).output().await.map_err(|x|format!("Не удалось запустить Strict Effects cache: {x}"))?;
+        if !out.status.success(){let _=fs::remove_file(&tmp);let _=fs::remove_file(&lock);return Err(format!("Strict Effects cache '{}': {}",e.name,String::from_utf8_lossy(&out.stderr).trim()))}
+        if path.exists(){let _=fs::remove_file(&path);}fs::rename(&tmp,&path).map_err(|x|format!("Strict Effects cache finalize: {x}"))?;let _=fs::remove_file(&lock);
+      },
+      Err(_)=>{
+        for _ in 0..400{if path.exists(){break}tokio::time::sleep(std::time::Duration::from_millis(100)).await;}
+        if !path.exists(){let _=fs::remove_file(&lock);return Err(format!("Strict Effects cache '{}' не успел подготовиться",e.name))}
+      }
+    }
+  }
+  let mut prepared=e.clone();prepared.source=path.to_string_lossy().into_owned();prepared.cache_key=Some(key);prepared.cache_ready=Some(true);prepared.mode=if e.mode=="screen"||e.mode=="screen-cache"{"strict-screen-cache".into()}else{"strict-prealpha".into()};Ok(prepared)
+}
+
+pub fn start_strict_prewarm_856(app:AppHandle){
+  let value=crate::persistence::read_value(&app,"library.json");let effects=value.get("effects").cloned().and_then(|v|serde_json::from_value::<Vec<EffectPreset>>(v).ok()).unwrap_or_default();
+  for e in effects.into_iter().filter(|e|e.enabled&&!e.source.trim().is_empty()){
+    let app2=app.clone();tauri::async_runtime::spawn(async move{let _=prepare_strict_856(&app2,&e,30,1920,1080).await;});
+  }
+}
+
 pub async fn prepare(app:&AppHandle,e:&EffectPreset,fps:u32)->Result<EffectPreset,String>{
   if !e.enabled||e.source.trim().is_empty(){return Ok(e.clone())}
   if !Path::new(&e.source).is_file(){return Err(format!("Не найден файл эффекта: {}",e.source))}

@@ -10,7 +10,7 @@ import tempfile
 import time
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(os.environ.get("GITHUB_WORKSPACE") or Path(__file__).resolve().parents[1]).resolve()
 SIDE = Path(sys.argv[1]).resolve()
 FFMPEG = Path(sys.argv[2]).resolve()
 FFPROBE = Path(sys.argv[3]).resolve()

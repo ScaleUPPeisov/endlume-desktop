@@ -3,7 +3,41 @@ import React from 'react';
 type Release={version:string;date:string;current?:boolean;title:string;items:string[]};
 
 const releases:Release[]=[
-  {version:'1.0.0-alpha.8.41',date:'31.08.2026',current:true,title:'60 FPS • Stability • Gapless Audio • Chroma',items:[
+  {version:'1.0.0-alpha.8.61',date:'07.09.2026',current:true,title:'External Disk Render Stability',items:[
+    'Рабочие master/audio/manifest файлы one-image рендера перенесены с внешнего output-диска в локальный cache Mac.',
+    'На TOSHIBA/другой выбранный диск итоговый MOV записывается один раз после завершения локального zero-copy manifest.',
+    'Убрано накопительное замедление проектов из-за многократной тяжёлой записи временных файлов на внешний диск.',
+    'Сохранены HEVC VideoToolbox q:v100, GOP1800, 1920×1080 CFR60, original MP3 packet-copy, whole-song, Effects/Subscribe, 500–700 МБ и VYRON contracts.'
+  ]},
+  {version:'1.0.0-alpha.8.60',date:'07.09.2026',current:false,title:'Render Speed Stability • Equalizer Carry-Forward',items:[
+    'Статичная картинка 1920×1080 масштабируется/crop один раз на проект вместо повторной обработки каждого кадра strict master.',
+    'Физический gate проверяет 5 последовательных реальных master подряд с пределом 30 секунд на каждый, чтобы не возвращался рост времени очереди.',
+    'Zero-copy manifest обновляет sample tables in-place без повторной полной перезаписи большого MOV.',
+    'Круглый эквалайзер использует защищённый chromakey 0.18 / 0.03 и в Strict Effects cache, поэтому не становится тусклым в реальном рендере.',
+    'Сохранены HEVC VideoToolbox q:v100, GOP1800, 1920×1080 CFR60, untouched MP3, whole-song, Effects/Subscribe, 500–700 МБ, VYRON и queue contracts.'
+  ]},
+  {version:'1.0.0-alpha.8.58',date:'06.09.2026',current:false,title:'Queue Finalization • Dual Terminal Ack',items:[
+    'Исправлена гонка Render Center: отложенный requestAnimationFrame progress=97 больше не может перезаписать уже полученный render-done=100.',
+    'Добавлен второй независимый terminal-ack от backend queue snapshot: даже если render-done задержан или потерян, готовый файл принудительно переводит карточку в Готово / 100%.',
+    'Backend хранит до 500 terminal-состояний текущей сессии и восстанавливает resultPath/resultBytes по реально созданному MP4/MOV в папке результата.',
+    'Статусы done/error остаются монотонными: поздние render-progress и queue-changed не возвращают завершённый проект в rendering/queued.',
+    'Regression gate проверяет 40/40 проектов, потерю render-done, поздний 97%, stale queue snapshot и восстановление отсутствующей карточки.',
+    'Render Core 8.57 не менялся: HEVC VideoToolbox q:v 100, GOP 1800, 1920×1080/60, untouched MP3, Effects/Subscribe и 500–700 МБ сохранены.'
+  ]},
+  {version:'1.0.0-alpha.8.57',date:'06.09.2026',current:false,title:'Strict Master Integrity • Safe VideoToolbox GOP',items:[
+    'Исправлена отдельная ошибка lifetime keyed Effects: короткий cached Effect больше не завершает Strict master раньше базового таймлайна.',
+    'Физическая диагностика Apple Silicon выявила отдельный HEVC VideoToolbox дефект длинного GOP: GOP 3381 записывал 3381 packets, но декодировались только 2048 frames с RPS/POC errors.',
+    'Для HEVC VideoToolbox keyframe interval ограничен 1800 кадрами; полный master остаётся 3381 кадров, 1920×1080/60 FPS и q:v 100.',
+    'Strict runtime проверяет decoded frames и encoded packets для master, Subscribe-сегментов и seed до zero-copy expansion.',
+    'Перед render-done итог дополнительно проверяется: HEVC/yuv420p, 1920×1080/60, untouched MP3, 500–700 МБ, точная длительность и seek/decode в начале, середине и хвосте.',
+    'Экран Обновления и О программе синхронизирован с текущей версией 8.57; VYRON bridge и updater identity сохранены.'
+  ]},
+  {version:'1.0.0-alpha.8.56',date:'05.09.2026',current:false,title:'Render Isolation • Strict Output Contract',items:[
+    'Strict one-image render изолирован от software fallback и случайных legacy-путей.',
+    'Whole-track audio и нулевой crossfade закреплены для производственного VYRON-пайплайна.',
+    'Финальный файл проходит строгий контракт размера 400–700 МБ и проверку результата до публикации.'
+  ]},
+  {version:'1.0.0-alpha.8.41',date:'31.08.2026',current:false,title:'60 FPS • Stability • Gapless Audio • Chroma',items:[
     'Smart/Fidelity render снова работает в реальных 60 FPS без изменения проверенного 500k видеобюджета и быстрого short-master pipeline.',
     'Effects/Equalizer получают motion-interpolated 60 FPS cache и 60 FPS Live Preview вместо простого дублирования 25/30 FPS кадров.',
     'История 100+ рендеров больше не сериализуется в localStorage на каждом progress event; UI progress синхронизируется через requestAnimationFrame.',

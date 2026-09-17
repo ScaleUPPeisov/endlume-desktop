@@ -45,6 +45,7 @@ pub fn run(){
     ])
     .setup(|app|{
       persistence::mark_session_open(&app.handle().clone())?;
+      cache::start_strict_prewarm_856(app.handle().clone());
       Ok(())
     })
     .on_window_event(|window,event|{

@@ -10,6 +10,10 @@ mod benchmark;
 mod queue;
 mod cache;
 mod system;
+#[cfg(target_os="windows")]
+#[path="updater_windows.rs"]
+mod updater_local;
+#[cfg(not(target_os="windows"))]
 mod updater_local;
 mod mp4_manifest;
 mod vyron_bridge;

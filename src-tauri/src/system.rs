@@ -11,6 +11,40 @@ const ENDLUME_APP_NAME:&str="ENDLUME Studio.app";
 #[cfg(target_os="macos")]
 const ENDLUME_CANONICAL_PATH:&str="/Applications/ENDLUME Studio.app";
 
+#[cfg(target_os="windows")]
+#[repr(C)]
+struct SystemPowerStatus{
+  ac_line_status:u8,
+  battery_flag:u8,
+  battery_life_percent:u8,
+  reserved1:u8,
+  battery_life_time:u32,
+  battery_full_life_time:u32,
+}
+
+#[cfg(target_os="windows")]
+#[link(name="kernel32")]
+unsafe extern "system"{
+  fn GetSystemPowerStatus(status:*mut SystemPowerStatus)->i32;
+}
+
+#[cfg(target_os="windows")]
+fn windows_power_status()->Value{
+  let mut status=SystemPowerStatus{ac_line_status:255,battery_flag:255,battery_life_percent:255,reserved1:0,battery_life_time:u32::MAX,battery_full_life_time:u32::MAX};
+  let ok=unsafe{GetSystemPowerStatus(&mut status as *mut SystemPowerStatus)}!=0;
+  if !ok{return json!({"supported":false,"onBattery":false,"percent":null});}
+  let percent=if status.battery_life_percent==255{None}else{Some(status.battery_life_percent.min(100) as u32)};
+  json!({"supported":true,"onBattery":status.ac_line_status==0,"percent":percent})
+}
+
+#[cfg(target_os="windows")]
+fn hidden_windows_command(program:&str)->std::process::Command{
+  use std::os::windows::process::CommandExt;
+  let mut command=std::process::Command::new(program);
+  command.creation_flags(0x0800_0000);
+  command
+}
+
 #[tauri::command]
 pub fn power_status()->Value{
   #[cfg(target_os="macos")]
@@ -24,7 +58,9 @@ pub fn power_status()->Value{
     }
     return json!({"supported":true,"onBattery":false,"percent":null});
   }
-  #[cfg(not(target_os="macos"))]
+  #[cfg(target_os="windows")]
+  { return windows_power_status(); }
+  #[cfg(all(not(target_os="macos"),not(target_os="windows")))]
   { json!({"supported":false,"onBattery":false,"percent":null}) }
 }
 
@@ -219,7 +255,7 @@ pub fn open_result_path(path:String)->Result<(),String>{
   #[cfg(target_os="macos")]
   let result=std::process::Command::new("/usr/bin/open").arg(&path).spawn();
   #[cfg(target_os="windows")]
-  let result=std::process::Command::new("explorer.exe").arg(&path).spawn();
+  let result=hidden_windows_command("explorer.exe").arg(&path).spawn();
   #[cfg(all(not(target_os="macos"),not(target_os="windows")))]
   let result=std::process::Command::new("xdg-open").arg(&path).spawn();
   result.map(|_|()).map_err(|e|format!("Не удалось открыть видео: {e}"))
@@ -231,7 +267,7 @@ pub fn reveal_result_path(path:String)->Result<(),String>{
   #[cfg(target_os="macos")]
   let result=std::process::Command::new("/usr/bin/open").arg("-R").arg(&path).spawn();
   #[cfg(target_os="windows")]
-  let result=std::process::Command::new("explorer.exe").arg(format!("/select,{path}")).spawn();
+  let result=hidden_windows_command("explorer.exe").arg(format!("/select,{path}")).spawn();
   #[cfg(all(not(target_os="macos"),not(target_os="windows")))]
   let result={let parent=std::path::Path::new(&path).parent().unwrap_or(std::path::Path::new(&path));std::process::Command::new("xdg-open").arg(parent).spawn()};
   result.map(|_|()).map_err(|e|format!("Не удалось открыть папку результата: {e}"))

@@ -1,0 +1,56 @@
+name: ENDLUME 8.61 Finalization Regression
+
+on:
+  push:
+    branches: [windows/endlume-861-managed-access]
+    paths:
+      - 'src/**'
+      - 'src-tauri/src/**'
+      - 'src-tauri/Cargo.toml'
+      - 'src-tauri/Cargo.lock'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/endlume-861-finalization-regression.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: endlume-861-finalization-regression
+  cancel-in-progress: true
+
+jobs:
+  regression:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: windows/endlume-861-managed-access
+          fetch-depth: 1
+      - name: Prepare sidecars
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p src-tauri/binaries
+          cp "$(command -v ffmpeg)" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp "$(command -v ffprobe)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          chmod +x src-tauri/binaries/ffmpeg-aarch64-apple-darwin src-tauri/binaries/ffprobe-aarch64-apple-darwin
+      - name: TypeScript and frontend production build
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          npm ci
+          npm run check
+          npm run build
+      - name: Rust regression
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cargo check --manifest-path src-tauri/Cargo.toml
+          cargo test --manifest-path src-tauri/Cargo.toml
+      - name: Contract scripts
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/test-windows-861-strict-port.py
+          python3 scripts/test-managed-license-render-gate.py
+          python3 scripts/test-local-scratch-stability-8-61.py .

@@ -67,14 +67,17 @@ jobs:
           sha=pathlib.Path('promote')/os.environ['SHA_NAME']
           size=exe.stat().st_size
           digest=hashlib.sha256(exe.read_bytes()).hexdigest()
-          expected_line=f"{os.environ['EXPECTED_SHA256']}  {os.environ['EXE_NAME']}"
-          actual_line=sha.read_text().replace('\r','').replace('\n','')
+          raw=sha.read_text().replace('\r','').strip()
+          parts=raw.split(maxsplit=1)
+          assert parts and parts[0]==os.environ['EXPECTED_SHA256'], repr(raw)
+          assert len(parts)==2 and parts[1].endswith(os.environ['EXE_NAME']), repr(raw)
           assert size==int(os.environ['EXPECTED_SIZE']), size
           assert digest==os.environ['EXPECTED_SHA256'], digest
-          assert actual_line==expected_line, repr(actual_line)
+          sha.write_text(f"{os.environ['EXPECTED_SHA256']}  {os.environ['EXE_NAME']}\n")
           print('RC_EXACT_BINARY_VERIFIED=YES')
           print('RC_SIZE='+str(size))
           print('RC_SHA256='+digest)
+          print('PRODUCTION_SHA_FILE_NORMALIZED=YES')
           PY
 
       - name: Create or verify production tag

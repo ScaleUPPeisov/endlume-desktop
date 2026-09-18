@@ -56,7 +56,17 @@ fn done_fallback_payload(job:&QueueJob)->Value{
 pub async fn enqueue_projects(app:AppHandle,runtime:State<'_,Arc<QueueRuntime>>,projects:Vec<ProjectScanItem>,settings:RenderSettings,effects:Vec<EffectPreset>,subscribes:Vec<SubscribePreset>,ambient:Option<String>)->Result<(),String>{
   license::assert_production_allowed(&app).await?;
   if settings.output_dir.trim().is_empty(){return Err("Не выбрана папка результата".into())}
-  {let mut q=runtime.pending.lock();for project in projects.into_iter().filter(|p|p.valid){runtime.clear_terminal(&project.id);q.push_back(QueueJob{project,settings:settings.clone(),effects:effects.clone(),subscribes:subscribes.clone(),ambient:ambient.clone()});}}
+  {
+    let active=runtime.active.lock();
+    let mut q=runtime.pending.lock();
+    let mut occupied=q.iter().map(|j|j.project.id.clone()).collect::<HashSet<_>>();
+    if let Some(job)=active.as_ref(){occupied.insert(job.project.id.clone());}
+    for project in projects.into_iter().filter(|p|p.valid){
+      if !occupied.insert(project.id.clone()){continue}
+      runtime.clear_terminal(&project.id);
+      q.push_back(QueueJob{project,settings:settings.clone(),effects:effects.clone(),subscribes:subscribes.clone(),ambient:ambient.clone()});
+    }
+  }
   runtime.persist(&app);let _=app.emit("queue-changed",queue_snapshot_value(runtime.inner().as_ref()));start_worker_if_needed(app,runtime.inner().clone());Ok(())
 }
 
@@ -93,8 +103,15 @@ fn start_worker_if_needed(app:AppHandle,runtime:Arc<QueueRuntime>){
   tauri::async_runtime::spawn(async move{
     loop{
       if license::production_blocked(){break}
-      let next={runtime.pending.lock().pop_front()};let Some(job)=next else{break};
-      *runtime.active.lock()=Some(job.clone());runtime.persist(&app);let _=app.emit("queue-changed",queue_snapshot_value(runtime.as_ref()));
+      let next={
+        let mut active=runtime.active.lock();
+        let mut pending=runtime.pending.lock();
+        let next=pending.pop_front();
+        if let Some(job)=next.as_ref(){*active=Some(job.clone());}
+        next
+      };
+      let Some(job)=next else{break};
+      runtime.persist(&app);let _=app.emit("queue-changed",queue_snapshot_value(runtime.as_ref()));
       let id=job.project.id.clone();let cancel=Arc::new(AtomicBool::new(false));*runtime.active_cancel.lock()=Some(cancel.clone());license::telemetry_render_started(&job);let job_timer=Instant::now();
       let outcome=render::render_job(&app,&job,cancel).await;*runtime.active_cancel.lock()=None;
       let cancelled=runtime.cancelled.lock().remove(&id);
@@ -147,7 +164,19 @@ pub async fn resume_recovery(app:AppHandle,runtime:State<'_,Arc<QueueRuntime>>)-
   let value=persistence::read_value(&app,"recovery.json");if !value.get("interrupted").and_then(Value::as_bool).unwrap_or(false){return Ok(())}
   let mut jobs=Vec::new();if let Some(active)=value.get("active").filter(|v|!v.is_null()){if let Ok(job)=serde_json::from_value::<QueueJob>(active.clone()){jobs.push(job)}}
   if let Some(pending)=value.get("pending").and_then(Value::as_array){for v in pending{if let Ok(job)=serde_json::from_value::<QueueJob>(v.clone()){jobs.push(job)}}}
-  let recovered_projects=jobs.iter().map(|j|j.project.clone()).collect::<Vec<_>>();{let mut q=runtime.pending.lock();for job in jobs{runtime.clear_terminal(&job.project.id);q.push_back(job)}}
+  let mut recovered_projects=Vec::new();
+  {
+    let active=runtime.active.lock();
+    let mut q=runtime.pending.lock();
+    let mut occupied=q.iter().map(|j|j.project.id.clone()).collect::<HashSet<_>>();
+    if let Some(job)=active.as_ref(){occupied.insert(job.project.id.clone());}
+    for job in jobs{
+      if !occupied.insert(job.project.id.clone()){continue}
+      runtime.clear_terminal(&job.project.id);
+      recovered_projects.push(job.project.clone());
+      q.push_back(job);
+    }
+  }
   let _=app.emit("queue-recovered",json!({"projects":recovered_projects}));let _=persistence::write_value(&app,"recovery.json",&json!({"interrupted":false}));runtime.persist(&app);start_worker_if_needed(app,runtime.inner().clone());Ok(())
 }
 

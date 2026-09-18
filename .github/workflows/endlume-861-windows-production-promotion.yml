@@ -133,48 +133,41 @@ jobs:
           open('promote/release_id','w').write(str(r['id']))
           PY
 
-      - name: Replace production assets with exact verified RC assets
+      - name: Verify existing production assets without reupload
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -Eeuo pipefail
-          RELEASE_ID="$(cat promote/release_id)"
-          gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets?per_page=100" > promote/current-assets.json
-
-          python3 - <<'PY' > promote/delete-assets.txt
-          import json,os
-          keep={os.environ['EXE_NAME'],os.environ['SHA_NAME']}
-          for a in json.load(open('promote/current-assets.json')):
-              if a.get('name') in keep:
-                  print(a['id'])
-          PY
-          while IFS= read -r id; do
-            test -z "$id" || gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$id"
-          done < promote/delete-assets.txt
-
-          TOKEN="$GH_TOKEN"
-          upload_asset() {
-            local file="$1"
-            local name="$2"
-            local out="$3"
-            /usr/bin/curl --fail-with-body --silent --show-error --location --http1.1               --retry 5 --retry-all-errors --retry-delay 5               --connect-timeout 20 --max-time 600               --speed-time 60 --speed-limit 1024               -X POST               -H "Authorization: Bearer $TOKEN"               -H "Accept: application/vnd.github+json"               -H "X-GitHub-Api-Version: 2022-11-28"               -H "Content-Type: application/octet-stream"               --data-binary @"$file"               "https://uploads.github.com/repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets?name=$name"               -o "$out"
-          }
-
-          upload_asset "promote/$EXE_NAME" "$EXE_NAME" promote/upload-exe.json
-          upload_asset "promote/$SHA_NAME" "$SHA_NAME" promote/upload-sha.json
-
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$PROD_TAG" > promote/prod-assets.json
           python3 - <<'PY'
           import json,os
-          for fn,name,size in [
-              ('promote/upload-exe.json',os.environ['EXE_NAME'],int(os.environ['EXPECTED_SIZE'])),
-              ('promote/upload-sha.json',os.environ['SHA_NAME'],182),
-          ]:
-              p=json.load(open(fn))
-              assert p.get('name')==name,p
-              assert p.get('state')=='uploaded',p
-              assert int(p.get('size',0))==size,p
-              print(f"UPLOAD_GREEN={name}:{size}")
+          r=json.load(open('promote/prod-assets.json'))
+          names={a['name']:a for a in r.get('assets',[])}
+          exe=os.environ['EXE_NAME']; sha=os.environ['SHA_NAME']
+          assert exe in names, names.keys()
+          assert sha in names, names.keys()
+          e=names[exe]; s=names[sha]
+          assert e.get('state')=='uploaded',e
+          assert int(e.get('size',0))==int(os.environ['EXPECTED_SIZE']),e
+          assert e.get('digest')=='sha256:'+os.environ['EXPECTED_SHA256'],e
+          assert s.get('state')=='uploaded',s
+          assert int(s.get('size',0))==122,s
+          open('promote/prod_exe_asset_id','w').write(str(e['id']))
+          open('promote/prod_sha_asset_id','w').write(str(s['id']))
+          print('PRODUCTION_EXE_METADATA_GREEN=1')
+          print('PRODUCTION_SHA_METADATA_GREEN=1')
+          PY
+
+          gh api -H "Accept: application/octet-stream"             "repos/$GITHUB_REPOSITORY/releases/assets/$(cat promote/prod_sha_asset_id)" > "promote/production.sha256"
+
+          python3 - <<'PY'
+          import os,pathlib
+          p=pathlib.Path('promote/production.sha256')
+          expected=f"{os.environ['EXPECTED_SHA256']}  {os.environ['EXE_NAME']}\n"
+          actual=p.read_text().replace('\r\n','\n')
+          assert actual==expected,(repr(actual),repr(expected))
+          print('PRODUCTION_SHA_FILE_GREEN=1')
           PY
 
       - name: Verify production Release assets and download exact EXE back

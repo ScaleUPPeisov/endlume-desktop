@@ -28,15 +28,10 @@ def copy_slice(src,start_frame,n,outp):
     if n<=0:return
     run([FFM,'-hide_banner','-loglevel','error','-stream_loop','-1','-ss',f'{start_frame/FPS:.9f}','-i',src,'-frames:v',str(n),'-an','-c:v','copy','-avoid_negative_ts','make_zero','-y',outp])
     assert frames(outp)==n,(outp,frames(outp),n)
-def pad(p):
+def natural_size(p):
     n=p.stat().st_size
-    if n>700_000_000: raise RuntimeError(f'final >700MB: {n}')
-    if n<500_000_000:
-        add=500_000_000-n
-        if add<8 or add>0xffffffff: raise RuntimeError(f'bad free atom {add}')
-        with p.open('ab') as f:
-            f.write(add.to_bytes(4,'big'));f.write(b'free');f.truncate(500_000_000);f.flush();os.fsync(f.fileno())
-    return p.stat().st_size
+    if n>700_000_000: raise RuntimeError(f'natural final >700MB: {n}')
+    return n
 
 data=json.loads(SIDE.read_text(errors='replace'));sub=json.loads(SUBJSON.read_text(errors='replace'))
 image=Path(data['project']['media'][0]);audios=[Path(x) for x in data['project']['audio']]
@@ -134,13 +129,13 @@ with tempfile.TemporaryDirectory(prefix='e860-sub-') as td:
     seed=d/'seed.mov';run([FFM,'-hide_banner','-loglevel','error','-i',seed_video,'-stream_loop','-1','-fflags','+genpts','-i',cycle,'-t',f'{final_duration:.9f}','-map','0:v:0','-map','1:a:0','-c:v','copy','-c:a','copy','-y',seed])
     env=os.environ.copy();env.update({'ENDLUME_MANIFEST_SEED':str(seed),'ENDLUME_MANIFEST_OUT':str(seed),'ENDLUME_MANIFEST_PREFIX_FRAMES':str(anchor_frames),'ENDLUME_MANIFEST_CYCLE_FRAMES':str(repeat_frames),'ENDLUME_MANIFEST_TOTAL_FRAMES':str(total_frames)})
     run(['cargo','test','--manifest-path','src-tauri/Cargo.toml','external_prefix_cycle_manifest_if_requested','--','--nocapture'],env=env,cwd=ROOT)
-    size=pad(seed);ss=probe(seed);v=next(x for x in ss if x.get('codec_type')=='video');a=next(x for x in ss if x.get('codec_type')=='audio');fd=dur(seed)
+    size=natural_size(seed);ss=probe(seed);v=next(x for x in ss if x.get('codec_type')=='video');a=next(x for x in ss if x.get('codec_type')=='audio');fd=dur(seed)
     assert v.get('codec_name')=='hevc' and v.get('pix_fmt')=='yuv420p' and v.get('width')==W and v.get('height')==H and v.get('avg_frame_rate')=='60/1',v
     assert a.get('codec_name')=='mp3',a
     assert abs(fd-final_duration)<=1.0,(fd,final_duration)
-    assert 500_000_000<=size<=700_000_000,size
+    assert 0<size<=700_000_000,size
     points=[max(0,first0-.25),first0+.25,max(0,anchor-.25),anchor+.25,anchor+repeat-.25,anchor+repeat+.25,final_duration/2,max(0,final_duration-2)]
     for pnt in points:run([FFM,'-hide_banner','-loglevel','error','-ss',f'{pnt:.3f}','-i',seed,'-map','0:v:0','-frames:v','2','-f','null','-'])
     run([FFM,'-hide_banner','-loglevel','error','-ss',f'{max(0,final_duration-2):.3f}','-i',seed,'-map','0:a:0','-t','0.25','-f','null','-'])
-    metrics.update({'status':'passed','release_gate':True,'subscribe_on_gate':True,'master_seconds':round(master_elapsed,3),'master_frames':master_frames,'master_packets':master_frames,'final_duration':round(fd,6),'final_bytes':size,'audio_codec':'mp3','resolution':'1920x1080','fps':'60/1','seek_points':len(points),'whole_track':True,'in_place_manifest':True})
+    metrics.update({'status':'passed','release_gate':True,'subscribe_on_gate':True,'master_seconds':round(master_elapsed,3),'master_frames':master_frames,'master_packets':master_frames,'final_duration':round(fd,6),'final_bytes':size,'synthetic_padding':False,'audio_codec':'mp3','resolution':'1920x1080','fps':'60/1','seek_points':len(points),'whole_track':True,'in_place_manifest':True})
     METRICS.write_text(json.dumps(metrics,ensure_ascii=False,indent=2));log('PASS',json.dumps(metrics,ensure_ascii=False))

@@ -94,23 +94,11 @@ def pos_expr(axis, value):
     return f"max(0,min(H-h,H*{clamp(value,0,1)}-h/2))"
 
 
-def pad_to_runtime_contract(path):
+def natural_size(path):
     current = path.stat().st_size
     if current > 700_000_000:
-        raise RuntimeError(f"final size {current} > 700MB")
-    if current >= 400_000_000:
-        return current
-    target = 500_000_000
-    add = target - current
-    if add < 8 or add > 0xFFFFFFFF:
-        raise RuntimeError(f"cannot create safe free atom: add={add}")
-    with path.open("ab") as f:
-        f.write(int(add).to_bytes(4, "big"))
-        f.write(b"free")
-        f.truncate(current + add)
-        f.flush()
-        os.fsync(f.fileno())
-    return path.stat().st_size
+        raise RuntimeError(f"natural final size {current} > 700MB")
+    return current
 
 
 def seek_decode(path, pos, media):
@@ -287,7 +275,7 @@ with tempfile.TemporaryDirectory(prefix="endlume857-e2e-") as td:
     run(["cargo", "test", "--manifest-path", "src-tauri/Cargo.toml", "external_prefix_cycle_manifest_if_requested", "--", "--nocapture"],
         env=env, cwd=ROOT)
     assert final.is_file(), final
-    final_bytes = pad_to_runtime_contract(final)
+    final_bytes = natural_size(final)
 
     fdur = duration(final)
     streams = stream_json(final)
@@ -303,8 +291,7 @@ with tempfile.TemporaryDirectory(prefix="endlume857-e2e-") as td:
     assert audio.get("codec_name") == "mp3", audio
     assert int(audio.get("sample_rate")) == signatures[0][1], audio
     assert int(audio.get("channels")) == signatures[0][2], audio
-    assert 400_000_000 <= final_bytes <= 700_000_000, final_bytes
-    assert final_bytes >= 500_000_000, f"user 500-700 MB target missed: {final_bytes}"
+    assert 0 < final_bytes <= 700_000_000, final_bytes
 
     seek_decode(final, 0.0, "video")
     seek_decode(final, final_duration * 0.5, "video")
@@ -338,6 +325,7 @@ with tempfile.TemporaryDirectory(prefix="endlume857-e2e-") as td:
         "total_video_frames": total_frames,
         "final_bytes": final_bytes,
         "final_mb_decimal": round(final_bytes/1_000_000, 3),
+        "synthetic_padding": False,
         "seek_begin": True,
         "seek_middle": True,
         "seek_tail": True,

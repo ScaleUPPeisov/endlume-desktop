@@ -118,7 +118,7 @@ jobs:
             gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID"               -f tag_name="$PROD_TAG"               -f target_commitish="$PROMOTION_TARGET"               -f name="$RELEASE_NAME"               -f body="$NOTES"               -F draft=false               -F prerelease=false > promote/prod-release-normalized.json
           else
             NOTES="$(cat promote/release-notes.txt)"
-            gh api --method POST "repos/$GITHUB_REPOSITORY/releases"               -f tag_name="$PROD_TAG"               -f target_commitish="$PROMOTION_TARGET"               -f name="$RELEASE_NAME"               -f body="$NOTES"               -F draft=false               -F prerelease=false               -F make_latest=true > promote/prod-release-created.json
+            gh api --method POST "repos/$GITHUB_REPOSITORY/releases"               -f tag_name="$PROD_TAG"               -f target_commitish="$PROMOTION_TARGET"               -f name="$RELEASE_NAME"               -f body="$NOTES"               -F draft=false               -F prerelease=false               -f make_latest=true > promote/prod-release-created.json
           fi
 
           gh api "repos/$GITHUB_REPOSITORY/releases/tags/$PROD_TAG" > promote/prod-release.json

@@ -106,30 +106,43 @@ jobs:
           print('SHARED_MANIFEST_VERSION_COMPATIBLE=1')
           PY
 
-      - name: Verify installed updater signing key matches embedded public key
+      - name: Resolve signing key matching embedded Windows updater public key
         shell: bash
         run: |
           set -Eeuo pipefail
-          KEY="$HOME/.endlume-updater/endlume.key"
-          PUB="$KEY.pub"
-          test -s "$KEY"
-          test -s "$PUB"
           printf '%s' "$EXPECTED_UPDATER_PUBKEY_B64" | base64 --decode > updater-promote/embedded.pub
           python3 - <<'PY'
           from pathlib import Path
-          def norm(p):
-              return Path(p).read_text().replace('\r\n','\n').strip()
-          embedded=norm('updater-promote/embedded.pub')
-          local=norm(Path.home()/'.endlume-updater/endlume.key.pub')
-          assert embedded==local,'Local updater public key does not match Windows embedded updater pubkey'
+          home=Path.home()
+          expected=Path('updater-promote/embedded.pub').read_text().replace('\r\n','\n').strip()
+          roots=[home/'.endlume-updater',home/'.tauri',home/'.endlume-release-bridge']
+          matches=[]
+          for root in roots:
+              if not root.exists():
+                  continue
+              for pub in root.glob('**/*.pub'):
+                  try:
+                      if pub.read_text().replace('\r\n','\n').strip()!=expected:
+                          continue
+                  except Exception:
+                      continue
+                  private=Path(str(pub)[:-4])
+                  if private.is_file() and private.stat().st_size>0:
+                      matches.append((pub,private))
+          if not matches:
+              raise SystemExit('No existing private key matches the updater public key embedded in Windows 8.61')
+          pub,private=matches[0]
+          Path('updater-promote/signing_key_path').write_text(str(private))
           print('UPDATER_PUBLIC_KEY_MATCH=1')
+          print('MATCHING_SIGNING_KEY_PATH='+str(private))
           PY
 
       - name: Sign exact production EXE without rebuilding
         shell: bash
         run: |
           set -Eeuo pipefail
-          KEY="$HOME/.endlume-updater/endlume.key"
+          KEY="$(cat updater-promote/signing_key_path)"
+          test -s "$KEY"
           EXE="$PWD/updater-promote/$EXE_NAME"
           export TAURI_SIGNING_PRIVATE_KEY_PATH="$KEY"
           unset TAURI_SIGNING_PRIVATE_KEY_PASSWORD || true

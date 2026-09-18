@@ -799,7 +799,7 @@ fn strict_856_validate_natural_size(path:&Path)->Result<(),String>{
 }
 
 async fn render_zero_sub_zero_copy_856(app:&AppHandle,job:&QueueJob,effects:&[EffectPreset],subs:&[SubscribePreset],audio:&AudioSource,master_duration:f64,final_duration:f64,work:&Path,out:&Path,encoder:&str,attempt:u32,cancel:&AtomicBool,started:i64,timer:&Instant)->Result<bool,String>{
-  if !smart_repeat_project(job)||timed_effects(effects,final_duration){return Ok(false)}if subs.iter().any(|x|x.effect.enabled&&!x.effect.source.trim().is_empty()){return Ok(false)}if !strict_856_encoder_allowed(encoder){return Err(format!("Strict 8.61: HEVC encoder {encoder} не разрешён strict pipeline"))}
+  if !smart_repeat_project(job)||timed_effects(effects,final_duration){return Ok(false)}if subs.iter().any(|x|x.effect.enabled&&!x.effect.source.trim().is_empty()){return Ok(false)}if !strict_856_encoder_allowed(encoder){return Err(format!("Strict 8.62: HEVC encoder {encoder} не разрешён strict pipeline"))}
   let fps=60u32;let work_fps=30u32;let duration=master_duration.clamp(12.0,60.0);let master_frames=(duration*fps as f64).round() as usize;let mut ws=job.settings.clone();ws.fps=work_fps;
   let base_still=work.join("strict-860-base.png");
   if !base_still.is_file(){
@@ -857,7 +857,7 @@ pub async fn render_job(app:&AppHandle,job:&QueueJob,cancel:Arc<AtomicBool>)->Re
   let max_attempts=if smart_repeat_project(job){if cfg!(target_os="windows"){2}else{1}}else{2};
   for attempt in 1..=max_attempts{
     if cancel.load(Ordering::SeqCst){return Err(CANCELLED.into())}
-    let smart_repeat=smart_repeat_project(job);let _=std::fs::remove_file(&out);let encoder=if smart_repeat{let e=choose_hybrid_encoder(app,attempt).await;if !strict_856_encoder_allowed(&e){return Err(format!("Strict 8.61: HEVC encoder {e} недоступен для strict pipeline"))}e}else if attempt==1{choose_encoder(app,&job.settings).await}else{software_encoder(&job.settings)};
+    let smart_repeat=smart_repeat_project(job);let _=std::fs::remove_file(&out);let encoder=if smart_repeat{let e=choose_hybrid_encoder(app,attempt).await;if !strict_856_encoder_allowed(&e){return Err(format!("Strict 8.62: HEVC encoder {e} недоступен для strict pipeline"))}e}else if attempt==1{choose_encoder(app,&job.settings).await}else{software_encoder(&job.settings)};
     let _=app.emit("engine-profile",json!({"id":job.project.id,"smartSize":smart_repeat,"smartRepeat":smart_repeat,"originalFidelity":smart_repeat,"targetVideoKbps":None::<u64>}));
     emit_progress(app,job,started,&timer,1.0,"Анализ файлов",&encoder,attempt,None);let work=render_work_dir(app,&job.project.id,attempt)?;
     let result:Result<(Vec<f64>,f64),String>=async{

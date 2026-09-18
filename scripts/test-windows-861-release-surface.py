@@ -14,7 +14,7 @@ package=json.loads((root/'package.json').read_text(encoding='utf-8'))
 ui=(root/'src/components/ui.tsx').read_text(encoding='utf-8')
 settings=(root/'src/pages/SettingsPage.tsx').read_text(encoding='utf-8')
 brand=(root/'src/platform-brand.ts').read_text(encoding='utf-8')
-assert package['version']=='1.0.0-alpha.8.61'
+assert package['version'] in {'1.0.0-alpha.8.61','1.0.0-alpha.8.62'}
 assert 'windows_subsystem = "windows"' in main
 assert conf['productName']=='ENDLUME YT Studio PEISOV'
 assert conf.get('mainBinaryName')=='ENDLUME YT Studio PEISOV'
@@ -45,4 +45,4 @@ assert 'Get-FileHash -Algorithm SHA256' in publisher
 assert 'sha256 = $Sha256' in publisher
 assert "platform.startsWith('windows-')&&!validSha256(manifest.sha256)" in worker
 assert 'response.sha256=manifest.sha256.trim().toLowerCase()' in worker
-print('ENDLUME_WINDOWS_861_RELEASE_SURFACE_GREEN')
+print('ENDLUME_WINDOWS_861_RELEASE_SURFACE_GREEN',package['version'])

@@ -141,6 +141,12 @@ jobs:
           cp "$FFPROBE" src-tauri/binaries/ffprobe-aarch64-apple-darwin
           chmod +x src-tauri/binaries/ffmpeg-aarch64-apple-darwin src-tauri/binaries/ffprobe-aarch64-apple-darwin
 
+      - name: Install Rust QA components
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          rustup component add rustfmt clippy
+
       - name: Rust formatting check
         shell: bash
         run: |

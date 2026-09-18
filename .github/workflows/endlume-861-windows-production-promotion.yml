@@ -10,6 +10,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: endlume-861-windows-production-promotion
+  cancel-in-progress: true
+
 env:
   PROMOTION_TARGET: 34d35d2448c810baa276031f4b74b8be0fde81c8
   RC_TAG: endlume-v1.0.0-alpha.8.61-windows-rc
@@ -27,12 +31,6 @@ jobs:
     timeout-minutes: 30
 
     steps:
-      - name: Checkout promotion control
-        uses: actions/checkout@v4
-        with:
-          ref: windows/endlume-861-managed-access
-          fetch-depth: 0
-
       - name: Download exact RC assets and verify
         shell: bash
         env:

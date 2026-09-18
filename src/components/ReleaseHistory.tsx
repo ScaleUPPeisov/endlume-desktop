@@ -3,7 +3,15 @@ import React from 'react';
 type Release={version:string;date:string;current?:boolean;title:string;items:string[]};
 
 const releases:Release[]=[
-  {version:'1.0.0-alpha.8.61',date:'07.09.2026',current:true,title:'External Disk Render Stability',items:[
+  {version:'1.0.0-alpha.8.62',date:'18.09.2026',current:true,title:'Production QA • License Security • Queue/Revoke Hardening',items:[
+    'Managed License key generation hardened from 80-bit to 160-bit cryptographic keys while preserving activation of existing legacy keys.',
+    'Database enforces owner/managed consistency, SHA-256 hash shape and device↔license isolation for sessions, renders and render events.',
+    'Backend queue rejects duplicate project IDs even under repeated/direct Tauri enqueue calls and recovery.',
+    'Remote revoke is enforced through final manifest/FFprobe/output finalization, not only while FFmpeg is running.',
+    'Synthetic MOV free-atom/zero padding removed: output size now reflects actual media payload instead of artificial filler.',
+    'Production 8.61 release remains immutable; these runtime fixes are isolated to the 8.62 patch candidate.'
+  ]},
+  {version:'1.0.0-alpha.8.61',date:'07.09.2026',current:false,title:'External Disk Render Stability',items:[
     'Рабочие master/audio/manifest файлы one-image рендера перенесены с внешнего output-диска в локальный cache Mac.',
     'На TOSHIBA/другой выбранный диск итоговый MOV записывается один раз после завершения локального zero-copy manifest.',
     'Убрано накопительное замедление проектов из-за многократной тяжёлой записи временных файлов на внешний диск.',

@@ -17,22 +17,45 @@ env:
 
 concurrency:
   group: endlume-861-windows-rc-publish-recovery
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   publish-recovery:
     name: Windows x64 • RC asset publish recovery
     runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
-    timeout-minutes: 120
+    timeout-minutes: 60
 
     steps:
-      - name: Checkout current branch HEAD
+      - name: Checkout current branch HEAD without deleting verified build
         uses: actions/checkout@v4
         with:
           ref: ${{ github.ref_name }}
           fetch-depth: 0
+          clean: false
+
+      - name: Reuse verified installer when present
+        id: reuse
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          FINAL="src-tauri/target/$WINDOWS_TARGET/release/bundle/nsis/$FINAL_INSTALLER"
+          if [ -s "$FINAL" ]; then
+            python3 - "$FINAL" <<'PY'
+          from pathlib import Path
+          import sys
+          p = Path(sys.argv[1])
+          assert p.stat().st_size > 1_000_000
+          with p.open('rb') as f:
+              assert f.read(2) == b'MZ'
+          print(f'REUSING_VERIFIED_INSTALLER_BYTES={p.stat().st_size}')
+          PY
+            echo "reuse=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "reuse=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Prepare cross-build toolchain and pinned sidecars
+        if: steps.reuse.outputs.reuse != 'true'
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -82,10 +105,12 @@ jobs:
           chmod +x "$DEST/ffmpeg-aarch64-apple-darwin" "$DEST/ffprobe-aarch64-apple-darwin"
 
       - name: Install frontend dependencies
+        if: steps.reuse.outputs.reuse != 'true'
         shell: bash
         run: npm ci
 
-      - name: Rebuild installer only from current product source
+      - name: Rebuild installer only if verified build is absent
+        if: steps.reuse.outputs.reuse != 'true'
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -134,7 +159,7 @@ jobs:
 
           shasum -a 256 "$FINAL" | tee "$FINAL.sha256"
 
-      - name: Publish RC metadata and assets
+      - name: Publish RC assets through GitHub uploads API
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -161,14 +186,6 @@ jobs:
           - full installed-app render/no-console validation.
           EOF
 
-          DRAFT_IDS="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
-            --jq ".[] | select(.tag_name == \"$RELEASE_TAG\" and .draft == true) | .id")"
-          if [ -n "$DRAFT_IDS" ]; then
-            while IFS= read -r id; do
-              [ -n "$id" ] && gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/$id"
-            done <<< "$DRAFT_IDS"
-          fi
-
           if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release edit "$RELEASE_TAG" \
               --repo "$GITHUB_REPOSITORY" \
@@ -184,26 +201,78 @@ jobs:
               --prerelease
           fi
 
-          gh release upload "$RELEASE_TAG" "$FINAL" --clobber --repo "$GITHUB_REPOSITORY"
-          gh release upload "$RELEASE_TAG" "$SHA_FILE" --clobber --repo "$GITHUB_REPOSITORY"
+          RELEASE_ID="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" --jq '.id')"
+          test -n "$RELEASE_ID"
+
+          delete_asset_if_present() {
+            local name="$1"
+            local id
+            id="$(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets?per_page=100" \
+              --jq ".[] | select(.name == \"$name\") | .id" | head -1)"
+            if [ -n "$id" ]; then
+              gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$id"
+            fi
+          }
+
+          upload_asset() {
+            local file="$1"
+            local name="$2"
+            local out="$RUNNER_TEMP/upload-${name}.json"
+            curl --http1.1 --fail-with-body --show-error --silent \
+              --retry 5 --retry-all-errors --retry-delay 5 \
+              --connect-timeout 20 --max-time 600 \
+              --speed-time 60 --speed-limit 1024 \
+              -X POST \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              -H "Content-Type: application/octet-stream" \
+              --data-binary @"$file" \
+              "https://uploads.github.com/repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets?name=$name" \
+              > "$out"
+            python3 - "$out" "$file" "$name" <<'PY'
+          import json, sys
+          from pathlib import Path
+          payload = json.loads(Path(sys.argv[1]).read_text())
+          local = Path(sys.argv[2])
+          expected_name = sys.argv[3]
+          assert payload.get('name') == expected_name, payload
+          assert payload.get('state') == 'uploaded', payload
+          assert payload.get('size') == local.stat().st_size, (payload.get('size'), local.stat().st_size)
+          print(f"UPLOAD_GREEN={expected_name}:{payload.get('size')}")
+          PY
+          }
+
+          delete_asset_if_present "$FINAL_INSTALLER"
+          delete_asset_if_present "$FINAL_INSTALLER.sha256"
+          upload_asset "$FINAL" "$FINAL_INSTALLER"
+          upload_asset "$SHA_FILE" "$FINAL_INSTALLER.sha256"
 
           LOCAL_SIZE="$(stat -f%z "$FINAL")"
-          REMOTE_SIZE="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" \
-            --jq ".assets[] | select(.name == \"$FINAL_INSTALLER\") | .size")"
-          test -n "$REMOTE_SIZE"
+          EXPECTED_SHA="$(awk '{print $1; exit}' "$SHA_FILE")"
+          EXE_ASSET_ID="$(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets?per_page=100" \
+            --jq ".[] | select(.name == \"$FINAL_INSTALLER\") | .id" | head -1)"
+          REMOTE_SIZE="$(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets?per_page=100" \
+            --jq ".[] | select(.name == \"$FINAL_INSTALLER\") | .size" | head -1)"
+          SHA_ASSET_ID="$(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets?per_page=100" \
+            --jq ".[] | select(.name == \"$FINAL_INSTALLER.sha256\") | .id" | head -1)"
+          test -n "$EXE_ASSET_ID"
+          test -n "$SHA_ASSET_ID"
           test "$LOCAL_SIZE" = "$REMOTE_SIZE"
 
-          VERIFY_DIR="$RUNNER_TEMP/endlume-rc-download-verify"
-          rm -rf "$VERIFY_DIR"
-          mkdir -p "$VERIFY_DIR"
-          gh release download "$RELEASE_TAG" \
-            --repo "$GITHUB_REPOSITORY" \
-            --pattern "$FINAL_INSTALLER" \
-            --dir "$VERIFY_DIR"
+          VERIFY="$RUNNER_TEMP/$FINAL_INSTALLER"
+          rm -f "$VERIFY"
+          curl --http1.1 --fail-with-body --show-error --silent --location \
+            --retry 5 --retry-all-errors --retry-delay 5 \
+            --connect-timeout 20 --max-time 600 \
+            --speed-time 60 --speed-limit 1024 \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/octet-stream" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/assets/$EXE_ASSET_ID" \
+            --output "$VERIFY"
 
-          EXPECTED_SHA="$(awk '{print $1; exit}' "$SHA_FILE")"
-          DOWNLOADED="$VERIFY_DIR/$FINAL_INSTALLER"
-          ACTUAL_SHA="$(shasum -a 256 "$DOWNLOADED" | awk '{print $1}')"
+          ACTUAL_SHA="$(shasum -a 256 "$VERIFY" | awk '{print $1}')"
           test "$EXPECTED_SHA" = "$ACTUAL_SHA"
 
           gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" \

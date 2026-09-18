@@ -25,6 +25,6 @@ assert s.count('finalize_local_output(&seed,out)')==2, s.count('finalize_local_o
 assert 'let root=output.join(".ENDLUME-work")' not in s
 p=json.loads((ROOT/'package.json').read_text())
 t=json.loads((ROOT/'src-tauri/tauri.conf.json').read_text())
-assert p['version']=='1.0.0-alpha.8.61'
-assert t['version']=='1.0.0-alpha.8.61'
-print('PASS: ENDLUME 8.61 uses internal Mac scratch and single external finalize while preserving strict media invariants')
+assert p['version'] in {'1.0.0-alpha.8.61','1.0.0-alpha.8.62'}
+assert t['version']==p['version']
+print('PASS: ENDLUME 8.61+ internal scratch contract preserved under',p['version'])

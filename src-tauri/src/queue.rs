@@ -93,7 +93,7 @@ fn save_error_log(job:&QueueJob,raw:&str)->Option<String>{
   if fs::create_dir_all(&dir).is_err(){return None}
   let safe=job.project.name.chars().map(|c|if ['/', '\\', ':', '*', '?', '"', '<', '>', '|'].contains(&c){'_'}else{c}).collect::<String>();
   let path=dir.join(format!("{} — error.txt",safe));
-  let body=format!("ENDLUME render error\nProject: {}\nPath: {}\nVersion: alpha.8.61\n\n{}\n",job.project.name,job.project.path,raw);
+  let body=format!("ENDLUME render error\nProject: {}\nPath: {}\nVersion: {}\n\n{}\n",job.project.name,job.project.path,env!("CARGO_PKG_VERSION"),raw);
   fs::write(&path,body).ok().map(|_|path.to_string_lossy().into_owned())
 }
 

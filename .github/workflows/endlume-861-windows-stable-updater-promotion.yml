@@ -115,20 +115,47 @@ jobs:
           from pathlib import Path
           home=Path.home()
           expected=Path('updater-promote/embedded.pub').read_text().replace('\r\n','\n').strip()
-          roots=[home/'.endlume-updater',home/'.tauri',home/'.endlume-release-bridge']
+          expected_key_line=expected.splitlines()[-1]
+          roots=[
+              home/'.endlume-updater',home/'.tauri',home/'.endlume-release-bridge',
+              home/'Desktop',home/'Documents',home/'Downloads',home/'.config'
+          ]
           matches=[]
+          seen=set()
           for root in roots:
               if not root.exists():
                   continue
-              for pub in root.glob('**/*.pub'):
+              try:
+                  candidates=list(root.rglob('*'))
+              except Exception:
+                  continue
+              for pub in candidates:
                   try:
-                      if pub.read_text().replace('\r\n','\n').strip()!=expected:
+                      if not pub.is_file() or pub.stat().st_size>16384:
+                          continue
+                      resolved=str(pub.resolve())
+                      if resolved in seen:
+                          continue
+                      seen.add(resolved)
+                      text=pub.read_text(errors='ignore').replace('\r\n','\n').strip()
+                      if text!=expected and expected_key_line not in text:
                           continue
                   except Exception:
                       continue
-                  private=Path(str(pub)[:-4])
-                  if private.is_file() and private.stat().st_size>0:
-                      matches.append((pub,private))
+                  private_candidates=[]
+                  if str(pub).endswith('.pub'):
+                      private_candidates.append(Path(str(pub)[:-4]))
+                  private_candidates += [
+                      pub.with_suffix('.key'),
+                      pub.parent/'endlume.key',
+                      pub.parent/'updater.key',
+                  ]
+                  for private in private_candidates:
+                      try:
+                          if private.is_file() and private.stat().st_size>0:
+                              matches.append((pub,private))
+                      except Exception:
+                          pass
           if not matches:
               raise SystemExit('No existing private key matches the updater public key embedded in Windows 8.61')
           pub,private=matches[0]

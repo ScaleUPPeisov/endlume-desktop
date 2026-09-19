@@ -424,7 +424,7 @@ fn emit_progress(app:&AppHandle,job:&QueueJob,started:i64,timer:&Instant,progres
   let raw_eta=if progress>1.0{Some(elapsed*(100.0-progress)/progress)}else{None};
   // Fast-path progress is phase-based (short master -> audio -> manifest -> verify), not proportional
   // to the multi-hour final media duration. Never extrapolate it into a multi-minute fake ETA.
-  let eta=if smart_repeat_project(job){raw_eta.map(|v|v.min(30.0))}else{raw_eta};
+  let eta=if smart_repeat_project(job)&&!audio_processing_requested(job){raw_eta.map(|v|v.min(30.0))}else{raw_eta};
   let (cpu,ram,total,available)=metrics.unwrap_or((0.0,0,0,0));
   let _=app.emit("render-progress",Progress{id:job.project.id.clone(),status:"rendering".into(),progress:progress.clamp(0.0,99.9),stage:stage.into(),started_at:Some(started),elapsed_sec:elapsed,eta_sec:eta,result_path:None,result_bytes:None,actual_video_bitrate:None,cpu_pct:metrics.map(|_|cpu),ram_bytes:metrics.map(|_|ram),ram_total_bytes:metrics.map(|_|total),ram_available_bytes:metrics.map(|_|available),gpu_pct:None,encoder:Some(encoder.into()),attempt:Some(attempt)});
   crate::license::telemetry_render_progress(job,progress.clamp(0.0,99.9),eta,stage,encoder);

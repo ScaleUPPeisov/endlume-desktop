@@ -497,6 +497,8 @@ async fn build_lossless_processed_audio_cycle(app:&AppHandle,job:&QueueJob,start
     durations.push(probe_duration(app,a).await.unwrap_or(180.0).max(0.2));
     args.extend(vec!["-i",a.as_str()].into_iter().map(String::from));
   }
+  let ambient_index=job.project.audio.len();let ambient_enabled=job.ambient.as_ref().map(|x|!x.trim().is_empty()).unwrap_or(false);
+  if let Some(a)=job.ambient.as_ref().filter(|p|!p.trim().is_empty()){args.extend(vec!["-stream_loop","-1","-i",a.as_str()].into_iter().map(String::from));}
   emit_timing(app,&job.project.id,"probe",probe_mark.elapsed().as_secs_f64());
   let min_track=durations.iter().copied().fold(f64::INFINITY,f64::min);
   let cf=job.settings.crossfade_sec.clamp(0.0,10.0).min((min_track*0.40).max(0.0));
@@ -518,7 +520,13 @@ async fn build_lossless_processed_audio_cycle(app:&AppHandle,job:&QueueJob,start
     graph.push_str(&format!(";{inputs}concat=n={}:v=0:a=1[joined]",job.project.audio.len()));
     "joined".to_string()
   };
-  graph.push_str(&format!(";[{last}]aresample=48000:async=1:first_pts=0,alimiter=limit=0.98[outa]"));
+  let music="processed_music";
+  if job.settings.normalize_lufs{graph.push_str(&format!(";[{last}]loudnorm=I=-14:TP=-1.5:LRA=11[{music}]"));}else{graph.push_str(&format!(";[{last}]anull[{music}]"));}
+  if ambient_enabled{
+    graph.push_str(&format!(";[{ambient_index}:a]aresample=48000:async=1:first_pts=0,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,volume=0.18[amb];[{music}][amb]amix=inputs=2:duration=first:weights='1 1':normalize=0,alimiter=limit=0.98[outa]"));
+  }else{
+    graph.push_str(&format!(";[{music}]aresample=48000:async=1:first_pts=0,alimiter=limit=0.98[outa]"));
+  }
   let cycle=work.join("audio-crossfade-gapless.m4a");
   let expected=(durations.iter().sum::<f64>()-cf*((durations.len().saturating_sub(1)) as f64)).max(0.2);
   let audio_encoder=choose_audio_encoder(app).await;

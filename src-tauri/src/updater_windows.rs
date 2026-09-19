@@ -59,8 +59,8 @@ fn expected_sha256(update:&Update)->Option<String>{
 }
 
 async fn check(app:&AppHandle)->Result<Option<Update>,String>{
-  app.updater().map_err(|e|format!("Windows updater init: {e}"))?
-    .check().await.map_err(|e|format!("Windows updater check: {e}"))
+  app.updater().map_err(|e|format!("ENDLUME updater init: {e}"))?
+    .check().await.map_err(|e|format!("ENDLUME updater check: {e}"))
 }
 
 #[tauri::command]
@@ -76,7 +76,7 @@ pub async fn local_update_check(app:AppHandle)->LocalUpdateInfo{
         version:Some(update.version.clone()),
         notes:update.body.clone(),
         date:update.date.map(|d|d.to_string()),
-        reason:if sha.is_some(){None}else{Some("Update manifest не содержит обязательный SHA-256 для Windows package".into())},
+        reason:if sha.is_some(){None}else{Some("Update manifest не содержит обязательный SHA-256 для update package".into())},
       }
     },
     Ok(None)=>LocalUpdateInfo{supported:true,available:false,current,version:None,notes:None,date:None,reason:None},
@@ -88,9 +88,9 @@ pub async fn local_update_check(app:AppHandle)->LocalUpdateInfo{
 pub async fn local_update_start(app:AppHandle)->Result<LocalUpdateStatus,String>{
   let path=state_path(&app)?;
   let update=check(&app).await?.ok_or_else(||format!("Уже установлена актуальная версия {}",env!("CARGO_PKG_VERSION")))?.restart_after_install(true);
-  let expected=expected_sha256(&update).ok_or("Windows update manifest не содержит SHA-256; установка заблокирована")?;
+  let expected=expected_sha256(&update).ok_or("Update manifest не содержит SHA-256; установка заблокирована")?;
   if expected.len()!=64||!expected.chars().all(|c|c.is_ascii_hexdigit()){
-    return Err("Windows update manifest содержит некорректный SHA-256".into())
+    return Err("Update manifest содержит некорректный SHA-256".into())
   }
 
   let initial=state("downloading","Скачиваю подписанное обновление",5.0,Some(format!("ENDLUME {}",update.version)));
@@ -110,7 +110,7 @@ pub async fn local_update_start(app:AppHandle)->Result<LocalUpdateStatus,String>
     },
     ||{}
   ).await.map_err(|e|{
-    let msg=format!("Проверка updater signature / загрузка Windows package: {e}");
+    let msg=format!("Проверка updater signature / загрузка package: {e}");
     let _=write_state(&path,&state("failed","Обновление остановлено",0.0,Some(msg.clone())));
     msg
   })?;
@@ -125,12 +125,12 @@ pub async fn local_update_start(app:AppHandle)->Result<LocalUpdateStatus,String>
 
   write_state(&path,&state("installing","Подпись и SHA-256 проверены. Устанавливаю обновление",90.0,None))?;
   update.install(bytes).map_err(|e|{
-    let msg=format!("Не удалось запустить Windows installer: {e}");
+    let msg=format!("Не удалось установить обновление: {e}");
     let _=write_state(&path,&state("failed","Установка не запущена",0.0,Some(msg.clone())));
     msg
   })?;
 
-  let done=state("success","Windows installer запущен",100.0,Some("ENDLUME будет перезапущен установщиком".into()));
+  let done=state("success","Обновление установлено",100.0,Some("ENDLUME будет перезапущен после установки".into()));
   let _=write_state(&path,&done);
   Ok(done)
 }

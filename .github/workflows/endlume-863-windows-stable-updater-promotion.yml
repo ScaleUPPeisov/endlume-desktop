@@ -1,0 +1,251 @@
+name: ENDLUME 8.63 Windows Stable Updater Promotion
+
+on:
+  push:
+    branches: [fix/endlume-863-windows-fast-render-size]
+    paths:
+      - '.github/workflows/endlume-863-windows-stable-updater-promotion.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-863-windows-stable-updater-promotion
+  cancel-in-progress: true
+
+env:
+  VERSION: 1.0.0-alpha.8.63
+  PROD_TAG: endlume-v1.0.0-alpha.8.63-windows-rc
+  EXE_NAME: ENDLUME-YT-Studio-PEISOV-Setup-1.0.0-alpha.8.63-x64.exe
+  EXPECTED_SIZE: '98249592'
+  EXPECTED_SHA256: 5ab839ceec3fa110e81cd8a4baac27cfff1cf0f6201815ffceb8a25bd4e43883
+  STABLE_REPO: ScaleUPPeisov/scaleup-site
+  STABLE_TAG: endlume-stable
+  EXPECTED_UPDATER_PUBKEY_B64: dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEQzMjJDRDUwNDkxRDM1MDAKUldRQU5SMUpVTTBpMCs2TTF5UjZkS1h3K0N5UUlBb0srYmVtN1lianVCdEY2ZkxuN2FlM1AyQmoK
+
+jobs:
+  promote-windows-updater:
+    name: Sign exact Windows 8.63 EXE and extend stable manifest
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 30
+    env:
+      RELEASE_TOKEN: ${{ secrets.ENDLUME_RELEASE_TOKEN }}
+
+    steps:
+      - name: Verify cross-repo release token
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "${RELEASE_TOKEN:-}" || { echo 'ENDLUME_RELEASE_TOKEN is missing'; exit 20; }
+          GH_TOKEN="$RELEASE_TOKEN" gh api "repos/$STABLE_REPO" --jq .full_name
+
+      - name: Download exact Windows 8.63 EXE and verify SHA
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          rm -rf updater-promote
+          mkdir -p updater-promote
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$PROD_TAG" > updater-promote/prod.json
+          python3 - <<'PY'
+          import json,os
+          r=json.load(open('updater-promote/prod.json'))
+          a=next((x for x in r.get('assets',[]) if x.get('name')==os.environ['EXE_NAME']),None)
+          assert a,a
+          assert a.get('state')=='uploaded',a
+          assert int(a.get('size',0))==int(os.environ['EXPECTED_SIZE']),a
+          assert a.get('digest')=='sha256:'+os.environ['EXPECTED_SHA256'],a
+          open('updater-promote/exe_asset_id','w').write(str(a['id']))
+          PY
+          gh api -H "Accept: application/octet-stream"             "repos/$GITHUB_REPOSITORY/releases/assets/$(cat updater-promote/exe_asset_id)"             > "updater-promote/$EXE_NAME"
+          python3 - <<'PY'
+          import hashlib,os,pathlib
+          p=pathlib.Path('updater-promote')/os.environ['EXE_NAME']
+          size=p.stat().st_size
+          sha=hashlib.sha256(p.read_bytes()).hexdigest()
+          assert size==int(os.environ['EXPECTED_SIZE']),size
+          assert sha==os.environ['EXPECTED_SHA256'],sha
+          print('UPDATER_EXACT_WINDOWS_863_EXE_GREEN=1')
+          print('UPDATER_EXE_BYTES='+str(size))
+          print('UPDATER_EXE_SHA256='+sha)
+          PY
+
+      - name: Read current stable manifest without mutating it
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export GH_TOKEN="$RELEASE_TOKEN"
+          gh api "repos/$STABLE_REPO/releases/tags/$STABLE_TAG" > updater-promote/stable-release.json
+          python3 - <<'PY'
+          import json
+          r=json.load(open('updater-promote/stable-release.json'))
+          a=next((x for x in r.get('assets',[]) if x.get('name')=='latest.json'),None)
+          assert a,'latest.json missing from stable release'
+          open('updater-promote/latest_asset_id','w').write(str(a['id']))
+          PY
+          gh api -H "Accept: application/octet-stream"             "repos/$STABLE_REPO/releases/assets/$(cat updater-promote/latest_asset_id)"             > updater-promote/latest-before.json
+          python3 - <<'PY'
+          import json,os,pathlib
+          p=pathlib.Path('updater-promote/latest-before.json')
+          d=json.loads(p.read_text())
+          version=str(d.get('version',''))
+          platforms=d.get('platforms') or {}
+          print('CURRENT_STABLE_VERSION='+version)
+          print('CURRENT_STABLE_PLATFORMS='+','.join(sorted(platforms)))
+          assert 'darwin-aarch64' in platforms,'macOS stable platform missing; refusing to mutate'
+          pathlib.Path('updater-promote/darwin-before.json').write_text(
+              json.dumps(platforms['darwin-aarch64'],sort_keys=True,separators=(',',':'))
+          )
+          if version!=os.environ['VERSION']:
+              raise SystemExit(
+                f"SAFE_STOP_SHARED_MANIFEST_VERSION={version}; "
+                f"Windows={os.environ['VERSION']}; refusing to alter macOS update semantics"
+              )
+          print('SHARED_MANIFEST_VERSION_COMPATIBLE=1')
+          PY
+
+      - name: Resolve signing key matching embedded updater public key
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          printf '%s' "$EXPECTED_UPDATER_PUBKEY_B64" | base64 --decode > updater-promote/embedded.pub
+          python3 - <<'PY'
+          from pathlib import Path
+          home=Path.home()
+          expected=Path('updater-promote/embedded.pub').read_text().replace('\r\n','\n').strip()
+          expected_key_line=expected.splitlines()[-1]
+          roots=[
+              home/'.endlume-updater',home/'.tauri',home/'.endlume-release-bridge',
+              home/'Desktop',home/'Documents',home/'Downloads',home/'.config'
+          ]
+          matches=[]
+          seen=set()
+          for root in roots:
+              if not root.exists():
+                  continue
+              try:
+                  candidates=list(root.rglob('*'))
+              except Exception:
+                  continue
+              for pub in candidates:
+                  try:
+                      if not pub.is_file() or pub.stat().st_size>16384:
+                          continue
+                      resolved=str(pub.resolve())
+                      if resolved in seen:
+                          continue
+                      seen.add(resolved)
+                      text=pub.read_text(errors='ignore').replace('\r\n','\n').strip()
+                      if text!=expected and expected_key_line not in text:
+                          continue
+                  except Exception:
+                      continue
+                  private_candidates=[]
+                  if str(pub).endswith('.pub'):
+                      private_candidates.append(Path(str(pub)[:-4]))
+                  private_candidates += [
+                      pub.with_suffix('.key'),
+                      pub.parent/'endlume.key',
+                      pub.parent/'updater.key',
+                  ]
+                  for private in private_candidates:
+                      try:
+                          if private.is_file() and private.stat().st_size>0:
+                              matches.append((pub,private))
+                      except Exception:
+                          pass
+          if not matches:
+              raise SystemExit('No existing private key matches the updater public key embedded in ENDLUME')
+          pub,private=matches[0]
+          Path('updater-promote/signing_key_path').write_text(str(private))
+          print('UPDATER_PUBLIC_KEY_MATCH=1')
+          print('MATCHING_SIGNING_KEY_PATH='+str(private))
+          PY
+
+      - name: Sign exact Windows 8.63 EXE without rebuilding
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          KEY="$(cat updater-promote/signing_key_path)"
+          test -s "$KEY"
+          EXE="$PWD/updater-promote/$EXE_NAME"
+          export TAURI_SIGNING_PRIVATE_KEY_PATH="$KEY"
+          unset TAURI_SIGNING_PRIVATE_KEY_PASSWORD || true
+          npx --yes @tauri-apps/cli@2.10.1 signer sign "$EXE"
+          test -s "$EXE.sig"
+          SIG="$(tr -d '\r\n' < "$EXE.sig")"
+          test -n "$SIG"
+          printf '%s' "$SIG" > updater-promote/windows.signature
+          echo "UPDATER_SIGNATURE_BYTES=$(wc -c < updater-promote/windows.signature | tr -d ' ')"
+          echo 'UPDATER_EXACT_WINDOWS_863_EXE_SIGNED=1'
+
+      - name: Extend stable manifest with Windows 8.63 while preserving macOS
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          PROD_URL="https://github.com/$GITHUB_REPOSITORY/releases/download/$PROD_TAG/$EXE_NAME"
+          python3 - "$PROD_URL" <<'PY'
+          import json,os,pathlib,sys
+          url=sys.argv[1]
+          before=json.loads(pathlib.Path('updater-promote/latest-before.json').read_text())
+          darwin_before=json.dumps(before['platforms']['darwin-aarch64'],sort_keys=True,separators=(',',':'))
+          sig=pathlib.Path('updater-promote/windows.signature').read_text().strip()
+          before.setdefault('platforms',{})['windows-x86_64']={
+            'url':url,
+            'signature':sig,
+            'sha256':os.environ['EXPECTED_SHA256'],
+          }
+          darwin_after=json.dumps(before['platforms']['darwin-aarch64'],sort_keys=True,separators=(',',':'))
+          assert darwin_before==darwin_after,'macOS platform entry changed'
+          assert str(before.get('version'))==os.environ['VERSION']
+          pathlib.Path('updater-promote/latest.json').write_text(
+              json.dumps(before,ensure_ascii=False,indent=2)+'\n'
+          )
+          print('MACOS_PLATFORM_ENTRY_PRESERVED=1')
+          print('WINDOWS_STABLE_URL='+url)
+          PY
+
+      - name: Publish only latest.json to existing stable release
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export GH_TOKEN="$RELEASE_TOKEN"
+          gh release upload "$STABLE_TAG" updater-promote/latest.json             --repo "$STABLE_REPO" --clobber
+
+      - name: Verify stable updater manifest after publish
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export GH_TOKEN="$RELEASE_TOKEN"
+          gh api "repos/$STABLE_REPO/releases/tags/$STABLE_TAG" > updater-promote/stable-after.json
+          python3 - <<'PY'
+          import json
+          r=json.load(open('updater-promote/stable-after.json'))
+          a=next((x for x in r.get('assets',[]) if x.get('name')=='latest.json'),None)
+          assert a,a
+          open('updater-promote/latest_after_asset_id','w').write(str(a['id']))
+          PY
+          gh api -H "Accept: application/octet-stream"             "repos/$STABLE_REPO/releases/assets/$(cat updater-promote/latest_after_asset_id)"             > updater-promote/latest-after.json
+          python3 - <<'PY'
+          import json,os,pathlib
+          before=json.loads(pathlib.Path('updater-promote/latest-before.json').read_text())
+          after=json.loads(pathlib.Path('updater-promote/latest-after.json').read_text())
+          assert after.get('version')==os.environ['VERSION'],after.get('version')
+          b=json.dumps(before['platforms']['darwin-aarch64'],sort_keys=True,separators=(',',':'))
+          a=json.dumps(after['platforms']['darwin-aarch64'],sort_keys=True,separators=(',',':'))
+          assert a==b,'macOS stable entry changed'
+          w=after.get('platforms',{}).get('windows-x86_64')
+          assert w,w
+          expected_url=f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/releases/download/{os.environ['PROD_TAG']}/{os.environ['EXE_NAME']}"
+          assert w.get('url')==expected_url,w
+          assert w.get('sha256')==os.environ['EXPECTED_SHA256'],w
+          assert w.get('signature')==pathlib.Path('updater-promote/windows.signature').read_text().strip()
+          print('WINDOWS_STABLE_MANIFEST_VERIFIED=YES')
+          print('MACOS_STABLE_ENTRY_UNCHANGED=YES')
+          print('UPDATER_VERSION='+after['version'])
+          print('UPDATER_ARCH=windows-x86_64')
+          print('UPDATER_SHA256='+w['sha256'])
+          print('UPDATER_VERIFIED=YES')
+          PY

@@ -7,9 +7,9 @@ use std::{collections::HashSet,fs,path::{Path,PathBuf},process::Command};
 #[cfg(target_os="macos")]
 const ENDLUME_BUNDLE_ID:&str="studio.endlume.desktop";
 #[cfg(target_os="macos")]
-const ENDLUME_APP_NAME:&str="ENDLUME Studio.app";
+const ENDLUME_APP_NAME:&str="ENDLUME YT Studio PEISOV.app";
 #[cfg(target_os="macos")]
-const ENDLUME_CANONICAL_PATH:&str="/Applications/ENDLUME Studio.app";
+const ENDLUME_CANONICAL_PATH:&str="/Applications/ENDLUME YT Studio PEISOV.app";
 
 #[cfg(target_os="windows")]
 #[repr(C)]
@@ -223,10 +223,10 @@ pub fn normalize_current_app_name(app:tauri::AppHandle)->Result<Value,String>{
     let current_version=plist_value(&current,"CFBundleShortVersionString").unwrap_or_default();
     if target.exists(){
       let target_id=plist_value(&target,"CFBundleIdentifier");
-      if target_id.as_deref()!=Some(ENDLUME_BUNDLE_ID){return Err(format!("Файл '{}' уже существует и не является ENDLUME Studio.",target.display()))}
+      if target_id.as_deref()!=Some(ENDLUME_BUNDLE_ID){return Err(format!("Файл '{}' уже существует и не является ENDLUME YT Studio PEISOV.",target.display()))}
       let target_version=plist_value(&target,"CFBundleShortVersionString").unwrap_or_default();
       if !target_version.is_empty()&&!current_version.is_empty()&&version_cmp(&target_version,&current_version)==std::cmp::Ordering::Greater{
-        launch_app(&target).map_err(|e|format!("Не удалось запустить более новую ENDLUME Studio: {e}"))?;
+        launch_app(&target).map_err(|e|format!("Не удалось запустить более новую ENDLUME YT Studio PEISOV: {e}"))?;
         let response=json!({"supported":true,"renamed":false,"canonicalName":true,"canonicalInstall":true,"selectedExisting":true,"currentPath":target,"version":target_version});
         app.exit(0);
         return Ok(response);
@@ -235,7 +235,7 @@ pub fn normalize_current_app_name(app:tauri::AppHandle)->Result<Value,String>{
     }
 
     if let Some(parent)=target.parent(){if !parent.exists(){fs::create_dir_all(parent).map_err(|e|format!("Не удалось подготовить /Applications: {e}"))?;}}
-    if let Err(e)=fs::rename(&current,&target){privileged_move(&current,&target).map_err(|admin|format!("Не удалось перенести ENDLUME Studio в /Applications: {e}; {admin}"))?;}
+    if let Err(e)=fs::rename(&current,&target){privileged_move(&current,&target).map_err(|admin|format!("Не удалось перенести ENDLUME YT Studio PEISOV в /Applications: {e}; {admin}"))?;}
     launch_app(&target).map_err(|e|format!("Приложение перенесено, но не удалось перезапустить ENDLUME: {e}"))?;
     let response=json!({"supported":true,"renamed":true,"canonicalName":true,"canonicalInstall":true,"previousPath":current,"currentPath":target});
     app.exit(0);

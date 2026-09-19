@@ -22,8 +22,14 @@ jobs:
           KEYDIR="$HOME/.endlume-updater"
           test -s "$KEYDIR/cloudflare-api-token.txt"
           test -s "$KEYDIR/cloudflare-account-id.txt"
-          echo "CLOUDFLARE_API_TOKEN=$(tr -d '\r\n' < "$KEYDIR/cloudflare-api-token.txt")" >> "$GITHUB_ENV"
-          echo "CLOUDFLARE_ACCOUNT_ID=$(tr -d '\r\n' < "$KEYDIR/cloudflare-account-id.txt")" >> "$GITHUB_ENV"
+          TOKEN="$(tr -d '\r\n' < "$KEYDIR/cloudflare-api-token.txt")"
+          ACCOUNT="$(tr -d '\r\n' < "$KEYDIR/cloudflare-account-id.txt")"
+          echo "::add-mask::$TOKEN"
+          echo "::add-mask::$ACCOUNT"
+          {
+            echo "CLOUDFLARE_API_TOKEN=$TOKEN"
+            echo "CLOUDFLARE_ACCOUNT_ID=$ACCOUNT"
+          } >> "$GITHUB_ENV"
       - name: Validate Worker JavaScript
         run: node --check infra/cloudflare-update/src/index.js
       - name: Deploy Worker

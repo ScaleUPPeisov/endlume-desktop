@@ -1,0 +1,247 @@
+name: ENDLUME 8.63 Cross-Platform Stable Updater Promotion v2
+
+on:
+  push:
+    branches: [fix/endlume-863-windows-fast-render-size]
+    paths:
+      - '.github/workflows/endlume-863-crossplatform-stable-updater-promotion-v2.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-863-crossplatform-stable-updater-promotion-v2
+  cancel-in-progress: true
+
+env:
+  VERSION: 1.0.0-alpha.8.63
+  HOST_REPO: ScaleUPPeisov/scaleup-site
+  STABLE_TAG: endlume-stable
+  STABLE_TAR: ENDLUME-macos-aarch64.app.tar.gz
+  WINDOWS_TAG: endlume-v1.0.0-alpha.8.63-windows-rc
+  WINDOWS_EXE: ENDLUME-YT-Studio-PEISOV-Setup-1.0.0-alpha.8.63-x64.exe
+  WINDOWS_SIZE: '98249592'
+  WINDOWS_SHA256: 5ab839ceec3fa110e81cd8a4baac27cfff1cf0f6201815ffceb8a25bd4e43883
+
+jobs:
+  promote:
+    name: macOS ARM64 + Windows x64 • Signed Stable 8.63
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 150
+    env:
+      RELEASE_TOKEN: ${{ secrets.ENDLUME_RELEASE_TOKEN }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify source and release token
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(uname -s)" = Darwin
+          test "$(uname -m)" = arm64
+          test -n "${RELEASE_TOKEN:-}" || { echo 'ENDLUME_RELEASE_TOKEN missing'; exit 20; }
+          GH_TOKEN="$RELEASE_TOKEN" gh api "repos/$HOST_REPO" --jq .full_name
+          python3 - <<'PY'
+          import json,re
+          from pathlib import Path
+          v='1.0.0-alpha.8.63'
+          assert json.loads(Path('package.json').read_text())['version']==v
+          assert json.loads(Path('src-tauri/tauri.conf.json').read_text())['version']==v
+          cargo=Path('src-tauri/Cargo.toml').read_text()
+          assert re.search(r'^version\s*=\s*"'+re.escape(v)+r'"$',cargo,re.M)
+          print('ENDLUME_863_SOURCE_GREEN')
+          PY
+
+      - name: Stage Apple Silicon FFmpeg sidecars
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          FOUNDATION="$HOME/.endlume-local-builder/endlume-desktop-8.40-bootstrap"
+          test -d "$FOUNDATION/src-tauri/binaries"
+          mkdir -p src-tauri/binaries
+          rsync -a "$FOUNDATION/src-tauri/binaries/" src-tauri/binaries/
+          chmod +x src-tauri/binaries/ffmpeg* src-tauri/binaries/ffprobe*
+          test -x src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          test -x src-tauri/binaries/ffprobe-aarch64-apple-darwin
+
+      - name: Regression before stable promotion
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          npm ci
+          npm run check
+          npm run build
+          python3 scripts/test-fast-2h-contract-8-63.py
+          python3 scripts/test-managed-license-render-gate.py
+          python3 scripts/test-runtime-safety-8-62.py
+          cargo check --manifest-path src-tauri/Cargo.toml
+          cargo test --manifest-path src-tauri/Cargo.toml -- --nocapture
+
+      - name: Prepare updater signing key
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          KEY="$HOME/.endlume-updater/endlume.key"
+          PUB="$HOME/.endlume-updater/endlume.key.pub"
+          test -s "$KEY"
+          test -s "$PUB"
+          EXPECTED="$(python3 - <<'PY'
+          import json
+          print(json.load(open('src-tauri/tauri.conf.json'))['plugins']['updater']['pubkey'].strip())
+          PY
+          )"
+          ACTUAL="$(tr -d '\r\n' < "$PUB")"
+          test "$EXPECTED" = "$ACTUAL"
+          echo "TAURI_SIGNING_PRIVATE_KEY_PATH=$KEY" >> "$GITHUB_ENV"
+          echo "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=" >> "$GITHUB_ENV"
+          echo UPDATER_PUBLIC_KEY_MATCH=1
+
+      - name: Build macOS 8.63 app
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          export TAURI_SIGNING_PRIVATE_KEY="$(cat "$TAURI_SIGNING_PRIVATE_KEY_PATH")"
+          rm -rf src-tauri/target/aarch64-apple-darwin/release/bundle/macos
+          npx tauri build --target aarch64-apple-darwin --bundles app
+
+      - name: Verify and sign macOS updater archive
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          BUNDLE="src-tauri/target/aarch64-apple-darwin/release/bundle/macos"
+          APP="$(find "$BUNDLE" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          test -n "$APP" -a -d "$APP"
+          BID="$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$APP/Contents/Info.plist")"
+          VER="$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist")"
+          EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
+          test "$BID" = 'studio.endlume.desktop'
+          test "$VER" = "$VERSION"
+          /usr/bin/lipo -archs "$APP/Contents/MacOS/$EXE" | grep -qw arm64
+          if ! /usr/bin/codesign --verify --deep --strict "$APP" >/dev/null 2>&1; then
+            /usr/bin/codesign --force --deep --sign - "$APP"
+          fi
+          /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP"
+          OUT="$RUNNER_TEMP/endlume-863-stable"
+          rm -rf "$OUT"; mkdir -p "$OUT"
+          TAR="$OUT/$STABLE_TAR"
+          /usr/bin/tar -czf "$TAR" -C "$BUNDLE" "$(basename "$APP")"
+          test -s "$TAR"
+          env -u TAURI_SIGNING_PRIVATE_KEY npx tauri signer sign "$TAR" >/dev/null
+          test -s "$TAR.sig"
+          MAC_SHA="$(shasum -a 256 "$TAR" | awk '{print $1}')"
+          test "${#MAC_SHA}" = 64
+          echo "ENDLUME_OUT=$OUT" >> "$GITHUB_ENV"
+          echo "MAC_SHA256=$MAC_SHA" >> "$GITHUB_ENV"
+          echo MACOS_863_SIGNED_UPDATER_GREEN=1
+
+      - name: Download and sign exact Windows 8.63 EXE
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          OUT="$ENDLUME_OUT"
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$WINDOWS_TAG" > "$OUT/windows-release.json"
+          python3 - <<'PY'
+          import json,os,pathlib
+          r=json.loads((pathlib.Path(os.environ['ENDLUME_OUT'])/'windows-release.json').read_text())
+          a=next((x for x in r.get('assets',[]) if x.get('name')==os.environ['WINDOWS_EXE']),None)
+          assert a,a
+          assert a.get('state')=='uploaded',a
+          assert int(a.get('size',0))==int(os.environ['WINDOWS_SIZE']),a
+          assert a.get('digest')=='sha256:'+os.environ['WINDOWS_SHA256'],a
+          (pathlib.Path(os.environ['ENDLUME_OUT'])/'windows_asset_id').write_text(str(a['id']))
+          PY
+          gh api -H "Accept: application/octet-stream"             "repos/$GITHUB_REPOSITORY/releases/assets/$(cat "$OUT/windows_asset_id")" > "$OUT/$WINDOWS_EXE"
+          test "$(stat -f%z "$OUT/$WINDOWS_EXE")" = "$WINDOWS_SIZE"
+          test "$(shasum -a 256 "$OUT/$WINDOWS_EXE" | awk '{print $1}')" = "$WINDOWS_SHA256"
+          export TAURI_SIGNING_PRIVATE_KEY_PATH="$TAURI_SIGNING_PRIVATE_KEY_PATH"
+          unset TAURI_SIGNING_PRIVATE_KEY_PASSWORD || true
+          npx --yes @tauri-apps/cli@2.10.1 signer sign "$OUT/$WINDOWS_EXE"
+          test -s "$OUT/$WINDOWS_EXE.sig"
+          echo WINDOWS_863_EXACT_EXE_SIGNED_GREEN=1
+
+      - name: Build combined 8.63 stable manifest
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          OUT="$ENDLUME_OUT"
+          MAC_URL="https://github.com/$HOST_REPO/releases/download/$STABLE_TAG/$STABLE_TAR"
+          WIN_URL="https://github.com/$GITHUB_REPOSITORY/releases/download/$WINDOWS_TAG/$WINDOWS_EXE"
+          MAC_SIG="$(tr -d '\r\n' < "$OUT/$STABLE_TAR.sig")"
+          WIN_SIG="$(tr -d '\r\n' < "$OUT/$WINDOWS_EXE.sig")"
+          python3 - "$OUT/latest.json" "$VERSION" "$MAC_URL" "$MAC_SIG" "$MAC_SHA256" "$WIN_URL" "$WIN_SIG" "$WINDOWS_SHA256" <<'PY'
+          import datetime,json,sys
+          out,version,mac_url,mac_sig,mac_sha,win_url,win_sig,win_sha=sys.argv[1:]
+          data={
+            "version":version,
+            "notes":"ENDLUME 8.63: Windows fast multi-still render fix, original/processed audio separation, expanded telemetry and Control diagnostics. macOS remains on the 8.63 managed-access source line.",
+            "pub_date":datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00","Z"),
+            "platforms":{
+              "darwin-aarch64":{"url":mac_url,"signature":mac_sig,"sha256":mac_sha},
+              "windows-x86_64":{"url":win_url,"signature":win_sig,"sha256":win_sha}
+            }
+          }
+          json.dump(data,open(out,"w"),ensure_ascii=False,indent=2)
+          print('COMBINED_863_MANIFEST_GREEN')
+          PY
+
+      - name: Publish signed stable 8.63 channel
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.ENDLUME_RELEASE_TOKEN }}
+        run: |
+          set -Eeuo pipefail
+          test -n "${GH_TOKEN:-}"
+          OUT="$ENDLUME_OUT"
+          if ! gh release view "$STABLE_TAG" --repo "$HOST_REPO" >/dev/null 2>&1; then
+            gh release create "$STABLE_TAG" --repo "$HOST_REPO" --title "ENDLUME Stable Updates" --notes "Signed updater channel."
+          fi
+          gh release upload "$STABLE_TAG"             "$OUT/$STABLE_TAR" "$OUT/$STABLE_TAR.sig" "$OUT/latest.json"             --clobber --repo "$HOST_REPO"
+          echo STABLE_863_PUBLISHED=1
+
+      - name: Verify public stable manifest and both packages
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          PUBLIC="$RUNNER_TEMP/endlume-863-public-latest.json"
+          URL="https://github.com/$HOST_REPO/releases/download/$STABLE_TAG/latest.json"
+          rm -f "$PUBLIC"
+          for i in {1..24}; do
+            if /usr/bin/curl -fsSL --connect-timeout 10 --max-time 30 "$URL?run=$GITHUB_RUN_ID-$i" -o "$PUBLIC"; then
+              if python3 - "$PUBLIC" "$VERSION" "$WINDOWS_SHA256" "$MAC_SHA256" <<'PY'
+          import json,sys
+          d=json.load(open(sys.argv[1]))
+          assert d.get('version')==sys.argv[2],d.get('version')
+          p=d.get('platforms',{})
+          assert set(['darwin-aarch64','windows-x86_64']).issubset(p)
+          assert p['windows-x86_64'].get('sha256')==sys.argv[3]
+          assert p['darwin-aarch64'].get('sha256')==sys.argv[4]
+          assert p['windows-x86_64'].get('url') and p['windows-x86_64'].get('signature')
+          assert p['darwin-aarch64'].get('url') and p['darwin-aarch64'].get('signature')
+          PY
+              then break; fi
+            fi
+            sleep 5
+          done
+          python3 - "$PUBLIC" "$VERSION" <<'PY'
+          import json,sys
+          d=json.load(open(sys.argv[1]))
+          assert d.get('version')==sys.argv[2]
+          assert 'windows-x86_64' in d.get('platforms',{})
+          assert 'darwin-aarch64' in d.get('platforms',{})
+          print('PUBLIC_STABLE_863_TWO_PLATFORM_GREEN')
+          PY
+          /usr/bin/curl -fsIL --connect-timeout 10 --max-time 30             "https://github.com/$HOST_REPO/releases/download/$STABLE_TAG/$STABLE_TAR" >/dev/null
+          /usr/bin/curl -fsIL --connect-timeout 10 --max-time 30             "https://github.com/$GITHUB_REPOSITORY/releases/download/$WINDOWS_TAG/$WINDOWS_EXE" >/dev/null
+          echo ENDLUME_863_AUTOUPDATE_ENABLED_GREEN=1

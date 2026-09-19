@@ -123,4 +123,12 @@ export interface LicenseStatus {
   expiresAt?: string | null;
   maskedKey?: string;
   offlineUntil?: string | null;
+  plan?: string | null;
+  licenseId?: string | null;
+  licenseStatus?: string | null;
+  deviceId?: string | null;
+  deviceRecordId?: string | null;
+  deviceStatus?: string | null;
+  realtimeTopic?: string | null;
+  connection?: string | null;
 }

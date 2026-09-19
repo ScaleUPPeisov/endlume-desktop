@@ -1,7 +1,5 @@
 import { invoke, convertFileSrc } from '@tauri-apps/api/core';
 import { open, message } from '@tauri-apps/plugin-dialog';
-import { check } from '@tauri-apps/plugin-updater';
-import { relaunch } from '@tauri-apps/plugin-process';
 import { getVersion } from '@tauri-apps/api/app';
 import type { BenchmarkResult, EffectPreset, LibraryPayload, LicenseStatus, ProjectScanItem, RecoveryPayload, RenderSettings, SubscribePreset } from './types';
 
@@ -26,11 +24,12 @@ export type SingleAppStatus={
 export type LivePreviewAssetPaths={basePath:string;baseKind:'image'|'video';overlayPath:string};
 export type VyronBatchRequest={batchId:string;manifestPath:string;requestedAt?:string|null;handoffId?:string|null;selectedProjectIds?:string[];sourceManifestPath?:string|null;schemaVersion?:number|null};
 export type VyronBatchInfo={batchId:string;channelId:string;channelName:string;projectCount:number;tracksAssigned:number;rootPath:string;outputDir:string;statusPath:string;manifestPath:string;projectPaths:string[]};
-type WindowsUpdateInfo={supported:boolean;available:boolean;current:string;version?:string|null;notes?:string|null;date?:string|null;reason?:string|null};
-type WindowsUpdateStatus={state:string;stage?:string|null;progress:number;message?:string|null;logPath?:string|null};
+type NativeUpdateInfo={supported:boolean;available:boolean;current:string;version?:string|null;notes?:string|null;date?:string|null;reason?:string|null};
+type NativeUpdateStatus={state:string;stage?:string|null;progress:number;message?:string|null;logPath?:string|null};
 
 const isWindowsRuntime=()=>/Windows/i.test(navigator.userAgent);
-const productTitle=()=>isWindowsRuntime()?'ENDLUME YT Studio PEISOV':'ENDLUME Studio';
+const isMacRuntime=()=>/Macintosh|Mac OS X/i.test(navigator.userAgent);
+const productTitle=()=>'ENDLUME YT Studio PEISOV';
 
 async function withTimeout<T>(promise:Promise<T>,ms:number,label:string):Promise<T>{
   let timer:number|undefined;
@@ -42,13 +41,13 @@ async function importManagedAsset(source:string,kind:'effects'|'subscribe'|'ambi
   return invoke<string>('import_library_asset',{source,kind});
 }
 
-async function windowsUpdateInstall(onProgress?:(percent:number,stage?:string)=>void){
+async function nativeUpdateInstall(onProgress?:(percent:number,stage?:string)=>void){
   onProgress?.(1,'Подготавливаю подписанное обновление');
   let stopped=false;
   const poll=async()=>{
     while(!stopped){
       try{
-        const s=await invoke<WindowsUpdateStatus>('local_update_status');
+        const s=await invoke<NativeUpdateStatus>('local_update_status');
         onProgress?.(Math.max(0,Math.min(100,Number(s.progress)||0)),s.stage||undefined);
         if(s.state==='failed')throw new Error(s.message||'Windows update failed');
         if(s.state==='success')return;
@@ -56,7 +55,7 @@ async function windowsUpdateInstall(onProgress?:(percent:number,stage?:string)=>
       await new Promise(r=>window.setTimeout(r,250));
     }
   };
-  const install=invoke<WindowsUpdateStatus>('local_update_start');
+  const install=invoke<NativeUpdateStatus>('local_update_start');
   const poller=poll();
   try{
     const done=await install;
@@ -118,48 +117,20 @@ export const api = {
   showInfo:(text:string)=>message(text,{title:productTitle(),kind:'info'}),
   checkUpdate:async()=>{
     const current=await getVersion();
-    if(isWindowsRuntime()){
-      const u=await withTimeout(invoke<WindowsUpdateInfo>('local_update_check'),20000,'Проверка обновлений');
-      if(!u.available||!u.version)return {none:true,current,channel:'windows-signed-sha256',reason:u.reason||undefined};
+    if(isWindowsRuntime()||isMacRuntime()){
+      const u=await withTimeout(invoke<NativeUpdateInfo>('local_update_check'),20000,'Проверка обновлений');
+      if(!u.available||!u.version)return {none:true,current,channel:'signed-sha256',reason:u.reason||undefined};
       if(u.reason)throw new Error(u.reason);
       return {
         version:u.version,
         date:u.date||'',
         body:u.notes||'',
         current,
-        channel:'windows-signed-sha256',
-        install:windowsUpdateInstall
+        channel:'signed-sha256',
+        install:nativeUpdateInstall
       };
     }
-    const update=await withTimeout(check(),20000,'Проверка обновлений');
-    if(!update)return {none:true,current,channel:'github-signed'};
-    return {
-      version:update.version,
-      date:update.date||'',
-      body:update.body||'',
-      current,
-      channel:'github-signed',
-      install:async(onProgress?:(percent:number,stage?:string)=>void)=>{
-        let total=0;
-        let downloaded=0;
-        onProgress?.(1,'Подготавливаю подписанное обновление');
-        await update.downloadAndInstall((event)=>{
-          if(event.event==='Started'){
-            total=event.data.contentLength||0;
-            downloaded=0;
-            onProgress?.(3,'Скачиваю обновление');
-          }else if(event.event==='Progress'){
-            downloaded+=event.data.chunkLength||0;
-            const pct=total>0?Math.min(94,3+Math.round(downloaded/total*91)):25;
-            onProgress?.(pct,'Скачиваю обновление');
-          }else if(event.event==='Finished'){
-            onProgress?.(97,'Устанавливаю обновление');
-          }
-        });
-        onProgress?.(100,'Обновление установлено');
-        await relaunch();
-      }
-    };
+    return {none:true,current,channel:'unsupported'};
   },
-  updateStatus:async()=>isWindowsRuntime()?invoke<WindowsUpdateStatus>('local_update_status'):({state:'native',stage:'Tauri signed updater',progress:0})
+  updateStatus:async()=>invoke<NativeUpdateStatus>('local_update_status')
 };

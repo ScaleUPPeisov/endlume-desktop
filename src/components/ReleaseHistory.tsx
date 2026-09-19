@@ -3,7 +3,14 @@ import React from 'react';
 type Release={version:string;date:string;current?:boolean;title:string;items:string[]};
 
 const releases:Release[]=[
-  {version:'1.0.0-alpha.8.62',date:'18.09.2026',current:true,title:'Production QA • License Security • Queue/Revoke Hardening',items:[
+  {version:'1.0.0-alpha.8.63',date:'19.09.2026',current:true,title:'macOS Managed Access • Native Updater • PEISOV Parity',items:[
+    'macOS Apple Silicon переведён на managed-license backend ENDLUME: уникальные customer keys, OWNER lifetime, device binding, heartbeat и remote revoke.',
+    'Session token на Mac хранится в native Keychain через keyring apple-native; device_id сохраняется между перезапусками.',
+    'macOS updater переведён с GitHub CLI/shell bootstrap на подписанный Tauri updater с обязательной SHA-256 проверкой перед install.',
+    'Название приложения унифицировано: ENDLUME YT Studio PEISOV, включая bundle title и канонический /Applications path.',
+    'Сохранены production fixes 8.62: queue dedupe, revoke-finalization hardening, 160-bit license keys и natural output без synthetic padding.'
+  ]},
+  {version:'1.0.0-alpha.8.62',date:'18.09.2026',current:false,title:'Production QA • License Security • Queue/Revoke Hardening',items:[
     'Managed License key generation hardened from 80-bit to 160-bit cryptographic keys while preserving activation of existing legacy keys.',
     'Database enforces owner/managed consistency, SHA-256 hash shape and device↔license isolation for sessions, renders and render events.',
     'Backend queue rejects duplicate project IDs even under repeated/direct Tauri enqueue calls and recovery.',

@@ -63,7 +63,7 @@ mod managed{
   static PROGRESS_SENT:OnceLock<Mutex<HashMap<String,i64>>>=OnceLock::new();
 
   #[derive(Default)] struct TokenCache{loaded:bool,token:Option<String>}
-  #[derive(Clone,Default)] struct Activity{screen:Option<String>,render_status:Option<String>,job_id:Option<String>,progress:Option<f64>}
+  #[derive(Clone,Default)] struct Activity{screen:Option<String>,render_status:Option<String>,job_id:Option<String>,progress:Option<f64>,queue_depth:u32}
 
   fn now_ms()->i64{chrono::Utc::now().timestamp_millis()}
   fn cache()->&'static Mutex<TokenCache>{TOKEN_CACHE.get_or_init(||Mutex::new(TokenCache::default()))}
@@ -172,7 +172,7 @@ mod managed{
     let local=read_value(app);let token=match load_token(){Ok(Some(t))=>t,_=>{let v=json!({"valid":false,"connection":"not-activated"});mark_remote(app,false,&v);return v}};
     let body=if heartbeat{
       let a=activity().lock().clone();
-      let mut body=json!({"app_version":env!("CARGO_PKG_VERSION"),"current_screen":a.screen,"render_status":a.render_status,"current_job_id":a.job_id,"progress":a.progress});
+      let mut body=json!({"app_version":env!("CARGO_PKG_VERSION"),"current_screen":a.screen,"render_status":a.render_status,"current_job_id":a.job_id,"progress":a.progress,"queue_depth":a.queue_depth});
       if let (Some(dst),Some(src))=(body.as_object_mut(),device_diagnostics().as_object()){for (k,v) in src{dst.insert(k.clone(),v.clone());}}
       body
     }else{json!({})};
@@ -204,6 +204,7 @@ mod managed{
   }
   pub fn blocked()->bool{REMOTE_BLOCKED.load(Ordering::SeqCst)}
   pub fn set_screen(screen:String){activity().lock().screen=Some(screen.chars().take(120).collect())}
+  pub fn set_queue_depth(depth:u32){activity().lock().queue_depth=depth.min(100_000)}
   pub fn set_render_activity(job_id:Option<String>,status:Option<String>,progress:Option<f64>){let mut a=activity().lock();a.job_id=job_id;a.render_status=status;a.progress=progress.map(|x|x.clamp(0.0,100.0));}
   pub fn start_heartbeat(app:AppHandle){
     tauri::async_runtime::spawn(async move{tokio::time::sleep(Duration::from_secs(2)).await;loop{let _=status(&app,true).await;tokio::time::sleep(Duration::from_secs(HEARTBEAT_SECS)).await;}});
@@ -305,6 +306,11 @@ pub async fn activate_license(app:AppHandle,key:String)->Result<Value,String>{
 pub fn set_license_screen(screen:String){
   #[cfg(any(target_os="windows",target_os="macos"))]{managed::set_screen(screen)}
   #[cfg(not(any(target_os="windows",target_os="macos")))]{let _=screen;}
+}
+#[tauri::command]
+pub fn set_license_queue_depth(depth:u32){
+  #[cfg(any(target_os="windows",target_os="macos"))]{managed::set_queue_depth(depth)}
+  #[cfg(not(any(target_os="windows",target_os="macos")))]{let _=depth;}
 }
 pub async fn assert_production_allowed(app:&AppHandle)->Result<(),String>{
   #[cfg(any(target_os="windows",target_os="macos"))]{return managed::assert_start(app).await}

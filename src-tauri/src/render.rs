@@ -30,7 +30,24 @@ fn emit_timing(app:&AppHandle,id:&str,key:&str,sec:f64){let _=app.emit("engine-t
 const AUDIO_EXT:&[&str]=&["mp3","wav","m4a","aac","flac","ogg","opus","aif","aiff"];
 fn is_audio(path:&Path)->bool{path.extension().and_then(|x|x.to_str()).map(|x|AUDIO_EXT.contains(&x.to_ascii_lowercase().as_str())).unwrap_or(false)}
 fn software_encoder(s:&RenderSettings)->String{if s.codec.eq_ignore_ascii_case("h265"){"libx265".into()}else{"libx264".into()}}
-fn smart_repeat_project(job:&QueueJob)->bool{job.project.media.len()==1&&job.project.media.iter().all(|m|is_image(m))}
+
+#[derive(Clone,Copy,Debug)]
+pub(crate) struct FastPathDecision{pub eligible:bool,pub reason:&'static str}
+
+pub(crate) fn fast_path_decision(job:&QueueJob)->FastPathDecision{
+  if job.project.media.is_empty(){return FastPathDecision{eligible:false,reason:"DISQUALIFIED_NO_MEDIA"}}
+  let all_images=job.project.media.iter().all(|m|is_image(m));
+  if all_images{
+    if job.project.media.len()==1{return FastPathDecision{eligible:true,reason:"FAST_ONE_IMAGE"}}
+    if job.effects.iter().any(|e|e.enabled&&!e.source.trim().is_empty()){return FastPathDecision{eligible:false,reason:"DISQUALIFIED_MULTI_STILL_EFFECTS"}}
+    if job.subscribes.iter().any(|x|x.effect.enabled&&!x.effect.source.trim().is_empty()){return FastPathDecision{eligible:false,reason:"DISQUALIFIED_MULTI_STILL_SUBSCRIBE"}}
+    return FastPathDecision{eligible:true,reason:"FAST_MULTI_STILL"}
+  }
+  if job.project.media.len()==1{return FastPathDecision{eligible:false,reason:"DISQUALIFIED_SHORT_VIDEO_LOOP_UNSUPPORTED"}}
+  FastPathDecision{eligible:false,reason:"DISQUALIFIED_MULTIPLE_MEDIA"}
+}
+fn smart_repeat_project(job:&QueueJob)->bool{fast_path_decision(job).eligible}
+fn fast_multi_still(job:&QueueJob)->bool{fast_path_decision(job).reason=="FAST_MULTI_STILL"}
 
 async fn choose_fidelity_encoder(app:&AppHandle,attempt:u32)->String{
   #[cfg(target_os="macos")]
@@ -500,6 +517,7 @@ async fn materialize_continuous_audio(app:&AppHandle,job:&QueueJob,started:i64,t
 
 async fn build_source_master(app:&AppHandle,job:&QueueJob,started:i64,timer:&Instant,work:&Path,encoder:&str,attempt:u32,cancel:&AtomicBool)->Result<(PathBuf,f64),String>{
   if smart_repeat_project(job)&&job.project.media.len()==1&&is_image(&job.project.media[0]){let d=hybrid_master_seconds_for_job(app,job).await;emit_timing(app,&job.project.id,"master-loop",0.0);return Ok((PathBuf::from(&job.project.media[0]),d))}
+  if fast_multi_still(job){let d=job.project.media.len() as f64*10.0;emit_timing(app,&job.project.id,"master-loop",0.0);return Ok((PathBuf::from(&job.project.media[0]),d))}
   if job.project.media.is_empty(){return Err("Нет изображения или видео".into())}
   let mark=Instant::now();let total=job.project.media.len();let mut clips=Vec::new();let mut total_duration=0.0;
   for (i,m) in job.project.media.iter().enumerate(){let (p,d)=build_media_clip(app,job,m,i,total,started,timer,work,encoder,attempt,cancel).await?;clips.push(p);total_duration+=d;}
@@ -697,8 +715,8 @@ async fn verify_result(app:&AppHandle,out:&Path,expected:f64,s:&RenderSettings)-
 
 
 async fn verify_strict_857_result(app:&AppHandle,out:&Path,expected:f64)->Result<(),String>{
-  let bytes=std::fs::metadata(out).map_err(|e|format!("Strict 8.57 final stat: {e}"))?.len();
-  if bytes<500_000_000||bytes>700_000_000{return Err(format!("Strict 8.57 final size: {} MB вне 500-700 MB",bytes/1_000_000))}
+  let bytes=std::fs::metadata(out).map_err(|e|format!("Strict 8.63 final stat: {e}"))?.len();
+  if bytes>700_000_000{return Err(format!("Strict 8.63 natural final size: {} MB превышает hard max 700 MB",bytes/1_000_000))}
   let d=probe_duration(app,out.to_string_lossy().as_ref()).await?;
   if (d-expected).abs()>1.0{return Err(format!("Strict 8.57 final duration: {:.3} вместо {:.3}",d,expected))}
   let args=vec!["-v","error","-show_entries","stream=codec_type,codec_name,pix_fmt,width,height,avg_frame_rate,sample_rate,channels","-of","json",out.to_string_lossy().as_ref()].into_iter().map(String::from).collect();
@@ -798,6 +816,48 @@ fn strict_856_validate_natural_size(path:&Path)->Result<(),String>{
   Ok(())
 }
 
+async fn render_multi_still_zero_copy_863(app:&AppHandle,job:&QueueJob,audio:&AudioSource,final_duration:f64,work:&Path,out:&Path,encoder:&str,attempt:u32,cancel:&AtomicBool,started:i64,timer:&Instant)->Result<bool,String>{
+  if !fast_multi_still(job){return Ok(false)}
+  if !strict_856_encoder_allowed(encoder){return Err(format!("Strict 8.63: HEVC encoder {encoder} не разрешён fast multi-still pipeline"))}
+  const PHYSICAL_FRAMES_PER_STILL:usize=30;
+  const LOGICAL_FRAMES_PER_STILL:usize=600;
+  let fps=60usize;let physical_seconds=PHYSICAL_FRAMES_PER_STILL as f64/fps as f64;
+  let mut clips=Vec::with_capacity(job.project.media.len());let prep_mark=Instant::now();
+  for (i,media) in job.project.media.iter().enumerate(){
+    if cancel.load(Ordering::SeqCst){return Err(CANCELLED.into())}
+    let clip=work.join(format!("fast-863-still-{i:03}.mp4"));
+    let graph=format!("{}[outv]",base_filter(&job.settings,"0:v"));
+    let mut args:Vec<String>=vec!["-hide_banner","-loglevel","error","-loop","1","-framerate","60","-i",media.as_str(),"-filter_complex",&graph,"-map","[outv]","-frames:v",&PHYSICAL_FRAMES_PER_STILL.to_string(),"-an"].into_iter().map(String::from).collect();
+    args.extend(hybrid_fidelity_args(&job.settings,encoder,physical_seconds));
+    args.extend(vec!["-fps_mode","cfr","-r","60","-video_track_timescale","60000","-progress","pipe:1","-y",clip.to_string_lossy().as_ref()].into_iter().map(String::from));
+    let base=8.0+(i as f64/job.project.media.len().max(1) as f64)*14.0;let span=14.0/job.project.media.len().max(1) as f64;
+    run_ffmpeg(app,job,started,timer,args,&format!("Fast multi-still {}/{}",i+1,job.project.media.len()),base,span,physical_seconds,encoder,attempt,cancel).await?;
+    let frames=probe_video_frames_852(app,&clip).await?;if frames!=PHYSICAL_FRAMES_PER_STILL{return Err(format!("8.63 multi-still physical master frames={frames}, expected {PHYSICAL_FRAMES_PER_STILL}"))}
+    clips.push(clip);
+  }
+  emit_timing(app,&job.project.id,"image-preprocess",prep_mark.elapsed().as_secs_f64());
+
+  let list=work.join("fast-863-physical-list.txt");let body=clips.iter().map(|p|format!("file '{}'",p.to_string_lossy().replace('\\',"/"))).collect::<Vec<_>>().join("\n");std::fs::write(&list,body).map_err(|e|e.to_string())?;
+  let physical=work.join("fast-863-physical-pool.mp4");let concat_mark=Instant::now();
+  let args=vec!["-hide_banner","-loglevel","error","-f","concat","-safe","0","-i",list.to_string_lossy().as_ref(),"-an","-c:v","copy","-progress","pipe:1","-y",physical.to_string_lossy().as_ref()].into_iter().map(String::from).collect();
+  run_ffmpeg(app,job,started,timer,args,"Fast multi-still physical cycle",24.0,4.0,physical_seconds*job.project.media.len() as f64,encoder,attempt,cancel).await?;
+  let pool_frames=probe_video_frames_852(app,&physical).await?;let expected_pool=PHYSICAL_FRAMES_PER_STILL*job.project.media.len();if pool_frames!=expected_pool{return Err(format!("8.63 multi-still pool frames={pool_frames}, expected {expected_pool}"))}
+  emit_timing(app,&job.project.id,"visual-master",concat_mark.elapsed().as_secs_f64());
+
+  let seed=work.join("fast-863-multistill-seed.mov");let mut mux:Vec<String>=vec!["-hide_banner","-loglevel","error","-i",physical.to_string_lossy().as_ref()].into_iter().map(String::from).collect();
+  match audio{AudioSource::Loop(p)=>mux.extend(vec!["-stream_loop","-1","-fflags","+genpts","-i",p.to_string_lossy().as_ref()].into_iter().map(String::from)),AudioSource::Long(p)=>mux.extend(vec!["-i",p.to_string_lossy().as_ref()].into_iter().map(String::from))}
+  mux.extend(vec!["-t",&final_duration.to_string(),"-map","0:v:0","-map","1:a:0","-c:v","copy","-c:a","copy","-progress","pipe:1","-y",seed.to_string_lossy().as_ref()].into_iter().map(String::from));
+  let mux_mark=Instant::now();run_ffmpeg(app,job,started,timer,mux,"Fast Original Audio • MP3 packet-copy",60.0,18.0,final_duration,encoder,attempt,cancel).await?;emit_timing(app,&job.project.id,"audio-mux",mux_mark.elapsed().as_secs_f64());
+
+  let mut cycle=Vec::with_capacity(LOGICAL_FRAMES_PER_STILL*job.project.media.len());
+  for image in 0..job.project.media.len(){let start=image*PHYSICAL_FRAMES_PER_STILL;for i in 0..LOGICAL_FRAMES_PER_STILL{cycle.push(start+(i%PHYSICAL_FRAMES_PER_STILL));}}
+  let total_frames=(final_duration*fps as f64).round().max(cycle.len() as f64) as usize;let selected=(0..total_frames).map(|i|cycle[i%cycle.len()]).collect::<Vec<_>>();
+  let manifest_mark=Instant::now();ensure_license_allowed()?;crate::mp4_manifest::remap_video_samples(&seed,&seed,&selected)?;ensure_license_allowed()?;emit_timing(app,&job.project.id,"manifest-expand",manifest_mark.elapsed().as_secs_f64());
+
+  let finalize_mark=Instant::now();finalize_local_output(&seed,out).map_err(|e|format!("8.63 multi-still finalize: {e}"))?;strict_856_validate_natural_size(out)?;ensure_license_allowed()?;emit_timing(app,&job.project.id,"finalize",finalize_mark.elapsed().as_secs_f64());
+  emit_progress(app,job,started,timer,96.0,"Fast multi-still sample-table готов",encoder,attempt,None);Ok(true)
+}
+
 async fn render_zero_sub_zero_copy_856(app:&AppHandle,job:&QueueJob,effects:&[EffectPreset],subs:&[SubscribePreset],audio:&AudioSource,master_duration:f64,final_duration:f64,work:&Path,out:&Path,encoder:&str,attempt:u32,cancel:&AtomicBool,started:i64,timer:&Instant)->Result<bool,String>{
   if !smart_repeat_project(job)||timed_effects(effects,final_duration){return Ok(false)}if subs.iter().any(|x|x.effect.enabled&&!x.effect.source.trim().is_empty()){return Ok(false)}if !strict_856_encoder_allowed(encoder){return Err(format!("Strict 8.62: HEVC encoder {encoder} не разрешён strict pipeline"))}
   let fps=60u32;let work_fps=30u32;let duration=master_duration.clamp(12.0,60.0);let master_frames=(duration*fps as f64).round() as usize;let mut ws=job.settings.clone();ws.fps=work_fps;
@@ -835,7 +895,10 @@ async fn render_periodic_zero_copy_852(app:&AppHandle,job:&QueueJob,effects:&[Ef
 pub async fn render_job(app:&AppHandle,job:&QueueJob,cancel:Arc<AtomicBool>)->Result<(),String>{
   ensure_license_allowed()?;
   let mut resolved_job=job.clone();refresh_project_paths(&mut resolved_job);
+  let decision=fast_path_decision(&resolved_job);
+  let _=app.emit("render-diagnostics",json!({"id":resolved_job.project.id,"fastPathEligible":decision.eligible,"fastPathReason":decision.reason,"mediaCount":resolved_job.project.media.len(),"imageCount":resolved_job.project.media.iter().filter(|m|is_image(m)).count(),"videoCount":resolved_job.project.media.iter().filter(|m|!is_image(m)).count()}));
   if smart_repeat_project(&resolved_job){
+    if resolved_job.settings.crossfade_sec>0.01||resolved_job.settings.normalize_lufs||resolved_job.ambient.as_ref().map(|x|!x.trim().is_empty()).unwrap_or(false){emit_warning(app,&resolved_job.project.id,"Fast Original Audio: crossfade / normalization / ambient отключены, чтобы сохранить исходные MP3 packets без перекодирования.");}
     if resolved_job.settings.width!=1920||resolved_job.settings.height!=1080{emit_warning(app,&resolved_job.project.id,"Fidelity Lock: one-image проект выводится строго 1920x1080. Это убирает бессмысленное 4K-сжатие при лимите около 1 ГБ.");}
     resolved_job.settings.width=1920;
     resolved_job.settings.height=1080;
@@ -858,7 +921,7 @@ pub async fn render_job(app:&AppHandle,job:&QueueJob,cancel:Arc<AtomicBool>)->Re
   for attempt in 1..=max_attempts{
     if cancel.load(Ordering::SeqCst){return Err(CANCELLED.into())}
     let smart_repeat=smart_repeat_project(job);let _=std::fs::remove_file(&out);let encoder=if smart_repeat{let e=choose_hybrid_encoder(app,attempt).await;if !strict_856_encoder_allowed(&e){return Err(format!("Strict 8.62: HEVC encoder {e} недоступен для strict pipeline"))}e}else if attempt==1{choose_encoder(app,&job.settings).await}else{software_encoder(&job.settings)};
-    let _=app.emit("engine-profile",json!({"id":job.project.id,"smartSize":smart_repeat,"smartRepeat":smart_repeat,"originalFidelity":smart_repeat,"targetVideoKbps":None::<u64>}));
+    let _=app.emit("engine-profile",json!({"id":job.project.id,"smartSize":smart_repeat,"smartRepeat":smart_repeat,"originalFidelity":smart_repeat,"fastPath":smart_repeat,"fastPathReason":decision.reason,"audioMode":if smart_repeat{"ORIGINAL_MP3_PACKET_COPY"}else{"PROCESSED_AUDIO"},"targetVideoKbps":None::<u64>}));
     emit_progress(app,job,started,&timer,1.0,"Анализ файлов",&encoder,attempt,None);let work=render_work_dir(app,&job.project.id,attempt)?;
     let result:Result<(Vec<f64>,f64),String>=async{
       emit_progress(app,job,started,&timer,4.0,"Проверяю самый быстрый движок",&encoder,attempt,None);
@@ -893,7 +956,11 @@ pub async fn render_job(app:&AppHandle,job:&QueueJob,cancel:Arc<AtomicBool>)->Re
         let audio=build_long_audio(app,job,started,&timer,&work,&cycle,cycle_duration,final_duration,&encoder,attempt,&cancel).await?;
         (audio,durations,final_duration)
       };
-      let zero_copy=if smart_repeat{if render_zero_sub_zero_copy_856(app,job,&fx,&subs,&audio,visual_master_duration,final_duration,&work,&out,&encoder,attempt,&cancel,started,&timer).await?{true}else{render_periodic_zero_copy_852(app,job,&fx,&subs,&audio,final_duration,&work,&out,&encoder,attempt,&cancel,started,&timer).await?}}else{false};
+      let zero_copy=if smart_repeat{
+        if render_multi_still_zero_copy_863(app,job,&audio,final_duration,&work,&out,&encoder,attempt,&cancel,started,&timer).await?{true}
+        else if render_zero_sub_zero_copy_856(app,job,&fx,&subs,&audio,visual_master_duration,final_duration,&work,&out,&encoder,attempt,&cancel,started,&timer).await?{true}
+        else{render_periodic_zero_copy_852(app,job,&fx,&subs,&audio,final_duration,&work,&out,&encoder,attempt,&cancel,started,&timer).await?}
+      }else{false};
       if smart_repeat&&!zero_copy{return Err("Strict 8.56: этот Subscribe schedule не поддерживает безопасный zero-copy профиль; медленный многочасовой fallback запрещён".into())}
       if !zero_copy{
         let visual=assemble_visual(app,job,&source_master,visual_master_duration,&fx,&subs,final_duration,&work,&encoder,attempt,&cancel,started,&timer).await?;

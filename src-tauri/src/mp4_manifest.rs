@@ -82,12 +82,11 @@ fn rebuild_minf(minf:&[u8],selected:&[usize])->Result<(Vec<u8>,u64,bool),String>
 fn rebuild_mdia(mdia:&[u8],selected:&[usize])->Result<(Vec<u8>,u32,u64,bool),String>{let mdhd=find_child(mdia,*b"mdhd")?.ok_or("MP4: mdhd missing")?;let(ts,_)=timing(&mdhd,*b"mdhd")?;let mut out=Vec::new();let mut dur=None;let mut sync=false;for b in children(mdia)?{if atom_type(&b)==*b"minf"{let(x,d,s)=rebuild_minf(&b,selected)?;out.push(x);dur=Some(d);sync=s}else{out.push(b)}}let d=dur.ok_or("MP4: video duration missing")?;for b in out.iter_mut(){if atom_type(b)==*b"mdhd"{*b=patch_duration(b,*b"mdhd",d)?}}Ok((make_atom(*b"mdia",&out.concat())?,ts,d,sync))}
 fn rebuild_video_trak(trak:&[u8],selected:&[usize],movie_ts:u32)->Result<(Vec<u8>,u64,bool),String>{let mut out=Vec::new();let mut media=None;let mut sync=false;for b in children(trak)?{match atom_type(&b){t if t==*b"mdia"=>{let(x,ts,d,s)=rebuild_mdia(&b,selected)?;media=Some((ts,d));sync=s;out.push(x)},t if t==*b"edts"=>{},_=>out.push(b)}}let(ts,d)=media.ok_or("MP4: video mdia missing")?;let movie_dur=((d as u128*movie_ts as u128+ts as u128/2)/ts as u128)as u64;for b in out.iter_mut(){if atom_type(b)==*b"tkhd"{*b=patch_duration(b,*b"tkhd",movie_dur)?}}Ok((make_atom(*b"trak",&out.concat())?,movie_dur,sync))}
 
-pub fn expand_video_prefix_cycle(seed:&Path,out:&Path,prefix_frames:usize,cycle_frames:usize,total_frames:usize)->Result<(),String>{
-  if cycle_frames==0||total_frames<prefix_frames{return Err("MP4 manifest: invalid prefix/cycle/total frame counts".into())}
+fn remap_video_samples_impl(seed:&Path,out:&Path,selected:&[usize])->Result<(),String>{
+  if selected.is_empty(){return Err("MP4 manifest: empty selected sample map".into())}
   let data=fs::read(seed).map_err(|e|format!("MP4 manifest: read {}: {e}",seed.display()))?;let top=atoms(&data)?;let moovs=top.iter().filter(|x|x.typ==*b"moov").copied().collect::<Vec<_>>();if moovs.len()!=1{return Err("MP4 manifest: expected one moov".into())}let moov_ref=moovs[0];let last_mdat=top.iter().filter(|x|x.typ==*b"mdat").map(|x|x.off+x.size).max().ok_or("MP4 manifest: mdat missing")?;if moov_ref.off<last_mdat{return Err("MP4 manifest: moov must be after mdat (do not use faststart for seed)".into())}
   let moov=&data[moov_ref.off..moov_ref.off+moov_ref.size];let mvhd=find_child(moov,*b"mvhd")?.ok_or("MP4 manifest: mvhd missing")?;let(movie_ts,old_movie_dur)=timing(&mvhd,*b"mvhd")?;
-  let needed=prefix_frames.checked_add(cycle_frames).ok_or("MP4 manifest: frame overflow")?;let mut selected=Vec::with_capacity(total_frames);selected.extend(0..prefix_frames);for i in 0..(total_frames-prefix_frames){selected.push(prefix_frames+(i%cycle_frames))}
-  let mut kids=Vec::new();let mut video_dur=None;let mut video_seen=0usize;for b in children(moov)?{if atom_type(&b)==*b"trak"&&handler_type(&b)?==Some(*b"vide"){video_seen+=1;if video_seen>1{return Err("MP4 manifest: multiple video tracks unsupported".into())}let stbl=find_child(&find_child(&find_child(&b,*b"mdia")?.ok_or("MP4: mdia")?,*b"minf")?.ok_or("MP4: minf")?,*b"stbl")?.ok_or("MP4: stbl")?;let count=stsz_sizes(&find_child(&stbl,*b"stsz")?.ok_or("MP4: stsz")?)?.len();if count<needed{return Err(format!("MP4 manifest: seed video has {count} samples; need prefix+cycle {needed}"))}let(x,d,sync0)=rebuild_video_trak(&b,&selected,movie_ts)?;if !sync0{return Err("MP4 manifest: source sample 1 is not sync/keyframe".into())}video_dur=Some(d);kids.push(x)}else{kids.push(b)}}let vd=video_dur.ok_or("MP4 manifest: video track missing")?;let new_movie_dur=old_movie_dur.max(vd);for b in kids.iter_mut(){if atom_type(b)==*b"mvhd"{*b=patch_duration(b,*b"mvhd",new_movie_dur)?}}let new_moov=make_atom(*b"moov",&kids.concat())?;
+  let mut kids=Vec::new();let mut video_dur=None;let mut video_seen=0usize;for b in children(moov)?{if atom_type(&b)==*b"trak"&&handler_type(&b)?==Some(*b"vide"){video_seen+=1;if video_seen>1{return Err("MP4 manifest: multiple video tracks unsupported".into())}let stbl=find_child(&find_child(&find_child(&b,*b"mdia")?.ok_or("MP4: mdia")?,*b"minf")?.ok_or("MP4: minf")?,*b"stbl")?.ok_or("MP4: stbl")?;let count=stsz_sizes(&find_child(&stbl,*b"stsz")?.ok_or("MP4: stsz")?)?.len();if selected.iter().any(|&i|i>=count){return Err(format!("MP4 manifest: selected video sample outside pool of {count} samples"))}let(x,d,sync0)=rebuild_video_trak(&b,selected,movie_ts)?;if !sync0{return Err("MP4 manifest: source sample 1 is not sync/keyframe".into())}video_dur=Some(d);kids.push(x)}else{kids.push(b)}}let vd=video_dur.ok_or("MP4 manifest: video track missing")?;let new_movie_dur=old_movie_dur.max(vd);for b in kids.iter_mut(){if atom_type(b)==*b"mvhd"{*b=patch_duration(b,*b"mvhd",new_movie_dur)?}}let new_moov=make_atom(*b"moov",&kids.concat())?;
   if seed==out{
     use std::io::{Seek,Write};
     let tail=data[moov_ref.off+moov_ref.size..].to_vec();
@@ -103,7 +102,24 @@ pub fn expand_video_prefix_cycle(seed:&Path,out:&Path,prefix_frames:usize,cycle_
   }
 }
 
+pub fn remap_video_samples(seed:&Path,out:&Path,selected:&[usize])->Result<(),String>{remap_video_samples_impl(seed,out,selected)}
+
+pub fn expand_video_prefix_cycle(seed:&Path,out:&Path,prefix_frames:usize,cycle_frames:usize,total_frames:usize)->Result<(),String>{
+  if cycle_frames==0||total_frames<prefix_frames{return Err("MP4 manifest: invalid prefix/cycle/total frame counts".into())}
+  let needed=prefix_frames.checked_add(cycle_frames).ok_or("MP4 manifest: frame overflow")?;let mut selected=Vec::with_capacity(total_frames);selected.extend(0..prefix_frames);for i in 0..(total_frames-prefix_frames){selected.push(prefix_frames+(i%cycle_frames))}
+  if selected.iter().any(|&i|i>=needed){return Err("MP4 manifest: generated sample map outside prefix/cycle pool".into())}
+  remap_video_samples_impl(seed,out,&selected)
+}
+
 #[cfg(test)]
 mod tests{
   #[test]fn prefix_cycle_index_math(){let p=3usize;let c=4usize;let t=13usize;let mut s=Vec::new();s.extend(0..p);for i in 0..t-p{s.push(p+i%c)}assert_eq!(s,vec![0,1,2,3,4,5,6,3,4,5,6,3,4]);}
+  #[test]fn multistill_sample_schedule_math(){
+    let media=3usize;let physical_frames=2usize;let logical_frames=6usize;let total_frames=24usize;
+    let mut cycle=Vec::new();
+    for image in 0..media{let start=image*physical_frames;for i in 0..logical_frames{cycle.push(start+(i%physical_frames));}}
+    assert_eq!(cycle,vec![0,1,0,1,0,1,2,3,2,3,2,3,4,5,4,5,4,5]);
+    let selected=(0..total_frames).map(|i|cycle[i%cycle.len()]).collect::<Vec<_>>();
+    assert_eq!(selected.len(),24);assert_eq!(&selected[..18],cycle.as_slice());assert_eq!(&selected[18..],&cycle[..6]);
+  }
 }

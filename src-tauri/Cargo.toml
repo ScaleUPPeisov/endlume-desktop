@@ -1,8 +1,8 @@
 [package]
 name = "endlume"
-version = "1.0.0-alpha.8.62"
-description = "ENDLUME Studio"
-authors = ["ENDLUME Studio"]
+version = "1.0.0-alpha.8.63"
+description = "ENDLUME YT Studio PEISOV"
+authors = ["ENDLUME YT Studio PEISOV"]
 edition = "2021"
 
 [lib]

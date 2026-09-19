@@ -32,6 +32,7 @@ pub struct RenderOutcome{
 }
 
 fn is_image(path:&str)->bool{Path::new(path).extension().and_then(|x|x.to_str()).map(|x|IMAGE_EXT.contains(&x.to_ascii_lowercase().as_str())).unwrap_or(false)}
+pub(crate) fn is_image_for_telemetry(path:&str)->bool{is_image(path)}
 fn safe_name(name:&str)->String{name.chars().map(|c|if ['/', '\\', ':', '*', '?', '"', '<', '>', '|'].contains(&c){'_'}else{c}).collect()}
 fn unique_output(dir:&Path,name:&str)->PathBuf{let safe=safe_name(name);let mut p=dir.join(format!("{} — Ready Videos.mp4",safe));let mut n=2;while p.exists(){p=dir.join(format!("{} — Ready Videos_{}.mp4",safe,n));n+=1}p}
 fn unique_output_ext(dir:&Path,name:&str,ext:&str)->PathBuf{let safe=safe_name(name);let ext=ext.trim_start_matches('.');let mut p=dir.join(format!("{} — Ready Videos.{}",safe,ext));let mut n=2;while p.exists(){p=dir.join(format!("{} — Ready Videos_{}.{}",safe,n,ext));n+=1}p}

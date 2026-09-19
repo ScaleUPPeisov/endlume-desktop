@@ -16,6 +16,8 @@ const modes:Array<{id:LoopMode;title:string;subtitle:string;icon:'image'|'crossf
 type FeatureFlags={subscribe:boolean;effects:boolean;ambient:boolean};
 const featureKey='endlume-feature-flags-v2';
 function loadFeatures():FeatureFlags{try{return {...{subscribe:true,effects:true,ambient:true},...JSON.parse(localStorage.getItem(featureKey)||'{}')}}catch{return {subscribe:true,effects:true,ambient:true}}}
+const imageExt=new Set(['jpg','jpeg','png','webp','bmp','tif','tiff','heic','avif']);
+function isImagePath(path:string){const clean=path.split(/[?#]/)[0]||'';const ext=clean.includes('.')?clean.split('.').pop()?.toLowerCase()||'':'';return imageExt.has(ext)}
 
 export function ProjectPage(){
   const {
@@ -68,6 +70,10 @@ export function ProjectPage(){
       const activeEffects=features.effects?effects.filter(e=>e.enabled):[];
       const activeSubscribes=features.subscribe?subscribes.filter(e=>e.enabled):[];
       const activeAmbient=features.ambient?ambient:undefined;
+      const fastStaticProjects=draftProjects.filter(p=>p.media.length>0&&p.media.every(isImagePath)&&(p.media.length===1||(activeEffects.length===0&&activeSubscribes.length===0)));
+      if(fastStaticProjects.length&&(settings.crossfadeSec>0||settings.normalizeLufs||!!activeAmbient)){
+        await api.showInfo(`Fast Original Audio включён для ${fastStaticProjects.length} статичных проектов. Для них ENDLUME отключит crossfade, LUFS normalization и ambient, чтобы сохранить исходные MP3 packets без перекодирования. Audio processing применяется только к проектам вне Fast path и может работать заметно дольше.`);
+      }
       const stamp=Date.now().toString(36);
       const queuedProjects=draftProjects.map((p,i)=>({...p,id:`${p.id}-${stamp}-${i}-${Math.random().toString(36).slice(2,8)}`,status:'queued' as const,progress:0,stage:'Ожидает в очереди',elapsedSec:0}));
       await api.enqueue(queuedProjects,settings,activeEffects,activeSubscribes,activeAmbient);
@@ -106,7 +112,7 @@ export function ProjectPage(){
         <div className="bigControl"><div><b>Длительность</b><small>Целевое время финального видео</small></div><div className="bigValue">{settings.durationHours} ч</div><Range value={settings.durationHours} min={.5} max={12} step={.5} onChange={v=>patchSettings({durationHours:v})} minLabel="0.5 ч" maxLabel="12 ч"/></div>
         <div className="durationPresets">{[1,1.5,2,3,4,8,10,12].map(v=><button className={settings.durationHours===v?'selected':''} key={v} onClick={()=>patchSettings({durationHours:v})}>{v}ч</button>)}</div>
         <div className="bigControl"><div><b>Битрейт</b><small>Для обычных видео-проектов. Для статичного проекта ENDLUME автоматически выбирает компактный режим без жёсткого ухудшения качества.</small></div><div className="bigValue">{settings.bitrateMbps} Мбит/с</div><Range value={settings.bitrateMbps} min={1} max={100} onChange={v=>patchSettings({bitrateMbps:v})} minLabel="1 Мбит/с" maxLabel="100 Мбит/с"/></div>
-        <div className="bigControl compactControl"><div><b>Кроссфейд между треками</b><small>{settings.crossfadeSec>0?'Включён. Переход реально сводится между песнями и сохраняется в ALAC lossless без повторного lossy-сжатия.':'Выключен. YouTube Fill 16:9: one-image проект всегда заполняет весь кадр 1920×1080 без чёрных полос. Если исходник не 16:9, края слегка обрезаются по центру. Совместимые MP3 идут bitstream-copy без повторного кодирования.'}</small></div><div className="bigValue small">{settings.crossfadeSec>0?`${settings.crossfadeSec} сек`:'Выкл'}</div><Range value={settings.crossfadeSec} min={0} max={10} step={0.5} onChange={v=>patchSettings({crossfadeSec:v})} minLabel="Выкл" maxLabel="10 сек"/></div><div className="durationPresets"><button className={settings.crossfadeSec===0?'selected':''} onClick={()=>patchSettings({crossfadeSec:0})}>ВЫКЛ</button>{[1,2,3,5,7,10].map(v=><button className={settings.crossfadeSec===v?'selected':''} key={`cf-${v}`} onClick={()=>patchSettings({crossfadeSec:v})}>{v}с</button>)}</div>
+        <div className="bigControl compactControl"><div><b>Кроссфейд между треками</b><small>{settings.crossfadeSec>0?'Processed Audio: для обычных проектов переход реально сводится и требует обработки музыки. Fast static path приоритетно сохраняет Original MP3 и автоматически отключает crossfade/normalization/ambient.':'Original Audio: совместимые MP3 идут bitstream-copy без повторного кодирования. Fast static path сохраняет музыку в исходном виде.'}</small></div><div className="bigValue small">{settings.crossfadeSec>0?`${settings.crossfadeSec} сек`:'Выкл'}</div><Range value={settings.crossfadeSec} min={0} max={10} step={0.5} onChange={v=>patchSettings({crossfadeSec:v})} minLabel="Выкл" maxLabel="10 сек"/></div><div className="durationPresets"><button className={settings.crossfadeSec===0?'selected':''} onClick={()=>patchSettings({crossfadeSec:0})}>ВЫКЛ</button>{[1,2,3,5,7,10].map(v=><button className={settings.crossfadeSec===v?'selected':''} key={`cf-${v}`} onClick={()=>patchSettings({crossfadeSec:v})}>{v}с</button>)}</div>
 
         <div className="toggles">
           <Toggle checked={settings.normalizeLufs} onChange={v=>patchSettings({normalizeLufs:v})} label="Нормализация звука до -14 LUFS"/>

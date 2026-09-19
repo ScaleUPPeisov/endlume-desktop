@@ -122,12 +122,12 @@ with tempfile.TemporaryDirectory(prefix="endlume863-multi-") as td:
         cycle=work/"audio-cycle.mp3"
         run([FFMPEG,"-hide_banner","-loglevel","error","-fflags","+genpts","-i",f"concatf:{raw}","-map","0:a:0","-c:a","copy","-map_metadata","-1","-write_xing","0","-id3v2_version","0","-y",cycle])
 
-        seed=work/"seed.mov"
+        seed=work/"seed.mp4"
         run([FFMPEG,"-hide_banner","-loglevel","error","-i",pool,"-stream_loop","-1","-fflags","+genpts","-i",cycle,"-t",f"{final_duration:.9f}",
              "-map","0:v:0","-map","1:a:0","-c:v","copy","-c:a","copy","-y",seed])
         assert packet_hash(cycle,5.0)==packet_hash(seed,5.0)
 
-        final=work/"final.mov"
+        final=work/"final.mp4"
         env=os.environ.copy();env.update({
             "ENDLUME_MULTI_MANIFEST_SEED":str(seed),
             "ENDLUME_MULTI_MANIFEST_OUT":str(final),

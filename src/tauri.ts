@@ -102,6 +102,7 @@ export const api = {
   benchmark:()=>invoke<BenchmarkResult>('benchmark_engine'),
   activate:(key:string)=>invoke<LicenseStatus>('activate_license',{key}),
   license:()=>invoke<LicenseStatus>('license_status'),
+  setLicenseScreen:(screen:string)=>invoke<void>('set_license_screen',{screen}),
   cacheStats:()=>invoke<{count:number;bytes:number}>('cache_stats'),
   powerStatus:()=>invoke<{supported:boolean;onBattery:boolean;percent?:number|null}>('power_status'),
   diskStatus:(path?:string)=>invoke<{totalBytes:number;freeBytes:number;usedBytes:number;mount:string}>('disk_status',{path:path||null}),

@@ -1,4 +1,4 @@
-use crate::{model::{EffectPreset,ProjectScanItem,QueueJob,RenderSettings,SubscribePreset},persistence,render};
+use crate::{license,model::{EffectPreset,ProjectScanItem,QueueJob,RenderSettings,SubscribePreset},persistence,render};
 use parking_lot::Mutex;
 use serde_json::{json,Value};
 use std::{collections::{HashSet,VecDeque},fs,path::PathBuf,sync::{Arc,atomic::{AtomicBool,Ordering}},time::UNIX_EPOCH};
@@ -52,6 +52,7 @@ fn done_fallback_payload(job:&QueueJob)->Value{
 
 #[tauri::command]
 pub async fn enqueue_projects(app:AppHandle,runtime:State<'_,Arc<QueueRuntime>>,projects:Vec<ProjectScanItem>,settings:RenderSettings,effects:Vec<EffectPreset>,subscribes:Vec<SubscribePreset>,ambient:Option<String>)->Result<(),String>{
+  license::assert_production_allowed(&app).await?;
   if settings.output_dir.trim().is_empty(){return Err("Не выбрана папка результата".into())}
   {let mut q=runtime.pending.lock();for project in projects.into_iter().filter(|p|p.valid){runtime.clear_terminal(&project.id);q.push_back(QueueJob{project,settings:settings.clone(),effects:effects.clone(),subscribes:subscribes.clone(),ambient:ambient.clone()});}}
   runtime.persist(&app);let _=app.emit("queue-changed",queue_snapshot_value(runtime.inner().as_ref()));start_worker_if_needed(app,runtime.inner().clone());Ok(())

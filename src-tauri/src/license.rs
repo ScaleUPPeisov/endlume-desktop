@@ -44,6 +44,7 @@ mod managed{
   use crate::model::QueueJob;
   use keyring::Entry;
   use parking_lot::Mutex;
+  use sysinfo::{System,Disks};
   use std::{collections::HashMap,path::Path,sync::{OnceLock,atomic::{AtomicBool,AtomicI64,Ordering}},time::Duration};
 
   const CLIENT_API:&str="https://odlseljmogaguyqdlkyv.supabase.co/functions/v1/endlume-client-api";
@@ -99,6 +100,22 @@ mod managed{
       .filter(|x|!x.trim().is_empty())
       .unwrap_or_else(||"ENDLUME device".into())
   }
+  fn device_diagnostics()->Value{
+    let sys=System::new_all();
+    let cpu_model=sys.cpus().first().map(|c|c.brand().trim().to_string()).filter(|x|!x.is_empty());
+    let cpu_percent=sys.global_cpu_usage() as f64;
+    let memory_total=sys.total_memory();
+    let memory_used=sys.used_memory();
+    let disks=Disks::new_with_refreshed_list();
+    let disk_free=disks.list().iter().map(|d|d.available_space()).max().unwrap_or(0);
+    json!({
+      "cpu_model":cpu_model,
+      "memory_total_bytes":memory_total,
+      "memory_used_bytes":memory_used,
+      "disk_free_bytes":disk_free,
+      "cpu_percent":cpu_percent
+    })
+  }
   fn normalized_key(key:&str)->String{key.chars().filter(|c|!c.is_whitespace()).collect::<String>().to_uppercase()}
   fn friendly(code:&str)->String{match code{
     "key_format"=>"Неверный формат ключа ENDLUME.",
@@ -153,7 +170,12 @@ mod managed{
   }
   pub async fn status(app:&AppHandle,heartbeat:bool)->Value{
     let local=read_value(app);let token=match load_token(){Ok(Some(t))=>t,_=>{let v=json!({"valid":false,"connection":"not-activated"});mark_remote(app,false,&v);return v}};
-    let body=if heartbeat{let a=activity().lock().clone();json!({"app_version":env!("CARGO_PKG_VERSION"),"current_screen":a.screen,"render_status":a.render_status,"current_job_id":a.job_id,"progress":a.progress})}else{json!({})};
+    let body=if heartbeat{
+      let a=activity().lock().clone();
+      let mut body=json!({"app_version":env!("CARGO_PKG_VERSION"),"current_screen":a.screen,"render_status":a.render_status,"current_job_id":a.job_id,"progress":a.progress});
+      if let (Some(dst),Some(src))=(body.as_object_mut(),device_diagnostics().as_object()){for (k,v) in src{dst.insert(k.clone(),v.clone());}}
+      body
+    }else{json!({})};
     match post(if heartbeat{"heartbeat"}else{"status"},body,Some(&token),6).await{
       Ok((http,v)) if (200..300).contains(&http)&&v.get("ok").and_then(Value::as_bool).unwrap_or(false)=>{
         let allowed=v.get("allowed").and_then(Value::as_bool).unwrap_or(false);if allowed{LAST_REMOTE_OK_MS.store(now_ms(),Ordering::SeqCst)}

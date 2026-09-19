@@ -38,6 +38,10 @@ assert 'resolved_job.ambient=None;' not in render_job
 assert 'audio_processing_requested(job)' in render_job
 assert 'let processed=processed_audio;' in render_job
 assert 'render_multi_still_zero_copy_863' in render_job
+assert 'unique_output(&out_dir,&job.project.name)' in render_job, "fast result must remain Ready Videos.mp4"
+assert 'unique_output_ext(&out_dir,&job.project.name,"mov")' not in render_job
+assert 'fast-863-multistill-seed.mp4' in render, "multi-still manifest seed must be MP4"
+assert 'strict-856-seed.mp4' in render, "one-image manifest seed must be MP4"
 assert render_job.index("render_multi_still_zero_copy_863") < render_job.index("render_zero_sub_zero_copy_856")
 assert 'audio_mode:if processed_audio{"PROCESSED_AUDIO".into()}else{"ORIGINAL_MP3_PACKET_COPY".into()}' in render_job
 assert 'verify_strict_857_result(app,&out,final_duration,!processed_audio)' in render_job

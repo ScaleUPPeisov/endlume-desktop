@@ -1,0 +1,112 @@
+name: ENDLUME 8.63 macOS Baseline
+
+on:
+  push:
+    branches: [feature/endlume-863-macos-factory]
+    paths:
+      - 'src/**'
+      - 'src-tauri/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/endlume-863-macos-baseline.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-863-macos-baseline
+  cancel-in-progress: true
+
+jobs:
+  macos-arm64:
+    name: macOS ARM64 • Baseline • No Publish
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify Apple Silicon runner
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(uname -s)" = "Darwin"
+          test "$(uname -m)" = "arm64"
+          echo "MACOS=$(sw_vers -productVersion)"
+          echo "ARCH=$(uname -m)"
+
+      - name: Stage bundled Apple Silicon FFmpeg
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          FOUNDATION="$HOME/.endlume-local-builder/endlume-desktop-8.40-bootstrap"
+          test -d "$FOUNDATION/src-tauri/binaries"
+          mkdir -p src-tauri/binaries
+          rsync -a "$FOUNDATION/src-tauri/binaries/" src-tauri/binaries/
+          chmod +x src-tauri/binaries/ffmpeg* src-tauri/binaries/ffprobe*
+          FFMPEG="$(find src-tauri/binaries -maxdepth 1 -type f -name 'ffmpeg*' -perm -111 -print -quit)"
+          FFPROBE="$(find src-tauri/binaries -maxdepth 1 -type f -name 'ffprobe*' -perm -111 -print -quit)"
+          test -n "$FFMPEG" -a -n "$FFPROBE"
+          file "$FFMPEG"
+          file "$FFPROBE"
+
+      - name: Frontend and Rust regression
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          npm ci
+          npm run check
+          npm run build
+          cargo check --manifest-path src-tauri/Cargo.toml
+          cargo test --manifest-path src-tauri/Cargo.toml -- --nocapture
+
+      - name: Mac platform contract
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          license_rs=Path('src-tauri/src/license.rs').read_text()
+          lib_rs=Path('src-tauri/src/lib.rs').read_text()
+          updater=Path('src-tauri/src/updater_local.rs').read_text()
+          conf=Path('src-tauri/tauri.conf.json').read_text()
+          print('managed-on-windows=', '#[cfg(target_os="windows")]' in license_rs)
+          print('legacy-mac-updater-gh-cli=', 'gh_auth_ok' in updater or 'GitHub CLI' in updater)
+          print('product-brand-has-yt=', 'ENDLUME YT Studio PEISOV' in conf)
+          print('NOTE: baseline gate reports current macOS parity gaps; it does not mutate source.')
+          PY
+
+      - name: Build unsigned local macOS app candidate
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('src-tauri/tauri.conf.json')
+          cfg=json.loads(p.read_text())
+          cfg['bundle']['createUpdaterArtifacts']=False
+          p.write_text(json.dumps(cfg,ensure_ascii=False,indent=2)+'\n')
+          PY
+          npm run tauri build -- --bundles app
+
+      - name: Verify built app
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          APP="$(find src-tauri/target/release/bundle/macos -maxdepth 1 -type d -name '*.app' -print -quit)"
+          test -n "$APP" -a -d "$APP"
+          EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
+          BID="$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$APP/Contents/Info.plist")"
+          VER="$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist")"
+          test "$BID" = "studio.endlume.desktop"
+          /usr/bin/lipo -archs "$APP/Contents/MacOS/$EXE" | grep -qw arm64
+          echo "APP=$APP"
+          echo "VERSION=$VER"
+          echo "BUNDLE_ID=$BID"
+          echo "ENDLUME_863_MACOS_BASELINE_GREEN"

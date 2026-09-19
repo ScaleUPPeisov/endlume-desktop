@@ -1,0 +1,187 @@
+name: ENDLUME 8.63 Public Windows Updater Hotfix
+
+on:
+  push:
+    branches: [fix/endlume-863-windows-fast-render-size]
+    paths:
+      - '.github/workflows/endlume-863-public-windows-updater-hotfix.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-863-public-windows-updater-hotfix
+  cancel-in-progress: true
+
+env:
+  VERSION: 1.0.0-alpha.8.63
+  SOURCE_TAG: endlume-v1.0.0-alpha.8.63-windows-rc
+  EXE_NAME: ENDLUME-YT-Studio-PEISOV-Setup-1.0.0-alpha.8.63-x64.exe
+  EXPECTED_SIZE: '98249592'
+  EXPECTED_SHA256: 5ab839ceec3fa110e81cd8a4baac27cfff1cf0f6201815ffceb8a25bd4e43883
+  HOST_REPO: ScaleUPPeisov/scaleup-site
+  STABLE_TAG: endlume-stable
+
+jobs:
+  publish-public-windows-updater:
+    name: Publish exact Windows 8.63 EXE to public stable release
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 45
+    env:
+      RELEASE_TOKEN: ${{ secrets.ENDLUME_RELEASE_TOKEN }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify tokens
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "${RELEASE_TOKEN:-}" || { echo 'ENDLUME_RELEASE_TOKEN missing'; exit 20; }
+          GH_TOKEN="$RELEASE_TOKEN" gh api "repos/$HOST_REPO" --jq .full_name
+
+      - name: Download exact private Windows 8.63 package
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          OUT="$RUNNER_TEMP/endlume-863-public-win"
+          rm -rf "$OUT"; mkdir -p "$OUT"
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$SOURCE_TAG" > "$OUT/source-release.json"
+          python3 - <<'PY'
+          import json,os,pathlib
+          out=pathlib.Path(os.environ['RUNNER_TEMP'])/'endlume-863-public-win'
+          r=json.loads((out/'source-release.json').read_text())
+          a=next((x for x in r.get('assets',[]) if x.get('name')==os.environ['EXE_NAME']),None)
+          assert a,a
+          assert a.get('state')=='uploaded',a
+          assert int(a.get('size',0))==int(os.environ['EXPECTED_SIZE']),a
+          assert a.get('digest')=='sha256:'+os.environ['EXPECTED_SHA256'],a
+          (out/'asset_id').write_text(str(a['id']))
+          PY
+          gh api -H "Accept: application/octet-stream"             "repos/$GITHUB_REPOSITORY/releases/assets/$(cat "$OUT/asset_id")"             > "$OUT/$EXE_NAME"
+          test "$(stat -f%z "$OUT/$EXE_NAME")" = "$EXPECTED_SIZE"
+          test "$(shasum -a 256 "$OUT/$EXE_NAME" | awk '{print $1}')" = "$EXPECTED_SHA256"
+          echo "OUT=$OUT" >> "$GITHUB_ENV"
+          echo SOURCE_WINDOWS_PACKAGE_VERIFIED=1
+
+      - name: Download current stable manifest
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.ENDLUME_RELEASE_TOKEN }}
+        run: |
+          set -Eeuo pipefail
+          gh api "repos/$HOST_REPO/releases/tags/$STABLE_TAG" > "$OUT/stable-release.json"
+          python3 - <<'PY'
+          import json,os,pathlib
+          out=pathlib.Path(os.environ['OUT'])
+          r=json.loads((out/'stable-release.json').read_text())
+          a=next((x for x in r.get('assets',[]) if x.get('name')=='latest.json'),None)
+          assert a,'latest.json missing'
+          (out/'latest_asset_id').write_text(str(a['id']))
+          PY
+          gh api -H "Accept: application/octet-stream"             "repos/$HOST_REPO/releases/assets/$(cat "$OUT/latest_asset_id")"             > "$OUT/latest-before.json"
+          python3 - <<'PY'
+          import json,os,pathlib
+          d=json.loads((pathlib.Path(os.environ['OUT'])/'latest-before.json').read_text())
+          assert d.get('version')==os.environ['VERSION'],d.get('version')
+          p=d.get('platforms',{})
+          assert 'darwin-aarch64' in p
+          assert 'windows-x86_64' in p
+          w=p['windows-x86_64']
+          assert w.get('signature'),'Windows signature missing'
+          assert w.get('sha256')==os.environ['EXPECTED_SHA256'],w
+          print('CURRENT_STABLE_863_MANIFEST_VERIFIED=1')
+          print('CURRENT_WINDOWS_URL='+str(w.get('url')))
+          PY
+
+      - name: Publish Windows EXE to public stable release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.ENDLUME_RELEASE_TOKEN }}
+        run: |
+          set -Eeuo pipefail
+          gh release upload "$STABLE_TAG" "$OUT/$EXE_NAME"             --repo "$HOST_REPO" --clobber
+          gh api "repos/$HOST_REPO/releases/tags/$STABLE_TAG" > "$OUT/stable-after-exe.json"
+          python3 - <<'PY'
+          import json,os,pathlib
+          r=json.loads((pathlib.Path(os.environ['OUT'])/'stable-after-exe.json').read_text())
+          a=next((x for x in r.get('assets',[]) if x.get('name')==os.environ['EXE_NAME']),None)
+          assert a,a
+          assert a.get('state')=='uploaded',a
+          assert int(a.get('size',0))==int(os.environ['EXPECTED_SIZE']),a
+          assert a.get('digest')=='sha256:'+os.environ['EXPECTED_SHA256'],a
+          print('PUBLIC_WINDOWS_EXE_VERIFIED=1')
+          PY
+
+      - name: Patch only Windows URL in stable manifest
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          PUBLIC_URL="https://github.com/$HOST_REPO/releases/download/$STABLE_TAG/$EXE_NAME"
+          python3 - "$PUBLIC_URL" <<'PY'
+          import json,os,pathlib,sys
+          out=pathlib.Path(os.environ['OUT'])
+          d=json.loads((out/'latest-before.json').read_text())
+          public_url=sys.argv[1]
+          p=d['platforms']
+          darwin_before=json.dumps(p['darwin-aarch64'],sort_keys=True,separators=(',',':'))
+          win_before=dict(p['windows-x86_64'])
+          p['windows-x86_64']['url']=public_url
+          assert p['windows-x86_64']['signature']==win_before['signature']
+          assert p['windows-x86_64']['sha256']==win_before['sha256']==os.environ['EXPECTED_SHA256']
+          assert json.dumps(p['darwin-aarch64'],sort_keys=True,separators=(',',':'))==darwin_before
+          assert d['version']==os.environ['VERSION']
+          (out/'latest.json').write_text(json.dumps(d,ensure_ascii=False,indent=2)+'\n')
+          print('WINDOWS_URL_PATCHED='+public_url)
+          print('MACOS_ENTRY_PRESERVED=1')
+          PY
+
+      - name: Publish fixed latest.json
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.ENDLUME_RELEASE_TOKEN }}
+        run: |
+          set -Eeuo pipefail
+          gh release upload "$STABLE_TAG" "$OUT/latest.json"             --repo "$HOST_REPO" --clobber
+          echo STABLE_MANIFEST_HOTFIX_PUBLISHED=1
+
+      - name: Verify release metadata and manifest bytes
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.ENDLUME_RELEASE_TOKEN }}
+        run: |
+          set -Eeuo pipefail
+          gh api "repos/$HOST_REPO/releases/tags/$STABLE_TAG" > "$OUT/final-release.json"
+          python3 - <<'PY'
+          import json,os,pathlib
+          out=pathlib.Path(os.environ['OUT'])
+          r=json.loads((out/'final-release.json').read_text())
+          exe=next((x for x in r.get('assets',[]) if x.get('name')==os.environ['EXE_NAME']),None)
+          latest=next((x for x in r.get('assets',[]) if x.get('name')=='latest.json'),None)
+          assert exe and latest
+          assert int(exe['size'])==int(os.environ['EXPECTED_SIZE'])
+          assert exe.get('digest')=='sha256:'+os.environ['EXPECTED_SHA256']
+          (out/'final_latest_id').write_text(str(latest['id']))
+          PY
+          gh api -H "Accept: application/octet-stream"             "repos/$HOST_REPO/releases/assets/$(cat "$OUT/final_latest_id")"             > "$OUT/latest-final.json"
+          python3 - <<'PY'
+          import json,os,pathlib
+          d=json.loads((pathlib.Path(os.environ['OUT'])/'latest-final.json').read_text())
+          w=d['platforms']['windows-x86_64']
+          expected=f"https://github.com/{os.environ['HOST_REPO']}/releases/download/{os.environ['STABLE_TAG']}/{os.environ['EXE_NAME']}"
+          assert d['version']==os.environ['VERSION']
+          assert w['url']==expected,w
+          assert w['sha256']==os.environ['EXPECTED_SHA256']
+          assert w.get('signature')
+          assert 'darwin-aarch64' in d['platforms']
+          print('WINDOWS_PUBLIC_URL_VERIFIED=1')
+          print('ENDLUME_863_WINDOWS_AUTOUPDATE_404_FIXED=1')
+          PY

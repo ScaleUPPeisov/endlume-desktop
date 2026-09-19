@@ -69,6 +69,10 @@ assert order==sorted(order), order
 assert '"libx265"' in hybrid
 
 assert 'fn audio_processing_requested' in render
+processed_audio=section(render,"async fn build_lossless_processed_audio_cycle","async fn materialize_continuous_audio")
+assert 'loudnorm=I=-14:TP=-1.5:LRA=11' in processed_audio, "Processed Audio must apply requested LUFS normalization"
+assert 'amix=inputs=2:duration=first' in processed_audio, "Processed Audio must apply requested ambient mix"
+assert '"-stream_loop","-1","-i",a.as_str()' in processed_audio, "Processed Audio ambient input must loop safely"
 assert 'raw_eta.map(|v|v.min(30.0))' in render, "fast ETA must not extrapolate into multi-minute values"
 for timing in ("scan","encoder-benchmark","image-preprocess","visual-master","audio-mux","manifest-expand","finalize","ffprobe-validation","total"):
     assert f'"{timing}"' in render, f"stage timing missing {timing}"

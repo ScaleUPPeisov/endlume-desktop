@@ -13,6 +13,7 @@ on:
       - 'scripts/find-endlume-real-fixture.py'
       - 'scripts/run-endlume-863-fast-multistill.py'
       - 'scripts/test-managed-license-render-gate.py'
+      - 'scripts/test-runtime-safety-8-62.py'
       - 'src/pages/ProjectPage.tsx'
       - 'supabase/functions/endlume-client-api/index.ts'
       - 'supabase/migrations/20260919_endlume_863_render_performance_telemetry.sql'

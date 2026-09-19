@@ -111,6 +111,13 @@ export function App(){
     }
   },[]);
 
+
+  useEffect(()=>{
+    if(!license?.valid)return;
+    const screen=editor?`editor:${editor.kind}`:`page:${page}`;
+    api.setLicenseScreen(screen).catch(()=>{});
+  },[license?.valid,page,editor?.kind]);
+
   useEffect(()=>{
     if(!license)return;
     return watchManagedLicenseRealtime(license,()=>{api.license().then(setLicense).catch(()=>{});});

@@ -184,17 +184,18 @@ fn ffconcat_escape(path:&Path)->String{
 
 async fn build_original_audio_cycle(app:&AppHandle,job:&QueueJob,started:i64,timer:&Instant,work:&Path,encoder:&str,attempt:u32,cancel:&AtomicBool)->Result<(PathBuf,Vec<f64>,f64),String>{
   if job.project.audio.is_empty(){return Err("Нет песен".into())}
-  let mut durations=Vec::new();let mut first:Option<(String,u32,u32)>=None;let mut clean=Vec::new();
+  let mut durations=Vec::new();let mut first:Option<(String,u32,u32)>=None;let mut clean=Vec::new();let mut probe_seconds=0.0f64;let mut remux_seconds=0.0f64;
   for (i,a) in job.project.audio.iter().enumerate(){
-    durations.push(probe_duration(app,a).await.unwrap_or(180.0).max(0.2));
+    let probe_mark=Instant::now();durations.push(probe_duration(app,a).await.unwrap_or(180.0).max(0.2));
     if !a.to_ascii_lowercase().ends_with(".mp3"){return Err(format!("{} — не MP3",Path::new(a).file_name().and_then(|x|x.to_str()).unwrap_or(a)))}
-    let sig=probe_audio_signature(app,a).await?;
+    let sig=probe_audio_signature(app,a).await?;probe_seconds+=probe_mark.elapsed().as_secs_f64();
     if sig.0!="mp3"{return Err(format!("{} — codec {}",Path::new(a).file_name().and_then(|x|x.to_str()).unwrap_or(a),sig.0))}
     if let Some(ref base)=first{if base!=&sig{return Err(format!("MP3 имеют разные параметры: ожидается {} Hz / {} ch, найдено {} Hz / {} ch",base.1,base.2,sig.1,sig.2))}}else{first=Some(sig)}
     let dst=work.join(format!("audio-clean-{i:03}.mp3"));
     let args=vec!["-hide_banner","-loglevel","error","-i",a.as_str(),"-map","0:a:0","-c:a","copy","-map_metadata","-1","-write_xing","0","-id3v2_version","0","-y",dst.to_string_lossy().as_ref()].into_iter().map(String::from).collect();
-    output(app,"ffmpeg",args).await.map_err(|e|format!("Original Audio clean-remux: {e}"))?;clean.push(dst);
+    let remux_mark=Instant::now();output(app,"ffmpeg",args).await.map_err(|e|format!("Original Audio clean-remux: {e}"))?;remux_seconds+=remux_mark.elapsed().as_secs_f64();clean.push(dst);
   }
+  emit_timing(app,&job.project.id,"probe",probe_seconds);emit_timing(app,&job.project.id,"audio-clean-remux",remux_seconds);
   let raw_list=work.join("audio-raw-list.txt");
   let body=clean.iter().map(|p|p.to_string_lossy().into_owned()).collect::<Vec<_>>().join("
 ");std::fs::write(&raw_list,body).map_err(|e|e.to_string())?;
@@ -490,12 +491,13 @@ async fn build_media_clip(app:&AppHandle,job:&QueueJob,media:&str,index:usize,to
 
 async fn build_lossless_processed_audio_cycle(app:&AppHandle,job:&QueueJob,started:i64,timer:&Instant,work:&Path,encoder:&str,attempt:u32,cancel:&AtomicBool)->Result<(PathBuf,Vec<f64>,f64),String>{
   if job.project.audio.is_empty(){return Err("Нет песен".into())}
-  let mut durations=Vec::new();
+  let mut durations=Vec::new();let probe_mark=Instant::now();
   let mut args:Vec<String>=vec!["-hide_banner","-loglevel","error"].into_iter().map(String::from).collect();
   for a in &job.project.audio{
     durations.push(probe_duration(app,a).await.unwrap_or(180.0).max(0.2));
     args.extend(vec!["-i",a.as_str()].into_iter().map(String::from));
   }
+  emit_timing(app,&job.project.id,"probe",probe_mark.elapsed().as_secs_f64());
   let min_track=durations.iter().copied().fold(f64::INFINITY,f64::min);
   let cf=job.settings.crossfade_sec.clamp(0.0,10.0).min((min_track*0.40).max(0.0));
   let mut graph=String::new();
@@ -872,7 +874,8 @@ async fn render_multi_still_zero_copy_863(app:&AppHandle,job:&QueueJob,audio:&Au
   let seed=work.join("fast-863-multistill-seed.mov");let mut mux:Vec<String>=vec!["-hide_banner","-loglevel","error","-i",physical.to_string_lossy().as_ref()].into_iter().map(String::from).collect();
   match audio{AudioSource::Loop(p)=>mux.extend(vec!["-stream_loop","-1","-fflags","+genpts","-i",p.to_string_lossy().as_ref()].into_iter().map(String::from)),AudioSource::Long(p)=>mux.extend(vec!["-i",p.to_string_lossy().as_ref()].into_iter().map(String::from))}
   mux.extend(vec!["-t",&final_duration.to_string(),"-map","0:v:0","-map","1:a:0","-c:v","copy","-c:a","copy","-progress","pipe:1","-y",seed.to_string_lossy().as_ref()].into_iter().map(String::from));
-  let mux_mark=Instant::now();run_ffmpeg(app,job,started,timer,mux,"Fast Original Audio • MP3 packet-copy",60.0,18.0,final_duration,encoder,attempt,cancel).await?;emit_timing(app,&job.project.id,"audio-mux",mux_mark.elapsed().as_secs_f64());
+  let audio_stage=if matches!(audio,&AudioSource::Loop(_)){"Fast Original Audio • MP3 packet-copy"}else{"Processed Audio • AAC packet-copy into final container"};
+  let mux_mark=Instant::now();run_ffmpeg(app,job,started,timer,mux,audio_stage,60.0,18.0,final_duration,encoder,attempt,cancel).await?;emit_timing(app,&job.project.id,"audio-mux",mux_mark.elapsed().as_secs_f64());
 
   let mut cycle=Vec::with_capacity(LOGICAL_FRAMES_PER_STILL*job.project.media.len());
   for image in 0..job.project.media.len(){let start=image*PHYSICAL_FRAMES_PER_STILL;for i in 0..LOGICAL_FRAMES_PER_STILL{cycle.push(start+(i%PHYSICAL_FRAMES_PER_STILL));}}
@@ -896,7 +899,7 @@ async fn render_zero_sub_zero_copy_856(app:&AppHandle,job:&QueueJob,effects:&[Ef
   let master=work.join("strict-856-master.mp4");let mut args:Vec<String>=vec!["-hide_banner","-loglevel","error","-filter_complex_threads","8","-loop","1","-framerate","30","-i",base_still.to_string_lossy().as_ref()].into_iter().map(String::from).collect();for e in effects.iter().filter(|x|x.enabled&&!x.source.trim().is_empty()){args.extend(vec!["-stream_loop","-1","-i",e.source.as_str()].into_iter().map(String::from));}
   let base="[0:v]fps=30,setsar=1[b0]".to_string();let (graph,last)=apply_effects_filter(base,"b0".into(),effects,&ws,1);let graph=format!("{graph};[{last}]fps=60,format=yuv420p[outv]");args.extend(vec!["-filter_complex",&graph,"-map","[outv]","-frames:v",&master_frames.to_string(),"-an"].into_iter().map(String::from));args.extend(hybrid_fidelity_args(&job.settings,encoder,duration));args.extend(vec!["-fps_mode","cfr","-r","60","-video_track_timescale","60000","-progress","pipe:1","-y",master.to_string_lossy().as_ref()].into_iter().map(String::from));
   let vm=Instant::now();run_ffmpeg(app,job,started,timer,args,"Strict 8.57: fidelity master полного Effects-цикла",55.0,18.0,duration,encoder,attempt,cancel).await?;emit_timing(app,&job.project.id,"strict-visual-master",vm.elapsed().as_secs_f64());let got=probe_video_frames_852(app,&master).await?;let packets=probe_video_packets_857(app,&master).await?;if got!=master_frames||packets!=master_frames{return Err(format!("Strict 8.57 master integrity: frames={got}/{master_frames}, packets={packets}/{master_frames}"))}
-  let seed=work.join("strict-856-seed.mov");let mut mux:Vec<String>=vec!["-hide_banner","-loglevel","error","-i",master.to_string_lossy().as_ref()].into_iter().map(String::from).collect();match audio{AudioSource::Loop(p)=>mux.extend(vec!["-stream_loop","-1","-fflags","+genpts","-i",p.to_string_lossy().as_ref()].into_iter().map(String::from)),AudioSource::Long(p)=>mux.extend(vec!["-i",p.to_string_lossy().as_ref()].into_iter().map(String::from))};mux.extend(vec!["-t",&final_duration.to_string(),"-map","0:v:0","-map","1:a:0","-c:v","copy","-c:a","copy","-progress","pipe:1","-y",seed.to_string_lossy().as_ref()].into_iter().map(String::from));let am=Instant::now();run_ffmpeg(app,job,started,timer,mux,"Strict 8.56: mux original MP3 packets",74.0,12.0,final_duration,encoder,attempt,cancel).await?;emit_timing(app,&job.project.id,"strict-audio-mux",am.elapsed().as_secs_f64());
+  let seed=work.join("strict-856-seed.mov");let mut mux:Vec<String>=vec!["-hide_banner","-loglevel","error","-i",master.to_string_lossy().as_ref()].into_iter().map(String::from).collect();match audio{AudioSource::Loop(p)=>mux.extend(vec!["-stream_loop","-1","-fflags","+genpts","-i",p.to_string_lossy().as_ref()].into_iter().map(String::from)),AudioSource::Long(p)=>mux.extend(vec!["-i",p.to_string_lossy().as_ref()].into_iter().map(String::from))};mux.extend(vec!["-t",&final_duration.to_string(),"-map","0:v:0","-map","1:a:0","-c:v","copy","-c:a","copy","-progress","pipe:1","-y",seed.to_string_lossy().as_ref()].into_iter().map(String::from));let audio_stage=if matches!(audio,&AudioSource::Loop(_)){"Strict 8.63: mux Original MP3 packets"}else{"Strict 8.63: mux Processed AAC packets"};let am=Instant::now();run_ffmpeg(app,job,started,timer,mux,audio_stage,74.0,12.0,final_duration,encoder,attempt,cancel).await?;let audio_mux_sec=am.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"strict-audio-mux",audio_mux_sec);emit_timing(app,&job.project.id,"audio-mux",audio_mux_sec);
   let total_frames=(final_duration*fps as f64).round().max(master_frames as f64) as usize;let mm=Instant::now();ensure_license_allowed()?;crate::mp4_manifest::expand_video_prefix_cycle(&seed,&seed,0,master_frames,total_frames)?;ensure_license_allowed()?;finalize_local_output(&seed,out).map_err(|e|format!("Strict 8.56: finalize zero-copy MOV: {e}"))?;ensure_license_allowed()?;strict_856_validate_natural_size(out)?;ensure_license_allowed()?;emit_timing(app,&job.project.id,"zero-copy-manifest",mm.elapsed().as_secs_f64());emit_progress(app,job,started,timer,96.0,"Strict 8.57 zero-copy готов",encoder,attempt,None);Ok(true)
 }
 

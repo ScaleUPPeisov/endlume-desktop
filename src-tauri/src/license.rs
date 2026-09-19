@@ -3,7 +3,7 @@ use sha2::{Digest,Sha256};
 use std::fs;
 use tauri::{AppHandle,Emitter,Manager};
 
-#[cfg(not(target_os="windows"))]
+#[cfg(not(any(target_os="windows",target_os="macos")))]
 const OWNER_HASH:&str="4b5631d4a5b7018be7c5237994ad4ba463a4fc1df33165beab0fedc901733ef9";
 
 fn file(app:&AppHandle)->Result<std::path::PathBuf,String>{
@@ -26,9 +26,9 @@ fn mask(key:&str)->String{
   else if key.len()<9{"••••".into()}else{format!("{}••••{}",&key[..4],&key[key.len()-4..])}
 }
 
-#[cfg(not(target_os="windows"))]
+#[cfg(not(any(target_os="windows",target_os="macos")))]
 fn legacy_status(app:&AppHandle)->Value{read_value(app)}
-#[cfg(not(target_os="windows"))]
+#[cfg(not(any(target_os="windows",target_os="macos")))]
 fn legacy_activate(app:&AppHandle,key:String)->Result<Value,String>{
   let key=key.trim();if key.is_empty(){return Err("Введите ключ ENDLUME".into())}
   let digest=hex::encode(Sha256::digest(key.as_bytes()));
@@ -38,7 +38,7 @@ fn legacy_activate(app:&AppHandle,key:String)->Result<Value,String>{
   write_value_atomic(&file(app)?,&v)?;Ok(v)
 }
 
-#[cfg(target_os="windows")]
+#[cfg(any(target_os="windows",target_os="macos"))]
 mod managed{
   use super::*;
   use crate::model::QueueJob;
@@ -77,7 +77,7 @@ mod managed{
   }
   fn save_token(token:&str)->Result<(),String>{
     let _guard=KEYRING_SERIAL.get_or_init(||Mutex::new(())).lock();
-    keyring_entry()?.set_password(token).map_err(|e|format!("Не удалось сохранить session token в Windows Credential Manager: {e}"))?;
+    keyring_entry()?.set_password(token).map_err(|e|format!("Не удалось сохранить session token в защищённом хранилище системы: {e}"))?;
     let mut c=cache().lock();c.loaded=true;c.token=Some(token.to_string());Ok(())
   }
   fn clear_token(){
@@ -93,7 +93,12 @@ mod managed{
     if let Ok(bytes)=fs::read(&p){if let Ok(v)=serde_json::from_slice::<Value>(&bytes){if let Some(id)=v.get("deviceId").and_then(Value::as_str).filter(|x|!x.trim().is_empty()){return Ok(id.to_string())}}}
     let id=uuid::Uuid::new_v4().to_string();write_value_atomic(&p,&json!({"deviceId":id,"createdAt":chrono::Utc::now()}))?;Ok(id)
   }
-  fn device_name()->String{std::env::var("COMPUTERNAME").ok().filter(|x|!x.trim().is_empty()).unwrap_or_else(||"Windows device".into())}
+  fn device_name()->String{
+    std::env::var("COMPUTERNAME").ok()
+      .or_else(||std::env::var("HOSTNAME").ok())
+      .filter(|x|!x.trim().is_empty())
+      .unwrap_or_else(||"ENDLUME device".into())
+  }
   fn normalized_key(key:&str)->String{key.chars().filter(|c|!c.is_whitespace()).collect::<String>().to_uppercase()}
   fn friendly(code:&str)->String{match code{
     "key_format"=>"Неверный формат ключа ENDLUME.",
@@ -163,7 +168,7 @@ mod managed{
   }
   pub async fn activate(app:&AppHandle,key:String)->Result<Value,String>{
     let key=normalized_key(&key);if key.is_empty(){return Err("Введите ключ ENDLUME".into())}
-    let id=device_id(app)?;let body=json!({"key":key,"device_id":id,"platform":"windows","architecture":std::env::consts::ARCH,"app_version":env!("CARGO_PKG_VERSION"),"device_name":device_name()});
+    let id=device_id(app)?;let body=json!({"key":key,"device_id":id,"platform":std::env::consts::OS,"architecture":std::env::consts::ARCH,"app_version":env!("CARGO_PKG_VERSION"),"device_name":device_name()});
     let (http,v)=post("activate",body,None,12).await?;
     if !(200..300).contains(&http)||!v.get("ok").and_then(Value::as_bool).unwrap_or(false){let code=v.get("code").and_then(Value::as_str).unwrap_or("denied");return Err(friendly(code))}
     let token=v.get("sessionToken").and_then(Value::as_str).filter(|x|!x.is_empty()).ok_or("Сервер не вернул session token")?;save_token(token)?;
@@ -199,40 +204,40 @@ mod managed{
 
 #[tauri::command]
 pub async fn license_status(app:AppHandle)->Value{
-  #[cfg(target_os="windows")]{return managed::status(&app,false).await}
-  #[cfg(not(target_os="windows"))]{legacy_status(&app)}
+  #[cfg(any(target_os="windows",target_os="macos"))]{return managed::status(&app,false).await}
+  #[cfg(not(any(target_os="windows",target_os="macos")))]{legacy_status(&app)}
 }
 #[tauri::command]
 pub async fn activate_license(app:AppHandle,key:String)->Result<Value,String>{
-  #[cfg(target_os="windows")]{return managed::activate(&app,key).await}
-  #[cfg(not(target_os="windows"))]{legacy_activate(&app,key)}
+  #[cfg(any(target_os="windows",target_os="macos"))]{return managed::activate(&app,key).await}
+  #[cfg(not(any(target_os="windows",target_os="macos")))]{legacy_activate(&app,key)}
 }
 #[tauri::command]
 pub fn set_license_screen(screen:String){
-  #[cfg(target_os="windows")]{managed::set_screen(screen)}
-  #[cfg(not(target_os="windows"))]{let _=screen;}
+  #[cfg(any(target_os="windows",target_os="macos"))]{managed::set_screen(screen)}
+  #[cfg(not(any(target_os="windows",target_os="macos")))]{let _=screen;}
 }
 pub async fn assert_production_allowed(app:&AppHandle)->Result<(),String>{
-  #[cfg(target_os="windows")]{return managed::assert_start(app).await}
-  #[cfg(not(target_os="windows"))]{if legacy_status(app).get("valid").and_then(Value::as_bool).unwrap_or(false){Ok(())}else{Err("ENDLUME не активирован.".into())}}
+  #[cfg(any(target_os="windows",target_os="macos"))]{return managed::assert_start(app).await}
+  #[cfg(not(any(target_os="windows",target_os="macos")))]{if legacy_status(app).get("valid").and_then(Value::as_bool).unwrap_or(false){Ok(())}else{Err("ENDLUME не активирован.".into())}}
 }
 pub fn production_blocked()->bool{
-  #[cfg(target_os="windows")]{return managed::blocked()}
-  #[cfg(not(target_os="windows"))]{false}
+  #[cfg(any(target_os="windows",target_os="macos"))]{return managed::blocked()}
+  #[cfg(not(any(target_os="windows",target_os="macos")))]{false}
 }
 pub fn start_heartbeat(app:AppHandle){
-  #[cfg(target_os="windows")]{managed::start_heartbeat(app)}
-  #[cfg(not(target_os="windows"))]{let _=app;}
+  #[cfg(any(target_os="windows",target_os="macos"))]{managed::start_heartbeat(app)}
+  #[cfg(not(any(target_os="windows",target_os="macos")))]{let _=app;}
 }
 pub fn telemetry_render_started(job:&crate::model::QueueJob){
-  #[cfg(target_os="windows")]{managed::render_started(job)}
-  #[cfg(not(target_os="windows"))]{let _=job;}
+  #[cfg(any(target_os="windows",target_os="macos"))]{managed::render_started(job)}
+  #[cfg(not(any(target_os="windows",target_os="macos")))]{let _=job;}
 }
 pub fn telemetry_render_progress(job:&crate::model::QueueJob,progress:f64,eta:Option<f64>,stage:&str,encoder:&str){
-  #[cfg(target_os="windows")]{managed::render_progress(job,progress,eta,stage,encoder)}
-  #[cfg(not(target_os="windows"))]{let _=(job,progress,eta,stage,encoder);}
+  #[cfg(any(target_os="windows",target_os="macos"))]{managed::render_progress(job,progress,eta,stage,encoder)}
+  #[cfg(not(any(target_os="windows",target_os="macos")))]{let _=(job,progress,eta,stage,encoder);}
 }
 pub fn telemetry_render_terminal(job:&crate::model::QueueJob,event_type:&str,output:Option<&str>,bytes:Option<u64>,error:Option<&str>,duration:Option<f64>){
-  #[cfg(target_os="windows")]{managed::render_terminal(job,event_type,output,bytes,error,duration)}
-  #[cfg(not(target_os="windows"))]{let _=(job,event_type,output,bytes,error,duration);}
+  #[cfg(any(target_os="windows",target_os="macos"))]{managed::render_terminal(job,event_type,output,bytes,error,duration)}
+  #[cfg(not(any(target_os="windows",target_os="macos")))]{let _=(job,event_type,output,bytes,error,duration);}
 }

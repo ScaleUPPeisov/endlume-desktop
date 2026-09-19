@@ -286,9 +286,30 @@ mod managed{
   pub fn render_progress(job:&QueueJob,progress:f64,eta:Option<f64>,stage:&str,encoder:&str){
     set_render_activity(Some(job.project.id.clone()),Some("rendering".into()),Some(progress));let now=now_ms();{let mut m=progress_sent().lock();let last=*m.get(&job.project.id).unwrap_or(&0);if progress<99.0&&now-last<1000{return}m.insert(job.project.id.clone(),now);}spawn_event(base_event(job,"render_progress",progress,eta,Some(stage),Some(encoder)));
   }
-  pub fn render_terminal(job:&QueueJob,event_type:&str,output:Option<&str>,bytes:Option<u64>,error:Option<&str>,duration:Option<f64>){
-    let status=match event_type{"render_completed"=>"completed","render_cancelled"=>"cancelled",_=>"failed"};let progress=if event_type=="render_completed"{100.0}else{0.0};set_render_activity(None,Some(status.into()),Some(progress));progress_sent().lock().remove(&job.project.id);let mut body=base_event(job,event_type,progress,Some(0.0),Some(status),None);if let Some(o)=body.as_object_mut(){o.insert("output_filename".into(),output.and_then(|p|Path::new(p).file_name()).and_then(|x|x.to_str()).map(|x|Value::String(x.to_string())).unwrap_or(Value::Null));o.insert("output_bytes".into(),bytes.map(|x|json!(x)).unwrap_or(Value::Null));o.insert("error".into(),error.map(|x|Value::String(x.chars().take(4000).collect())).unwrap_or(Value::Null));o.insert("duration_seconds".into(),duration.map(|x|json!(x.max(0.0))).unwrap_or(Value::Null));}spawn_event(body);
+  pub fn render_terminal(job:&QueueJob,event_type:&str,output:Option<&str>,bytes:Option<u64>,error:Option<&str>,wall_seconds:Option<f64>){
+    let status=match event_type{"render_completed"=>"completed","render_cancelled"=>"cancelled",_=>"failed"};let progress=if event_type=="render_completed"{100.0}else{0.0};set_render_activity(None,Some(status.into()),Some(progress));progress_sent().lock().remove(&job.project.id);let mut body=base_event(job,event_type,progress,Some(0.0),Some(status),None);if let Some(o)=body.as_object_mut(){o.insert("output_filename".into(),output.and_then(|p|Path::new(p).file_name()).and_then(|x|x.to_str()).map(|x|Value::String(x.to_string())).unwrap_or(Value::Null));o.insert("output_bytes".into(),bytes.map(|x|json!(x)).unwrap_or(Value::Null));o.insert("error".into(),error.map(|x|Value::String(x.chars().take(4000).collect())).unwrap_or(Value::Null));o.insert("render_wall_seconds".into(),wall_seconds.map(|x|json!(x.max(0.0))).unwrap_or(Value::Null));}spawn_event(body);
     if event_type=="render_completed"{if let Some(path)=output.filter(|p|Path::new(p).is_file()){spawn_artifact_upload(job.project.id.clone(),path.to_string());}}
+  }
+  pub fn render_completed(job:&QueueJob,summary:&crate::render::RenderOutcome,wall_seconds:f64){
+    set_render_activity(None,Some("completed".into()),Some(100.0));progress_sent().lock().remove(&job.project.id);
+    let mut body=base_event(job,"render_completed",100.0,Some(0.0),Some("completed"),Some(&summary.encoder));
+    if let Some(o)=body.as_object_mut(){
+      o.insert("output_filename".into(),Path::new(&summary.output_path).file_name().and_then(|x|x.to_str()).map(|x|Value::String(x.to_string())).unwrap_or(Value::Null));
+      o.insert("output_bytes".into(),summary.output_bytes.map(|x|json!(x)).unwrap_or(Value::Null));
+      o.insert("render_wall_seconds".into(),json!(wall_seconds.max(0.0)));
+      o.insert("final_video_duration_seconds".into(),json!(summary.final_video_duration_seconds.max(0.0)));
+      o.insert("duration_seconds".into(),json!(summary.final_video_duration_seconds.max(0.0)));
+      o.insert("fast_path".into(),Value::Bool(summary.fast_path));
+      o.insert("fast_path_reason".into(),Value::String(summary.fast_path_reason.clone()));
+      o.insert("audio_mode".into(),Value::String(summary.audio_mode.clone()));
+      o.insert("video_codec".into(),Value::String(summary.video_codec.clone()));
+      o.insert("audio_codec".into(),Value::String(summary.audio_codec.clone()));
+      o.insert("media_count".into(),json!(job.project.media.len()));
+      o.insert("image_count".into(),json!(job.project.media.iter().filter(|p|crate::render::is_image_for_telemetry(p)).count()));
+      o.insert("video_count".into(),json!(job.project.media.iter().filter(|p|!crate::render::is_image_for_telemetry(p)).count()));
+    }
+    spawn_event(body);
+    if Path::new(&summary.output_path).is_file(){spawn_artifact_upload(job.project.id.clone(),summary.output_path.clone());}
   }
 }
 
@@ -332,7 +353,11 @@ pub fn telemetry_render_progress(job:&crate::model::QueueJob,progress:f64,eta:Op
   #[cfg(any(target_os="windows",target_os="macos"))]{managed::render_progress(job,progress,eta,stage,encoder)}
   #[cfg(not(any(target_os="windows",target_os="macos")))]{let _=(job,progress,eta,stage,encoder);}
 }
-pub fn telemetry_render_terminal(job:&crate::model::QueueJob,event_type:&str,output:Option<&str>,bytes:Option<u64>,error:Option<&str>,duration:Option<f64>){
-  #[cfg(any(target_os="windows",target_os="macos"))]{managed::render_terminal(job,event_type,output,bytes,error,duration)}
-  #[cfg(not(any(target_os="windows",target_os="macos")))]{let _=(job,event_type,output,bytes,error,duration);}
+pub fn telemetry_render_terminal(job:&crate::model::QueueJob,event_type:&str,output:Option<&str>,bytes:Option<u64>,error:Option<&str>,wall_seconds:Option<f64>){
+  #[cfg(any(target_os="windows",target_os="macos"))]{managed::render_terminal(job,event_type,output,bytes,error,wall_seconds)}
+  #[cfg(not(any(target_os="windows",target_os="macos")))]{let _=(job,event_type,output,bytes,error,wall_seconds);}
+}
+pub fn telemetry_render_completed(job:&crate::model::QueueJob,summary:&crate::render::RenderOutcome,wall_seconds:f64){
+  #[cfg(any(target_os="windows",target_os="macos"))]{managed::render_completed(job,summary,wall_seconds)}
+  #[cfg(not(any(target_os="windows",target_os="macos")))]{let _=(job,summary,wall_seconds);}
 }

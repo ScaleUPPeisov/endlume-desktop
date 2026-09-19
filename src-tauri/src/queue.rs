@@ -120,8 +120,8 @@ fn start_worker_if_needed(app:AppHandle,runtime:Arc<QueueRuntime>){
         let payload=json!({"id":id,"project":job.project,"status":"error","progress":100.0,"stage":"Остановлено пользователем","etaSec":0.0});runtime.remember_terminal(payload.clone());let _=app.emit("render-error",payload);
       }else{
         match outcome{
-          Ok(())=>{
-            let (path,bytes)=latest_result_for_job(&job);license::telemetry_render_terminal(&job,"render_completed",path.as_deref(),bytes,None,Some(job_timer.elapsed().as_secs_f64()));runtime.remember_terminal(done_fallback_payload(&job));
+          Ok(summary)=>{
+            license::telemetry_render_completed(&job,&summary,job_timer.elapsed().as_secs_f64());runtime.remember_terminal(done_fallback_payload(&job));
           }
           Err(error) if error==LICENSE_BLOCKED||license::production_blocked()=>{
             license::telemetry_render_terminal(&job,"render_cancelled",None,None,Some("license_blocked"),Some(job_timer.elapsed().as_secs_f64()));

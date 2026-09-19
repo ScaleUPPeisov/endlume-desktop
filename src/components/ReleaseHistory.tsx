@@ -3,7 +3,7 @@ import React from 'react';
 type Release={version:string;date:string;current?:boolean;title:string;items:string[]};
 
 const releases:Release[]=[
-  {version:'1.0.0-alpha.8.61',date:'07.09.2026',current:true,title:'External Disk Render Stability',items:[
+  {version:'1.0.0-alpha.8.61',date:'07.09.2026',current:false,title:'External Disk Render Stability',items:[
     'Рабочие master/audio/manifest файлы one-image рендера перенесены с внешнего output-диска в локальный cache Mac.',
     'На TOSHIBA/другой выбранный диск итоговый MOV записывается один раз после завершения локального zero-copy manifest.',
     'Убрано накопительное замедление проектов из-за многократной тяжёлой записи временных файлов на внешний диск.',

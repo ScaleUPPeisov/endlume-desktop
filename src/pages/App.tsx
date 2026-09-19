@@ -36,7 +36,7 @@ function syncBackendQueue(snapshot:any){
 }
 
 export function App(){
-  const page=useApp(s=>s.page),editor=useApp(s=>s.editor),patchProject=useApp(s=>s.patchProject),setLibrary=useApp(s=>s.setLibrary),appendProjects=useApp(s=>s.appendProjects);
+  const page=useApp(s=>s.page),editor=useApp(s=>s.editor),patchProject=useApp(s=>s.patchProject),setLibrary=useApp(s=>s.setLibrary),appendProjects=useApp(s=>s.appendProjects),queueDepth=useApp(s=>s.projects.filter(p=>p.status==='queued'||p.status==='rendering').length);
   const [recovery,setRecovery]=useState<RecoveryPayload>();
   const [license,setLicense]=useState<LicenseStatus|null>(null);
   const [availableUpdate,setAvailableUpdate]=useState<any>(null);
@@ -95,6 +95,7 @@ export function App(){
       });
     };
     const off:Promise<()=>void>[]=[];
+    off.push(listen<LicenseStatus>('license-state-changed',e=>setLicense(e.payload)));
     off.push(listen<any>('queue-changed',e=>syncQueueSnapshot(e.payload)));
     off.push(listen<any>('render-progress',e=>{const p=e.payload;if(!p?.id)return;progressPending.set(p.id,p);if(progressRaf===undefined)progressRaf=requestAnimationFrame(flushRenderProgress)}));
     off.push(listen<any>('render-done',e=>{const p=e.payload;if(!p?.id)return;progressPending.delete(p.id);patchProject(p.id,{...compactPayload(p),status:'done',progress:100,stage:'Готово',etaSec:0})}));
@@ -108,6 +109,17 @@ export function App(){
       window.removeEventListener('focus',onFocus);document.removeEventListener('visibilitychange',onVisibility);off.forEach(p=>p.then(f=>f()));
     }
   },[]);
+
+  useEffect(()=>{
+    if(!license?.valid)return;
+    const screen=editor?`editor:${editor.kind}`:`page:${page}`;
+    api.setLicenseScreen(screen).catch(()=>{});
+  },[license?.valid,page,editor?.kind]);
+
+  useEffect(()=>{
+    if(!license?.valid)return;
+    api.setLicenseQueueDepth(queueDepth).catch(()=>{});
+  },[license?.valid,queueDepth]);
 
   if(!license)return <div className="bootScreen"><div className="bootPulse"/>ENDLUME</div>;
   if(!license.valid)return <ActivationScreen onActivated={setLicense}/>;

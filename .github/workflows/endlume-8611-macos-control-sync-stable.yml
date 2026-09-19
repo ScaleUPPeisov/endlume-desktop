@@ -1,0 +1,204 @@
+name: ENDLUME 8.61.1 macOS Control Sync Stable
+
+on:
+  push:
+    branches:
+      - hotfix/endlume-8611-macos-control-sync
+    paths:
+      - '.github/workflows/endlume-8611-macos-control-sync-stable.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-8611-macos-control-sync-stable
+  cancel-in-progress: true
+
+jobs:
+  build-test-publish:
+    name: macOS ARM64 • 8.61.1 • Test + Signed Stable Update
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 120
+    env:
+      VERSION: 1.0.0-alpha.8.61.1
+      HOST_REPO: ScaleUPPeisov/scaleup-site
+      STABLE_TAG: endlume-stable
+      STABLE_TAR: ENDLUME-macos-aarch64.app.tar.gz
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify exact 8.61 hotfix source
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(uname -s)" = Darwin
+          test "$(uname -m)" = arm64
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          v='1.0.0-alpha.8.61.1'
+          assert json.loads(Path('package.json').read_text())['version']==v
+          assert json.loads(Path('src-tauri/tauri.conf.json').read_text())['version']==v
+          c=Path('src-tauri/src/license.rs').read_text()
+          assert 'legacy_owner_migrate' in c
+          assert 'HEARTBEAT_SECS:u64=25' in c
+          assert 'set_license_screen' in c
+          assert 'set_license_queue_depth' in c
+          r=Path('src-tauri/src/render.rs').read_text()
+          assert 'telemetry_render_progress' in r
+          assert 'telemetry_render_terminal' in r
+          print('SOURCE_CONTRACT_GREEN')
+          PY
+
+      - name: Stage Apple Silicon FFmpeg sidecars
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          FOUNDATION="$HOME/.endlume-local-builder/endlume-desktop-8.40-bootstrap"
+          test -d "$FOUNDATION/src-tauri/binaries"
+          mkdir -p src-tauri/binaries
+          rsync -a "$FOUNDATION/src-tauri/binaries/" src-tauri/binaries/
+          chmod +x src-tauri/binaries/ffmpeg* src-tauri/binaries/ffprobe*
+          test -x src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          test -x src-tauri/binaries/ffprobe-aarch64-apple-darwin
+
+      - name: Frontend + Rust regression
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          npm ci
+          npm run check
+          npm run build
+          cargo test --manifest-path src-tauri/Cargo.toml -- --nocapture
+          cargo check --manifest-path src-tauri/Cargo.toml
+
+      - name: Prepare updater signing key
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          KEY="$HOME/.endlume-updater/endlume.key"
+          PUB="$HOME/.endlume-updater/endlume.key.pub"
+          test -s "$KEY"
+          test -s "$PUB"
+          EXPECTED="$(python3 - <<'PY'
+          import json
+          print(json.load(open('src-tauri/tauri.conf.json'))['plugins']['updater']['pubkey'].strip())
+          PY
+          )"
+          ACTUAL="$(tr -d '\r\n' < "$PUB")"
+          test "$EXPECTED" = "$ACTUAL"
+          echo "TAURI_SIGNING_PRIVATE_KEY_PATH=$KEY" >> "$GITHUB_ENV"
+          echo "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=" >> "$GITHUB_ENV"
+
+      - name: Build signed macOS ARM64 app
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          export TAURI_SIGNING_PRIVATE_KEY="$(cat "$TAURI_SIGNING_PRIVATE_KEY_PATH")"
+          rm -rf src-tauri/target/aarch64-apple-darwin/release/bundle/macos
+          npx tauri build --target aarch64-apple-darwin --bundles app
+
+      - name: Verify app and create signed updater archive
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          BUNDLE="src-tauri/target/aarch64-apple-darwin/release/bundle/macos"
+          APP="$(find "$BUNDLE" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          test -n "$APP" -a -d "$APP"
+          test "$(basename "$APP")" = "ENDLUME STUDIO PEISOV.app"
+          BID="$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$APP/Contents/Info.plist")"
+          VER="$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist")"
+          EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
+          test "$BID" = "studio.endlume.desktop"
+          test "$VER" = "$VERSION"
+          /usr/bin/lipo -archs "$APP/Contents/MacOS/$EXE" | grep -qw arm64
+          if ! /usr/bin/codesign --verify --deep --strict "$APP" >/dev/null 2>&1; then
+            /usr/bin/codesign --force --deep --sign - "$APP"
+          fi
+          /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP"
+          test -s "$APP/Contents/_CodeSignature/CodeResources"
+
+          OUT="$RUNNER_TEMP/endlume-8611-stable"
+          rm -rf "$OUT"
+          mkdir -p "$OUT"
+          TAR="$OUT/$STABLE_TAR"
+          /usr/bin/tar -czf "$TAR" -C "$BUNDLE" "$(basename "$APP")"
+          test -s "$TAR"
+          env -u TAURI_SIGNING_PRIVATE_KEY npx tauri signer sign "$TAR" >/dev/null
+          test -s "$TAR.sig"
+
+          VERIFY="$OUT/verify"
+          mkdir -p "$VERIFY"
+          /usr/bin/tar -xzf "$TAR" -C "$VERIFY"
+          /usr/bin/codesign --verify --deep --strict --verbose=2 "$VERIFY/ENDLUME STUDIO PEISOV.app"
+          shasum -a 256 "$TAR" | tee "$OUT/$STABLE_TAR.sha256"
+          echo "ENDLUME_OUT=$OUT" >> "$GITHUB_ENV"
+
+      - name: Publish stable in-app updater
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.ENDLUME_RELEASE_TOKEN }}
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          test -n "${GH_TOKEN:-}" || { echo "ENDLUME_RELEASE_TOKEN missing" >&2; exit 1; }
+          TAR="$ENDLUME_OUT/$STABLE_TAR"
+          SIGFILE="$TAR.sig"
+          LATEST="$ENDLUME_OUT/latest.json"
+          SIG="$(tr -d '\r\n' < "$SIGFILE")"
+          test -n "$SIG"
+          ASSET_URL="https://github.com/$HOST_REPO/releases/download/$STABLE_TAG/$STABLE_TAR"
+
+          python3 - "$LATEST" "$VERSION" "$ASSET_URL" "$SIG" <<'PY'
+          import datetime,json,sys
+          out,version,url,sig=sys.argv[1:]
+          data={
+            "version":version,
+            "notes":"macOS Control Sync hotfix: ENDLUME 8.61 render stack сохранён; добавлены Owner/Managed server session, heartbeat ~25 sec, current screen, queue depth и render telemetry в ENDLUME Control.",
+            "pub_date":datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00","Z"),
+            "platforms":{"darwin-aarch64":{"url":url,"signature":sig}}
+          }
+          json.dump(data,open(out,"w"),ensure_ascii=False,indent=2)
+          PY
+
+          if ! gh release view "$STABLE_TAG" --repo "$HOST_REPO" >/dev/null 2>&1; then
+            gh release create "$STABLE_TAG" --repo "$HOST_REPO" --title "ENDLUME Stable Updates" --notes "Signed updater channel."
+          fi
+          gh release upload "$STABLE_TAG" "$TAR" "$SIGFILE" "$LATEST" --clobber --repo "$HOST_REPO"
+
+      - name: Verify public stable channel
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          LATEST_PUBLIC="$RUNNER_TEMP/latest-public.json"
+          URL="https://github.com/$HOST_REPO/releases/download/$STABLE_TAG/latest.json"
+          for i in {1..24}; do
+            if /usr/bin/curl -fsSL --connect-timeout 10 --max-time 30 "$URL?run=$GITHUB_RUN_ID-$i" -o "$LATEST_PUBLIC"; then
+              if python3 - "$LATEST_PUBLIC" "$VERSION" <<'PY'
+          import json,sys
+          d=json.load(open(sys.argv[1]))
+          assert d.get('version')==sys.argv[2],d.get('version')
+          p=d.get('platforms',{}).get('darwin-aarch64',{})
+          assert p.get('url') and p.get('signature')
+          PY
+              then break; fi
+            fi
+            sleep 5
+          done
+          python3 - "$LATEST_PUBLIC" "$VERSION" <<'PY'
+          import json,sys
+          d=json.load(open(sys.argv[1]))
+          assert d.get('version')==sys.argv[2]
+          PY
+          /usr/bin/curl -fsIL --connect-timeout 10 --max-time 30 "https://github.com/$HOST_REPO/releases/download/$STABLE_TAG/$STABLE_TAR" >/dev/null
+          echo "ENDLUME_8611_MACOS_CONTROL_SYNC_STABLE_GREEN"

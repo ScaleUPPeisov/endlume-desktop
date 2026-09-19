@@ -103,6 +103,7 @@ export const api = {
   activate:(key:string)=>invoke<LicenseStatus>('activate_license',{key}),
   license:()=>invoke<LicenseStatus>('license_status'),
   setLicenseScreen:(screen:string)=>invoke<void>('set_license_screen',{screen}),
+  setLicenseQueueDepth:(depth:number)=>invoke<void>('set_license_queue_depth',{depth}),
   cacheStats:()=>invoke<{count:number;bytes:number}>('cache_stats'),
   powerStatus:()=>invoke<{supported:boolean;onBattery:boolean;percent?:number|null}>('power_status'),
   diskStatus:(path?:string)=>invoke<{totalBytes:number;freeBytes:number;usedBytes:number;mount:string}>('disk_status',{path:path||null}),

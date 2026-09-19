@@ -1,0 +1,75 @@
+name: ENDLUME 8.63 Fast Render Incident QA
+
+on:
+  push:
+    branches: [fix/endlume-863-windows-fast-render-size]
+    paths:
+      - '.github/workflows/endlume-863-fast-render-qa.yml'
+      - 'src-tauri/src/render.rs'
+      - 'src-tauri/src/queue.rs'
+      - 'src-tauri/src/license.rs'
+      - 'src-tauri/src/mp4_manifest.rs'
+      - 'scripts/test-fast-2h-contract-8-63.py'
+      - 'supabase/functions/endlume-client-api/index.ts'
+      - 'supabase/migrations/20260919_endlume_863_render_performance_telemetry.sql'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-863-fast-render-qa
+  cancel-in-progress: true
+
+jobs:
+  targeted:
+    name: Fast 2h • Rust • MP4 manifest
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Fast 2h source contract
+        run: python3 scripts/test-fast-2h-contract-8-63.py
+
+      - name: Stage native FFmpeg sidecars
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+          mkdir -p src-tauri/binaries
+          cp "$(command -v ffmpeg)" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp "$(command -v ffprobe)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          chmod +x src-tauri/binaries/ffmpeg-aarch64-apple-darwin src-tauri/binaries/ffprobe-aarch64-apple-darwin
+
+      - name: Rustfmt changed files only
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          rustup component add rustfmt
+          rustfmt --edition 2021 --check             src-tauri/src/render.rs             src-tauri/src/queue.rs             src-tauri/src/license.rs             src-tauri/src/mp4_manifest.rs
+
+      - name: Cargo check
+        run: cargo check --manifest-path src-tauri/Cargo.toml
+
+      - name: Full Rust tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml -- --nocapture
+
+      - name: MP4 manifest targeted tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml mp4_manifest -- --nocapture
+
+      - name: Managed license render gate regression
+        run: python3 scripts/test-managed-license-render-gate.py
+
+      - name: Runtime safety regression
+        run: python3 scripts/test-runtime-safety-8-62.py
+
+      - name: Verdict
+        run: |
+          echo ENDLUME_863_FAST_RENDER_TARGETED_QA_GREEN
+          echo HEAD=$GITHUB_SHA

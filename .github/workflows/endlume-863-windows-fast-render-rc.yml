@@ -1,0 +1,250 @@
+name: ENDLUME 8.63 Windows Fast Render RC
+
+on:
+  push:
+    branches: [fix/endlume-863-windows-fast-render-size]
+    paths:
+      - '.github/workflows/endlume-863-windows-fast-render-rc.yml'
+      - 'src/**'
+      - 'src-tauri/**'
+      - 'scripts/test-fast-2h-contract-8-63.py'
+      - 'scripts/find-endlume-real-fixture.py'
+      - 'scripts/run-endlume-863-fast-multistill.py'
+      - 'scripts/test-managed-license-render-gate.py'
+      - 'scripts/test-runtime-safety-8-62.py'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: endlume-863-windows-fast-render-rc
+  cancel-in-progress: true
+
+env:
+  WINDOWS_TARGET: x86_64-pc-windows-msvc
+  ENDLUME_VERSION: 1.0.0-alpha.8.63
+  FINAL_INSTALLER: ENDLUME-YT-Studio-PEISOV-Setup-1.0.0-alpha.8.63-x64.exe
+  RELEASE_TAG: endlume-v1.0.0-alpha.8.63-windows-rc
+  RELEASE_TITLE: ENDLUME YT Studio PEISOV 1.0.0-alpha.8.63 Windows RC
+
+jobs:
+  build-rc:
+    name: Real media gate • Windows x64 • NSIS • RC
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 0
+
+      - name: Verify 8.63 source surfaces
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import json,re
+          from pathlib import Path
+          expected='1.0.0-alpha.8.63'
+          assert json.loads(Path('package.json').read_text())['version']==expected
+          assert json.loads(Path('src-tauri/tauri.conf.json').read_text())['version']==expected
+          cargo=Path('src-tauri/Cargo.toml').read_text()
+          assert re.search(r'^version\s*=\s*"'+re.escape(expected)+r'"$',cargo,re.M)
+          win=json.loads(Path('src-tauri/tauri.windows.conf.json').read_text())
+          assert win['productName']=='ENDLUME YT Studio PEISOV'
+          assert win['mainBinaryName']=='ENDLUME YT Studio PEISOV'
+          assert win['identifier']=='studio.endlume.desktop'
+          assert win['bundle']['targets']==['nsis']
+          print('ENDLUME_863_WINDOWS_SOURCE_SURFACE_GREEN')
+          PY
+
+      - name: Prove Windows 8.62 release is immutable
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          JSON="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/endlume-v1.0.0-alpha.8.62-windows")"
+          test "$(printf '%s' "$JSON" | jq -r '.target_commitish')" = "cc42a23094dc92590e0f2ecf0a1cfeeca5cf5961"
+          printf '%s' "$JSON" | jq -r '.assets[] | select(.name=="ENDLUME-YT-Studio-PEISOV-Setup-1.0.0-alpha.8.62-x64.exe") | [.size,.digest] | @tsv' \
+            | grep -F $'98226125\tsha256:a78c7d6158f0e6d4e926eda2e57060955c6f5b7c485d8476ebb6e49ea00a1879'
+          echo WINDOWS_862_IMMUTABLE_GREEN
+
+      - name: Stage native FFmpeg for real-media gate
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+          command -v ffmpeg
+          command -v ffprobe
+          mkdir -p src-tauri/binaries
+          cp "$(command -v ffmpeg)" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp "$(command -v ffprobe)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          chmod +x src-tauri/binaries/ffmpeg-aarch64-apple-darwin src-tauri/binaries/ffprobe-aarch64-apple-darwin
+
+      - name: Software regression
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          npm ci
+          npm run check
+          npm run build
+          python3 scripts/test-fast-2h-contract-8-63.py
+          python3 scripts/test-managed-license-render-gate.py
+          python3 scripts/test-runtime-safety-8-62.py
+          cargo check --manifest-path src-tauri/Cargo.toml
+          cargo test --manifest-path src-tauri/Cargo.toml -- --nocapture
+
+      - name: Resolve durable real-media fixture
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          TMP="$(mktemp -d /tmp/e863rcfixture.XXXXXX)"
+          python3 scripts/find-endlume-real-fixture.py "$TMP/env"
+          cat "$TMP/env" >> "$GITHUB_ENV"
+          source "$TMP/env"
+          test "$AUDIO_COUNT" = 15
+          test -f "$SIDE"; test -f "$IMG"
+
+      - name: Five-run 2h multi-still acceptance
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/run-endlume-863-fast-multistill.py "$SIDE" "$(command -v ffmpeg)" "$(command -v ffprobe)" "$GITHUB_WORKSPACE/863-fast-multistill-rc.json"
+
+      - name: Install Windows cross-build prerequisites
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          command -v brew >/dev/null
+          brew list nsis >/dev/null 2>&1 || brew install nsis
+          brew list llvm >/dev/null 2>&1 || brew install llvm
+          command -v gh >/dev/null 2>&1 || brew install gh
+          LLVM_BIN="$(brew --prefix llvm)/bin"
+          echo "$LLVM_BIN" >> "$GITHUB_PATH"
+          export PATH="$LLVM_BIN:$PATH"
+          rustup target add "$WINDOWS_TARGET"
+          command -v cargo-xwin >/dev/null 2>&1 || cargo install --locked cargo-xwin
+          makensis -VERSION
+          cargo xwin --version
+
+      - name: Stage pinned Windows FFmpeg sidecars
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          FFMPEG_TAG='autobuild-2026-09-14-13-17'
+          ARCHIVE='ffmpeg-N-126549-ga51bb69b09-win64-gpl.zip'
+          URL="https://github.com/BtbN/FFmpeg-Builds/releases/download/$FFMPEG_TAG/$ARCHIVE"
+          CACHE="$RUNNER_TEMP/endlume-ffmpeg-863"
+          ZIP="$CACHE/$ARCHIVE"
+          EXTRACT="$CACHE/extract"
+          DEST='src-tauri/binaries'
+          rm -rf "$EXTRACT"; mkdir -p "$CACHE" "$EXTRACT" "$DEST"
+          if [ ! -s "$ZIP" ]; then curl --fail --location --retry 3 --output "$ZIP" "$URL"; fi
+          ditto -x -k "$ZIP" "$EXTRACT"
+          FFMPEG="$(find "$EXTRACT" -type f -name ffmpeg.exe -print -quit)"
+          FFPROBE="$(find "$EXTRACT" -type f -name ffprobe.exe -print -quit)"
+          test -n "$FFMPEG"; test -n "$FFPROBE"
+          cp "$FFMPEG" "$DEST/ffmpeg-$WINDOWS_TARGET.exe"
+          cp "$FFPROBE" "$DEST/ffprobe-$WINDOWS_TARGET.exe"
+          python3 - <<'PY'
+          from pathlib import Path
+          for n in ('ffmpeg','ffprobe'):
+              p=Path('src-tauri/binaries')/f'{n}-x86_64-pc-windows-msvc.exe'
+              assert p.stat().st_size>1_000_000
+              assert p.read_bytes()[:2]==b'MZ'
+          print('WINDOWS_863_SIDECARS_PE_GREEN')
+          PY
+
+      - name: Build Windows x64 NSIS RC
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          LLVM_BIN="$(brew --prefix llvm)/bin"
+          export PATH="$LLVM_BIN:$PATH"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('src-tauri/tauri.conf.json')
+          cfg=json.loads(p.read_text())
+          assert cfg['version']=='1.0.0-alpha.8.63'
+          assert cfg['bundle']['createUpdaterArtifacts'] is True
+          cfg['bundle']['createUpdaterArtifacts']=False
+          p.write_text(json.dumps(cfg,ensure_ascii=False,indent=2)+'\n')
+          PY
+          npm run tauri build -- --runner cargo-xwin --target "$WINDOWS_TARGET" --bundles nsis --config src-tauri/tauri.windows.conf.json
+
+      - name: Normalize and hash installer
+        id: verify
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          NSIS_DIR="src-tauri/target/$WINDOWS_TARGET/release/bundle/nsis"
+          FINAL="$NSIS_DIR/$FINAL_INSTALLER"
+          if [ ! -s "$FINAL" ]; then
+            CANDIDATE="$(find "$NSIS_DIR" -maxdepth 1 -type f -name '*.exe' ! -name "$FINAL_INSTALLER" -print -quit)"
+            test -n "$CANDIDATE"; cp "$CANDIDATE" "$FINAL"
+          fi
+          test -s "$FINAL"
+          python3 - "$FINAL" <<'PY'
+          from pathlib import Path
+          import sys
+          p=Path(sys.argv[1]); assert p.stat().st_size>1_000_000; assert p.read_bytes()[:2]==b'MZ'
+          print('NSIS_PE_MZ_GREEN',p.stat().st_size)
+          PY
+          SHA="$(shasum -a 256 "$FINAL" | awk '{print $1}')"
+          SIZE="$(stat -f%z "$FINAL")"
+          printf '%s  %s\n' "$SHA" "$FINAL_INSTALLER" > "$FINAL.sha256"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "size=$SIZE" >> "$GITHUB_OUTPUT"
+          echo "installer=$FINAL" >> "$GITHUB_OUTPUT"
+          echo "checksum=$FINAL.sha256" >> "$GITHUB_OUTPUT"
+          echo "INSTALLER_BYTES=$SIZE"
+          echo "INSTALLER_SHA256=$SHA"
+
+      - name: Publish Windows 8.63 prerelease RC
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INSTALLER_SHA: ${{ steps.verify.outputs.sha }}
+          INSTALLER_SIZE: ${{ steps.verify.outputs.size }}
+          INSTALLER_PATH: ${{ steps.verify.outputs.installer }}
+          CHECKSUM_PATH: ${{ steps.verify.outputs.checksum }}
+        run: |
+          set -Eeuo pipefail
+          NOTES="$RUNNER_TEMP/endlume-863-rc.md"
+          cat > "$NOTES" <<EOF
+          ENDLUME YT Studio PEISOV 1.0.0-alpha.8.63 Windows RC
+
+          Source: $GITHUB_SHA
+          Fast-render source contract: PASS
+          Five-run real-media 2h multi-still gate: PASS on macOS reference hardware
+          Windows x64 cross-build / NSIS structural verification: PASS
+          Native Windows hardware/customer E2E: PENDING
+
+          This is a prerelease RC. Production promotion is forbidden until the same customer project passes on real Windows hardware.
+          EOF
+
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" "$INSTALLER_PATH" "$CHECKSUM_PATH" --clobber --repo "$GITHUB_REPOSITORY"
+            gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "$RELEASE_TITLE" --notes-file "$NOTES" --prerelease
+          else
+            gh release create "$RELEASE_TAG" "$INSTALLER_PATH" "$CHECKSUM_PATH" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "$RELEASE_TITLE" --notes-file "$NOTES" --prerelease
+          fi
+          JSON="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG")"
+          test "$(printf '%s' "$JSON" | jq -r --arg n "$FINAL_INSTALLER" '.assets[]|select(.name==$n)|.size')" = "$INSTALLER_SIZE"
+          test "$(printf '%s' "$JSON" | jq -r --arg n "$FINAL_INSTALLER" '.assets[]|select(.name==$n)|.digest')" = "sha256:$INSTALLER_SHA"
+          echo WINDOWS_863_RC_PUBLISHED_GREEN
+
+      - name: Upload RC provenance
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ENDLUME-8.63-Windows-Fast-Render-RC-Provenance
+          path: |
+            863-fast-multistill-rc.json
+            src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/ENDLUME-YT-Studio-PEISOV-Setup-1.0.0-alpha.8.63-x64.exe.sha256
+          if-no-files-found: warn
+          retention-days: 30

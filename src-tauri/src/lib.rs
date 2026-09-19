@@ -37,7 +37,7 @@ pub fn run(){
       preview::generate_preview,live_preview::prepare_live_preview,assets::import_library_asset,
       persistence::load_library,persistence::save_library,persistence::load_recovery,persistence::dismiss_recovery,
       benchmark::benchmark_engine,
-      license::activate_license,license::license_status,
+      license::activate_license,license::license_status,license::set_license_screen,license::set_license_queue_depth,
       cache::cache_stats,cache::clear_effect_cache,
       system::power_status,system::disk_status,system::cleanup_duplicate_apps,system::normalize_current_app_name,system::open_result_path,system::reveal_result_path,
       updater_local::local_update_check,updater_local::local_update_start,updater_local::local_update_status,
@@ -46,6 +46,7 @@ pub fn run(){
     .setup(|app|{
       persistence::mark_session_open(&app.handle().clone())?;
       cache::start_strict_prewarm_856(app.handle().clone());
+      license::start_heartbeat(app.handle().clone());
       Ok(())
     })
     .on_window_event(|window,event|{

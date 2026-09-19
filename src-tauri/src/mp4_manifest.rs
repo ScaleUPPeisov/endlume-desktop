@@ -113,6 +113,7 @@ pub fn expand_video_prefix_cycle(seed:&Path,out:&Path,prefix_frames:usize,cycle_
 
 #[cfg(test)]
 mod tests{
+  use super::*;
   #[test]fn prefix_cycle_index_math(){let p=3usize;let c=4usize;let t=13usize;let mut s=Vec::new();s.extend(0..p);for i in 0..t-p{s.push(p+i%c)}assert_eq!(s,vec![0,1,2,3,4,5,6,3,4,5,6,3,4]);}
   #[test]fn multistill_sample_schedule_math(){
     let media=3usize;let physical_frames=2usize;let logical_frames=6usize;let total_frames=24usize;

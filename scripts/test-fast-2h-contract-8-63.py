@@ -32,12 +32,15 @@ before_audio=multi[:multi.index("match audio")]
 assert '"-stream_loop","-1","-i",physical' not in before_audio
 
 render_job=section(render,"pub async fn render_job","fn natural_key")
-assert 'resolved_job.settings.crossfade_sec=0.0;' in render_job
-assert 'resolved_job.settings.normalize_lufs=false;' in render_job
-assert 'resolved_job.ambient=None;' in render_job
+assert 'resolved_job.settings.crossfade_sec=0.0;' not in render_job
+assert 'resolved_job.settings.normalize_lufs=false;' not in render_job
+assert 'resolved_job.ambient=None;' not in render_job
+assert 'audio_processing_requested(job)' in render_job
+assert 'let processed=processed_audio;' in render_job
 assert 'render_multi_still_zero_copy_863' in render_job
 assert render_job.index("render_multi_still_zero_copy_863") < render_job.index("render_zero_sub_zero_copy_856")
-assert 'audio_mode:if smart_repeat{"ORIGINAL_MP3_PACKET_COPY".into()}else{"PROCESSED_AUDIO".into()}' in render_job
+assert 'audio_mode:if processed_audio{"PROCESSED_AUDIO".into()}else{"ORIGINAL_MP3_PACKET_COPY".into()}' in render_job
+assert 'verify_strict_857_result(app,&out,final_duration,!processed_audio)' in render_job
 
 original=section(render,"async fn build_original_audio_cycle","async fn build_lossless_audio_cycle")
 assert original.count('"-c:a","copy"') >= 2
@@ -48,7 +51,8 @@ strict_verify=section(render,"async fn verify_strict_857_result","#[derive(Clone
 assert 'bytes>700_000_000' in strict_verify
 assert 'bytes<500_000_000' not in strict_verify
 assert 'codec_name' in strict_verify and 'Some("hevc")' in strict_verify
-assert 'Some("mp3")' in strict_verify
+assert 'audio_codec!="mp3"' in strict_verify
+assert 'audio_codec!="aac"' in strict_verify
 assert '(expected*0.5)' in strict_verify, "middle seek must be validated for video/audio"
 
 for forbidden in ("STRICT_856_PAD_TARGET_BYTES",'f.write_all(b"free")',"set_len(current+add)"):
@@ -63,6 +67,11 @@ hybrid=section(render,"async fn choose_hybrid_encoder","fn strict_856_encoder_al
 order=[hybrid.index(x) for x in ['"hevc_nvenc"','"hevc_qsv"','"hevc_amf"']]
 assert order==sorted(order), order
 assert '"libx265"' in hybrid
+
+assert 'fn audio_processing_requested' in render
+assert 'raw_eta.map(|v|v.min(30.0))' in render, "fast ETA must not extrapolate into multi-minute values"
+for timing in ("scan","encoder-benchmark","image-preprocess","visual-master","audio-mux","manifest-expand","finalize","ffprobe-validation","total"):
+    assert f'"{timing}"' in render, f"stage timing missing {timing}"
 
 for field in (
     "render_wall_seconds","final_video_duration_seconds","fast_path",

@@ -1,0 +1,50 @@
+name: ENDLUME Control R2 Worker Deploy
+
+on:
+  push:
+    branches:
+      - feature/endlume-863-macos-factory
+    paths:
+      - 'infra/cloudflare-update/**'
+      - '.github/workflows/endlume-control-r2-deploy.yml'
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, endlume, macos, arm64]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Load local Cloudflare credentials
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          KEYDIR="$HOME/.endlume-updater"
+          test -s "$KEYDIR/cloudflare-api-token.txt"
+          test -s "$KEYDIR/cloudflare-account-id.txt"
+          echo "CLOUDFLARE_API_TOKEN=$(tr -d '\r\n' < "$KEYDIR/cloudflare-api-token.txt")" >> "$GITHUB_ENV"
+          echo "CLOUDFLARE_ACCOUNT_ID=$(tr -d '\r\n' < "$KEYDIR/cloudflare-account-id.txt")" >> "$GITHUB_ENV"
+      - name: Validate Worker JavaScript
+        run: node --check infra/cloudflare-update/src/index.js
+      - name: Deploy Worker
+        id: deploy
+        shell: bash
+        working-directory: infra/cloudflare-update
+        run: |
+          set -Eeuo pipefail
+          npx --yes wrangler@4 deploy 2>&1 | tee "$RUNNER_TEMP/endlume-worker-deploy.log"
+          URL="$(grep -Eo 'https://[A-Za-z0-9._-]+\.workers\.dev' "$RUNNER_TEMP/endlume-worker-deploy.log" | tail -1)"
+          test -n "$URL"
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+      - name: Verify health
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          for i in $(seq 1 30); do
+            if curl -fsS "${{ steps.deploy.outputs.url }}/health" | grep -q '"renderArtifacts":"multipart-r2"'; then
+              echo "Worker health GREEN"
+              exit 0
+            fi
+            sleep 2
+          done
+          exit 1

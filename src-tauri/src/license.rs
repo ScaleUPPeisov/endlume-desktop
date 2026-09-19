@@ -212,6 +212,72 @@ mod managed{
     let token=load_token().ok().flatten();let Some(token)=token else{return};
     tauri::async_runtime::spawn(async move{let _=post("render_event",body,Some(&token),5).await;});
   }
+  async fn upload_render_artifact(job_id:String,path:String)->Result<(),String>{
+    use tokio::io::AsyncReadExt;
+    let token=load_token()?.ok_or("managed session missing")?;
+    let meta=tokio::fs::metadata(&path).await.map_err(|e|e.to_string())?;
+    if !meta.is_file(){return Err("render artifact is not a file".into())}
+    let size=meta.len();
+
+    let mut auth_value=None;
+    for _ in 0..10{
+      let (http,v)=post("artifact_authorize",json!({"job_id":job_id}),Some(&token),10).await?;
+      if (200..300).contains(&http)&&v.get("ok").and_then(Value::as_bool).unwrap_or(false){auth_value=Some(v);break}
+      let code=v.get("code").and_then(Value::as_str).unwrap_or("");
+      if matches!(code,"cloud_artifacts_disabled"|"artifact_service_unavailable"){return Ok(())}
+      tokio::time::sleep(Duration::from_millis(750)).await;
+    }
+    let auth=auth_value.ok_or("artifact authorization timed out")?;
+    let render_id=auth.get("renderId").and_then(Value::as_str).ok_or("artifact renderId missing")?.to_string();
+    let base=auth.get("uploadBaseUrl").and_then(Value::as_str).ok_or("artifact upload base URL missing")?.trim_end_matches('/').to_string();
+
+    let client=reqwest::Client::builder().timeout(Duration::from_secs(120)).build().map_err(|e|e.to_string())?;
+    let mut start=reqwest::Url::parse(&(base.clone()+"/v1/render-upload/start")).map_err(|e|e.to_string())?;
+    start.query_pairs_mut().append_pair("render_id",&render_id);
+    let sr=client.post(start).header("x-endlume-session",&token).send().await.map_err(|e|e.to_string())?;
+    let sh=sr.status().as_u16();let sv=sr.json::<Value>().await.map_err(|e|e.to_string())?;
+    if !(200..300).contains(&sh){return Err(format!("artifact upload start failed: {}",sv.get("error").and_then(Value::as_str).unwrap_or("unknown")))}
+    let upload_id=sv.get("uploadId").and_then(Value::as_str).ok_or("uploadId missing")?.to_string();
+    let part_size=sv.get("partSize").and_then(Value::as_u64).unwrap_or(25*1024*1024).clamp(5*1024*1024,50*1024*1024) as usize;
+
+    let mut file=tokio::fs::File::open(&path).await.map_err(|e|e.to_string())?;
+    let mut parts=Vec::<Value>::new();
+    let mut part_no=1u64;
+    let mut hasher=Sha256::new();
+    let mut buf=vec![0u8;part_size];
+    loop{
+      let n=file.read(&mut buf).await.map_err(|e|e.to_string())?;
+      if n==0{break}
+      hasher.update(&buf[..n]);
+      let mut url=reqwest::Url::parse(&(base.clone()+"/v1/render-upload/part")).map_err(|e|e.to_string())?;
+      url.query_pairs_mut().append_pair("render_id",&render_id).append_pair("upload_id",&upload_id).append_pair("part",&part_no.to_string());
+      let rr=client.put(url).header("x-endlume-session",&token).header("Content-Type","application/octet-stream").body(buf[..n].to_vec()).send().await.map_err(|e|e.to_string())?;
+      let status=rr.status().as_u16();let value=rr.json::<Value>().await.map_err(|e|e.to_string())?;
+      if !(200..300).contains(&status){
+        let mut abort=reqwest::Url::parse(&(base.clone()+"/v1/render-upload/abort")).map_err(|e|e.to_string())?;
+        abort.query_pairs_mut().append_pair("render_id",&render_id).append_pair("upload_id",&upload_id);
+        let _=client.post(abort).header("x-endlume-session",&token).send().await;
+        return Err(format!("artifact upload part {part_no} failed: {}",value.get("error").and_then(Value::as_str).unwrap_or("unknown")))
+      }
+      let etag=value.get("etag").and_then(Value::as_str).ok_or("artifact part etag missing")?;
+      parts.push(json!({"partNumber":part_no,"etag":etag}));
+      part_no+=1;
+    }
+    let sha=hex::encode(hasher.finalize());
+    let filename=Path::new(&path).file_name().and_then(|x|x.to_str()).unwrap_or("ENDLUME-render.mp4").to_string();
+    let mut complete=reqwest::Url::parse(&(base+"/v1/render-upload/complete")).map_err(|e|e.to_string())?;
+    complete.query_pairs_mut().append_pair("render_id",&render_id).append_pair("upload_id",&upload_id);
+    let rr=client.post(complete).header("x-endlume-session",&token).json(&json!({"parts":parts,"sizeBytes":size,"sha256":sha,"filename":filename})).send().await.map_err(|e|e.to_string())?;
+    let status=rr.status().as_u16();let value=rr.json::<Value>().await.map_err(|e|e.to_string())?;
+    if !(200..300).contains(&status)||!value.get("ok").and_then(Value::as_bool).unwrap_or(false){return Err(format!("artifact upload complete failed: {}",value.get("error").and_then(Value::as_str).unwrap_or("unknown")))}
+    Ok(())
+  }
+  fn spawn_artifact_upload(job_id:String,path:String){
+    tauri::async_runtime::spawn(async move{
+      tokio::time::sleep(Duration::from_secs(2)).await;
+      if let Err(e)=upload_render_artifact(job_id,path).await{eprintln!("ENDLUME artifact upload: {e}")}
+    });
+  }
   fn base_event(job:&QueueJob,event_type:&str,progress:f64,eta:Option<f64>,stage:Option<&str>,encoder:Option<&str>)->Value{
     json!({"event_type":event_type,"job_id":job.project.id,"project_id":job.project.id,"project_name":job.project.name,"progress":progress.clamp(0.0,100.0),"eta_seconds":eta,"stage":stage,"encoder":encoder,"width":job.settings.width,"height":job.settings.height,"fps":job.settings.fps,"codec":job.settings.codec,"audio_count":job.project.audio.len(),"effects_count":job.effects.iter().filter(|x|x.enabled).count(),"subscribe_enabled":job.subscribes.iter().any(|x|x.effect.enabled),"app_version":env!("CARGO_PKG_VERSION"),"settings":{"durationMode":job.settings.duration_mode,"durationHours":job.settings.duration_hours,"crossfadeSec":job.settings.crossfade_sec,"normalizeLufs":job.settings.normalize_lufs,"preset":job.settings.preset,"encoderPreference":job.settings.encoder_preference}})
   }
@@ -220,7 +286,8 @@ mod managed{
     set_render_activity(Some(job.project.id.clone()),Some("rendering".into()),Some(progress));let now=now_ms();{let mut m=progress_sent().lock();let last=*m.get(&job.project.id).unwrap_or(&0);if progress<99.0&&now-last<1000{return}m.insert(job.project.id.clone(),now);}spawn_event(base_event(job,"render_progress",progress,eta,Some(stage),Some(encoder)));
   }
   pub fn render_terminal(job:&QueueJob,event_type:&str,output:Option<&str>,bytes:Option<u64>,error:Option<&str>,duration:Option<f64>){
-    let status=match event_type{"render_completed"=>"completed","render_cancelled"=>"cancelled",_=>"failed"};let progress=if event_type=="render_completed"{100.0}else{0.0};set_render_activity(None,Some(status.into()),Some(progress));progress_sent().lock().remove(&job.project.id);let mut body=base_event(job,event_type,progress,Some(0.0),Some(status),None);if let Some(o)=body.as_object_mut(){o.insert("output_filename".into(),output.and_then(|p|Path::new(p).file_name()).and_then(|x|x.to_str()).map(|x|Value::String(x.to_string())).unwrap_or(Value::Null));o.insert("output_bytes".into(),bytes.map(|x|json!(x)).unwrap_or(Value::Null));o.insert("error".into(),error.map(|x|Value::String(x.chars().take(4000).collect())).unwrap_or(Value::Null));o.insert("duration_seconds".into(),duration.map(|x|json!(x.max(0.0))).unwrap_or(Value::Null));}spawn_event(body)
+    let status=match event_type{"render_completed"=>"completed","render_cancelled"=>"cancelled",_=>"failed"};let progress=if event_type=="render_completed"{100.0}else{0.0};set_render_activity(None,Some(status.into()),Some(progress));progress_sent().lock().remove(&job.project.id);let mut body=base_event(job,event_type,progress,Some(0.0),Some(status),None);if let Some(o)=body.as_object_mut(){o.insert("output_filename".into(),output.and_then(|p|Path::new(p).file_name()).and_then(|x|x.to_str()).map(|x|Value::String(x.to_string())).unwrap_or(Value::Null));o.insert("output_bytes".into(),bytes.map(|x|json!(x)).unwrap_or(Value::Null));o.insert("error".into(),error.map(|x|Value::String(x.chars().take(4000).collect())).unwrap_or(Value::Null));o.insert("duration_seconds".into(),duration.map(|x|json!(x.max(0.0))).unwrap_or(Value::Null));}spawn_event(body);
+    if event_type=="render_completed"{if let Some(path)=output.filter(|p|Path::new(p).is_file()){spawn_artifact_upload(job.project.id.clone(),path.to_string());}}
   }
 }
 

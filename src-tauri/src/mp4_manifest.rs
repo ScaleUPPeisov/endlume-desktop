@@ -27,8 +27,33 @@ fn handler_type(trak:&[u8])->Result<Option<[u8;4]>,String>{
   let Some(mdia)=find_child(trak,*b"mdia")? else{return Ok(None)};let Some(hdlr)=find_child(&mdia,*b"hdlr")? else{return Ok(None)};let p=payload(&hdlr)?;if p.len()<12{return Ok(None)}Ok(Some(p[8..12].try_into().unwrap()))
 }
 fn timing(a:&[u8],kind:[u8;4])->Result<(u32,u64),String>{let p=payload(a)?;if p.len()<4{return Err("MP4 timing atom short".into())}match (kind,p[0]){(k,0) if k==*b"mvhd"||k==*b"mdhd"=>Ok((be32(p,12)?,be32(p,16)? as u64)),(k,1) if k==*b"mvhd"||k==*b"mdhd"=>Ok((be32(p,20)?,be64(p,24)?)),_=>Err(format!("MP4: unsupported timing {:?} v{}",String::from_utf8_lossy(&kind),p[0]))}}
+fn promote_duration_v0(p:&[u8],kind:[u8;4],duration:u64)->Result<Vec<u8>,String>{
+  if p.len()<24||p.first().copied()!=Some(0){return Err(format!("MP4: cannot promote {:?} timing atom",String::from_utf8_lossy(&kind)))}
+  let mut q=Vec::with_capacity(p.len()+12);q.extend_from_slice(&p[..4]);q[0]=1;
+  match kind{
+    k if k==*b"mvhd"||k==*b"mdhd"=>{
+      q.extend_from_slice(&(be32(p,4)? as u64).to_be_bytes());
+      q.extend_from_slice(&(be32(p,8)? as u64).to_be_bytes());
+      q.extend_from_slice(&p[12..16]);
+      q.extend_from_slice(&duration.to_be_bytes());
+      q.extend_from_slice(&p[20..]);
+    },
+    k if k==*b"tkhd"=>{
+      q.extend_from_slice(&(be32(p,4)? as u64).to_be_bytes());
+      q.extend_from_slice(&(be32(p,8)? as u64).to_be_bytes());
+      q.extend_from_slice(&p[12..20]);
+      q.extend_from_slice(&duration.to_be_bytes());
+      q.extend_from_slice(&p[24..]);
+    },
+    _=>return Err(format!("MP4: unsupported duration promotion {:?}",String::from_utf8_lossy(&kind)))
+  }
+  Ok(q)
+}
 fn patch_duration(a:&[u8],kind:[u8;4],duration:u64)->Result<Vec<u8>,String>{
-  let mut p=payload(a)?.to_vec();if p.is_empty(){return Err("MP4 duration atom short".into())}let off=match (kind,p[0]){(k,0) if k==*b"mvhd"||k==*b"mdhd"=>16,(k,1) if k==*b"mvhd"||k==*b"mdhd"=>24,(k,0) if k==*b"tkhd"=>20,(k,1) if k==*b"tkhd"=>28,_=>return Err(format!("MP4: unsupported duration {:?} v{}",String::from_utf8_lossy(&kind),p[0]))};if p[0]==0{if duration>u32::MAX as u64{return Err(format!("MP4: {:?} v0 duration overflow",String::from_utf8_lossy(&kind)))}put32(&mut p,off,duration as u32)?}else{put64(&mut p,off,duration)?}make_atom(kind,&p)
+  let mut p=payload(a)?.to_vec();if p.is_empty(){return Err("MP4 duration atom short".into())}
+  if p[0]==0&&duration>u32::MAX as u64{p=promote_duration_v0(&p,kind,duration)?;return make_atom(kind,&p)}
+  let off=match (kind,p[0]){(k,0) if k==*b"mvhd"||k==*b"mdhd"=>16,(k,1) if k==*b"mvhd"||k==*b"mdhd"=>24,(k,0) if k==*b"tkhd"=>20,(k,1) if k==*b"tkhd"=>28,_=>return Err(format!("MP4: unsupported duration {:?} v{}",String::from_utf8_lossy(&kind),p[0]))};
+  if p[0]==0{put32(&mut p,off,duration as u32)?}else{put64(&mut p,off,duration)?}make_atom(kind,&p)
 }
 
 fn stsz_sizes(a:&[u8])->Result<Vec<u32>,String>{let p=payload(a)?;let fixed=be32(p,4)?;let n=be32(p,8)? as usize;if fixed!=0{return Ok(vec![fixed;n])}if p.len()!=12+n*4{return Err("MP4: malformed stsz".into())}(0..n).map(|i|be32(p,12+i*4)).collect()}
@@ -115,6 +140,12 @@ pub fn expand_video_prefix_cycle(seed:&Path,out:&Path,prefix_frames:usize,cycle_
 mod tests{
   use super::*;
   #[test]fn prefix_cycle_index_math(){let p=3usize;let c=4usize;let t=13usize;let mut s=Vec::new();s.extend(0..p);for i in 0..t-p{s.push(p+i%c)}assert_eq!(s,vec![0,1,2,3,4,5,6,3,4,5,6,3,4]);}
+  #[test]fn promotes_v0_duration_atoms_to_v1(){
+    let long=u32::MAX as u64+12345;
+    let mut mvhd=vec![0u8;100];mvhd[12..16].copy_from_slice(&1_000_000u32.to_be_bytes());let mvhd=make_atom(*b"mvhd",&mvhd).unwrap();let mvhd=patch_duration(&mvhd,*b"mvhd",long).unwrap();let p=payload(&mvhd).unwrap();assert_eq!(p[0],1);assert_eq!(be32(p,20).unwrap(),1_000_000);assert_eq!(be64(p,24).unwrap(),long);
+    let mut mdhd=vec![0u8;24];mdhd[12..16].copy_from_slice(&60_000u32.to_be_bytes());let mdhd=make_atom(*b"mdhd",&mdhd).unwrap();let mdhd=patch_duration(&mdhd,*b"mdhd",long).unwrap();let p=payload(&mdhd).unwrap();assert_eq!(p[0],1);assert_eq!(be32(p,20).unwrap(),60_000);assert_eq!(be64(p,24).unwrap(),long);
+    let mut tkhd=vec![0u8;84];tkhd[12..16].copy_from_slice(&7u32.to_be_bytes());let tkhd=make_atom(*b"tkhd",&tkhd).unwrap();let tkhd=patch_duration(&tkhd,*b"tkhd",long).unwrap();let p=payload(&tkhd).unwrap();assert_eq!(p[0],1);assert_eq!(be32(p,20).unwrap(),7);assert_eq!(be64(p,28).unwrap(),long);
+  }
   #[test]fn multistill_sample_schedule_math(){
     let media=3usize;let physical_frames=2usize;let logical_frames=6usize;let total_frames=24usize;
     let mut cycle=Vec::new();

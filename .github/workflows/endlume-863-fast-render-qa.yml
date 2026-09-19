@@ -10,6 +10,8 @@ on:
       - 'src-tauri/src/license.rs'
       - 'src-tauri/src/mp4_manifest.rs'
       - 'scripts/test-fast-2h-contract-8-63.py'
+      - 'scripts/test-managed-license-render-gate.py'
+      - 'src/pages/ProjectPage.tsx'
       - 'supabase/functions/endlume-client-api/index.ts'
       - 'supabase/migrations/20260919_endlume_863_render_performance_telemetry.sql'
   workflow_dispatch:

@@ -116,7 +116,7 @@ export function App(){
     return watchManagedLicenseRealtime(license,()=>{api.license().then(setLicense).catch(()=>{});});
   },[license?.valid,license?.realtimeTopic]);
 
-  if(!license)return <div className="bootScreen"><div className="bootPulse"/>{api.isWindows()?'ENDLUME YT Studio PEISOV':'ENDLUME'}</div>;
+  if(!license)return <div className="bootScreen"><div className="bootPulse"/>ENDLUME YT Studio PEISOV</div>;
   if(!license.valid)return <ActivationScreen onActivated={setLicense}/>;
 
   const pageView=page==='project'?<ProjectPage/>:page==='render'?<RenderPage/>:page==='library'?<LibraryPage/>:<SettingsPage/>;
@@ -126,14 +126,14 @@ export function App(){
 function ActivationScreen({onActivated}:{onActivated:(v:LicenseStatus)=>void}){
   const [key,setKey]=useState(''),[busy,setBusy]=useState(false),[error,setError]=useState('');
   const windows=api.isWindows();
-  const product=windows?'ENDLUME YT Studio PEISOV':'ENDLUME';
-  return <div className="activationScreen"><div className="activationCard"><div className="activationBrand"><span className="activationInfinity">∞</span><div><b>ENDLUME</b><small>{windows?'YT STUDIO PEISOV':'STUDIO'}</small></div></div><h1>Активация {product}</h1><p>Для запуска введите ключ лицензии. После активации рендер работает локально; при временном отсутствии сети действует ограниченный offline grace.</p><input autoFocus placeholder="ENDLUME-XXXX-XXXX-XXXX-XXXX" value={key} onChange={e=>setKey(e.target.value)} onKeyDown={e=>e.key==='Enter'&&document.getElementById('activate')?.click()}/>{error&&<div className="activationError">{error}</div>}<button id="activate" disabled={busy||!key.trim()} onClick={async()=>{setBusy(true);setError('');try{onActivated(await api.activate(key))}catch(e){setError(String(e))}finally{setBusy(false)}}}>{busy?'ПРОВЕРЯЮ КЛЮЧ…':'АКТИВИРОВАТЬ →'}</button><small className="activationFoot">{windows?'ENDLUME YT Studio PEISOV • Windows x64':'ENDLUME Studio • macOS Apple Silicon'}</small></div></div>
+  const product='ENDLUME YT Studio PEISOV';
+  return <div className="activationScreen"><div className="activationCard"><div className="activationBrand"><span className="activationInfinity">∞</span><div><b>ENDLUME</b><small>YT STUDIO PEISOV</small></div></div><h1>Активация {product}</h1><p>Для запуска введите ключ лицензии. После активации рендер работает локально; при временном отсутствии сети действует ограниченный offline grace.</p><input autoFocus placeholder="ENDLUME-XXXX-XXXX-XXXX-XXXX" value={key} onChange={e=>setKey(e.target.value)} onKeyDown={e=>e.key==='Enter'&&document.getElementById('activate')?.click()}/>{error&&<div className="activationError">{error}</div>}<button id="activate" disabled={busy||!key.trim()} onClick={async()=>{setBusy(true);setError('');try{onActivated(await api.activate(key))}catch(e){setError(String(e))}finally{setBusy(false)}}}>{busy?'ПРОВЕРЯЮ КЛЮЧ…':'АКТИВИРОВАТЬ →'}</button><small className="activationFoot">ENDLUME YT Studio PEISOV • {windows?'Windows x64':'macOS Apple Silicon'}</small></div></div>
 }
 
 function UpdateNotice({update,onLater}:{update:any;onLater:()=>void}){
   const [progress,setProgress]=useState<number|null>(null),[stage,setStage]=useState(''),[error,setError]=useState('');
   const installing=progress!==null;
-  const product=api.isWindows()?'ENDLUME YT Studio PEISOV':'ENDLUME';
+  const product='ENDLUME YT Studio PEISOV';
   return <aside className="updateNotice" role="status" aria-live="polite">
     <div className="updateNoticeGlow"/>
     <div className="updateNoticeHead"><span className="updateNoticeDot"/><div><b>Вышло новое обновление</b><small>{product} {update.version}{update.date?` • ${formatUpdateDate(update.date)}`:''}</small></div></div>

@@ -1,4 +1,4 @@
-use crate::{cache,model::{EffectPreset,Progress,QueueJob,RenderSettings,SubscribePreset}};
+use crate::{cache,license,model::{EffectPreset,Progress,QueueJob,RenderSettings,SubscribePreset}};
 use serde_json::json;
 use std::{collections::HashMap,path::{Path,PathBuf},sync::{Arc,OnceLock,atomic::{AtomicBool,Ordering}},time::{Duration,Instant}};
 use sysinfo::{Pid,ProcessesToUpdate,System};
@@ -349,6 +349,7 @@ fn emit_progress(app:&AppHandle,job:&QueueJob,started:i64,timer:&Instant,progres
   let elapsed=timer.elapsed().as_secs_f64();let eta=if progress>1.0{Some(elapsed*(100.0-progress)/progress)}else{None};
   let (cpu,ram,total,available)=metrics.unwrap_or((0.0,0,0,0));
   let _=app.emit("render-progress",Progress{id:job.project.id.clone(),status:"rendering".into(),progress:progress.clamp(0.0,99.9),stage:stage.into(),started_at:Some(started),elapsed_sec:elapsed,eta_sec:eta,result_path:None,result_bytes:None,actual_video_bitrate:None,cpu_pct:metrics.map(|_|cpu),ram_bytes:metrics.map(|_|ram),ram_total_bytes:metrics.map(|_|total),ram_available_bytes:metrics.map(|_|available),gpu_pct:None,encoder:Some(encoder.into()),attempt:Some(attempt)});
+  license::telemetry_render_progress(job,progress.clamp(0.0,99.9),eta,stage,encoder);
 }
 
 async fn run_ffmpeg(app:&AppHandle,job:&QueueJob,started:i64,timer:&Instant,args:Vec<String>,stage:&str,base:f64,span:f64,expected_sec:f64,encoder:&str,attempt:u32,cancel:&AtomicBool)->Result<(),String>{
@@ -795,6 +796,8 @@ async fn render_periodic_zero_copy_852(app:&AppHandle,job:&QueueJob,effects:&[Ef
 }
 
 pub async fn render_job(app:&AppHandle,job:&QueueJob,cancel:Arc<AtomicBool>)->Result<(),String>{
+  license::assert_production_allowed(app).await?;
+  license::telemetry_render_started(job);
   let mut resolved_job=job.clone();refresh_project_paths(&mut resolved_job);
   if smart_repeat_project(&resolved_job){
     if resolved_job.settings.width!=1920||resolved_job.settings.height!=1080{emit_warning(app,&resolved_job.project.id,"Fidelity Lock: one-image проект выводится строго 1920x1080. Это убирает бессмысленное 4K-сжатие при лимите около 1 ГБ.");}
@@ -812,13 +815,13 @@ pub async fn render_job(app:&AppHandle,job:&QueueJob,cancel:Arc<AtomicBool>)->Re
   for p in &job.project.audio{if !Path::new(p).is_file(){return Err(format!("Не найден аудиофайл: {}",Path::new(p).file_name().and_then(|x|x.to_str()).unwrap_or(p)));}}
   if job.project.media.is_empty(){return Err("В проекте нет изображения или видео".into())}
   if job.project.audio.is_empty(){return Err("В проекте нет музыки".into())}
-  let started=chrono::Utc::now().timestamp_millis();let timer=Instant::now();let mut last_error=String::new();
+  let started=chrono::Utc::now().timestamp_millis();let timer=Instant::now();let mut last_error=String::new();let mut last_encoder:Option<String>=None;
   let requested_out_dir=PathBuf::from(&job.settings.output_dir);let out_dir=resolve_output_dir(app,&requested_out_dir)?;if out_dir!=requested_out_dir{emit_warning(app,&job.project.id,&format!("Выбранная папка недоступна. Результат будет сохранён в {}",out_dir.display()));}
   let out=if smart_repeat_project(job){unique_output_ext(&out_dir,&job.project.name,"mov")}else{unique_output(&out_dir,&job.project.name)};
   let max_attempts=if smart_repeat_project(job){1}else{2};
   for attempt in 1..=max_attempts{
     if cancel.load(Ordering::SeqCst){return Err(CANCELLED.into())}
-    let smart_repeat=smart_repeat_project(job);let _=std::fs::remove_file(&out);let encoder=if smart_repeat{let e=choose_hybrid_encoder(app,1).await;if e!="hevc_videotoolbox"{return Err("Strict 8.56: HEVC VideoToolbox недоступен; software fallback отключён".into())}e}else if attempt==1{choose_encoder(app,&job.settings).await}else{software_encoder(&job.settings)};
+    let smart_repeat=smart_repeat_project(job);let _=std::fs::remove_file(&out);let encoder=if smart_repeat{let e=choose_hybrid_encoder(app,1).await;if e!="hevc_videotoolbox"{return Err("Strict 8.56: HEVC VideoToolbox недоступен; software fallback отключён".into())}e}else if attempt==1{choose_encoder(app,&job.settings).await}else{software_encoder(&job.settings)};last_encoder=Some(encoder.clone());
     let _=app.emit("engine-profile",json!({"id":job.project.id,"smartSize":smart_repeat,"smartRepeat":smart_repeat,"originalFidelity":smart_repeat,"targetVideoKbps":None::<u64>}));
     emit_progress(app,job,started,&timer,1.0,"Анализ файлов",&encoder,attempt,None);let work=render_work_dir(app,&job.project.id,attempt)?;
     let result:Result<(Vec<f64>,f64),String>=async{
@@ -869,9 +872,10 @@ pub async fn render_job(app:&AppHandle,job:&QueueJob,cancel:Arc<AtomicBool>)->Re
       Ok((durations,final_duration))
     }.await;
     match result{
-      Ok((_durations,_fd))=>{let bytes=std::fs::metadata(&out).ok().map(|m|m.len());let bitrate=probe_video_bitrate(app,&out).await;let _=app.emit("render-done",Progress{id:job.project.id.clone(),status:"done".into(),progress:100.0,stage:"Готово".into(),started_at:Some(started),elapsed_sec:timer.elapsed().as_secs_f64(),eta_sec:Some(0.0),result_path:Some(out.to_string_lossy().into_owned()),result_bytes:bytes,actual_video_bitrate:bitrate,cpu_pct:None,ram_bytes:None,ram_total_bytes:None,ram_available_bytes:None,gpu_pct:None,encoder:Some(encoder),attempt:Some(attempt)});let _=std::fs::remove_dir_all(&work);return Ok(())},
+      Ok((_durations,_fd))=>{let bytes=std::fs::metadata(&out).ok().map(|m|m.len());let bitrate=probe_video_bitrate(app,&out).await;license::telemetry_render_terminal(job,"render_completed",Some(out.to_string_lossy().as_ref()),bytes,None,Some(_fd),Some(&encoder));let _=app.emit("render-done",Progress{id:job.project.id.clone(),status:"done".into(),progress:100.0,stage:"Готово".into(),started_at:Some(started),elapsed_sec:timer.elapsed().as_secs_f64(),eta_sec:Some(0.0),result_path:Some(out.to_string_lossy().into_owned()),result_bytes:bytes,actual_video_bitrate:bitrate,cpu_pct:None,ram_bytes:None,ram_total_bytes:None,ram_available_bytes:None,gpu_pct:None,encoder:Some(encoder),attempt:Some(attempt)});let _=std::fs::remove_dir_all(&work);return Ok(())},
       Err(e)=>{last_error=e;emit_warning(app,&job.project.id,&format!("Попытка {attempt} не прошла: {last_error}"));let _=std::fs::remove_dir_all(&work);let _=std::fs::remove_file(&out);if last_error==CANCELLED{return Err(last_error)}if attempt<max_attempts{emit_progress(app,job,started,&timer,2.0,"Повторяю безопасную попытку",&encoder,attempt+1,None);}}
     }
   }
+  license::telemetry_render_terminal(job,if last_error==CANCELLED{"render_cancelled"}else{"render_failed"},None,None,Some(&last_error),None,last_encoder.as_deref());
   Err(last_error)
 }

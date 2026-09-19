@@ -18,6 +18,19 @@ struct SubEvent{start:f64,end:f64,sub:SubscribePreset,event_start:f64}
 enum VisualSource{Loop(PathBuf),Long(PathBuf),Concat(PathBuf)}
 enum AudioSource{Loop(PathBuf),Long(PathBuf)}
 
+#[derive(Clone,Debug)]
+pub struct RenderOutcome{
+  pub output_path:String,
+  pub output_bytes:Option<u64>,
+  pub encoder:String,
+  pub final_video_duration_seconds:f64,
+  pub fast_path:bool,
+  pub fast_path_reason:String,
+  pub audio_mode:String,
+  pub video_codec:String,
+  pub audio_codec:String,
+}
+
 fn is_image(path:&str)->bool{Path::new(path).extension().and_then(|x|x.to_str()).map(|x|IMAGE_EXT.contains(&x.to_ascii_lowercase().as_str())).unwrap_or(false)}
 fn safe_name(name:&str)->String{name.chars().map(|c|if ['/', '\\', ':', '*', '?', '"', '<', '>', '|'].contains(&c){'_'}else{c}).collect()}
 fn unique_output(dir:&Path,name:&str)->PathBuf{let safe=safe_name(name);let mut p=dir.join(format!("{} — Ready Videos.mp4",safe));let mut n=2;while p.exists(){p=dir.join(format!("{} — Ready Videos_{}.mp4",safe,n));n+=1}p}
@@ -732,7 +745,7 @@ async fn verify_strict_857_result(app:&AppHandle,out:&Path,expected:f64)->Result
     let ss=format!("{pos:.3}");let args=vec!["-v","error","-ss",ss.as_str(),"-i",out.to_string_lossy().as_ref(),"-map","0:v:0","-frames:v","2","-f","null","-"].into_iter().map(String::from).collect();
     output(app,"ffmpeg",args).await.map_err(|e|format!("Strict 8.57 video seek/decode @ {ss}s: {e}"))?;
   }
-  for pos in [0.0,(expected-2.0).max(0.0)]{
+  for pos in [0.0,(expected*0.5).max(0.0),(expected-2.0).max(0.0)]{
     let ss=format!("{pos:.3}");let args=vec!["-v","error","-ss",ss.as_str(),"-i",out.to_string_lossy().as_ref(),"-map","0:a:0","-t","0.25","-f","null","-"].into_iter().map(String::from).collect();
     output(app,"ffmpeg",args).await.map_err(|e|format!("Strict 8.57 audio seek/decode @ {ss}s: {e}"))?;
   }
@@ -892,7 +905,7 @@ async fn render_periodic_zero_copy_852(app:&AppHandle,job:&QueueJob,effects:&[Ef
   let total_frames=(final_duration*fps as f64).round().max(seed_frames as f64) as usize;let mark=Instant::now();ensure_license_allowed()?;crate::mp4_manifest::expand_video_prefix_cycle(&seed,&seed,plan.anchor_frames,plan.repeat_frames,total_frames)?;ensure_license_allowed()?;finalize_local_output(&seed,out).map_err(|e|format!("8.52: не удалось завершить zero-copy MOV: {e}"))?;ensure_license_allowed()?;strict_856_validate_natural_size(out)?;ensure_license_allowed()?;emit_timing(app,&job.project.id,"zero-copy-manifest",mark.elapsed().as_secs_f64());emit_progress(app,job,started,timer,96.0,"8.56 Zero-copy manifest готов",encoder,attempt,None);Ok(true)
 }
 
-pub async fn render_job(app:&AppHandle,job:&QueueJob,cancel:Arc<AtomicBool>)->Result<(),String>{
+pub async fn render_job(app:&AppHandle,job:&QueueJob,cancel:Arc<AtomicBool>)->Result<RenderOutcome,String>{
   ensure_license_allowed()?;
   let mut resolved_job=job.clone();refresh_project_paths(&mut resolved_job);
   let decision=fast_path_decision(&resolved_job);
@@ -975,7 +988,21 @@ pub async fn render_job(app:&AppHandle,job:&QueueJob,cancel:Arc<AtomicBool>)->Re
       Ok((durations,final_duration))
     }.await;
     match result{
-      Ok((_durations,_fd))=>{if let Err(e)=ensure_license_allowed(){let _=std::fs::remove_dir_all(&work);let _=std::fs::remove_file(&out);return Err(e)}let bytes=std::fs::metadata(&out).ok().map(|m|m.len());let bitrate=probe_video_bitrate(app,&out).await;if let Err(e)=ensure_license_allowed(){let _=std::fs::remove_dir_all(&work);let _=std::fs::remove_file(&out);return Err(e)}let _=app.emit("render-done",Progress{id:job.project.id.clone(),status:"done".into(),progress:100.0,stage:"Готово".into(),started_at:Some(started),elapsed_sec:timer.elapsed().as_secs_f64(),eta_sec:Some(0.0),result_path:Some(out.to_string_lossy().into_owned()),result_bytes:bytes,actual_video_bitrate:bitrate,cpu_pct:None,ram_bytes:None,ram_total_bytes:None,ram_available_bytes:None,gpu_pct:None,encoder:Some(encoder),attempt:Some(attempt)});let _=std::fs::remove_dir_all(&work);return Ok(())},
+      Ok((_durations,fd))=>{
+        if let Err(e)=ensure_license_allowed(){let _=std::fs::remove_dir_all(&work);let _=std::fs::remove_file(&out);return Err(e)}
+        let bytes=std::fs::metadata(&out).ok().map(|m|m.len());let bitrate=probe_video_bitrate(app,&out).await;
+        let codec_args=vec!["-v","error","-show_entries","stream=codec_type,codec_name","-of","json",out.to_string_lossy().as_ref()].into_iter().map(String::from).collect();
+        let (video_codec,audio_codec)=match output(app,"ffprobe",codec_args).await{
+          Ok((raw,_))=>{let v:serde_json::Value=serde_json::from_slice(&raw).unwrap_or_else(|_|json!({}));let streams=v.get("streams").and_then(|x|x.as_array()).cloned().unwrap_or_default();let vc=streams.iter().find(|x|x.get("codec_type").and_then(|y|y.as_str())==Some("video")).and_then(|x|x.get("codec_name")).and_then(|x|x.as_str()).unwrap_or("unknown").to_string();let ac=streams.iter().find(|x|x.get("codec_type").and_then(|y|y.as_str())==Some("audio")).and_then(|x|x.get("codec_name")).and_then(|x|x.as_str()).unwrap_or("unknown").to_string();(vc,ac)},
+          Err(_)=>("unknown".into(),"unknown".into())
+        };
+        if let Err(e)=ensure_license_allowed(){let _=std::fs::remove_dir_all(&work);let _=std::fs::remove_file(&out);return Err(e)}
+        let elapsed=timer.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"total",elapsed);
+        let result_path=out.to_string_lossy().into_owned();
+        let _=app.emit("render-done",Progress{id:job.project.id.clone(),status:"done".into(),progress:100.0,stage:"Готово".into(),started_at:Some(started),elapsed_sec:elapsed,eta_sec:Some(0.0),result_path:Some(result_path.clone()),result_bytes:bytes,actual_video_bitrate:bitrate,cpu_pct:None,ram_bytes:None,ram_total_bytes:None,ram_available_bytes:None,gpu_pct:None,encoder:Some(encoder.clone()),attempt:Some(attempt)});
+        let outcome=RenderOutcome{output_path:result_path,output_bytes:bytes,encoder:encoder.clone(),final_video_duration_seconds:fd,fast_path:smart_repeat,fast_path_reason:decision.reason.to_string(),audio_mode:if smart_repeat{"ORIGINAL_MP3_PACKET_COPY".into()}else{"PROCESSED_AUDIO".into()},video_codec,audio_codec};
+        let _=std::fs::remove_dir_all(&work);return Ok(outcome)
+      },
       Err(e)=>{last_error=e;emit_warning(app,&job.project.id,&format!("Попытка {attempt} не прошла: {last_error}"));let _=std::fs::remove_dir_all(&work);let _=std::fs::remove_file(&out);if last_error==CANCELLED{return Err(last_error)}if attempt<max_attempts{emit_progress(app,job,started,&timer,2.0,"Повторяю безопасную попытку",&encoder,attempt+1,None);}}
     }
   }

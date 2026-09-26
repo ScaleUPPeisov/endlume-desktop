@@ -164,6 +164,7 @@ fn launch_app(path:&Path)->Result<(),String>{
 
 #[tauri::command]
 pub fn cleanup_duplicate_apps(aggressive:bool)->Value{
+  if std::env::var_os("ENDLUME_E2E_RENDER_JOB").is_some(){return json!({"supported":false,"singleApp":true,"canonicalName":true,"canonicalInstall":true,"e2e":true});}
   #[cfg(target_os="macos")]
   {
     let Some(current_raw)=current_app_bundle() else{return json!({"supported":true,"singleApp":false,"canonicalName":false,"canonicalInstall":false,"error":"Не удалось определить текущий ENDLUME.app"})};
@@ -213,6 +214,7 @@ pub fn cleanup_duplicate_apps(aggressive:bool)->Value{
 
 #[tauri::command]
 pub fn normalize_current_app_name(app:tauri::AppHandle)->Result<Value,String>{
+  if std::env::var_os("ENDLUME_E2E_RENDER_JOB").is_some(){return Ok(json!({"supported":false,"renamed":false,"canonicalName":true,"canonicalInstall":true,"e2e":true}));}
   #[cfg(target_os="macos")]
   {
     let current=current_app_bundle().ok_or("Не удалось определить текущий ENDLUME.app")?;

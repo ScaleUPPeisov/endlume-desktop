@@ -96,13 +96,18 @@ assert 'encoder: body.encoder == null ? null' not in client
 
 
 
-# 8.64 Turbo additions: one combined cached audio probe, direct packet-copy first,
+# 8.64 Turbo additions: cached bounded-parallel audio probes, direct concat-list packet-copy,
 # measured Windows HEVC selection, richer stage telemetry and full-window updater UX.
 assert 'AUDIO_PROBE_CACHE' in render
 assert 'probe_audio_meta' in render
 assert 'stream=codec_name,sample_rate,channels:format=duration' in render
-assert 'Original Audio: direct MP3 packet-copy concat' in render
+assert 'audioDirectConcatList' in render
+assert 'AudioSource::ConcatList' in render
+assert 'do not physically copy the whole playlist before the final MP4 mux' in render
 assert '"-f","concat","-safe","0"' in original
+assert 'PARALLEL_PROBES:usize=4' in render
+assert 'probe_original_audio_batch' in render
+assert 'audio-original-direct.mp3' not in original, "8.64 fast path must not materialize the whole playlist before final mux"
 assert 'Direct MP3 concat не прошёл integrity gate' in original
 assert 'FFMPEG_LAUNCHES' in render and 'FFPROBE_LAUNCHES' in render
 assert '"physicalEncodedFrames"' in render and '"logicalFrames"' in render and '"manifestFrames"' in render

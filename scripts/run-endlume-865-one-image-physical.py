@@ -11,6 +11,33 @@ WIDTH,HEIGHT,FPS=1920,1080,60
 PHYSICAL_FRAMES=30
 LOGICAL_FRAMES=600
 
+def encoder_works(name):
+    try:
+        run([FFMPEG,"-hide_banner","-loglevel","error","-f","lavfi","-i","color=c=black:s=640x360:r=60","-frames:v","30","-an","-c:v",name,"-pix_fmt","yuv420p","-f","null","-"])
+        return True
+    except Exception:
+        return False
+
+def choose_encoder():
+    if len(sys.argv)>5 and sys.argv[5].strip():
+        name=sys.argv[5].strip()
+        if not encoder_works(name): raise RuntimeError(f"requested encoder unavailable: {name}")
+        return name
+    for name in (["hevc_videotoolbox","libx265"] if sys.platform=="darwin" else ["hevc_nvenc","hevc_qsv","hevc_amf","libx265"]):
+        if encoder_works(name): return name
+    raise RuntimeError("no HEVC encoder available")
+
+def encoder_args(name):
+    if name=="hevc_videotoolbox":
+        return ["-c:v",name,"-realtime","1","-prio_speed","0","-power_efficient","0","-q:v","100","-b:v","500k","-maxrate","12M","-bufsize","64M","-g","120","-tag:v","hvc1","-pix_fmt","yuv420p"]
+    if name=="hevc_nvenc":
+        return ["-c:v",name,"-preset","p4","-rc","vbr","-cq","18","-b:v","500k","-maxrate","12M","-bufsize","64M","-g","120","-tag:v","hvc1","-pix_fmt","yuv420p"]
+    if name=="hevc_qsv":
+        return ["-c:v",name,"-global_quality","18","-maxrate","12M","-bufsize","64M","-g","120","-tag:v","hvc1","-pix_fmt","nv12"]
+    if name=="hevc_amf":
+        return ["-c:v",name,"-quality","balanced","-rc","vbr_peak","-b:v","500k","-maxrate","12M","-g","120","-tag:v","hvc1","-pix_fmt","yuv420p"]
+    return ["-c:v","libx265","-preset","ultrafast","-crf","18","-maxrate","500k","-bufsize","4M","-x265-params","keyint=120:min-keyint=120:scenecut=0:open-gop=0:aq-mode=3:aq-strength=1.0:vbv-init=1.0","-tag:v","hvc1","-pix_fmt","yuv420p"]
+
 def run(args,*,capture=False,env=None,cwd=None):
     return subprocess.run([str(x) for x in args],check=True,stdout=subprocess.PIPE if capture else None,stderr=subprocess.PIPE if capture else None,env=env,cwd=cwd)
 
@@ -57,6 +84,8 @@ assert sigs[0]==sigs[1],sigs
 durations=[duration(x) for x in audios]
 final_duration,instances=whole_duration(durations)
 total_frames=max(PHYSICAL_FRAMES,int(round(final_duration*FPS)))
+ENCODER=choose_encoder()
+print("ENDLUME_865_ENCODER",ENCODER,flush=True)
 
 # Compile the exact sample-table implementation before performance timing.
 run(["cargo","test","--manifest-path","src-tauri/Cargo.toml","external_multistill_manifest_if_requested","--no-run"],cwd=ROOT)
@@ -73,8 +102,7 @@ with tempfile.TemporaryDirectory(prefix="endlume865-one-") as td:
         t0=time.perf_counter()
         run([FFMPEG,"-hide_banner","-loglevel","error","-loop","1","-framerate","60","-i",image,
              "-vf",vf,"-frames:v",str(PHYSICAL_FRAMES),"-an",
-             "-c:v","hevc_videotoolbox","-realtime","1","-prio_speed","0","-power_efficient","0",
-             "-q:v","100","-b:v","500k","-maxrate","12M","-bufsize","64M","-g","120","-tag:v","hvc1","-pix_fmt","yuv420p",
+             *encoder_args(ENCODER),
              "-fps_mode","cfr","-r","60","-video_track_timescale","60000","-y",master])
         visual=time.perf_counter()-t0
 
@@ -134,7 +162,7 @@ with tempfile.TemporaryDirectory(prefix="endlume865-one-") as td:
           "run":idx+1,"cold":idx==0,"wall_seconds":round(wall,3),"visual_master_seconds":round(visual,3),
           "audio_prepare_seconds":round(audio_prepare,3),"audio_mux_seconds":round(audio_mux,3),
           "manifest_seconds":round(manifest,3),"validation_seconds":round(validation,3),
-          "output_bytes":size,"duration":round(fd,6),"codec":"hevc","fps":"60/1","audio":"mp3",
+          "output_bytes":size,"duration":round(fd,6),"codec":"hevc","fps":"60/1","audio":"mp3","encoder":ENCODER,
           "track_boundary_checked":True
         })
         print("ENDLUME_865_ONE_IMAGE_RUN",json.dumps(records[-1]),flush=True)

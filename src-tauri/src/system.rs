@@ -46,6 +46,9 @@ fn hidden_windows_command(program:&str)->std::process::Command{
 }
 
 #[tauri::command]
+pub fn e2e_mode()->bool{std::env::var_os("ENDLUME_E2E_RENDER_JOB").is_some()}
+
+#[tauri::command]
 pub fn power_status()->Value{
   #[cfg(target_os="macos")]
   {

@@ -45,9 +45,14 @@ fn maybe_start_render_e2e(app:tauri::AppHandle){
 
     let mut results=Vec::<serde_json::Value>::new();
     let mut ok=true;
+    if let Err(error)=license::assert_production_allowed(&app).await{
+      ok=false;
+      results.push(serde_json::json!({"status":"failed","stage":"license-gate","error":error}));
+    }
     match parsed{
       Ok(jobs)=>{
         for job in jobs{
+          if !ok{break}
           let id=job.project.id.clone();
           let started=std::time::Instant::now();
           match render::render_job(&app,&job,Arc::new(std::sync::atomic::AtomicBool::new(false))).await{

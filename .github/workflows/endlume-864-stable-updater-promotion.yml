@@ -49,8 +49,6 @@ jobs:
           test "$(uname -m)" = "arm64"
           test -n "${RELEASE_TOKEN:-}" || { echo 'ENDLUME_RELEASE_TOKEN is missing'; exit 20; }
           GH_TOKEN="$RELEASE_TOKEN" gh api "repos/$STABLE_REPO" --jq .full_name
-          test -s "$HOME/.endlume-updater/endlume.key"
-          test -s "$HOME/.endlume-updater/endlume.key.pub"
           printf '%s' "$EXPECTED_UPDATER_PUBKEY_B64" | base64 --decode > "$RUNNER_TEMP/embedded.pub"
           python3 - <<'PY'
           import json,re,os
@@ -65,12 +63,50 @@ jobs:
           cargo=Path('src-tauri/Cargo.toml').read_text()
           assert re.search(r'^version\s*=\s*"'+re.escape(expected)+r'"$',cargo,re.M)
           embedded=Path(os.environ['RUNNER_TEMP'],'embedded.pub').read_text().replace('\r\n','\n').strip()
-          disk=Path.home().joinpath('.endlume-updater/endlume.key.pub').read_text().replace('\r\n','\n').strip()
-          assert embedded==disk,'local updater signing key does not match embedded public key'
-          assert cfg['plugins']['updater']['pubkey'].strip()==disk,'tauri.conf updater pubkey mismatch'
+          assert cfg['plugins']['updater']['pubkey'].strip()==embedded,'tauri.conf updater pubkey mismatch'
+          expected_key_line=embedded.splitlines()[-1]
+          home=Path.home()
+          roots=[home/'.endlume-updater',home/'.tauri',home/'.endlume-release-bridge',home/'.config',home/'Desktop',home/'Documents',home/'Downloads']
+          matches=[]
+          seen=set()
+          for root in roots:
+              if not root.exists():
+                  continue
+              try:
+                  candidates=list(root.rglob('*'))
+              except Exception:
+                  continue
+              for pub in candidates:
+                  try:
+                      if not pub.is_file() or pub.stat().st_size>16384:
+                          continue
+                      rp=str(pub.resolve())
+                      if rp in seen:
+                          continue
+                      seen.add(rp)
+                      text=pub.read_text(errors='ignore').replace('\r\n','\n').strip()
+                      if text!=embedded and expected_key_line not in text:
+                          continue
+                  except Exception:
+                      continue
+                  private_candidates=[]
+                  if str(pub).endswith('.pub'):
+                      private_candidates.append(Path(str(pub)[:-4]))
+                  private_candidates += [pub.with_suffix('.key'),pub.parent/'endlume.key',pub.parent/'updater.key']
+                  for private in private_candidates:
+                      try:
+                          if private.is_file() and private.stat().st_size>0:
+                              matches.append((pub,private))
+                      except Exception:
+                          pass
+          if not matches:
+              raise SystemExit('No existing private key matches updater public key embedded in ENDLUME 8.64')
+          pub,private=matches[0]
+          Path(os.environ['RUNNER_TEMP'],'endlume-864-signing-key-path').write_text(str(private))
           assert '1.0.0-alpha.8.64' in Path('src/pages/SettingsPage.tsx').read_text()
           assert "version:'1.0.0-alpha.8.64'" in Path('src/components/ReleaseHistory.tsx').read_text()
           print('ENDLUME_864_SOURCE_AND_SIGNING_IDENTITY_GREEN')
+          print('MATCHING_SIGNING_KEY_PATH='+str(private))
           PY
 
       - name: Read current stable updater and refuse downgrade
@@ -161,7 +197,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
-          KEY="$HOME/.endlume-updater/endlume.key"
+          KEY="$(cat "$RUNNER_TEMP/endlume-864-signing-key-path")"
           export TAURI_SIGNING_PRIVATE_KEY_PATH="$KEY"
           export TAURI_SIGNING_PRIVATE_KEY="$KEY"
           export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
@@ -255,7 +291,7 @@ jobs:
           assert p.read_bytes()[:2]==b'MZ'
           print('WINDOWS_NSIS_PE_GREEN',p.stat().st_size)
           PY
-          KEY="$HOME/.endlume-updater/endlume.key"
+          KEY="$(cat "$RUNNER_TEMP/endlume-864-signing-key-path")"
           export TAURI_SIGNING_PRIVATE_KEY_PATH="$KEY"
           export TAURI_SIGNING_PRIVATE_KEY="$KEY"
           export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""

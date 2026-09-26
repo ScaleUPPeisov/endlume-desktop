@@ -1,6 +1,6 @@
 use crate::{cache,model::{EffectPreset,Progress,QueueJob,RenderSettings,SubscribePreset}};
 use serde_json::json;
-use std::{collections::HashMap,path::{Path,PathBuf},sync::{Arc,OnceLock,atomic::{AtomicBool,AtomicU64,Ordering}},time::{Duration,Instant,UNIX_EPOCH}};
+use std::{collections::HashMap,path::{Path,PathBuf},process::Command,sync::{Arc,OnceLock,atomic::{AtomicBool,AtomicU64,Ordering}},time::{Duration,Instant,UNIX_EPOCH}};
 use sysinfo::{Pid,ProcessesToUpdate,System};
 use tauri::{AppHandle,Emitter,Manager};
 use tauri_plugin_shell::{process::CommandEvent,ShellExt};
@@ -10,6 +10,7 @@ const CANCELLED:&str="__ENDLUME_CANCELLED__";
 const LICENSE_BLOCKED:&str="__ENDLUME_LICENSE_BLOCKED__";
 fn ensure_license_allowed()->Result<(),String>{if crate::license::production_blocked(){Err(LICENSE_BLOCKED.into())}else{Ok(())}}
 static ENCODER_CACHE:OnceLock<parking_lot::Mutex<HashMap<String,String>>>=OnceLock::new();
+static ENCODER_FINGERPRINT:OnceLock<String>=OnceLock::new();
 static AUDIO_ENCODER_CACHE:OnceLock<String>=OnceLock::new();
 static AUDIO_PROBE_CACHE:OnceLock<parking_lot::Mutex<HashMap<String,AudioProbe>>>=OnceLock::new();
 static FFMPEG_LAUNCHES:AtomicU64=AtomicU64::new(0);
@@ -134,6 +135,46 @@ fn hybrid_fidelity_args(s:&RenderSettings,encoder:&str,duration:f64)->Vec<String
   }
 }
 
+fn encoder_cache_path(app:&AppHandle)->Option<PathBuf>{
+  app.path().app_cache_dir().ok().map(|p|p.join("encoder-selection-8.64.json"))
+}
+
+fn encoder_hardware_fingerprint()->String{
+  ENCODER_FINGERPRINT.get_or_init(||{
+    #[cfg(target_os="windows")]
+    {
+      let gpu=Command::new("powershell.exe")
+        .args(["-NoProfile","-NonInteractive","-Command","Get-CimInstance Win32_VideoController | Sort-Object PNPDeviceID | Select-Object Name,DriverVersion,PNPDeviceID | ConvertTo-Json -Compress"])
+        .output().ok().filter(|o|o.status.success()).map(|o|String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_else(||"gpu-query-unavailable".into());
+      return format!("windows|{}|{}",std::env::consts::ARCH,gpu)
+    }
+    #[cfg(not(target_os="windows"))]
+    {format!("{}|{}",std::env::consts::OS,std::env::consts::ARCH)}
+  }).clone()
+}
+
+fn load_persistent_encoder(app:&AppHandle)->Option<String>{
+  let path=encoder_cache_path(app)?;
+  let raw=std::fs::read(path).ok()?;
+  let value:serde_json::Value=serde_json::from_slice(&raw).ok()?;
+  if value.get("fingerprint").and_then(|v|v.as_str())?!=encoder_hardware_fingerprint(){return None}
+  let selected=value.get("selected").and_then(|v|v.as_str())?.to_string();
+  if !matches!(selected.as_str(),"hevc_nvenc"|"hevc_qsv"|"hevc_amf"|"hevc_videotoolbox"|"libx265"){return None}
+  Some(selected)
+}
+
+fn save_persistent_encoder(app:&AppHandle,selected:&str){
+  let Some(path)=encoder_cache_path(app) else{return};
+  if let Some(parent)=path.parent(){let _=std::fs::create_dir_all(parent);}
+  let payload=json!({"version":"1.0.0-alpha.8.64","fingerprint":encoder_hardware_fingerprint(),"selected":selected});
+  let _=std::fs::write(path,serde_json::to_vec(&payload).unwrap_or_default());
+}
+
+fn invalidate_hybrid_encoder_cache(app:&AppHandle){
+  if let Some(cache)=ENCODER_CACHE.get(){cache.lock().remove("hybrid-hevc");}
+  if let Some(path)=encoder_cache_path(app){let _=std::fs::remove_file(path);}
+}
+
 async fn fast_encoder_sample(app:&AppHandle,encoder:&str)->Option<f64>{
   let started=Instant::now();
   let args=vec!["-hide_banner","-loglevel","error","-f","lavfi","-i","color=c=black:s=640x360:r=60","-frames:v","30","-an","-c:v",encoder,"-pix_fmt","yuv420p","-f","null","-"].into_iter().map(String::from).collect();
@@ -144,10 +185,14 @@ async fn choose_hybrid_encoder(app:&AppHandle,attempt:u32)->String{
   let cache=ENCODER_CACHE.get_or_init(||parking_lot::Mutex::new(HashMap::new()));
   if attempt==1{
     if let Some(found)=cache.lock().get("hybrid-hevc").cloned(){return found}
+    if let Some(found)=load_persistent_encoder(app){
+      cache.lock().insert("hybrid-hevc".into(),found.clone());
+      return found
+    }
     #[cfg(target_os="macos")]
     {
       if fast_encoder_sample(app,"hevc_videotoolbox").await.is_some(){
-        let selected="hevc_videotoolbox".to_string();cache.lock().insert("hybrid-hevc".into(),selected.clone());return selected
+        let selected="hevc_videotoolbox".to_string();cache.lock().insert("hybrid-hevc".into(),selected.clone());save_persistent_encoder(app,&selected);return selected
       }
     }
     #[cfg(target_os="windows")]
@@ -158,10 +203,10 @@ async fn choose_hybrid_encoder(app:&AppHandle,attempt:u32)->String{
           if best.as_ref().map(|(_,s)|seconds<*s).unwrap_or(true){best=Some((encoder.to_string(),seconds));}
         }
       }
-      if let Some((selected,_))=best{cache.lock().insert("hybrid-hevc".into(),selected.clone());return selected}
+      if let Some((selected,_))=best{cache.lock().insert("hybrid-hevc".into(),selected.clone());save_persistent_encoder(app,&selected);return selected}
     }
   }
-  if encoder_works(app,"libx265").await{return "libx265".into()}
+  if encoder_works(app,"libx265").await{let selected="libx265".to_string();if attempt==1{cache.lock().insert("hybrid-hevc".into(),selected.clone());save_persistent_encoder(app,&selected);}return selected}
   #[cfg(target_os="macos")]
   {if encoder_works(app,"hevc_videotoolbox").await{return "hevc_videotoolbox".into()}}
   "libx265".into()
@@ -1111,7 +1156,7 @@ pub async fn render_job(app:&AppHandle,job:&QueueJob,cancel:Arc<AtomicBool>)->Re
         let outcome=RenderOutcome{output_path:result_path,output_bytes:bytes,encoder:encoder.clone(),final_video_duration_seconds:fd,fast_path:smart_repeat,fast_path_reason:decision.reason.to_string(),audio_mode:if processed_audio{"PROCESSED_AUDIO".into()}else{"ORIGINAL_MP3_PACKET_COPY".into()},video_codec,audio_codec};
         let _=std::fs::remove_dir_all(&work);return Ok(outcome)
       },
-      Err(e)=>{last_error=e;emit_warning(app,&job.project.id,&format!("Попытка {attempt} не прошла: {last_error}"));let _=std::fs::remove_dir_all(&work);let _=std::fs::remove_file(&out);if last_error==CANCELLED{return Err(last_error)}if attempt<max_attempts{emit_progress(app,job,started,&timer,2.0,"Повторяю безопасную попытку",&encoder,attempt+1,None);}}
+      Err(e)=>{last_error=e;if smart_repeat&&attempt==1{invalidate_hybrid_encoder_cache(app);}emit_warning(app,&job.project.id,&format!("Попытка {attempt} не прошла: {last_error}"));let _=std::fs::remove_dir_all(&work);let _=std::fs::remove_file(&out);if last_error==CANCELLED{return Err(last_error)}if attempt<max_attempts{emit_progress(app,job,started,&timer,2.0,"Повторяю безопасную попытку",&encoder,attempt+1,None);}}
     }
   }
   Err(last_error)

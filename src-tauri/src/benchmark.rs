@@ -73,11 +73,11 @@ async fn functional_test(app:&AppHandle,encoder:&str)->(bool,Option<f64>,String)
 #[tauri::command]
 pub async fn benchmark_engine(app:AppHandle)->Value{
   #[cfg(target_os="macos")]
-  let names=vec!["h264_videotoolbox","hevc_videotoolbox","libx264"];
+  let names=vec!["hevc_videotoolbox","libx265"];
   #[cfg(target_os="windows")]
-  let names=vec!["h264_nvenc","h264_qsv","h264_amf","libx264"];
+  let names=vec!["hevc_nvenc","hevc_qsv","hevc_amf","libx265"];
   #[cfg(not(any(target_os="macos",target_os="windows")))]
-  let names=vec!["libx264"];
+  let names=vec!["libx265"];
 
   let list=encoder_list(&app).await;
   let list_error=list.as_ref().err().cloned();

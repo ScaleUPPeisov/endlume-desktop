@@ -19,7 +19,7 @@ assert 'DISQUALIFIED_MULTI_STILL_EFFECTS' in decision
 assert 'DISQUALIFIED_MULTI_STILL_SUBSCRIBE' in decision
 assert 'job.project.media.iter().all(|m|is_image(m))' in decision
 
-multi=section(render,"async fn render_multi_still_zero_copy_864","async fn render_zero_sub_zero_copy_856")
+multi=section(render,"async fn render_multi_still_zero_copy_863","async fn render_zero_sub_zero_copy_856")
 assert "PHYSICAL_FRAMES_PER_STILL:usize=30" in multi
 assert "LOGICAL_FRAMES_PER_STILL:usize=600" in multi
 assert 'crate::mp4_manifest::remap_video_samples(&seed,&seed,&selected)?' in multi
@@ -37,12 +37,12 @@ assert 'resolved_job.settings.normalize_lufs=false;' not in render_job
 assert 'resolved_job.ambient=None;' not in render_job
 assert 'audio_processing_requested(job)' in render_job
 assert 'let processed=processed_audio;' in render_job
-assert 'render_multi_still_zero_copy_864' in render_job
+assert 'render_multi_still_zero_copy_863' in render_job
 assert 'unique_output(&out_dir,&job.project.name)' in render_job, "fast result must remain Ready Videos.mp4"
 assert 'unique_output_ext(&out_dir,&job.project.name,"mov")' not in render_job
-assert 'fast-864-multistill-seed.mp4' in render, "multi-still manifest seed must be MP4"
+assert 'fast-863-multistill-seed.mp4' in render, "multi-still manifest seed must be MP4"
 assert 'strict-856-seed.mp4' in render, "one-image manifest seed must be MP4"
-assert render_job.index("render_multi_still_zero_copy_864") < render_job.index("render_zero_sub_zero_copy_856")
+assert render_job.index("render_multi_still_zero_copy_863") < render_job.index("render_zero_sub_zero_copy_856")
 assert 'audio_mode:if processed_audio{"PROCESSED_AUDIO".into()}else{"ORIGINAL_MP3_PACKET_COPY".into()}' in render_job
 assert 'verify_strict_857_result(app,&out,final_duration,!processed_audio)' in render_job
 

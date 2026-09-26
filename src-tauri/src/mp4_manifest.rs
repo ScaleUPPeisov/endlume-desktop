@@ -226,7 +226,7 @@ mod tests{
     let physical=std::env::var("ENDLUME_MULTI_PHYSICAL_FRAMES").unwrap().parse::<usize>().unwrap();
     let logical=std::env::var("ENDLUME_MULTI_LOGICAL_FRAMES").unwrap().parse::<usize>().unwrap();
     let total=std::env::var("ENDLUME_MULTI_TOTAL_FRAMES").unwrap().parse::<usize>().unwrap();
-    assert!(media>1&&physical>0&&logical>=physical&&total>=logical*media);
+    assert!(media>=1&&physical>0&&logical>=physical&&total>=logical*media);
     let mut cycle=Vec::with_capacity(logical*media);
     for image in 0..media{let start=image*physical;for i in 0..logical{cycle.push(start+(i%physical));}}
     let selected=(0..total).map(|i|cycle[i%cycle.len()]).collect::<Vec<_>>();

@@ -1008,14 +1008,20 @@ async fn render_multi_still_zero_copy_863(app:&AppHandle,job:&QueueJob,audio:&Au
   }
   emit_timing(app,&job.project.id,"image-preprocess",prep_mark.elapsed().as_secs_f64());
 
-  let list=work.join("fast-863-physical-list.txt");let body=clips.iter().map(|p|format!("file '{}'",p.to_string_lossy().replace('\\',"/"))).collect::<Vec<_>>().join("\n");std::fs::write(&list,body).map_err(|e|e.to_string())?;
-  let physical=work.join("fast-863-physical-pool.mp4");let concat_mark=Instant::now();
-  let args=vec!["-hide_banner","-loglevel","error","-f","concat","-safe","0","-i",list.to_string_lossy().as_ref(),"-an","-c:v","copy","-progress","pipe:1","-y",physical.to_string_lossy().as_ref()].into_iter().map(String::from).collect();
-  run_ffmpeg(app,job,started,timer,args,"Fast multi-still physical cycle",24.0,4.0,physical_seconds*job.project.media.len() as f64,encoder,attempt,cancel).await?;
-  let pool_frames=probe_video_frames_852(app,&physical).await?;let expected_pool=PHYSICAL_FRAMES_PER_STILL*job.project.media.len();if pool_frames!=expected_pool{return Err(format!("8.63 multi-still pool frames={pool_frames}, expected {expected_pool}"))}
-  emit_timing(app,&job.project.id,"visual-master",concat_mark.elapsed().as_secs_f64());
+  let physical=if clips.len()==1{
+    emit_timing(app,&job.project.id,"visual-master",0.0);
+    clips[0].clone()
+  }else{
+    let list=work.join("fast-865-physical-list.txt");let body=clips.iter().map(|p|format!("file '{}'",p.to_string_lossy().replace('\\',"/"))).collect::<Vec<_>>().join("\n");std::fs::write(&list,body).map_err(|e|e.to_string())?;
+    let physical=work.join("fast-865-physical-pool.mp4");let concat_mark=Instant::now();
+    let args=vec!["-hide_banner","-loglevel","error","-f","concat","-safe","0","-i",list.to_string_lossy().as_ref(),"-an","-c:v","copy","-progress","pipe:1","-y",physical.to_string_lossy().as_ref()].into_iter().map(String::from).collect();
+    run_ffmpeg(app,job,started,timer,args,"Fast still physical cycle",24.0,4.0,physical_seconds*job.project.media.len() as f64,encoder,attempt,cancel).await?;
+    emit_timing(app,&job.project.id,"visual-master",concat_mark.elapsed().as_secs_f64());
+    physical
+  };
+  let pool_frames=probe_video_frames_852(app,&physical).await?;let expected_pool=PHYSICAL_FRAMES_PER_STILL*job.project.media.len();if pool_frames!=expected_pool{return Err(format!("8.65 still pool frames={pool_frames}, expected {expected_pool}"))}
 
-  let seed=work.join("fast-863-multistill-seed.mp4");let mut mux:Vec<String>=vec!["-hide_banner","-loglevel","error","-i",physical.to_string_lossy().as_ref()].into_iter().map(String::from).collect();
+  let seed=work.join("fast-865-still-seed.mp4");let mut mux:Vec<String>=vec!["-hide_banner","-loglevel","error","-i",physical.to_string_lossy().as_ref()].into_iter().map(String::from).collect();
   match audio{AudioSource::Loop(p)=>mux.extend(vec!["-stream_loop","-1","-fflags","+genpts","-i",p.to_string_lossy().as_ref()].into_iter().map(String::from)),AudioSource::Long(p)=>mux.extend(vec!["-i",p.to_string_lossy().as_ref()].into_iter().map(String::from)),AudioSource::ConcatList(p)=>mux.extend(vec!["-stream_loop","-1","-f","concat","-safe","0","-fflags","+genpts","-i",p.to_string_lossy().as_ref()].into_iter().map(String::from))}
   mux.extend(vec!["-t",&final_duration.to_string(),"-map","0:v:0","-map","1:a:0","-c:v","copy","-c:a","copy","-progress","pipe:1","-y",seed.to_string_lossy().as_ref()].into_iter().map(String::from));
   let audio_stage=if matches!(audio,&AudioSource::Loop(_)|&AudioSource::ConcatList(_)){"Fast Original Audio • MP3 packet-copy"}else{"Processed Audio • AAC packet-copy into final container"};
@@ -1026,8 +1032,8 @@ async fn render_multi_still_zero_copy_863(app:&AppHandle,job:&QueueJob,audio:&Au
   let total_frames=(final_duration*fps as f64).round().max(cycle.len() as f64) as usize;let _=app.emit("engine-profile",json!({"id":job.project.id,"physicalEncodedFrames":pool_frames,"logicalFrames":total_frames,"manifestFrames":total_frames}));let selected=(0..total_frames).map(|i|cycle[i%cycle.len()]).collect::<Vec<_>>();
   let manifest_mark=Instant::now();ensure_license_allowed()?;crate::mp4_manifest::remap_video_samples(&seed,&seed,&selected)?;ensure_license_allowed()?;emit_timing(app,&job.project.id,"manifest-expand",manifest_mark.elapsed().as_secs_f64());
 
-  let finalize_mark=Instant::now();finalize_local_output(&seed,out).map_err(|e|format!("8.63 multi-still MP4 finalize: {e}"))?;strict_856_validate_natural_size(out)?;ensure_license_allowed()?;emit_timing(app,&job.project.id,"finalize",finalize_mark.elapsed().as_secs_f64());
-  emit_progress(app,job,started,timer,96.0,"Fast multi-still sample-table готов",encoder,attempt,None);Ok(true)
+  let finalize_mark=Instant::now();finalize_local_output(&seed,out).map_err(|e|format!("8.65 still MP4 finalize: {e}"))?;strict_856_validate_natural_size(out)?;ensure_license_allowed()?;emit_timing(app,&job.project.id,"finalize",finalize_mark.elapsed().as_secs_f64());
+  emit_progress(app,job,started,timer,96.0,"FAST_ONE_IMAGE / MULTI_STILL zero-copy готов",encoder,attempt,None);Ok(true)
 }
 
 async fn render_zero_sub_zero_copy_856(app:&AppHandle,job:&QueueJob,effects:&[EffectPreset],subs:&[SubscribePreset],audio:&AudioSource,master_duration:f64,final_duration:f64,work:&Path,out:&Path,encoder:&str,attempt:u32,cancel:&AtomicBool,started:i64,timer:&Instant)->Result<bool,String>{

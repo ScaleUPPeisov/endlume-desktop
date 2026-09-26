@@ -22,7 +22,7 @@ struct AudioProbe{codec:String,sample_rate:u32,channels:u32,duration:f64}
 struct SubEvent{start:f64,end:f64,sub:SubscribePreset,event_start:f64}
 
 enum VisualSource{Loop(PathBuf),Long(PathBuf),Concat(PathBuf)}
-enum AudioSource{Loop(PathBuf),Long(PathBuf)}
+enum AudioSource{Loop(PathBuf),Long(PathBuf),ConcatList(PathBuf)}
 
 #[derive(Clone,Debug)]
 pub struct RenderOutcome{
@@ -215,12 +215,29 @@ fn ffconcat_escape(path:&Path)->String{
   out
 }
 
+async fn probe_original_audio_batch(app:&AppHandle,paths:&[String])->Result<Vec<AudioProbe>,String>{
+  const PARALLEL_PROBES:usize=4;
+  let mut metas=Vec::with_capacity(paths.len());
+  for chunk in paths.chunks(PARALLEL_PROBES){
+    let mut tasks=Vec::with_capacity(chunk.len());
+    for path in chunk{
+      let app=app.clone();let path=path.clone();
+      tasks.push(tauri::async_runtime::spawn(async move{probe_audio_meta(&app,&path).await}));
+    }
+    for task in tasks{
+      let meta=task.await.map_err(|e|format!("Audio probe task failed: {e}"))??;
+      metas.push(meta);
+    }
+  }
+  Ok(metas)
+}
+
 async fn build_original_audio_cycle(app:&AppHandle,job:&QueueJob,started:i64,timer:&Instant,work:&Path,encoder:&str,attempt:u32,cancel:&AtomicBool)->Result<(PathBuf,Vec<f64>,f64),String>{
   if job.project.audio.is_empty(){return Err("Нет песен".into())}
   let probe_mark=Instant::now();let mut durations=Vec::with_capacity(job.project.audio.len());let mut first:Option<(String,u32,u32)>=None;
-  for a in &job.project.audio{
-    if !a.to_ascii_lowercase().ends_with(".mp3"){return Err(format!("{} — не MP3",Path::new(a).file_name().and_then(|x|x.to_str()).unwrap_or(a)))}
-    let meta=probe_audio_meta(app,a).await?;
+  for a in &job.project.audio{if !a.to_ascii_lowercase().ends_with(".mp3"){return Err(format!("{} — не MP3",Path::new(a).file_name().and_then(|x|x.to_str()).unwrap_or(a)))}}
+  let metas=probe_original_audio_batch(app,&job.project.audio).await?;
+  for (a,meta) in job.project.audio.iter().zip(metas.into_iter()){
     if meta.codec!="mp3"{return Err(format!("{} — codec {}",Path::new(a).file_name().and_then(|x|x.to_str()).unwrap_or(a),meta.codec))}
     let sig=(meta.codec.clone(),meta.sample_rate,meta.channels);
     if let Some(ref base)=first{if base!=&sig{return Err(format!("MP3 имеют разные параметры: ожидается {} Hz / {} ch, найдено {} Hz / {} ch",base.1,base.2,sig.1,sig.2))}}else{first=Some(sig)}
@@ -231,19 +248,20 @@ async fn build_original_audio_cycle(app:&AppHandle,job:&QueueJob,started:i64,tim
   let prep_mark=Instant::now();let direct_list=work.join("audio-direct-list.txt");
   let direct_body=job.project.audio.iter().map(|p|format!("file {}",ffconcat_escape(Path::new(p)))).collect::<Vec<_>>().join("\n");
   std::fs::write(&direct_list,direct_body).map_err(|e|e.to_string())?;
-  let cycle=work.join("audio-original-direct.mp3");
-  let args=vec!["-hide_banner","-loglevel","error","-f","concat","-safe","0","-i",direct_list.to_string_lossy().as_ref(),"-map","0:a:0","-c:a","copy","-map_metadata","-1","-write_xing","0","-id3v2_version","0","-progress","pipe:1","-y",cycle.to_string_lossy().as_ref()].into_iter().map(String::from).collect();
-  let direct=run_ffmpeg(app,job,started,timer,args,"Original Audio: direct MP3 packet-copy concat",35.0,8.0,expected,encoder,attempt,cancel).await;
-  if direct.is_ok()&&probe_audio_decodes(app,&cycle).await{
-    let cycle_duration=probe_duration(app,cycle.to_string_lossy().as_ref()).await.unwrap_or(expected);
-    let tolerance=(job.project.audio.len() as f64*0.08).max(1.5);
-    if (cycle_duration-expected).abs()<=tolerance{
-      emit_timing(app,&job.project.id,"audio-preparation",prep_mark.elapsed().as_secs_f64());
-      return Ok((cycle,durations,cycle_duration))
-    }
+  // 8.64: do not physically copy the whole playlist before the final MP4 mux.
+  // Validate the concat demuxer on a tiny packet-copy sample, then feed the list itself
+  // into the final mux with -stream_loop -1. This removes one O(audio_bytes) write+read.
+  let direct_probe=work.join("audio-direct-probe.mp3");
+  let probe_len=expected.min(12.0).max(1.0);
+  let args=vec!["-hide_banner","-loglevel","error","-f","concat","-safe","0","-i",direct_list.to_string_lossy().as_ref(),"-t",&probe_len.to_string(),"-map","0:a:0","-c:a","copy","-map_metadata","-1","-write_xing","0","-id3v2_version","0","-y",direct_probe.to_string_lossy().as_ref()].into_iter().map(String::from).collect();
+  let direct=output(app,"ffmpeg",args).await;
+  if direct.is_ok()&&probe_audio_decodes(app,&direct_probe).await{
+    let _=std::fs::remove_file(&direct_probe);
+    emit_timing(app,&job.project.id,"audio-preparation",prep_mark.elapsed().as_secs_f64());
+    return Ok((direct_list,durations,expected))
   }
 
-  emit_warning(app,&job.project.id,"Direct MP3 concat не прошёл integrity gate; использую безопасный packet-copy clean-remux fallback.");
+  emit_warning(app,&job.project.id,"Direct MP3 concat list не прошёл integrity gate; использую безопасный packet-copy clean-remux fallback.");
   let mut clean=Vec::with_capacity(job.project.audio.len());let remux_mark=Instant::now();
   for (i,a) in job.project.audio.iter().enumerate(){
     let dst=work.join(format!("audio-clean-{i:03}.mp3"));
@@ -937,9 +955,9 @@ async fn render_multi_still_zero_copy_863(app:&AppHandle,job:&QueueJob,audio:&Au
   emit_timing(app,&job.project.id,"visual-master",concat_mark.elapsed().as_secs_f64());
 
   let seed=work.join("fast-863-multistill-seed.mp4");let mut mux:Vec<String>=vec!["-hide_banner","-loglevel","error","-i",physical.to_string_lossy().as_ref()].into_iter().map(String::from).collect();
-  match audio{AudioSource::Loop(p)=>mux.extend(vec!["-stream_loop","-1","-fflags","+genpts","-i",p.to_string_lossy().as_ref()].into_iter().map(String::from)),AudioSource::Long(p)=>mux.extend(vec!["-i",p.to_string_lossy().as_ref()].into_iter().map(String::from))}
+  match audio{AudioSource::Loop(p)=>mux.extend(vec!["-stream_loop","-1","-fflags","+genpts","-i",p.to_string_lossy().as_ref()].into_iter().map(String::from)),AudioSource::Long(p)=>mux.extend(vec!["-i",p.to_string_lossy().as_ref()].into_iter().map(String::from)),AudioSource::ConcatList(p)=>mux.extend(vec!["-stream_loop","-1","-f","concat","-safe","0","-fflags","+genpts","-i",p.to_string_lossy().as_ref()].into_iter().map(String::from))}
   mux.extend(vec!["-t",&final_duration.to_string(),"-map","0:v:0","-map","1:a:0","-c:v","copy","-c:a","copy","-progress","pipe:1","-y",seed.to_string_lossy().as_ref()].into_iter().map(String::from));
-  let audio_stage=if matches!(audio,&AudioSource::Loop(_)){"Fast Original Audio • MP3 packet-copy"}else{"Processed Audio • AAC packet-copy into final container"};
+  let audio_stage=if matches!(audio,&AudioSource::Loop(_)|&AudioSource::ConcatList(_)){"Fast Original Audio • MP3 packet-copy"}else{"Processed Audio • AAC packet-copy into final container"};
   let mux_mark=Instant::now();run_ffmpeg(app,job,started,timer,mux,audio_stage,60.0,18.0,final_duration,encoder,attempt,cancel).await?;let mux_seconds=mux_mark.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"audio-mux",mux_seconds);if let Ok(meta)=std::fs::metadata(&seed){let mb_s=(meta.len() as f64/1_048_576.0)/mux_seconds.max(0.001);let _=app.emit("engine-profile",json!({"id":job.project.id,"diskWriteMBs":mb_s}));}
 
   let mut cycle=Vec::with_capacity(LOGICAL_FRAMES_PER_STILL*job.project.media.len());
@@ -965,7 +983,7 @@ async fn render_zero_sub_zero_copy_856(app:&AppHandle,job:&QueueJob,effects:&[Ef
   let master=work.join("strict-856-master.mp4");let mut args:Vec<String>=vec!["-hide_banner","-loglevel","error","-filter_complex_threads","8","-loop","1","-framerate","30","-i",base_still.to_string_lossy().as_ref()].into_iter().map(String::from).collect();for e in effects.iter().filter(|x|x.enabled&&!x.source.trim().is_empty()){args.extend(vec!["-stream_loop","-1","-i",e.source.as_str()].into_iter().map(String::from));}
   let base="[0:v]fps=30,setsar=1[b0]".to_string();let (graph,last)=apply_effects_filter(base,"b0".into(),effects,&ws,1);let graph=format!("{graph};[{last}]fps=60,format=yuv420p[outv]");args.extend(vec!["-filter_complex",&graph,"-map","[outv]","-frames:v",&master_frames.to_string(),"-an"].into_iter().map(String::from));args.extend(hybrid_fidelity_args(&job.settings,encoder,duration));args.extend(vec!["-fps_mode","cfr","-r","60","-video_track_timescale","60000","-progress","pipe:1","-y",master.to_string_lossy().as_ref()].into_iter().map(String::from));
   let vm=Instant::now();run_ffmpeg(app,job,started,timer,args,"Strict 8.57: fidelity master полного Effects-цикла",55.0,18.0,duration,encoder,attempt,cancel).await?;let visual_master_seconds=vm.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"strict-visual-master",visual_master_seconds);emit_timing(app,&job.project.id,"visual-master",visual_master_seconds);let got=probe_video_frames_852(app,&master).await?;let packets=probe_video_packets_857(app,&master).await?;if got!=master_frames||packets!=master_frames{return Err(format!("Strict 8.57 master integrity: frames={got}/{master_frames}, packets={packets}/{master_frames}"))}
-  let seed=work.join("strict-856-seed.mp4");let mut mux:Vec<String>=vec!["-hide_banner","-loglevel","error","-i",master.to_string_lossy().as_ref()].into_iter().map(String::from).collect();match audio{AudioSource::Loop(p)=>mux.extend(vec!["-stream_loop","-1","-fflags","+genpts","-i",p.to_string_lossy().as_ref()].into_iter().map(String::from)),AudioSource::Long(p)=>mux.extend(vec!["-i",p.to_string_lossy().as_ref()].into_iter().map(String::from))};mux.extend(vec!["-t",&final_duration.to_string(),"-map","0:v:0","-map","1:a:0","-c:v","copy","-c:a","copy","-progress","pipe:1","-y",seed.to_string_lossy().as_ref()].into_iter().map(String::from));let audio_stage=if matches!(audio,&AudioSource::Loop(_)){"Strict 8.63: mux Original MP3 packets"}else{"Strict 8.63: mux Processed AAC packets"};let am=Instant::now();run_ffmpeg(app,job,started,timer,mux,audio_stage,74.0,12.0,final_duration,encoder,attempt,cancel).await?;let audio_mux_sec=am.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"strict-audio-mux",audio_mux_sec);emit_timing(app,&job.project.id,"audio-mux",audio_mux_sec);if let Ok(meta)=std::fs::metadata(&seed){let mb_s=(meta.len() as f64/1_048_576.0)/audio_mux_sec.max(0.001);let _=app.emit("engine-profile",json!({"id":job.project.id,"diskWriteMBs":mb_s}));}
+  let seed=work.join("strict-856-seed.mp4");let mut mux:Vec<String>=vec!["-hide_banner","-loglevel","error","-i",master.to_string_lossy().as_ref()].into_iter().map(String::from).collect();match audio{AudioSource::Loop(p)=>mux.extend(vec!["-stream_loop","-1","-fflags","+genpts","-i",p.to_string_lossy().as_ref()].into_iter().map(String::from)),AudioSource::Long(p)=>mux.extend(vec!["-i",p.to_string_lossy().as_ref()].into_iter().map(String::from)),AudioSource::ConcatList(p)=>mux.extend(vec!["-stream_loop","-1","-f","concat","-safe","0","-fflags","+genpts","-i",p.to_string_lossy().as_ref()].into_iter().map(String::from))};mux.extend(vec!["-t",&final_duration.to_string(),"-map","0:v:0","-map","1:a:0","-c:v","copy","-c:a","copy","-progress","pipe:1","-y",seed.to_string_lossy().as_ref()].into_iter().map(String::from));let audio_stage=if matches!(audio,&AudioSource::Loop(_)|&AudioSource::ConcatList(_)){"Strict 8.63: mux Original MP3 packets"}else{"Strict 8.63: mux Processed AAC packets"};let am=Instant::now();run_ffmpeg(app,job,started,timer,mux,audio_stage,74.0,12.0,final_duration,encoder,attempt,cancel).await?;let audio_mux_sec=am.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"strict-audio-mux",audio_mux_sec);emit_timing(app,&job.project.id,"audio-mux",audio_mux_sec);if let Ok(meta)=std::fs::metadata(&seed){let mb_s=(meta.len() as f64/1_048_576.0)/audio_mux_sec.max(0.001);let _=app.emit("engine-profile",json!({"id":job.project.id,"diskWriteMBs":mb_s}));}
   let total_frames=(final_duration*fps as f64).round().max(master_frames as f64) as usize;let _=app.emit("engine-profile",json!({"id":job.project.id,"physicalEncodedFrames":master_frames,"logicalFrames":total_frames,"manifestFrames":total_frames}));let mm=Instant::now();ensure_license_allowed()?;crate::mp4_manifest::expand_video_prefix_cycle(&seed,&seed,0,master_frames,total_frames)?;ensure_license_allowed()?;let manifest_seconds=mm.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"zero-copy-manifest",manifest_seconds);emit_timing(app,&job.project.id,"manifest-expand",manifest_seconds);let finalize_mark=Instant::now();finalize_local_output(&seed,out).map_err(|e|format!("Strict 8.64: finalize zero-copy MP4: {e}"))?;ensure_license_allowed()?;strict_856_validate_natural_size(out)?;ensure_license_allowed()?;emit_timing(app,&job.project.id,"finalize",finalize_mark.elapsed().as_secs_f64());emit_progress(app,job,started,timer,96.0,"Strict 8.64 zero-copy готов",encoder,attempt,None);Ok(true)
 }
 
@@ -982,7 +1000,7 @@ async fn render_periodic_zero_copy_852(app:&AppHandle,job:&QueueJob,effects:&[Ef
   let recurring=render_periodic_sub_852(app,job,&master,&plan.sub,phase,cycle_sub,work,"cycle",encoder,attempt,cancel,started,timer).await?;
   let mut parts=prefix;parts.push(recurring);let remain=plan.repeat_frames-cycle_sub;let full=remain/plan.master_frames;let tail=remain%plan.master_frames;for _ in 0..full{parts.push(master.clone())}if tail>0{let p=work.join("periodic-852-cycle-tail.mp4");copy_head_frames_852(app,job,&master,tail,&p,encoder,attempt,cancel,started,timer).await?;parts.push(p)}
   let seed_video=work.join("periodic-852-seed-video.mp4");let seed_frames=plan.anchor_frames+plan.repeat_frames;concat_video_parts_852(app,job,&parts,&seed_video,seed_frames,work,encoder,attempt,cancel,started,timer).await?;
-  let seed=work.join("periodic-852-seed.mp4");let mut args:Vec<String>=vec!["-hide_banner","-loglevel","error","-i",seed_video.to_string_lossy().as_ref()].into_iter().map(String::from).collect();match audio{AudioSource::Loop(p)=>args.extend(vec!["-stream_loop","-1","-fflags","+genpts","-i",p.to_string_lossy().as_ref()].into_iter().map(String::from)),AudioSource::Long(p)=>args.extend(vec!["-i",p.to_string_lossy().as_ref()].into_iter().map(String::from))};args.extend(vec!["-t",&final_duration.to_string(),"-map","0:v:0","-map","1:a:0","-c:v","copy","-c:a","copy","-progress","pipe:1","-y",seed.to_string_lossy().as_ref()].into_iter().map(String::from));run_ffmpeg(app,job,started,timer,args,"8.52: mux seed без размножения video payload",78.0,8.0,final_duration,encoder,attempt,cancel).await?;
+  let seed=work.join("periodic-852-seed.mp4");let mut args:Vec<String>=vec!["-hide_banner","-loglevel","error","-i",seed_video.to_string_lossy().as_ref()].into_iter().map(String::from).collect();match audio{AudioSource::Loop(p)=>args.extend(vec!["-stream_loop","-1","-fflags","+genpts","-i",p.to_string_lossy().as_ref()].into_iter().map(String::from)),AudioSource::Long(p)=>args.extend(vec!["-i",p.to_string_lossy().as_ref()].into_iter().map(String::from)),AudioSource::ConcatList(p)=>args.extend(vec!["-stream_loop","-1","-f","concat","-safe","0","-fflags","+genpts","-i",p.to_string_lossy().as_ref()].into_iter().map(String::from))};args.extend(vec!["-t",&final_duration.to_string(),"-map","0:v:0","-map","1:a:0","-c:v","copy","-c:a","copy","-progress","pipe:1","-y",seed.to_string_lossy().as_ref()].into_iter().map(String::from));run_ffmpeg(app,job,started,timer,args,"8.52: mux seed без размножения video payload",78.0,8.0,final_duration,encoder,attempt,cancel).await?;
   let total_frames=(final_duration*fps as f64).round().max(seed_frames as f64) as usize;let _=app.emit("engine-profile",json!({"id":job.project.id,"physicalEncodedFrames":seed_frames,"logicalFrames":total_frames,"manifestFrames":total_frames}));let mark=Instant::now();ensure_license_allowed()?;crate::mp4_manifest::expand_video_prefix_cycle(&seed,&seed,plan.anchor_frames,plan.repeat_frames,total_frames)?;ensure_license_allowed()?;let manifest_seconds=mark.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"zero-copy-manifest",manifest_seconds);emit_timing(app,&job.project.id,"manifest-expand",manifest_seconds);let finalize_mark=Instant::now();finalize_local_output(&seed,out).map_err(|e|format!("8.64: не удалось завершить zero-copy MP4: {e}"))?;ensure_license_allowed()?;strict_856_validate_natural_size(out)?;ensure_license_allowed()?;emit_timing(app,&job.project.id,"finalize",finalize_mark.elapsed().as_secs_f64());emit_progress(app,job,started,timer,96.0,"8.64 Zero-copy manifest готов",encoder,attempt,None);Ok(true)
 }
 
@@ -1034,8 +1052,9 @@ pub async fn render_job(app:&AppHandle,job:&QueueJob,cancel:Arc<AtomicBool>)->Re
           match build_original_audio_cycle(app,job,started,&timer,&work,&encoder,attempt,&cancel).await{
             Ok((cycle,durations,_cycle_duration))=>{
               let final_duration=smart_final_duration(target,&durations,0.0,&job.settings.duration_mode);
-              let _=app.emit("engine-profile",json!({"id":job.project.id,"audioOriginal":true,"audioLossless":false,"crossfadeApplied":false}));
-              (AudioSource::Loop(cycle),durations,final_duration)
+              let direct_list=cycle.extension().and_then(|x|x.to_str()).map(|x|x.eq_ignore_ascii_case("txt")).unwrap_or(false);
+              let _=app.emit("engine-profile",json!({"id":job.project.id,"audioOriginal":true,"audioLossless":false,"crossfadeApplied":false,"audioDirectConcatList":direct_list}));
+              (if direct_list{AudioSource::ConcatList(cycle)}else{AudioSource::Loop(cycle)},durations,final_duration)
             },
             Err(reason)=>{
               return Err(format!("Strict Fidelity: исходную музыку нельзя сохранить bitstream-copy ({reason}). Для режима <=1 ГБ без потери музыки используй MP3 с одинаковыми sample rate/channel layout."));
@@ -1058,7 +1077,7 @@ pub async fn render_job(app:&AppHandle,job:&QueueJob,cancel:Arc<AtomicBool>)->Re
         let visual=assemble_visual(app,job,&source_master,visual_master_duration,&fx,&subs,final_duration,&work,&encoder,attempt,&cancel,started,&timer).await?;
         let mux_mark=Instant::now();let mut args:Vec<String>=vec!["-hide_banner","-loglevel","error"].into_iter().map(String::from).collect();
         match visual{VisualSource::Loop(p)=>args.extend(vec!["-stream_loop","-1","-i",p.to_string_lossy().as_ref()].into_iter().map(String::from)),VisualSource::Long(p)=>args.extend(vec!["-i",p.to_string_lossy().as_ref()].into_iter().map(String::from)),VisualSource::Concat(p)=>args.extend(vec!["-f","concat","-safe","0","-i",p.to_string_lossy().as_ref()].into_iter().map(String::from))}
-        match &audio{AudioSource::Loop(p)=>args.extend(vec!["-stream_loop","-1","-fflags","+genpts","-i",p.to_string_lossy().as_ref()].into_iter().map(String::from)),AudioSource::Long(p)=>args.extend(vec!["-i",p.to_string_lossy().as_ref()].into_iter().map(String::from))}
+        match &audio{AudioSource::Loop(p)=>args.extend(vec!["-stream_loop","-1","-fflags","+genpts","-i",p.to_string_lossy().as_ref()].into_iter().map(String::from)),AudioSource::Long(p)=>args.extend(vec!["-i",p.to_string_lossy().as_ref()].into_iter().map(String::from)),AudioSource::ConcatList(p)=>args.extend(vec!["-stream_loop","-1","-f","concat","-safe","0","-fflags","+genpts","-i",p.to_string_lossy().as_ref()].into_iter().map(String::from))}
         args.extend(vec!["-t",&final_duration.to_string(),"-map","0:v:0","-map","1:a:0","-c:v","copy","-c:a","copy","-movflags","+faststart","-progress","pipe:1","-y",out.to_string_lossy().as_ref()].into_iter().map(String::from));
         run_ffmpeg(app,job,started,&timer,args,"Собираю итоговое видео",90.0,6.0,final_duration,&encoder,attempt,&cancel).await?;emit_timing(app,&job.project.id,"final-mux",mux_mark.elapsed().as_secs_f64());
       }

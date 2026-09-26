@@ -5,6 +5,10 @@ description = "ENDLUME YT Studio PEISOV"
 authors = ["ENDLUME YT Studio PEISOV"]
 edition = "2021"
 
+[features]
+default = []
+e2e-render = []
+
 [lib]
 name = "endlume_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]

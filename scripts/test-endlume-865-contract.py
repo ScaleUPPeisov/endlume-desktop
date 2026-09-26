@@ -19,6 +19,8 @@ app=read("src/pages/App.tsx")
 ux=read("src/components/EndlumeUpdateExperience.tsx")
 render_page=read("src/pages/RenderPage.tsx")
 system=read("src-tauri/src/system.rs")
+lib=read("src-tauri/src/lib.rs")
+e2e=read("scripts/run-endlume-865-render-job-e2e.py")
 settings=read("src/pages/SettingsPage.tsx")
 history=read("src/components/ReleaseHistory.tsx")
 
@@ -56,6 +58,10 @@ assert "openResult(active.resultPath)" in render_page
 assert "revealResult(active.resultPath)" in render_page
 assert "project-scan','encoder-detection','strict-visual-master','strict-audio-mux','ffprobe-validation" in render_page
 assert 'pub fn open_result_path' in system and 'pub fn reveal_result_path' in system
+assert 'done_payload_from_summary' in queue
+assert 'ENDLUME_E2E_RENDER_JOB' in lib and 'render::render_job' in lib
+assert 'REAL_ENDLUME_RENDER_JOB_E2E_865_GREEN' in e2e
+assert 'terminal_result_bytes_ok' in e2e and 'track_boundary_checked' in e2e
 
 # Homer splash must be visible on every startup long enough to be perceived.
 assert "startupMinElapsed" in app

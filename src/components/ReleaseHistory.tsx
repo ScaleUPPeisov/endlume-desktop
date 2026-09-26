@@ -3,7 +3,15 @@ import React from 'react';
 type Release={version:string;date:string;current?:boolean;title:string;items:string[]};
 
 const releases:Release[]=[
-  {version:'1.0.0-alpha.8.64',date:'26.09.2026',current:true,title:'Windows Turbo Renderer • Full-screen Update Center',items:[
+  {version:'1.0.0-alpha.8.65',date:'26.09.2026',current:true,title:'Real Result State • FAST_ONE_IMAGE • Homer Startup',items:[
+    'Успешный render теперь сохраняет точные resultPath и resultBytes прямо из RenderOutcome; поздний terminal snapshot больше не может затереть валидные данные null-значениями.',
+    'Кнопки «Открыть видео» и «Открыть папку вывода» снова получают настоящий путь результата, а размер файла отображается из фактически созданного output.',
+    'Обычный проект с одной картинкой без активных Effects/Subscribe переведён на короткий physical still + zero-copy sample-table вместо кодирования 12–60 секунд одинакового strict master.',
+    'В сводке времени скрыты compatibility-alias тайминги, чтобы visual/audio/validation этапы не выглядели продублированными.',
+    'При каждом запуске Homer splash виден минимум около 1.15 секунды и показывает полное название ENDLUME YT Studio PEISOV • Long Video Engine.',
+    'Сохранены HEVC 1920×1080/60, Original MP3 packet-copy, whole-song, updater signature/SHA-256, queue recovery и cross-platform updater.'
+  ]},
+  {version:'1.0.0-alpha.8.64',date:'26.09.2026',current:false,title:'Windows Turbo Renderer • Full-screen Update Center',items:[
     'Windows fast-path ускорен: Original MP3 идёт packet-copy через direct concat-list без лишней полной промежуточной сборки аудиоплейлиста.',
     'MP3 metadata probing выполняется кэшированными ограниченно-параллельными FFprobe задачами; выбор NVENC / QSV / AMF сохраняется по GPU/driver fingerprint и пересчитывается при изменении железа.',
     'Убран искусственный hard-limit 700 МБ: размер остаётся целевым диапазоном, но исходная музыка не ухудшается и не отклоняется только ради размера файла.',

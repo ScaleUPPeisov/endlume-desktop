@@ -171,7 +171,7 @@ jobs:
           export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
           KEY="$(cat "$RUNNER_TEMP/endlume-864-signing-key-path")"
           export TAURI_SIGNING_PRIVATE_KEY_PATH="$KEY"
-          export TAURI_SIGNING_PRIVATE_KEY="$KEY"
+          unset TAURI_SIGNING_PRIVATE_KEY || true
           export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
           npm run tauri build -- --bundles app
           APP="$(find src-tauri/target/release/bundle/macos -maxdepth 1 -type d -name '*.app' -print -quit)"

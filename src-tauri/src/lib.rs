@@ -25,6 +25,45 @@ mod vyron_bridge_tests;
 use std::sync::Arc;
 use tauri::Manager;
 
+fn maybe_start_render_e2e(app:tauri::AppHandle){
+  let Ok(fixture_path)=std::env::var("ENDLUME_E2E_RENDER_JOB") else{return};
+  let Ok(result_path)=std::env::var("ENDLUME_E2E_RESULT") else{return};
+  tauri::async_runtime::spawn(async move{
+    let started=std::time::Instant::now();
+    let payload=match std::fs::read(&fixture_path)
+      .map_err(|e|format!("fixture read: {e}"))
+      .and_then(|bytes|serde_json::from_slice::<model::QueueJob>(&bytes).map_err(|e|format!("fixture json: {e}"))){
+      Ok(job)=>{
+        let id=job.project.id.clone();
+        match render::render_job(&app,&job,Arc::new(std::sync::atomic::AtomicBool::new(false))).await{
+          Ok(summary)=>{
+            let terminal=queue::done_payload_from_summary(&job,&id,&summary);
+            serde_json::json!({
+              "status":"passed",
+              "wallSeconds":started.elapsed().as_secs_f64(),
+              "terminal":terminal,
+              "outputPath":summary.output_path,
+              "outputBytes":summary.output_bytes,
+              "encoder":summary.encoder,
+              "finalDuration":summary.final_video_duration_seconds,
+              "fastPath":summary.fast_path,
+              "fastPathReason":summary.fast_path_reason,
+              "audioMode":summary.audio_mode,
+              "videoCodec":summary.video_codec,
+              "audioCodec":summary.audio_codec
+            })
+          }
+          Err(error)=>serde_json::json!({"status":"failed","wallSeconds":started.elapsed().as_secs_f64(),"error":error})
+        }
+      }
+      Err(error)=>serde_json::json!({"status":"failed","wallSeconds":started.elapsed().as_secs_f64(),"error":error})
+    };
+    let ok=payload.get("status").and_then(|v|v.as_str())==Some("passed");
+    let _=std::fs::write(&result_path,serde_json::to_vec_pretty(&payload).unwrap_or_default());
+    app.exit(if ok{0}else{31});
+  });
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run(){
   tauri::Builder::default()
@@ -49,8 +88,12 @@ pub fn run(){
     ])
     .setup(|app|{
       persistence::mark_session_open(&app.handle().clone())?;
-      cache::start_strict_prewarm_856(app.handle().clone());
-      license::start_heartbeat(app.handle().clone());
+      if std::env::var_os("ENDLUME_E2E_RENDER_JOB").is_some(){
+        maybe_start_render_e2e(app.handle().clone());
+      }else{
+        cache::start_strict_prewarm_856(app.handle().clone());
+        license::start_heartbeat(app.handle().clone());
+      }
       Ok(())
     })
     .on_window_event(|window,event|{

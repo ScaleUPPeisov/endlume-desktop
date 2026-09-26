@@ -9,5 +9,6 @@ import './motion-polish.css';
 import './motion-interactions.css';
 import './chroma-fidelity.css';
 import './smart-align.css';
+import './update-experience.css';
 document.title=PRODUCT_NAME;
 createRoot(document.getElementById('root')!).render(<React.StrictMode><App/></React.StrictMode>);

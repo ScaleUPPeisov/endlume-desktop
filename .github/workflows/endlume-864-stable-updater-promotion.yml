@@ -233,7 +233,8 @@ jobs:
           KEY="$(cat "$RUNNER_TEMP/endlume-864-signing-key-path")"
           test -s "$KEY"
           export TAURI_SIGNING_PRIVATE_KEY_PATH="$KEY"
-          unset TAURI_SIGNING_PRIVATE_KEY_PASSWORD || true
+          export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
+          unset TAURI_SIGNING_PRIVATE_KEY || true
           npx --yes @tauri-apps/cli@2.10.1 signer sign "$WIN_PATH"
           test -s "$WIN_PATH.sig"
           test "$(shasum -a 256 "$WIN_PATH" | awk '{print $1}')" = "$WINDOWS_EXPECTED_SHA256"

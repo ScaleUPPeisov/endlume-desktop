@@ -1,0 +1,296 @@
+name: ENDLUME 8.65 Dual QA
+
+on:
+  push:
+    branches: [endlume-8.64-turbo]
+    paths:
+      - '.github/workflows/endlume-865-dual-qa.yml'
+      - 'src/**'
+      - 'src-tauri/**'
+      - 'scripts/test-endlume-865-contract.py'
+      - 'scripts/run-endlume-865-one-image-physical.py'
+      - 'scripts/test-queue-finalization-8-58.mjs'
+      - 'package.json'
+      - 'package-lock.json'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: endlume-865-dual-qa
+  cancel-in-progress: true
+
+env:
+  VERSION: 1.0.0-alpha.8.65
+  WINDOWS_TARGET: x86_64-pc-windows-msvc
+  WINDOWS_ASSET: ENDLUME-YT-Studio-PEISOV-Setup-1.0.0-alpha.8.65-x64.exe
+  WINDOWS_RC_TAG: endlume-v1.0.0-alpha.8.65-windows-rc
+
+jobs:
+  windows-smoke:
+    name: Windows hosted • compile • NSIS • physical integrity
+    runs-on: windows-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 0
+
+      - name: Frontend and 8.65 contracts
+        shell: pwsh
+        run: |
+          npm ci
+          npm run check
+          npm run build
+          python scripts/test-endlume-865-contract.py
+          Remove-Item -Recurse -Force .queue-test-dist -ErrorAction SilentlyContinue
+          .\node_modules\.bin\tsc.cmd src/queue-state.ts --target ES2022 --module ES2022 --moduleResolution Bundler --skipLibCheck --outDir .queue-test-dist --noEmit false
+          node scripts/test-queue-finalization-8-58.mjs "$PWD/.queue-test-dist/queue-state.js"
+
+      - name: Stage pinned Windows FFmpeg
+        id: ffmpeg
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $tag='autobuild-2026-09-14-13-17'
+          $archive='ffmpeg-N-126549-ga51bb69b09-win64-gpl.zip'
+          $url="https://github.com/BtbN/FFmpeg-Builds/releases/download/$tag/$archive"
+          $zip=Join-Path $env:RUNNER_TEMP $archive
+          $extract=Join-Path $env:RUNNER_TEMP 'ffmpeg-865'
+          Invoke-WebRequest -Uri $url -OutFile $zip
+          Expand-Archive -Path $zip -DestinationPath $extract -Force
+          $ffmpeg=(Get-ChildItem $extract -Recurse -Filter ffmpeg.exe | Select-Object -First 1).FullName
+          $ffprobe=(Get-ChildItem $extract -Recurse -Filter ffprobe.exe | Select-Object -First 1).FullName
+          if(-not $ffmpeg -or -not $ffprobe){throw 'FFmpeg sidecars not found'}
+          New-Item -ItemType Directory -Force -Path 'src-tauri/binaries' | Out-Null
+          Copy-Item $ffmpeg 'src-tauri/binaries/ffmpeg-x86_64-pc-windows-msvc.exe'
+          Copy-Item $ffprobe 'src-tauri/binaries/ffprobe-x86_64-pc-windows-msvc.exe'
+          "ffmpeg=$ffmpeg" >> $env:GITHUB_OUTPUT
+          "ffprobe=$ffprobe" >> $env:GITHUB_OUTPUT
+
+      - name: Rust Windows regression
+        shell: pwsh
+        run: |
+          cargo check --manifest-path src-tauri/Cargo.toml
+          cargo test --manifest-path src-tauri/Cargo.toml -- --nocapture
+
+      - name: Windows synthetic production-shape integrity
+        shell: pwsh
+        env:
+          ENDLUME_865_MAX_SECONDS: '60'
+          FFMPEG: ${{ steps.ffmpeg.outputs.ffmpeg }}
+          FFPROBE: ${{ steps.ffmpeg.outputs.ffprobe }}
+        run: |
+          $ErrorActionPreference='Stop'
+          New-Item -ItemType Directory -Force -Path 'win865-fixture' | Out-Null
+          & $env:FFMPEG -hide_banner -loglevel error -f lavfi -i "color=c=0x172033:s=1920x1080:r=1" -frames:v 1 -y win865-fixture/image.png
+          & $env:FFMPEG -hide_banner -loglevel error -f lavfi -i "sine=frequency=440:sample_rate=44100" -t 7 -ac 2 -c:a libmp3lame -b:a 128k -y win865-fixture/a1.mp3
+          & $env:FFMPEG -hide_banner -loglevel error -f lavfi -i "sine=frequency=660:sample_rate=44100" -t 9 -ac 2 -c:a libmp3lame -b:a 128k -y win865-fixture/a2.mp3
+          @'
+          {"project":{"id":"win-865","name":"Windows 865 fixture","path":"fixture","media":["PLACE_IMAGE"],"audio":["PLACE_A1","PLACE_A2"]}}
+          '@ | Set-Content win865-fixture/project.json -Encoding UTF8
+          $json=Get-Content win865-fixture/project.json -Raw
+          $json=$json.Replace('PLACE_IMAGE',(Resolve-Path win865-fixture/image.png).Path.Replace('\','/'))
+          $json=$json.Replace('PLACE_A1',(Resolve-Path win865-fixture/a1.mp3).Path.Replace('\','/'))
+          $json=$json.Replace('PLACE_A2',(Resolve-Path win865-fixture/a2.mp3).Path.Replace('\','/'))
+          Set-Content win865-fixture/project.json $json -Encoding UTF8
+          python scripts/run-endlume-865-one-image-physical.py win865-fixture/project.json "$env:FFMPEG" "$env:FFPROBE" win865-fixture/metrics.json
+          Get-Content win865-fixture/metrics.json
+
+      - name: Build Windows NSIS smoke
+        shell: pwsh
+        run: |
+          $cfg=Get-Content 'src-tauri/tauri.conf.json' -Raw | ConvertFrom-Json
+          if($cfg.version -ne $env:VERSION){throw "wrong version $($cfg.version)"}
+          $cfg.bundle.createUpdaterArtifacts=$false
+          $cfg | ConvertTo-Json -Depth 30 | Set-Content 'src-tauri/tauri.conf.json' -Encoding utf8
+          npm run tauri build -- --bundles nsis --config src-tauri/tauri.windows.conf.json
+          $exe=Get-ChildItem 'src-tauri/target/release/bundle/nsis' -Filter '*.exe' | Select-Object -First 1
+          if(-not $exe){throw 'NSIS installer missing'}
+          $bytes=[System.IO.File]::ReadAllBytes($exe.FullName)
+          if($bytes.Length -lt 1000000 -or $bytes[0] -ne 0x4d -or $bytes[1] -ne 0x5a){throw 'invalid PE/NSIS'}
+          $hash=(Get-FileHash $exe.FullName -Algorithm SHA256).Hash.ToLower()
+          Write-Host "ENDLUME_865_WINDOWS_HOSTED_GREEN bytes=$($bytes.Length) sha256=$hash"
+
+  windows-rc:
+    name: macOS real media • Windows x64 RC build
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 150
+    needs: windows-smoke
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Stage native Apple Silicon FFmpeg
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+          mkdir -p src-tauri/binaries
+          cp "$(command -v ffmpeg)" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp "$(command -v ffprobe)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          chmod +x src-tauri/binaries/ffmpeg-aarch64-apple-darwin src-tauri/binaries/ffprobe-aarch64-apple-darwin
+
+      - name: Full Mac regression and result-state contract
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
+          npm ci
+          npm run check
+          npm run build
+          python3 scripts/test-endlume-865-contract.py
+          python3 scripts/test-managed-license-render-gate.py
+          python3 scripts/test-runtime-safety-8-62.py
+          rm -rf .queue-test-dist
+          ./node_modules/.bin/tsc src/queue-state.ts --target ES2022 --module ES2022 --moduleResolution Bundler --skipLibCheck --outDir .queue-test-dist --noEmit false
+          node scripts/test-queue-finalization-8-58.mjs "$GITHUB_WORKSPACE/.queue-test-dist/queue-state.js"
+          cargo check --manifest-path src-tauri/Cargo.toml
+          cargo test --manifest-path src-tauri/Cargo.toml -- --nocapture
+
+      - name: Resolve durable real-media fixture
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          TMP="$(mktemp -d /tmp/e865fixture.XXXXXX)"
+          python3 scripts/find-endlume-real-fixture.py "$TMP/env"
+          cat "$TMP/env" >> "$GITHUB_ENV"
+          source "$TMP/env"
+          test "$AUDIO_COUNT" = 15
+          test -f "$SIDE"; test -f "$IMG"
+
+      - name: Physical 8.65 one-image 2-MP3 gate
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+          python3 scripts/run-endlume-865-one-image-physical.py "$SIDE" "$(command -v ffmpeg)" "$(command -v ffprobe)" "$GITHUB_WORKSPACE/865-one-image-real.json"
+          python3 - <<'PY'
+          import json
+          x=json.load(open('865-one-image-real.json'))
+          assert x.get('status')=='passed' and x.get('release_gate') is True,x
+          runs=x.get('runs') or []
+          assert len(runs)==2,runs
+          assert runs[0]['wall_seconds']<=15 and runs[1]['wall_seconds']<=15,runs
+          assert all(r['output_bytes']>0 and r['codec']=='hevc' and r['fps']=='60/1' and r['audio']=='mp3' for r in runs),runs
+          print('ENDLUME_865_REAL_ONE_IMAGE_GREEN',runs)
+          PY
+
+      - name: Existing 7-image / 15-MP3 regression
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/run-endlume-863-fast-multistill.py "$SIDE" "$(command -v ffmpeg)" "$(command -v ffprobe)" "$GITHUB_WORKSPACE/865-multistill-regression.json"
+          python3 - <<'PY'
+          import json
+          x=json.load(open('865-multistill-regression.json'))
+          assert x.get('status')=='passed' and x.get('release_gate') is True,x
+          print('ENDLUME_865_MULTISTILL_GREEN')
+          PY
+
+      - name: Install Windows cross-build prerequisites
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          brew list nsis >/dev/null 2>&1 || brew install nsis
+          brew list llvm >/dev/null 2>&1 || brew install llvm
+          command -v gh >/dev/null 2>&1 || brew install gh
+          LLVM_BIN="$(brew --prefix llvm)/bin"
+          echo "$LLVM_BIN" >> "$GITHUB_PATH"
+          export PATH="$LLVM_BIN:$HOME/.cargo/bin:$PATH"
+          rustup target add "$WINDOWS_TARGET"
+          command -v cargo-xwin >/dev/null 2>&1 || cargo install --locked cargo-xwin
+          makensis -VERSION
+          cargo xwin --version
+
+      - name: Stage pinned Windows FFmpeg sidecars
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          TAG='autobuild-2026-09-14-13-17'
+          ARCHIVE='ffmpeg-N-126549-ga51bb69b09-win64-gpl.zip'
+          CACHE="$RUNNER_TEMP/endlume-ffmpeg-865"
+          ZIP="$CACHE/$ARCHIVE"; EXTRACT="$CACHE/extract"
+          mkdir -p "$CACHE" src-tauri/binaries
+          [ -s "$ZIP" ] || curl --fail --location --retry 3 --output "$ZIP" "https://github.com/BtbN/FFmpeg-Builds/releases/download/$TAG/$ARCHIVE"
+          rm -rf "$EXTRACT"; mkdir -p "$EXTRACT"; ditto -x -k "$ZIP" "$EXTRACT"
+          FFMPEG="$(find "$EXTRACT" -type f -name ffmpeg.exe -print -quit)"
+          FFPROBE="$(find "$EXTRACT" -type f -name ffprobe.exe -print -quit)"
+          test -n "$FFMPEG" -a -n "$FFPROBE"
+          cp "$FFMPEG" "src-tauri/binaries/ffmpeg-$WINDOWS_TARGET.exe"
+          cp "$FFPROBE" "src-tauri/binaries/ffprobe-$WINDOWS_TARGET.exe"
+
+      - name: Build Windows 8.65 x64 NSIS RC
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="$(brew --prefix llvm)/bin:$HOME/.cargo/bin:$PATH"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('src-tauri/tauri.conf.json');cfg=json.loads(p.read_text())
+          assert cfg['version']=='1.0.0-alpha.8.65'
+          cfg['bundle']['createUpdaterArtifacts']=False
+          p.write_text(json.dumps(cfg,ensure_ascii=False,indent=2)+'\n')
+          PY
+          npm run tauri build -- --runner cargo-xwin --target "$WINDOWS_TARGET" --bundles nsis --config src-tauri/tauri.windows.conf.json
+          NSIS="src-tauri/target/$WINDOWS_TARGET/release/bundle/nsis"
+          FINAL="$NSIS/$WINDOWS_ASSET"
+          if [ ! -s "$FINAL" ]; then CAND="$(find "$NSIS" -maxdepth 1 -type f -name '*.exe' -print -quit)"; test -n "$CAND"; cp "$CAND" "$FINAL"; fi
+          python3 - "$FINAL" <<'PY'
+          from pathlib import Path
+          import sys
+          p=Path(sys.argv[1]);assert p.stat().st_size>1_000_000;assert p.read_bytes()[:2]==b'MZ'
+          print('ENDLUME_865_WINDOWS_RC_PE_GREEN',p.stat().st_size)
+          PY
+          shasum -a 256 "$FINAL" | tee "$FINAL.sha256"
+
+      - name: Publish immutable Windows 8.65 RC
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          NSIS="src-tauri/target/$WINDOWS_TARGET/release/bundle/nsis"
+          FINAL="$NSIS/$WINDOWS_ASSET"
+          NOTES="$RUNNER_TEMP/865-windows-rc.md"
+          cat > "$NOTES" <<EOF
+          ENDLUME YT Studio PEISOV 1.0.0-alpha.8.65 Windows RC
+
+          Source: $GITHUB_SHA
+          Windows hosted compile / NSIS / integrity smoke: PASS
+          macOS real fixture one-image 2-MP3 physical gate: PASS
+          7-image / 15-MP3 regression: PASS
+          resultPath/resultBytes terminal-state regression: PASS
+          EOF
+          if gh release view "$WINDOWS_RC_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$WINDOWS_RC_TAG" "$FINAL" "$FINAL.sha256" --clobber --repo "$GITHUB_REPOSITORY"
+            gh release edit "$WINDOWS_RC_TAG" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "ENDLUME YT Studio PEISOV 1.0.0-alpha.8.65 Windows RC" --notes-file "$NOTES" --prerelease
+          else
+            gh release create "$WINDOWS_RC_TAG" "$FINAL" "$FINAL.sha256" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "ENDLUME YT Studio PEISOV 1.0.0-alpha.8.65 Windows RC" --notes-file "$NOTES" --prerelease
+          fi
+          SHA="$(shasum -a 256 "$FINAL"|awk '{print $1}')";SIZE="$(stat -f%z "$FINAL")"
+          JSON="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$WINDOWS_RC_TAG")"
+          test "$(printf '%s' "$JSON"|jq -r --arg n "$WINDOWS_ASSET" '.assets[]|select(.name==$n)|.size')" = "$SIZE"
+          test "$(printf '%s' "$JSON"|jq -r --arg n "$WINDOWS_ASSET" '.assets[]|select(.name==$n)|.digest')" = "sha256:$SHA"
+          echo "ENDLUME_865_WINDOWS_RC_PUBLISHED_GREEN size=$SIZE sha256=$SHA"
+
+      - name: Upload QA provenance
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: ENDLUME-8.65-Dual-QA
+          path: |
+            865-one-image-real.json
+            865-multistill-regression.json
+            src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.sha256
+          if-no-files-found: warn
+          retention-days: 30

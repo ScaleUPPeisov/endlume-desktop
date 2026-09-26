@@ -10,7 +10,7 @@ radial-gradient(820px 560px at 88% 86%,rgba(214,48,144,.13),transparent 60%),
 .endlumeMascotFrame{width:clamp(160px,16vw,250px);height:clamp(210px,22vw,330px);display:grid;place-items:center;padding:10px;border:1px solid rgba(255,255,255,.1);border-radius:28px;background:#fff;box-shadow:0 28px 90px rgba(0,0,0,.38);overflow:hidden}
 .endlumeMascotFrame img{width:100%;height:100%;object-fit:contain;display:block}
 .startupMascot{width:clamp(170px,19vw,260px);height:clamp(225px,25vw,340px);animation:endlumeMascotIn .48s cubic-bezier(.2,.8,.2,1) both}
-.endlumeBrandLockup{margin-top:22px;display:flex;flex-direction:column;gap:2px}.endlumeBrandLockup strong{font-size:clamp(28px,4vw,46px);letter-spacing:.12em}.endlumeBrandLockup span{font-size:11px;letter-spacing:.34em;color:#8f99b2}
+.endlumeBrandLockup{margin-top:22px;display:flex;max-width:min(900px,92vw);flex-direction:column;gap:5px}.endlumeBrandLockup strong{font-size:clamp(24px,3.2vw,42px);line-height:1.08;letter-spacing:.055em}.endlumeBrandLockup span{font-size:11px;letter-spacing:.28em;color:#8f99b2}
 .endlumeStartup p{margin:15px 0 18px;color:#b8c0d2;font-size:12px}
 .endlumeBootLine{width:min(300px,58vw);height:3px;border-radius:99px;overflow:hidden;background:#181e31}.endlumeBootLine i{display:block;width:38%;height:100%;border-radius:inherit;background:linear-gradient(90deg,#2bb8ec,#7564ff,#de4097);animation:endlumeBootSweep 1.05s ease-in-out infinite}
 .endlumeUpdateExperience{padding:clamp(18px,3vw,42px);display:grid;place-items:center;animation:endlumeFadeIn .22s ease both}

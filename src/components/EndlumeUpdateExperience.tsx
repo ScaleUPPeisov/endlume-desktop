@@ -126,7 +126,7 @@ export function UpdateExperience({update,onLater}:{update:any;onLater:()=>void})
             <span>Скорость: {humanRate(detail.bytesPerSecond)}</span>
             <span>Осталось: {detail.etaSeconds!=null?`~${Math.max(0,Math.ceil(detail.etaSeconds))} сек`:'—'}</span>
           </div>
-          <small>Не закрывайте ENDLUME во время установки.</small>
+          <small>{state==='INSTALLING'?'Windows может автоматически закрыть ENDLUME, чтобы завершить установку. После запуска новая версия покажет подтверждение.':'Не закрывайте ENDLUME во время загрузки и проверки.'}</small>
         </div>}
 
         {error&&<div className="endlumeUpdateError">Файл обновления не установлен: {error}</div>}
@@ -151,9 +151,9 @@ export function UpdateExperience({update,onLater}:{update:any;onLater:()=>void})
 }
 
 export function PostUpdateNotice({version,onClose}:{version:string;onClose:()=>void}){
-  return <div className="endlumePostUpdate">
-    <div className="endlumePostUpdateIcon">✓</div>
-    <div><b>ENDLUME обновлён до {version}</b><span>Turbo Renderer • Original MP3 • Windows 10/11</span></div>
-    <button onClick={onClose}>×</button>
+  return <div className="endlumePostUpdate" role="status" aria-live="polite">
+    <div className="endlumePostUpdateMascot"><img src={HOMER_URL} alt="ENDLUME Homer mascot"/></div>
+    <div><b>ENDLUME обновлён до {version}</b><strong>Гомер сделал свою работу.</strong><span>Turbo Renderer • Original MP3 packet-copy • faster validation • Windows 10/11</span></div>
+    <button onClick={onClose} aria-label="Закрыть">×</button>
   </div>;
 }

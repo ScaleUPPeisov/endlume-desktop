@@ -122,6 +122,10 @@ for encoder in ("hevc_nvenc","hevc_qsv","hevc_amf","libx265"):
     assert encoder in bench, f"HEVC benchmark candidate missing {encoder}"
 assert 'fast_encoder_sample' in render
 assert 'best:Option<(String,f64)>' in render
+assert 'encoder-selection-8.64.json' in render
+assert 'Win32_VideoController' in render and 'DriverVersion' in render
+assert 'load_persistent_encoder' in render and 'save_persistent_encoder' in render
+assert 'invalidate_hybrid_encoder_cache' in render
 
 app=Path("src/pages/App.tsx").read_text(encoding="utf-8")
 ux=Path("src/components/EndlumeUpdateExperience.tsx").read_text(encoding="utf-8")

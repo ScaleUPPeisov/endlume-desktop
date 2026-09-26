@@ -66,7 +66,7 @@ export function StartupSplash(){
     <div className="endlumeAmbient endlumeAmbientB"/>
     <div className="endlumeStartupInner">
       <div className="endlumeMascotFrame startupMascot"><img src={HOMER_URL} alt="ENDLUME mascot"/></div>
-      <div className="endlumeBrandLockup"><strong>ENDLUME</strong><span>YT Studio PEISOV</span></div>
+      <div className="endlumeBrandLockup"><strong>ENDLUME YT Studio PEISOV</strong><span>Long Video Engine</span></div>
       <p>{phrase}</p>
       <div className="endlumeBootLine"><i/></div>
     </div>
@@ -116,7 +116,7 @@ export function UpdateExperience({update,onLater}:{update:any;onLater:()=>void})
         <div className="endlumeUpdateBadge">{complete?'UPDATE COMPLETE':failed?'UPDATE FAILED':available?'NEW ENDLUME':'ENDLUME UPDATE'}</div>
         <h1>{complete?'ENDLUME ОБНОВЛЁН':failed?'ОБНОВЛЕНИЕ ОСТАНОВЛЕНО':available?'Доступно обновление':'ENDLUME обновляется'}</h1>
         <div className="endlumeVersionRow"><span>{update.current||'текущая версия'}</span><b>→</b><strong>{update.version}</strong></div>
-        <p className="endlumeReleaseTitle">{available?'Windows Turbo Renderer':complete?'Гомер сделал свою работу.':failed?'Ничего не устанавливаем, пока проверка не пройдёт.':humor}</p>
+        <p className="endlumeReleaseTitle">{available?'ENDLUME cross-platform update':complete?'Гомер сделал свою работу.':failed?'Ничего не устанавливаем, пока проверка не пройдёт.':humor}</p>
 
         {!available&&!failed&&<div className="endlumeProgressCard">
           <div className="endlumeProgressTop"><strong>{stage||state.replaceAll('_',' ')}</strong><b>{progress.toFixed(0)}%</b></div>

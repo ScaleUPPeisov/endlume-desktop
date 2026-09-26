@@ -38,6 +38,79 @@ env:
   RELEASE_TITLE: ENDLUME YT Studio PEISOV 1.0.0-alpha.8.64 Windows RC
 
 jobs:
+  hosted-smoke:
+    name: Hosted Windows compile • contract • NSIS smoke
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 0
+
+      - name: Install Node dependencies
+        shell: pwsh
+        run: npm ci
+
+      - name: Frontend typecheck and production build
+        shell: pwsh
+        run: |
+          npm run check
+          npm run build
+
+      - name: 8.64 source contract
+        shell: pwsh
+        run: python scripts/test-fast-2h-contract-8-64.py
+
+      - name: Managed license and runtime contracts
+        shell: pwsh
+        run: |
+          python scripts/test-managed-license-render-gate.py
+          python scripts/test-runtime-safety-8-62.py
+
+      - name: Stage Windows FFmpeg sidecars
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $tag='autobuild-2026-09-14-13-17'
+          $archive='ffmpeg-N-126549-ga51bb69b09-win64-gpl.zip'
+          $url="https://github.com/BtbN/FFmpeg-Builds/releases/download/$tag/$archive"
+          $zip=Join-Path $env:RUNNER_TEMP $archive
+          $extract=Join-Path $env:RUNNER_TEMP 'ffmpeg-864'
+          Invoke-WebRequest -Uri $url -OutFile $zip
+          Expand-Archive -Path $zip -DestinationPath $extract -Force
+          $ffmpeg=(Get-ChildItem $extract -Recurse -Filter ffmpeg.exe | Select-Object -First 1).FullName
+          $ffprobe=(Get-ChildItem $extract -Recurse -Filter ffprobe.exe | Select-Object -First 1).FullName
+          if(-not $ffmpeg -or -not $ffprobe){throw 'FFmpeg sidecars not found'}
+          New-Item -ItemType Directory -Force -Path 'src-tauri/binaries' | Out-Null
+          Copy-Item $ffmpeg 'src-tauri/binaries/ffmpeg-x86_64-pc-windows-msvc.exe'
+          Copy-Item $ffprobe 'src-tauri/binaries/ffprobe-x86_64-pc-windows-msvc.exe'
+
+      - name: Rust check and unit tests on real Windows target
+        shell: pwsh
+        run: |
+          cargo check --manifest-path src-tauri/Cargo.toml
+          cargo test --manifest-path src-tauri/Cargo.toml -- --nocapture
+
+      - name: Build Windows NSIS smoke installer
+        shell: pwsh
+        run: |
+          $cfg=Get-Content 'src-tauri/tauri.conf.json' -Raw | ConvertFrom-Json
+          $cfg.bundle.createUpdaterArtifacts=$false
+          $cfg | ConvertTo-Json -Depth 30 | Set-Content 'src-tauri/tauri.conf.json' -Encoding utf8
+          npm run tauri build -- --bundles nsis --config src-tauri/tauri.windows.conf.json
+
+      - name: Verify PE/NSIS artifact
+        shell: pwsh
+        run: |
+          $exe=Get-ChildItem 'src-tauri/target/release/bundle/nsis' -Filter '*.exe' | Select-Object -First 1
+          if(-not $exe){throw 'NSIS installer missing'}
+          $bytes=[System.IO.File]::ReadAllBytes($exe.FullName)
+          if($bytes.Length -lt 1000000 -or $bytes[0] -ne 0x4d -or $bytes[1] -ne 0x5a){throw 'Installer is not a valid PE/MZ payload'}
+          $hash=(Get-FileHash $exe.FullName -Algorithm SHA256).Hash.ToLower()
+          Write-Host "WINDOWS_HOSTED_SMOKE_GREEN bytes=$($bytes.Length) sha256=$hash"
+
   build-rc:
     name: Real media gate • Windows x64 • NSIS • RC
     runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]

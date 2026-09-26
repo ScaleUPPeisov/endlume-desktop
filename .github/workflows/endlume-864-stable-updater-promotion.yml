@@ -154,8 +154,10 @@ jobs:
           import json
           x=json.load(open('stable-864/five-run.json'))
           assert x.get('status')=='passed',x
-          times=x.get('times',[])
-          assert len(times)==5,times
+          runs=x.get('runs',[])
+          assert len(runs)==5,runs
+          times=[float(r.get('wall_seconds')) for r in runs]
+          assert all(t>0 for t in times),times
           print('ENDLUME_864_FIVE_RUN_REAL_MEDIA_GREEN',times)
           PY
 

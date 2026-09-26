@@ -51,9 +51,9 @@ async function nativeUpdateInstall(onProgress?:(percent:number,stage?:string,sta
         const s=await invoke<NativeUpdateStatus>('local_update_status');
         onProgress?.(Math.max(0,Math.min(100,Number(s.progress)||0)),s.stage||undefined,s);
         const state=String(s.state||'').toUpperCase();
-        if(state==='FAILED')throw new Error(s.message||'Windows update failed');
+        if(state==='FAILED')throw new Error(`ENDLUME_UPDATE_FAILED: ${s.message||'Update failed'}`);
         if(state==='RESTART_REQUIRED'||state==='SUCCESS')return;
-      }catch(e){if(String(e).includes('Windows update failed'))throw e;}
+      }catch(e){if(String(e).includes('ENDLUME_UPDATE_FAILED:'))throw e;}
       await new Promise(r=>window.setTimeout(r,250));
     }
   };

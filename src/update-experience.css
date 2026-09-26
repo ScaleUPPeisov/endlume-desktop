@@ -1,0 +1,39 @@
+.endlumeStartup,.endlumeUpdateExperience{position:fixed;inset:0;z-index:520;overflow:auto;background:
+radial-gradient(900px 540px at 12% 8%,rgba(43,112,255,.18),transparent 62%),
+radial-gradient(820px 560px at 88% 86%,rgba(214,48,144,.13),transparent 60%),
+#070914;color:#f5f7fb}
+.endlumeAmbient{position:fixed;pointer-events:none;filter:blur(70px);opacity:.42;border-radius:999px}
+.endlumeAmbientA{width:310px;height:310px;left:-90px;top:-70px;background:#345dff}
+.endlumeAmbientB{width:340px;height:340px;right:-120px;bottom:-100px;background:#b72c82}
+.endlumeStartup{display:grid;place-items:center;animation:endlumeFadeIn .22s ease both}
+.endlumeStartupInner{position:relative;z-index:1;display:flex;min-height:100vh;flex-direction:column;align-items:center;justify-content:center;padding:28px;text-align:center}
+.endlumeMascotFrame{width:clamp(160px,16vw,250px);height:clamp(210px,22vw,330px);display:grid;place-items:center;padding:10px;border:1px solid rgba(255,255,255,.1);border-radius:28px;background:#fff;box-shadow:0 28px 90px rgba(0,0,0,.38);overflow:hidden}
+.endlumeMascotFrame img{width:100%;height:100%;object-fit:contain;display:block}
+.startupMascot{width:clamp(170px,19vw,260px);height:clamp(225px,25vw,340px);animation:endlumeMascotIn .48s cubic-bezier(.2,.8,.2,1) both}
+.endlumeBrandLockup{margin-top:22px;display:flex;flex-direction:column;gap:2px}.endlumeBrandLockup strong{font-size:clamp(28px,4vw,46px);letter-spacing:.12em}.endlumeBrandLockup span{font-size:11px;letter-spacing:.34em;color:#8f99b2}
+.endlumeStartup p{margin:15px 0 18px;color:#b8c0d2;font-size:12px}
+.endlumeBootLine{width:min(300px,58vw);height:3px;border-radius:99px;overflow:hidden;background:#181e31}.endlumeBootLine i{display:block;width:38%;height:100%;border-radius:inherit;background:linear-gradient(90deg,#2bb8ec,#7564ff,#de4097);animation:endlumeBootSweep 1.05s ease-in-out infinite}
+.endlumeUpdateExperience{padding:clamp(18px,3vw,42px);display:grid;place-items:center;animation:endlumeFadeIn .22s ease both}
+.endlumeUpdateLayout{position:relative;z-index:1;width:min(1180px,100%);min-height:min(760px,calc(100vh - 84px));display:grid;grid-template-columns:minmax(0,1.38fr) minmax(300px,.62fr);border:1px solid #252d42;border-radius:28px;overflow:hidden;background:rgba(11,14,25,.9);box-shadow:0 40px 120px rgba(0,0,0,.5);backdrop-filter:blur(18px)}
+.endlumeUpdateHero{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:clamp(28px,4.8vw,64px);text-align:center}
+.endlumeUpdateBadge{margin-top:22px;border:1px solid #554d98;background:#17142d;border-radius:999px;padding:7px 11px;font-size:9px;font-weight:900;letter-spacing:.18em;color:#cfc6ff}
+.endlumeUpdateHero h1{margin:14px 0 8px;font-size:clamp(28px,4.6vw,54px);line-height:1.02;letter-spacing:-.035em}
+.endlumeVersionRow{display:flex;align-items:center;gap:10px;color:#7f8aa4;font-size:11px}.endlumeVersionRow b{color:#58627a}.endlumeVersionRow strong{color:#f5f7fb;font-size:15px}
+.endlumeReleaseTitle{margin:12px 0 18px;color:#9da8be;font-size:12px;min-height:18px}
+.endlumeUpdateActions{display:flex;gap:10px;justify-content:center;margin-top:8px}.endlumeUpdateActions button{min-width:142px;height:44px;border-radius:12px;font-size:10px;font-weight:900;letter-spacing:.06em;cursor:pointer}
+.endlumePrimary{border:0;color:#fff;background:linear-gradient(90deg,#178fce,#6658ee 54%,#c73a91);box-shadow:0 14px 34px rgba(75,79,226,.24)}.endlumeSecondary{border:1px solid #30384d;color:#c4ccdc;background:#121725}.endlumeUpdateActions button:disabled{opacity:.55;cursor:default}
+.endlumeProgressCard{width:min(620px,100%);margin:4px 0 9px;padding:16px;border:1px solid #2a3248;border-radius:16px;background:#0a0e19;text-align:left}
+.endlumeProgressTop{display:flex;justify-content:space-between;gap:18px;align-items:center}.endlumeProgressTop strong{font-size:10px;color:#dce2ef}.endlumeProgressTop b{font-variant-numeric:tabular-nums}
+.endlumeProgressTrack{height:9px;margin:12px 0;border-radius:99px;background:#171d2d;overflow:hidden}.endlumeProgressTrack i{display:block;height:100%;border-radius:inherit;background:linear-gradient(90deg,#2bb8ec,#7564ff,#de4097);transition:width .18s linear}
+.endlumeProgressMeta{display:grid;grid-template-columns:1.15fr 1fr 1fr;gap:10px;color:#7f8aa3;font-size:9px;font-variant-numeric:tabular-nums}.endlumeProgressCard>small{display:block;margin-top:11px;color:#5f6980;font-size:8px}
+.endlumeUpdateError{width:min(620px,100%);margin:4px 0 10px;padding:11px 12px;border:1px solid #6a3046;border-radius:10px;background:#21101a;color:#f3a4b8;font-size:9px;line-height:1.45}
+.endlumeWhatsNew{padding:clamp(28px,3.4vw,46px);border-left:1px solid #252c40;background:linear-gradient(180deg,rgba(18,22,37,.9),rgba(10,13,23,.96));display:flex;flex-direction:column;justify-content:center}
+.endlumeWhatsNew>small{color:#7069f3;font-size:9px;font-weight:900;letter-spacing:.2em}.endlumeWhatsNew h2{margin:8px 0 2px;font-size:28px}.endlumeReleaseDate{font-size:9px;color:#6f7890;margin-bottom:18px}
+.endlumeChangeList{display:grid;gap:11px}.endlumeChangeList>div{display:grid;grid-template-columns:22px 1fr;align-items:start;gap:8px;color:#bac3d5;font-size:10px;line-height:1.45}.endlumeChangeList i{display:grid;place-items:center;width:20px;height:20px;border-radius:7px;background:#15293a;color:#55d9b3;font-style:normal;font-size:10px}
+.endlumeIntegrity{margin-top:24px;padding-top:18px;border-top:1px solid #262d40;display:flex;flex-direction:column;gap:5px}.endlumeIntegrity span{font-size:8px;color:#6f78a0;letter-spacing:.18em}.endlumeIntegrity b{font-size:10px}.endlumeIntegrity small{font-size:8px;color:#69738a;line-height:1.45}
+.endlumePostUpdate{position:fixed;right:18px;top:78px;z-index:510;width:min(430px,calc(100vw - 36px));display:grid;grid-template-columns:34px 1fr 28px;gap:10px;align-items:center;border:1px solid #2d364c;border-radius:15px;padding:12px;background:rgba(15,19,31,.96);box-shadow:0 20px 60px rgba(0,0,0,.35);backdrop-filter:blur(14px);animation:endlumeSlideIn .28s ease both}
+.endlumePostUpdateIcon{width:32px;height:32px;display:grid;place-items:center;border-radius:10px;background:#123225;color:#57dda7;font-weight:900}.endlumePostUpdate b{display:block;font-size:10px}.endlumePostUpdate span{display:block;margin-top:4px;color:#7d879f;font-size:8px}.endlumePostUpdate button{border:0;background:transparent;color:#7e879b;font-size:22px;cursor:pointer}
+@keyframes endlumeFadeIn{from{opacity:0}to{opacity:1}}@keyframes endlumeMascotIn{from{opacity:0;transform:translateY(8px) scale(.97)}to{opacity:1;transform:none}}@keyframes endlumeBootSweep{0%{transform:translateX(-115%)}55%{transform:translateX(165%)}100%{transform:translateX(165%)}}@keyframes endlumeSlideIn{from{opacity:0;transform:translateY(-8px) translateX(8px)}to{opacity:1;transform:none}}
+@media(max-width:900px){.endlumeUpdateExperience{padding:0}.endlumeUpdateLayout{min-height:100vh;border-radius:0;grid-template-columns:1fr}.endlumeWhatsNew{border-left:0;border-top:1px solid #252c40}.endlumeUpdateHero{padding:28px 18px}.endlumeMascotFrame{width:150px;height:200px}.endlumeProgressMeta{grid-template-columns:1fr}.endlumeUpdateActions{width:100%;flex-direction:column}.endlumeUpdateActions button{width:100%}}
+@media(max-height:760px) and (min-width:901px){.endlumeUpdateLayout{min-height:calc(100vh - 36px)}.endlumeMascotFrame{width:130px;height:174px}.endlumeUpdateHero{padding:22px}.endlumeUpdateHero h1{font-size:34px}.endlumeWhatsNew{padding:24px}}
+@media(prefers-reduced-motion:reduce){.endlumeStartup,.endlumeUpdateExperience,.startupMascot,.endlumePostUpdate{animation:none}.endlumeBootLine i{animation:none;width:65%}.endlumeProgressTrack i{transition:none}}

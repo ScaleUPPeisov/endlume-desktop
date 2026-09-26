@@ -7,7 +7,7 @@ checks=[
  ('render entry gate','pub async fn render_job(app:&AppHandle,job:&QueueJob,cancel:Arc<AtomicBool>)->Result<RenderOutcome,String>{\n  ensure_license_allowed()?;'),
  ('zero-copy pre/post gate','ensure_license_allowed()?;crate::mp4_manifest::expand_video_prefix_cycle'),
  ('multi-still manifest gate','ensure_license_allowed()?;crate::mp4_manifest::remap_video_samples(&seed,&seed,&selected)?;ensure_license_allowed()?;'),
- ('final verify gate','verify_strict_857_result(app,&out,final_duration,!processed_audio).await?;}let validation_seconds=verify_mark.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"ffprobe-validation",validation_seconds);emit_timing(app,&job.project.id,"validation",validation_seconds);ensure_license_allowed()?;'),
+ ('final verify gate','verify_strict_857_result(app,&out,final_duration,!processed_audio,&durations).await?;}let validation_seconds=verify_mark.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"ffprobe-validation",validation_seconds);emit_timing(app,&job.project.id,"validation",validation_seconds);ensure_license_allowed()?;'),
  ('final success gate','if let Err(e)=ensure_license_allowed(){let _=std::fs::remove_dir_all(&work);let _=std::fs::remove_file(&out);return Err(e)}'),
  ('live telemetry','crate::license::telemetry_render_progress(job,progress.clamp(0.0,99.9),eta,stage,encoder);'),
 ]

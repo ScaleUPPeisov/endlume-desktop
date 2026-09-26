@@ -43,9 +43,11 @@ export function App(){
   const [license,setLicense]=useState<LicenseStatus|null>(null);
   const [availableUpdate,setAvailableUpdate]=useState<any>(null);
   const [postUpdateVersion,setPostUpdateVersion]=useState<string>();
+  const [startupMinElapsed,setStartupMinElapsed]=useState(false);
   const snoozeUntil=useRef(0),checkingUpdate=useRef(false),lastUpdateCheck=useRef(0);
 
   useEffect(()=>installMotionRuntime(),[]);
+  useEffect(()=>{const timer=window.setTimeout(()=>setStartupMinElapsed(true),1150);return()=>window.clearTimeout(timer)},[]);
 
   useEffect(()=>{
     let disposed=false,updateTimer:number|undefined,updateInterval:number|undefined;
@@ -142,7 +144,7 @@ export function App(){
     }).catch(()=>{});
   },[license?.valid]);
 
-  if(!license)return <StartupSplash/>;
+  if(!startupMinElapsed||!license)return <StartupSplash/>;
   if(!license.valid)return <ActivationScreen onActivated={setLicense}/>;
 
   const pageView=page==='project'?<ProjectPage/>:page==='render'?<RenderPage/>:page==='library'?<LibraryPage/>:<SettingsPage/>;

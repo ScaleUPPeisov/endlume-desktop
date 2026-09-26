@@ -136,6 +136,8 @@ export function App(){
     api.appVersion().then(version=>{
       const key='endlume-last-seen-version';
       const seen=window.localStorage.getItem(key);
+      // Fresh installs must not look like they have just completed an update.
+      if(seen===null){window.localStorage.setItem(key,version);return}
       if(seen!==version)setPostUpdateVersion(version);
     }).catch(()=>{});
   },[license?.valid]);

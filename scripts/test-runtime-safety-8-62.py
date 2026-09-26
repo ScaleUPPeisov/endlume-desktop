@@ -35,7 +35,7 @@ required_render=[
   'const LICENSE_BLOCKED:&str="__ENDLUME_LICENSE_BLOCKED__";',
   'fn ensure_license_allowed()->Result<(),String>',
   'ensure_license_allowed()?;crate::mp4_manifest::expand_video_prefix_cycle',
-  'verify_strict_857_result(app,&out,final_duration,!processed_audio).await?;}let validation_seconds=verify_mark.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"ffprobe-validation",validation_seconds);emit_timing(app,&job.project.id,"validation",validation_seconds);ensure_license_allowed()?;',
+  'verify_strict_857_result(app,&out,final_duration,!processed_audio,&durations).await?;}let validation_seconds=verify_mark.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"ffprobe-validation",validation_seconds);emit_timing(app,&job.project.id,"validation",validation_seconds);ensure_license_allowed()?;',
   'if let Err(e)=ensure_license_allowed(){let _=std::fs::remove_dir_all(&work);let _=std::fs::remove_file(&out);return Err(e)}',
   'fn strict_856_validate_natural_size(path:&Path)->Result<(),String>',
 ]

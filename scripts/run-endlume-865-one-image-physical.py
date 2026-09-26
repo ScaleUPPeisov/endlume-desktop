@@ -156,8 +156,10 @@ with tempfile.TemporaryDirectory(prefix="endlume865-one-") as td:
         wall=time.perf_counter()-started
         size=final.stat().st_size
         assert size>1_000_000,size
-        # Physical 8.64 user baseline was 46 s. 8.65 must materially beat it.
-        assert wall<=15.0,wall
+        # Physical 8.64 user baseline was 46 s. macOS release gate defaults to 15 s.
+        # Hosted Windows may use software x265 and can override this only for integrity smoke.
+        max_seconds=float(os.environ.get("ENDLUME_865_MAX_SECONDS","15"))
+        assert wall<=max_seconds,(wall,max_seconds)
         records.append({
           "run":idx+1,"cold":idx==0,"wall_seconds":round(wall,3),"visual_master_seconds":round(visual,3),
           "audio_prepare_seconds":round(audio_prepare,3),"audio_mux_seconds":round(audio_mux,3),

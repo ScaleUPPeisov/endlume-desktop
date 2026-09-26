@@ -6,8 +6,12 @@ export function applyProjectPatch(projects:any[],id:string,patch:any){
     const incomingStatus=patch?.status as string|undefined;
     if(isTerminal(project.status)){
       if(incomingStatus===project.status){
-        const merged={...project,...patch,progress:100};
-        if(project.status==='done'){merged.stage=patch?.stage||project.stage||'Готово';merged.etaSec=0;}
+        const safePatch={...patch};
+        for(const key of ['resultPath','resultBytes','actualVideoBitrate','encoder','startedAt','elapsedSec']){
+          if(safePatch[key]===null||safePatch[key]===undefined)delete safePatch[key];
+        }
+        const merged={...project,...safePatch,progress:100};
+        if(project.status==='done'){merged.stage=safePatch?.stage||project.stage||'Готово';merged.etaSec=0;}
         if(project.status==='error'){merged.etaSec=0;}
         return merged;
       }

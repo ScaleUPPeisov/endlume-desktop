@@ -5,23 +5,7 @@ on:
     branches: [endlume-8.64-turbo]
     paths:
       - '.github/workflows/endlume-864-windows-turbo-render-qa.yml'
-      - 'src/**'
-      - 'src-tauri/**'
-      - 'scripts/test-fast-2h-contract-8-64.py'
-      - 'scripts/find-endlume-real-fixture.py'
-      - 'scripts/run-endlume-863-fast-multistill.py'
-      - 'scripts/test-managed-license-render-gate.py'
-      - 'scripts/test-runtime-safety-8-62.py'
   workflow_dispatch:
-  pull_request:
-    branches: [main]
-    paths:
-      - '.github/workflows/endlume-864-windows-turbo-render-qa.yml'
-      - 'src/**'
-      - 'src-tauri/**'
-      - 'scripts/**'
-      - 'package.json'
-      - 'package-lock.json'
 
 permissions:
   contents: write

@@ -33,9 +33,11 @@ assert VERSION in settings and f"version:'{VERSION}'" in history
 
 # Exact success result metadata must come from RenderOutcome, not a guessed directory rescan.
 success=queue[queue.index("Ok(summary)=>"):queue.index("Err(error) if",queue.index("Ok(summary)=>"))]
-assert '"resultPath":summary.output_path' in success
-assert '"resultBytes":summary.output_bytes' in success
-assert '"encoder":summary.encoder' in success
+helper=queue[queue.index("pub(crate) fn done_payload_from_summary"):queue.index("#[tauri::command]",queue.index("pub(crate) fn done_payload_from_summary"))]
+assert "done_payload_from_summary(&job,&id,&summary)" in success
+assert '"resultPath":summary.output_path' in helper
+assert '"resultBytes":summary.output_bytes' in helper
+assert '"encoder":summary.encoder' in helper
 assert "done_fallback_payload(&job)" not in success
 
 # Late terminal snapshots are not allowed to erase valid result metadata.

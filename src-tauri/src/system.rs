@@ -46,9 +46,6 @@ fn hidden_windows_command(program:&str)->std::process::Command{
 }
 
 #[tauri::command]
-pub fn e2e_mode()->bool{std::env::var_os("ENDLUME_E2E_RENDER_JOB").is_some()}
-
-#[tauri::command]
 pub fn power_status()->Value{
   #[cfg(target_os="macos")]
   {
@@ -167,6 +164,7 @@ fn launch_app(path:&Path)->Result<(),String>{
 
 #[tauri::command]
 pub fn cleanup_duplicate_apps(aggressive:bool)->Value{
+  #[cfg(feature="e2e-render")]
   if std::env::var_os("ENDLUME_E2E_RENDER_JOB").is_some(){return json!({"supported":false,"singleApp":true,"canonicalName":true,"canonicalInstall":true,"e2e":true});}
   #[cfg(target_os="macos")]
   {
@@ -217,6 +215,7 @@ pub fn cleanup_duplicate_apps(aggressive:bool)->Value{
 
 #[tauri::command]
 pub fn normalize_current_app_name(app:tauri::AppHandle)->Result<Value,String>{
+  #[cfg(feature="e2e-render")]
   if std::env::var_os("ENDLUME_E2E_RENDER_JOB").is_some(){return Ok(json!({"supported":false,"renamed":false,"canonicalName":true,"canonicalInstall":true,"e2e":true}));}
   #[cfg(target_os="macos")]
   {

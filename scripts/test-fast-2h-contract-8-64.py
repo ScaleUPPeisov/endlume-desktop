@@ -52,12 +52,15 @@ for forbidden in ('"-c:a","aac"','"-c:a","alac"','"-c:a","pcm'):
     assert forbidden not in original, forbidden
 
 strict_verify=section(render,"async fn verify_strict_857_result","#[derive(Clone)]")
-assert 'bytes>700_000_000' in strict_verify
-assert 'bytes<500_000_000' not in strict_verify
+assert 'bytes>700_000_000' not in strict_verify
+assert 'STRICT_856_MAX_BYTES' not in render
+assert 'file-size ranges are targets' in render
 assert 'codec_name' in strict_verify and 'Some("hevc")' in strict_verify
 assert 'audio_codec!="mp3"' in strict_verify
 assert 'audio_codec!="aac"' in strict_verify
 assert '(expected*0.5)' in strict_verify, "middle seek must be validated for video/audio"
+assert 'track_durations[0]' in strict_verify and 'boundary+0.20' in strict_verify, "first song transition must be physically seek/decode validated"
+assert '(expected-10.0)' in strict_verify, "last 10 seconds must be covered by targeted audio validation"
 
 for forbidden in ("STRICT_856_PAD_TARGET_BYTES",'f.write_all(b"free")',"set_len(current+add)"):
     assert forbidden not in render, f"synthetic padding returned: {forbidden}"

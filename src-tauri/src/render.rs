@@ -72,7 +72,14 @@ pub(crate) fn fast_path_decision(job:&QueueJob)->FastPathDecision{
   FastPathDecision{eligible:false,reason:"DISQUALIFIED_MULTIPLE_MEDIA"}
 }
 fn smart_repeat_project(job:&QueueJob)->bool{fast_path_decision(job).eligible}
-fn fast_multi_still(job:&QueueJob)->bool{fast_path_decision(job).reason=="FAST_MULTI_STILL"}
+fn fast_multi_still(job:&QueueJob)->bool{
+  let reason=fast_path_decision(job).reason;
+  if reason=="FAST_MULTI_STILL"{return true}
+  if reason!="FAST_ONE_IMAGE"{return false}
+  let has_effects=job.effects.iter().any(|e|e.enabled&&!e.source.trim().is_empty());
+  let has_subs=job.subscribes.iter().any(|x|x.effect.enabled&&!x.effect.source.trim().is_empty());
+  !has_effects&&!has_subs
+}
 
 async fn choose_fidelity_encoder(app:&AppHandle,attempt:u32)->String{
   #[cfg(target_os="macos")]

@@ -9,6 +9,7 @@ on:
       - 'src-tauri/**'
       - 'scripts/test-endlume-865-contract.py'
       - 'scripts/run-endlume-865-one-image-physical.py'
+      - 'scripts/run-endlume-865-render-job-e2e.py'
       - 'scripts/test-queue-finalization-8-58.mjs'
       - 'package.json'
       - 'package-lock.json'
@@ -78,7 +79,53 @@ jobs:
           test "$AUDIO_COUNT" = 15
           test -f "$SIDE"; test -f "$IMG"
 
-      - name: Physical 8.65 one-image 2-MP3 gate
+      - name: Build macOS app for real production E2E
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('src-tauri/tauri.conf.json')
+          cfg=json.loads(p.read_text())
+          assert cfg['version']=='1.0.0-alpha.8.65'
+          cfg['bundle']['createUpdaterArtifacts']=False
+          p.write_text(json.dumps(cfg,ensure_ascii=False,indent=2)+'\n')
+          PY
+          npm run tauri build -- --bundles app
+          APP="$(find src-tauri/target/release/bundle/macos -maxdepth 1 -type d -name '*.app' -print -quit)"
+          test -n "$APP" -a -d "$APP"
+          EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
+          BIN="$APP/Contents/MacOS/$EXE"
+          test -x "$BIN"
+          echo "ENDLUME_E2E_APP_BIN=$BIN" >> "$GITHUB_ENV"
+          echo "ENDLUME_865_MAC_APP_BUILD_GREEN=$APP"
+
+      - name: REAL ENDLUME render_job E2E 8.65
+        shell: bash
+        env:
+          ENDLUME_865_REAL_E2E_MAX_SECONDS: '15'
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+          python3 scripts/run-endlume-865-render-job-e2e.py "$SIDE" "$ENDLUME_E2E_APP_BIN" "$(command -v ffmpeg)" "$(command -v ffprobe)" "$GITHUB_WORKSPACE/865-real-render-job-e2e.json"
+          python3 - <<'PY'
+          import json
+          x=json.load(open('865-real-render-job-e2e.json'))
+          assert x.get('status')=='passed' and x.get('release_gate') is True,x
+          assert x.get('kind')=='REAL_ENDLUME_RENDER_JOB_E2E_865',x
+          assert x.get('open_video_smoke') is True,x
+          assert x.get('reveal_folder_smoke') is True,x
+          rows=x.get('results') or []
+          assert len(rows)==6,rows
+          assert rows[0]['wall_seconds']<=15 and rows[1]['wall_seconds']<=15,rows[:2]
+          assert all(r['output_bytes']>0 and r['result_path_exists'] and r['terminal_result_bytes_ok'] for r in rows),rows
+          assert all(r['codec']=='hevc' and r['fps']=='60/1' and r['audio']=='mp3' for r in rows),rows
+          print('ENDLUME_865_REAL_RENDER_JOB_GATE_GREEN',rows)
+          PY
+
+      - name: Engine microbenchmark • one-image physical path
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -95,7 +142,7 @@ jobs:
           print('ENDLUME_865_REAL_ONE_IMAGE_GREEN',runs)
           PY
 
-      - name: Existing 7-image / 15-MP3 regression
+      - name: Engine microbenchmark • existing 7-image / 15-MP3 regression
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -201,6 +248,7 @@ jobs:
         with:
           name: ENDLUME-8.65-Dual-QA
           path: |
+            865-real-render-job-e2e.json
             865-one-image-real.json
             865-multistill-regression.json
             src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.sha256

@@ -29,36 +29,64 @@ fn maybe_start_render_e2e(app:tauri::AppHandle){
   let Ok(fixture_path)=std::env::var("ENDLUME_E2E_RENDER_JOB") else{return};
   let Ok(result_path)=std::env::var("ENDLUME_E2E_RESULT") else{return};
   tauri::async_runtime::spawn(async move{
-    let started=std::time::Instant::now();
-    let payload=match std::fs::read(&fixture_path)
+    let started_all=std::time::Instant::now();
+    let parsed=std::fs::read(&fixture_path)
       .map_err(|e|format!("fixture read: {e}"))
-      .and_then(|bytes|serde_json::from_slice::<model::QueueJob>(&bytes).map_err(|e|format!("fixture json: {e}"))){
-      Ok(job)=>{
-        let id=job.project.id.clone();
-        match render::render_job(&app,&job,Arc::new(std::sync::atomic::AtomicBool::new(false))).await{
-          Ok(summary)=>{
-            let terminal=queue::done_payload_from_summary(&job,&id,&summary);
-            serde_json::json!({
-              "status":"passed",
-              "wallSeconds":started.elapsed().as_secs_f64(),
-              "terminal":terminal,
-              "outputPath":summary.output_path,
-              "outputBytes":summary.output_bytes,
-              "encoder":summary.encoder,
-              "finalDuration":summary.final_video_duration_seconds,
-              "fastPath":summary.fast_path,
-              "fastPathReason":summary.fast_path_reason,
-              "audioMode":summary.audio_mode,
-              "videoCodec":summary.video_codec,
-              "audioCodec":summary.audio_codec
-            })
+      .and_then(|bytes|serde_json::from_slice::<serde_json::Value>(&bytes).map_err(|e|format!("fixture json: {e}")))
+      .and_then(|value|{
+        if value.is_array(){
+          serde_json::from_value::<Vec<model::QueueJob>>(value).map_err(|e|format!("fixture jobs: {e}"))
+        }else if let Some(jobs)=value.get("jobs"){
+          serde_json::from_value::<Vec<model::QueueJob>>(jobs.clone()).map_err(|e|format!("fixture jobs: {e}"))
+        }else{
+          serde_json::from_value::<model::QueueJob>(value).map(|job|vec![job]).map_err(|e|format!("fixture job: {e}"))
+        }
+      });
+
+    let mut results=Vec::<serde_json::Value>::new();
+    let mut ok=true;
+    match parsed{
+      Ok(jobs)=>{
+        for job in jobs{
+          let id=job.project.id.clone();
+          let started=std::time::Instant::now();
+          match render::render_job(&app,&job,Arc::new(std::sync::atomic::AtomicBool::new(false))).await{
+            Ok(summary)=>{
+              let terminal=queue::done_payload_from_summary(&job,&id,&summary);
+              results.push(serde_json::json!({
+                "id":id,
+                "status":"passed",
+                "wallSeconds":started.elapsed().as_secs_f64(),
+                "terminal":terminal,
+                "outputPath":summary.output_path,
+                "outputBytes":summary.output_bytes,
+                "encoder":summary.encoder,
+                "finalDuration":summary.final_video_duration_seconds,
+                "fastPath":summary.fast_path,
+                "fastPathReason":summary.fast_path_reason,
+                "audioMode":summary.audio_mode,
+                "videoCodec":summary.video_codec,
+                "audioCodec":summary.audio_codec
+              }));
+            }
+            Err(error)=>{
+              ok=false;
+              results.push(serde_json::json!({"id":id,"status":"failed","wallSeconds":started.elapsed().as_secs_f64(),"error":error}));
+              break;
+            }
           }
-          Err(error)=>serde_json::json!({"status":"failed","wallSeconds":started.elapsed().as_secs_f64(),"error":error})
         }
       }
-      Err(error)=>serde_json::json!({"status":"failed","wallSeconds":started.elapsed().as_secs_f64(),"error":error})
-    };
-    let ok=payload.get("status").and_then(|v|v.as_str())==Some("passed");
+      Err(error)=>{
+        ok=false;
+        results.push(serde_json::json!({"status":"failed","error":error}));
+      }
+    }
+    let payload=serde_json::json!({
+      "status":if ok{"passed"}else{"failed"},
+      "wallSeconds":started_all.elapsed().as_secs_f64(),
+      "results":results
+    });
     let _=std::fs::write(&result_path,serde_json::to_vec_pretty(&payload).unwrap_or_default());
     app.exit(if ok{0}else{31});
   });

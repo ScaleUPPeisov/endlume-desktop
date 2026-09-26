@@ -20,6 +20,16 @@ assert.equal(first.stage,'Готово');
 assert.equal(first.resultPath,'/out/001 — Ready Videos.mp4');
 assert.equal(first.resultBytes,500_000_000);
 
+// 8.65 regression: a same-status terminal snapshot with null result metadata must
+// never erase the exact RenderOutcome values received from render-done.
+projects=applyQueueSnapshot(projects,{active:null,pending:[],finished:[{
+  id:'job-001',project:projects[0],status:'done',progress:100,stage:'Готово',
+  resultPath:null,resultBytes:null,actualVideoBitrate:null,encoder:null
+}]});
+first=projects.find(p=>p.id==='job-001');
+assert.equal(first.resultPath,'/out/001 — Ready Videos.mp4');
+assert.equal(first.resultBytes,500_000_000);
+
 // A later queue snapshot for the next job must not downgrade the completed card.
 projects=applyQueueSnapshot(projects,{active:{project:projects[1]},pending:[],finished:[]});
 first=projects.find(p=>p.id==='job-001');
@@ -88,4 +98,4 @@ assert.equal(errors[0].status,'error');
 assert.equal(errors[0].progress,100);
 assert.match(errors[0].stage,/Ошибка/);
 
-console.log('PASS: ENDLUME 8.58 queue finalization regression — render-done race + lost render-done self-heal + backend terminal snapshot + 40/40 monotonic jobs');
+console.log('PASS: ENDLUME 8.65 queue/result finalization regression — render-done race + lost render-done self-heal + backend terminal snapshot + 40/40 monotonic jobs');

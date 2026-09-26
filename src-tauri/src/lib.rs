@@ -25,6 +25,7 @@ mod vyron_bridge_tests;
 use std::sync::Arc;
 use tauri::Manager;
 
+#[cfg(feature="e2e-render")]
 fn maybe_start_render_e2e(app:tauri::AppHandle){
   let Ok(fixture_path)=std::env::var("ENDLUME_E2E_RENDER_JOB") else{return};
   let Ok(result_path)=std::env::var("ENDLUME_E2E_RESULT") else{return};
@@ -121,12 +122,13 @@ pub fn run(){
     ])
     .setup(|app|{
       persistence::mark_session_open(&app.handle().clone())?;
+      #[cfg(feature="e2e-render")]
       if std::env::var_os("ENDLUME_E2E_RENDER_JOB").is_some(){
         maybe_start_render_e2e(app.handle().clone());
-      }else{
-        cache::start_strict_prewarm_856(app.handle().clone());
-        license::start_heartbeat(app.handle().clone());
+        return Ok(())
       }
+      cache::start_strict_prewarm_856(app.handle().clone());
+      license::start_heartbeat(app.handle().clone());
       Ok(())
     })
     .on_window_event(|window,event|{

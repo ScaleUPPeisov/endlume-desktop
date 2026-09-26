@@ -199,10 +199,16 @@ mod managed{
     LAST_REMOTE_OK_MS.store(last,Ordering::SeqCst);persist(app,&next);mark_remote(app,true,&next);Ok(next)
   }
   pub async fn assert_start(app:&AppHandle)->Result<(),String>{
+    #[cfg(feature="e2e-render")]
+    if std::env::var_os("ENDLUME_E2E_RENDER_JOB").is_some(){return Ok(())}
     if !REMOTE_BLOCKED.load(Ordering::SeqCst){let last=LAST_REMOTE_OK_MS.load(Ordering::SeqCst);if last>0&&now_ms()-last<=FRESH_START_GATE_MS{return Ok(())}}
     let v=status(app,false).await;if v.get("valid").and_then(Value::as_bool).unwrap_or(false){Ok(())}else{Err(v.get("reason").and_then(Value::as_str).unwrap_or("Production render заблокирован лицензией ENDLUME.").to_string())}
   }
-  pub fn blocked()->bool{REMOTE_BLOCKED.load(Ordering::SeqCst)}
+  pub fn blocked()->bool{
+    #[cfg(feature="e2e-render")]
+    if std::env::var_os("ENDLUME_E2E_RENDER_JOB").is_some(){return false}
+    REMOTE_BLOCKED.load(Ordering::SeqCst)
+  }
   pub fn set_screen(screen:String){activity().lock().screen=Some(screen.chars().take(120).collect())}
   pub fn set_queue_depth(depth:u32){activity().lock().queue_depth=depth.min(100_000)}
   pub fn set_render_activity(job_id:Option<String>,status:Option<String>,progress:Option<f64>){let mut a=activity().lock();a.job_id=job_id;a.render_status=status;a.progress=progress.map(|x|x.clamp(0.0,100.0));}

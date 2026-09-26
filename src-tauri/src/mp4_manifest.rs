@@ -1,4 +1,4 @@
-use std::{collections::HashSet,fs,path::Path};
+use std::{collections::HashSet,fs,io::{Read,Seek,SeekFrom,Write},path::Path};
 
 #[derive(Clone,Copy,Debug)]
 struct Atom{off:usize,size:usize,typ:[u8;4],hdr:usize}
@@ -18,6 +18,32 @@ fn atoms(buf:&[u8])->Result<Vec<Atom>,String>{
   }
   if p!=buf.len(){return Err(format!("MP4: {} trailing atom bytes",buf.len()-p))}Ok(out)
 }
+
+fn file_atoms(path:&Path)->Result<(Vec<Atom>,usize),String>{
+  let mut f=fs::File::open(path).map_err(|e|format!("MP4 manifest: open {}: {e}",path.display()))?;
+  let len=f.metadata().map_err(|e|format!("MP4 manifest: metadata {}: {e}",path.display()))?.len() as usize;
+  let mut out=Vec::new();let mut p=0usize;
+  while p+8<=len{
+    f.seek(SeekFrom::Start(p as u64)).map_err(|e|format!("MP4 manifest: seek atom {}: {e}",path.display()))?;
+    let mut head=[0u8;16];f.read_exact(&mut head[..8]).map_err(|e|format!("MP4 manifest: read atom header {}: {e}",path.display()))?;
+    let n=u32::from_be_bytes(head[..4].try_into().unwrap());let typ=head[4..8].try_into().unwrap();
+    let (size,hdr)=if n==1{
+      f.read_exact(&mut head[8..16]).map_err(|e|format!("MP4 manifest: read large atom header {}: {e}",path.display()))?;
+      (u64::from_be_bytes(head[8..16].try_into().unwrap()) as usize,16)
+    }else if n==0{(len-p,8)}else{(n as usize,8)};
+    if size<hdr||p.checked_add(size).filter(|e|*e<=len).is_none(){return Err(format!("MP4: invalid {:?} atom size {} at {}",String::from_utf8_lossy(&typ),size,p))}
+    out.push(Atom{off:p,size,typ,hdr});p+=size;
+  }
+  if p!=len{return Err(format!("MP4: {} trailing atom bytes",len-p))}
+  Ok((out,len))
+}
+
+fn read_file_range(path:&Path,off:usize,size:usize)->Result<Vec<u8>,String>{
+  let mut f=fs::File::open(path).map_err(|e|format!("MP4 manifest: open {}: {e}",path.display()))?;
+  f.seek(SeekFrom::Start(off as u64)).map_err(|e|format!("MP4 manifest: seek {}: {e}",path.display()))?;
+  let mut out=vec![0u8;size];f.read_exact(&mut out).map_err(|e|format!("MP4 manifest: read range {}: {e}",path.display()))?;Ok(out)
+}
+
 fn payload(a:&[u8])->Result<&[u8],String>{let xs=atoms(a)?;if xs.len()!=1||xs[0].off!=0||xs[0].size!=a.len(){return Err("MP4: expected one atom".into())}Ok(&a[xs[0].hdr..])}
 fn make_atom(typ:[u8;4],p:&[u8])->Result<Vec<u8>,String>{let size=8usize.checked_add(p.len()).ok_or("MP4 atom too large")?;if size>u32::MAX as usize{return Err("MP4 atom >4GB unsupported".into())}let mut v=Vec::with_capacity(size);v.extend_from_slice(&(size as u32).to_be_bytes());v.extend_from_slice(&typ);v.extend_from_slice(p);Ok(v)}
 fn children(a:&[u8])->Result<Vec<Vec<u8>>,String>{let p=payload(a)?;Ok(atoms(p)?.into_iter().map(|x|p[x.off..x.off+x.size].to_vec()).collect())}
@@ -109,21 +135,60 @@ fn rebuild_video_trak(trak:&[u8],selected:&[usize],movie_ts:u32)->Result<(Vec<u8
 
 fn remap_video_samples_impl(seed:&Path,out:&Path,selected:&[usize])->Result<(),String>{
   if selected.is_empty(){return Err("MP4 manifest: empty selected sample map".into())}
-  let data=fs::read(seed).map_err(|e|format!("MP4 manifest: read {}: {e}",seed.display()))?;let top=atoms(&data)?;let moovs=top.iter().filter(|x|x.typ==*b"moov").copied().collect::<Vec<_>>();if moovs.len()!=1{return Err("MP4 manifest: expected one moov".into())}let moov_ref=moovs[0];let last_mdat=top.iter().filter(|x|x.typ==*b"mdat").map(|x|x.off+x.size).max().ok_or("MP4 manifest: mdat missing")?;if moov_ref.off<last_mdat{return Err("MP4 manifest: moov must be after mdat (do not use faststart for seed)".into())}
-  let moov=&data[moov_ref.off..moov_ref.off+moov_ref.size];let mvhd=find_child(moov,*b"mvhd")?.ok_or("MP4 manifest: mvhd missing")?;let(movie_ts,old_movie_dur)=timing(&mvhd,*b"mvhd")?;
-  let mut kids=Vec::new();let mut video_dur=None;let mut video_seen=0usize;for b in children(moov)?{if atom_type(&b)==*b"trak"&&handler_type(&b)?==Some(*b"vide"){video_seen+=1;if video_seen>1{return Err("MP4 manifest: multiple video tracks unsupported".into())}let stbl=find_child(&find_child(&find_child(&b,*b"mdia")?.ok_or("MP4: mdia")?,*b"minf")?.ok_or("MP4: minf")?,*b"stbl")?.ok_or("MP4: stbl")?;let count=stsz_sizes(&find_child(&stbl,*b"stsz")?.ok_or("MP4: stsz")?)?.len();if selected.iter().any(|&i|i>=count){return Err(format!("MP4 manifest: selected video sample outside pool of {count} samples"))}let(x,d,sync0)=rebuild_video_trak(&b,selected,movie_ts)?;if !sync0{return Err("MP4 manifest: source sample 1 is not sync/keyframe".into())}video_dur=Some(d);kids.push(x)}else{kids.push(b)}}let vd=video_dur.ok_or("MP4 manifest: video track missing")?;let new_movie_dur=old_movie_dur.max(vd);for b in kids.iter_mut(){if atom_type(b)==*b"mvhd"{*b=patch_duration(b,*b"mvhd",new_movie_dur)?}}let new_moov=make_atom(*b"moov",&kids.concat())?;
+  let (top,file_len)=file_atoms(seed)?;
+  let moovs=top.iter().filter(|x|x.typ==*b"moov").copied().collect::<Vec<_>>();
+  if moovs.len()!=1{return Err("MP4 manifest: expected one moov".into())}
+  let moov_ref=moovs[0];
+  let last_mdat=top.iter().filter(|x|x.typ==*b"mdat").map(|x|x.off+x.size).max().ok_or("MP4 manifest: mdat missing")?;
+  if moov_ref.off<last_mdat{return Err("MP4 manifest: moov must be after mdat (do not use faststart for seed)".into())}
+
+  // 8.64 Turbo: read only the metadata atom. The old implementation read the
+  // entire multi-hundred-MB seed into RAM just to rewrite moov.
+  let moov=read_file_range(seed,moov_ref.off,moov_ref.size)?;
+  let mvhd=find_child(&moov,*b"mvhd")?.ok_or("MP4 manifest: mvhd missing")?;let(movie_ts,old_movie_dur)=timing(&mvhd,*b"mvhd")?;
+  let mut kids=Vec::new();let mut video_dur=None;let mut video_seen=0usize;
+  for b in children(&moov)?{
+    if atom_type(&b)==*b"trak"&&handler_type(&b)?==Some(*b"vide"){
+      video_seen+=1;if video_seen>1{return Err("MP4 manifest: multiple video tracks unsupported".into())}
+      let stbl=find_child(&find_child(&find_child(&b,*b"mdia")?.ok_or("MP4: mdia")?,*b"minf")?.ok_or("MP4: minf")?,*b"stbl")?.ok_or("MP4: stbl")?;
+      let count=stsz_sizes(&find_child(&stbl,*b"stsz")?.ok_or("MP4: stsz")?)?.len();
+      if selected.iter().any(|&i|i>=count){return Err(format!("MP4 manifest: selected video sample outside pool of {count} samples"))}
+      let(x,d,sync0)=rebuild_video_trak(&b,selected,movie_ts)?;
+      if !sync0{return Err("MP4 manifest: source sample 1 is not sync/keyframe".into())}
+      video_dur=Some(d);kids.push(x)
+    }else{kids.push(b)}
+  }
+  let vd=video_dur.ok_or("MP4 manifest: video track missing")?;let new_movie_dur=old_movie_dur.max(vd);
+  for b in kids.iter_mut(){if atom_type(b)==*b"mvhd"{*b=patch_duration(b,*b"mvhd",new_movie_dur)?}}
+  let new_moov=make_atom(*b"moov",&kids.concat())?;
+  let tail_off=moov_ref.off+moov_ref.size;
+  let tail_len=file_len.saturating_sub(tail_off);
+
   if seed==out{
-    use std::io::{Seek,Write};
-    let tail=data[moov_ref.off+moov_ref.size..].to_vec();
-    let mut f=std::fs::OpenOptions::new().read(true).write(true).open(seed).map_err(|e|format!("MP4 manifest: open in-place {}: {e}",seed.display()))?;
+    // mdat remains untouched on disk. Only the old moov (and rare small tail)
+    // is replaced, removing an O(final_file_size) memory read/copy.
+    let tail=if tail_len>0{read_file_range(seed,tail_off,tail_len)?}else{Vec::new()};
+    let mut f=fs::OpenOptions::new().read(true).write(true).open(seed).map_err(|e|format!("MP4 manifest: open in-place {}: {e}",seed.display()))?;
     f.set_len(moov_ref.off as u64).map_err(|e|format!("MP4 manifest: truncate in-place {}: {e}",seed.display()))?;
-    f.seek(std::io::SeekFrom::Start(moov_ref.off as u64)).map_err(|e|format!("MP4 manifest: seek in-place {}: {e}",seed.display()))?;
+    f.seek(SeekFrom::Start(moov_ref.off as u64)).map_err(|e|format!("MP4 manifest: seek in-place {}: {e}",seed.display()))?;
     f.write_all(&new_moov).map_err(|e|format!("MP4 manifest: write moov in-place {}: {e}",seed.display()))?;
-    f.write_all(&tail).map_err(|e|format!("MP4 manifest: write tail in-place {}: {e}",seed.display()))?;
+    if !tail.is_empty(){f.write_all(&tail).map_err(|e|format!("MP4 manifest: write tail in-place {}: {e}",seed.display()))?;}
     f.sync_all().map_err(|e|format!("MP4 manifest: sync in-place {}: {e}",seed.display()))?;
     Ok(())
   }else{
-    let mut output=Vec::with_capacity(data.len()+new_moov.len().saturating_sub(moov_ref.size));output.extend_from_slice(&data[..moov_ref.off]);output.extend_from_slice(&new_moov);output.extend_from_slice(&data[moov_ref.off+moov_ref.size..]);fs::write(out,&output).map_err(|e|format!("MP4 manifest: write {}: {e}",out.display()))?;Ok(())
+    // External output path also streams the payload instead of materializing
+    // the full MP4 in a Vec.
+    let mut src=fs::File::open(seed).map_err(|e|format!("MP4 manifest: open {}: {e}",seed.display()))?;
+    let mut dst=fs::File::create(out).map_err(|e|format!("MP4 manifest: create {}: {e}",out.display()))?;
+    {
+      let mut prefix=(&mut src).take(moov_ref.off as u64);
+      std::io::copy(&mut prefix,&mut dst).map_err(|e|format!("MP4 manifest: copy prefix {}: {e}",out.display()))?;
+    }
+    dst.write_all(&new_moov).map_err(|e|format!("MP4 manifest: write moov {}: {e}",out.display()))?;
+    src.seek(SeekFrom::Start(tail_off as u64)).map_err(|e|format!("MP4 manifest: seek tail {}: {e}",seed.display()))?;
+    std::io::copy(&mut src,&mut dst).map_err(|e|format!("MP4 manifest: copy tail {}: {e}",out.display()))?;
+    dst.sync_all().map_err(|e|format!("MP4 manifest: sync {}: {e}",out.display()))?;
+    Ok(())
   }
 }
 

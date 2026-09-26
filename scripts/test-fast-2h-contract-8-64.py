@@ -111,7 +111,7 @@ assert '"-f","concat","-safe","0"' in original
 assert 'PARALLEL_PROBES:usize=4' in render
 assert 'probe_original_audio_batch' in render
 assert 'audio-original-direct.mp3' not in original, "8.64 fast path must not materialize the whole playlist before final mux"
-assert 'Direct MP3 concat не прошёл integrity gate' in original
+assert 'Direct MP3 concat list не прошёл integrity gate' in original
 assert 'FFMPEG_LAUNCHES' in render and 'FFPROBE_LAUNCHES' in render
 assert '"physicalEncodedFrames"' in render and '"logicalFrames"' in render and '"manifestFrames"' in render
 for timing in ("project-scan","audio-probe","audio-preparation","encoder-detection","validation","side-files"):

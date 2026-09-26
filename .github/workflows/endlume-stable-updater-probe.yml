@@ -1,0 +1,80 @@
+name: ENDLUME Stable Updater Probe
+
+on:
+  push:
+    branches: [endlume-8.64-turbo]
+    paths:
+      - '.github/workflows/endlume-stable-updater-probe.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: Probe stable channel • auth • signing
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 15
+    env:
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+
+      - name: Inspect stable latest.json safely
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          URL='https://github.com/ScaleUPPeisov/scaleup-site/releases/download/endlume-stable/latest.json'
+          curl --fail --location --retry 3 --silent --show-error "$URL" -o "$RUNNER_TEMP/endlume-latest.json"
+          python3 - "$RUNNER_TEMP/endlume-latest.json" <<'PY'
+          import json,sys
+          p=sys.argv[1]
+          data=json.load(open(p,encoding='utf-8'))
+          print('LATEST_KEYS',sorted(data.keys()))
+          print('LATEST_VERSION',data.get('version'))
+          print('LATEST_PUB_DATE',data.get('pub_date'))
+          print('LATEST_NOTES_LEN',len(str(data.get('notes',''))))
+          print('LATEST_TOP_SHA256',data.get('sha256'))
+          platforms=data.get('platforms') or {}
+          print('LATEST_PLATFORMS',sorted(platforms.keys()))
+          for name,obj in sorted(platforms.items()):
+              if not isinstance(obj,dict):
+                  print('PLATFORM',name,'NON_OBJECT')
+                  continue
+              sig=str(obj.get('signature',''))
+              print('PLATFORM',name)
+              print('  URL',obj.get('url'))
+              print('  SHA256',obj.get('sha256'))
+              print('  SIGNATURE_PRESENT',bool(sig))
+              print('  SIGNATURE_LEN',len(sig))
+          PY
+
+      - name: Probe local GitHub auth for stable repo
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          unset GH_TOKEN GITHUB_TOKEN
+          gh auth status -h github.com >/dev/null
+          CAN_PUSH="$(gh api repos/ScaleUPPeisov/scaleup-site --jq '.permissions.push // false')"
+          CAN_ADMIN="$(gh api repos/ScaleUPPeisov/scaleup-site --jq '.permissions.admin // false')"
+          echo "SCALEUP_SITE_PUSH=$CAN_PUSH"
+          echo "SCALEUP_SITE_ADMIN=$CAN_ADMIN"
+          test "$CAN_PUSH" = "true"
+
+      - name: Probe Tauri updater signing capability
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          if [ -n "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
+            echo 'TAURI_SIGNING_KEY_PRESENT=yes'
+          else
+            echo 'TAURI_SIGNING_KEY_PRESENT=no'
+            exit 21
+          fi
+          npm ci
+          npx tauri signer sign --help | sed -n '1,120p'
+          echo 'ENDLUME_STABLE_UPDATER_PROBE_GREEN'

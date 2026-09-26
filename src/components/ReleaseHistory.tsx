@@ -3,7 +3,15 @@ import React from 'react';
 type Release={version:string;date:string;current?:boolean;title:string;items:string[]};
 
 const releases:Release[]=[
-  {version:'1.0.0-alpha.8.63',date:'19.09.2026',current:true,title:'macOS Managed Access • Native Updater • PEISOV Parity',items:[
+  {version:'1.0.0-alpha.8.64',date:'26.09.2026',current:true,title:'Windows Turbo Renderer • Full-screen Update Center',items:[
+    'Windows fast-path ускорен: Original MP3 идёт packet-copy через direct concat-list без лишней полной промежуточной сборки аудиоплейлиста.',
+    'MP3 metadata probing выполняется кэшированными ограниченно-параллельными FFprobe задачами; выбор NVENC / QSV / AMF сохраняется по GPU/driver fingerprint и пересчитывается при изменении железа.',
+    'Убран искусственный hard-limit 700 МБ: размер остаётся целевым диапазоном, но исходная музыка не ухудшается и не отклоняется только ради размера файла.',
+    'Финальная проверка дополнительно декодирует начало, середину, последние 10 секунд, хвост и переход между первой и второй песней.',
+    'Обновления получили полноэкранный ENDLUME Update Center с реальным progress/speed/ETA, SHA-256 gate и локальным Homer asset; после фактической смены версии показывается компактное подтверждение.',
+    'Сохранены 1920×1080, 60 FPS, HEVC/H.265, Original MP3 packet-copy, whole-song и zero-copy sample-table архитектура.'
+  ]},
+  {version:'1.0.0-alpha.8.63',date:'19.09.2026',current:false,title:'macOS Managed Access • Native Updater • PEISOV Parity',items:[
     'macOS Apple Silicon переведён на managed-license backend ENDLUME: уникальные customer keys, OWNER lifetime, device binding, heartbeat и remote revoke.',
     'Session token на Mac хранится в native Keychain через keyring apple-native; device_id сохраняется между перезапусками.',
     'macOS updater переведён с GitHub CLI/shell bootstrap на подписанный Tauri updater с обязательной SHA-256 проверкой перед install.',

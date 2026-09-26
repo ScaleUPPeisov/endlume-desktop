@@ -1,6 +1,7 @@
 import { invoke, convertFileSrc } from '@tauri-apps/api/core';
 import { open, message } from '@tauri-apps/plugin-dialog';
 import { getVersion } from '@tauri-apps/api/app';
+import { relaunch } from '@tauri-apps/plugin-process';
 import type { BenchmarkResult, EffectPreset, LibraryPayload, LicenseStatus, ProjectScanItem, RecoveryPayload, RenderSettings, SubscribePreset } from './types';
 
 export type SingleAppStatus={
@@ -25,7 +26,7 @@ export type LivePreviewAssetPaths={basePath:string;baseKind:'image'|'video';over
 export type VyronBatchRequest={batchId:string;manifestPath:string;requestedAt?:string|null;handoffId?:string|null;selectedProjectIds?:string[];sourceManifestPath?:string|null;schemaVersion?:number|null};
 export type VyronBatchInfo={batchId:string;channelId:string;channelName:string;projectCount:number;tracksAssigned:number;rootPath:string;outputDir:string;statusPath:string;manifestPath:string;projectPaths:string[]};
 type NativeUpdateInfo={supported:boolean;available:boolean;current:string;version?:string|null;notes?:string|null;date?:string|null;reason?:string|null};
-type NativeUpdateStatus={state:string;stage?:string|null;progress:number;message?:string|null;logPath?:string|null};
+type NativeUpdateStatus={state:string;stage?:string|null;progress:number;message?:string|null;logPath?:string|null;downloadedBytes?:number|null;totalBytes?:number|null;bytesPerSecond?:number|null;etaSeconds?:number|null};
 
 const isWindowsRuntime=()=>/Windows/i.test(navigator.userAgent);
 const isMacRuntime=()=>/Macintosh|Mac OS X/i.test(navigator.userAgent);
@@ -41,16 +42,17 @@ async function importManagedAsset(source:string,kind:'effects'|'subscribe'|'ambi
   return invoke<string>('import_library_asset',{source,kind});
 }
 
-async function nativeUpdateInstall(onProgress?:(percent:number,stage?:string)=>void){
+async function nativeUpdateInstall(onProgress?:(percent:number,stage?:string,status?:NativeUpdateStatus)=>void){
   onProgress?.(1,'Подготавливаю подписанное обновление');
   let stopped=false;
   const poll=async()=>{
     while(!stopped){
       try{
         const s=await invoke<NativeUpdateStatus>('local_update_status');
-        onProgress?.(Math.max(0,Math.min(100,Number(s.progress)||0)),s.stage||undefined);
-        if(s.state==='failed')throw new Error(s.message||'Windows update failed');
-        if(s.state==='success')return;
+        onProgress?.(Math.max(0,Math.min(100,Number(s.progress)||0)),s.stage||undefined,s);
+        const state=String(s.state||'').toUpperCase();
+        if(state==='FAILED')throw new Error(s.message||'Windows update failed');
+        if(state==='RESTART_REQUIRED'||state==='SUCCESS')return;
       }catch(e){if(String(e).includes('Windows update failed'))throw e;}
       await new Promise(r=>window.setTimeout(r,250));
     }
@@ -59,7 +61,7 @@ async function nativeUpdateInstall(onProgress?:(percent:number,stage?:string)=>v
   const poller=poll();
   try{
     const done=await install;
-    onProgress?.(Math.max(0,Math.min(100,Number(done.progress)||100)),done.stage||'Обновление установлено');
+    onProgress?.(Math.max(0,Math.min(100,Number(done.progress)||100)),done.stage||'Обновление установлено',done);
     stopped=true;
     await poller.catch(()=>{});
   }finally{stopped=true;}
@@ -67,6 +69,8 @@ async function nativeUpdateInstall(onProgress?:(percent:number,stage?:string)=>v
 
 export const api = {
   isWindows:isWindowsRuntime,
+  appVersion:()=>getVersion(),
+  restartApp:()=>relaunch(),
   chooseRoots: async()=>{
     const result=await open({directory:true,multiple:true,title:'Выберите папку или несколько папок с проектами'});
     if(!result)return [] as string[];

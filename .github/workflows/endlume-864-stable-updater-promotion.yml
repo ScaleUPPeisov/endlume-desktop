@@ -182,6 +182,9 @@ jobs:
           test "$BID" = 'studio.endlume.desktop'
           test "$VER" = "$VERSION"
           /usr/bin/lipo -archs "$APP/Contents/MacOS/$EXE" | grep -qw arm64
+          if ! /usr/bin/codesign --verify --deep --strict "$APP" >/dev/null 2>&1; then
+            /usr/bin/codesign --force --deep --sign - "$APP"
+          fi
           /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP"
           MAC_PATH="$GITHUB_WORKSPACE/stable-864/$MAC_ASSET"
           rm -f "$MAC_PATH" "$MAC_PATH.sig"

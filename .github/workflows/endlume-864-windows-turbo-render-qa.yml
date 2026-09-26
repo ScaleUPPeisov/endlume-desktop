@@ -18,7 +18,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: endlume-863-windows-fast-render-rc
+  group: endlume-864-windows-turbo-render-qa
   cancel-in-progress: true
 
 env:
@@ -57,7 +57,7 @@ jobs:
           assert win['mainBinaryName']=='ENDLUME YT Studio PEISOV'
           assert win['identifier']=='studio.endlume.desktop'
           assert win['bundle']['targets']==['nsis']
-          print('ENDLUME_863_WINDOWS_SOURCE_SURFACE_GREEN')
+          print('ENDLUME_864_WINDOWS_SOURCE_SURFACE_GREEN')
           PY
 
       - name: Prove Windows 8.62 release is immutable
@@ -101,7 +101,7 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-          TMP="$(mktemp -d /tmp/e863rcfixture.XXXXXX)"
+          TMP="$(mktemp -d /tmp/e864rcfixture.XXXXXX)"
           python3 scripts/find-endlume-real-fixture.py "$TMP/env"
           cat "$TMP/env" >> "$GITHUB_ENV"
           source "$TMP/env"
@@ -137,7 +137,7 @@ jobs:
           FFMPEG_TAG='autobuild-2026-09-14-13-17'
           ARCHIVE='ffmpeg-N-126549-ga51bb69b09-win64-gpl.zip'
           URL="https://github.com/BtbN/FFmpeg-Builds/releases/download/$FFMPEG_TAG/$ARCHIVE"
-          CACHE="$RUNNER_TEMP/endlume-ffmpeg-863"
+          CACHE="$RUNNER_TEMP/endlume-ffmpeg-864"
           ZIP="$CACHE/$ARCHIVE"
           EXTRACT="$CACHE/extract"
           DEST='src-tauri/binaries'
@@ -214,7 +214,7 @@ jobs:
           CHECKSUM_PATH: ${{ steps.verify.outputs.checksum }}
         run: |
           set -Eeuo pipefail
-          NOTES="$RUNNER_TEMP/endlume-863-rc.md"
+          NOTES="$RUNNER_TEMP/endlume-864-rc.md"
           cat > "$NOTES" <<EOF
           ENDLUME YT Studio PEISOV 1.0.0-alpha.8.64 Windows RC
 
@@ -243,7 +243,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ENDLUME-8.64-Windows-Fast-Render-RC-Provenance
+          name: ENDLUME-8.64-Windows-Turbo-RC-Provenance
           path: |
             864-fast-multistill-rc.json
             src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/ENDLUME-YT-Studio-PEISOV-Setup-1.0.0-alpha.8.64-x64.exe.sha256

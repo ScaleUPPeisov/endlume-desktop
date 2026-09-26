@@ -26,7 +26,7 @@ fn file_atoms(path:&Path)->Result<(Vec<Atom>,usize),String>{
   while p+8<=len{
     f.seek(SeekFrom::Start(p as u64)).map_err(|e|format!("MP4 manifest: seek atom {}: {e}",path.display()))?;
     let mut head=[0u8;16];f.read_exact(&mut head[..8]).map_err(|e|format!("MP4 manifest: read atom header {}: {e}",path.display()))?;
-    let n=u32::from_be_bytes(head[..4].try_into().unwrap());let typ=head[4..8].try_into().unwrap();
+    let n=u32::from_be_bytes(head[..4].try_into().unwrap());let typ:[u8;4]=head[4..8].try_into().unwrap();
     let (size,hdr)=if n==1{
       f.read_exact(&mut head[8..16]).map_err(|e|format!("MP4 manifest: read large atom header {}: {e}",path.display()))?;
       (u64::from_be_bytes(head[8..16].try_into().unwrap()) as usize,16)

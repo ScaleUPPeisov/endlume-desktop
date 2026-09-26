@@ -822,9 +822,9 @@ async fn verify_result(app:&AppHandle,out:&Path,expected:f64,s:&RenderSettings)-
 }
 
 
-async fn verify_strict_857_result(app:&AppHandle,out:&Path,expected:f64,original_audio:bool)->Result<(),String>{
-  let bytes=std::fs::metadata(out).map_err(|e|format!("Strict 8.63 final stat: {e}"))?.len();
-  if bytes>700_000_000{return Err(format!("Strict 8.63 natural final size: {} MB превышает hard max 700 MB",bytes/1_000_000))}
+async fn verify_strict_857_result(app:&AppHandle,out:&Path,expected:f64,original_audio:bool,track_durations:&[f64])->Result<(),String>{
+  let bytes=std::fs::metadata(out).map_err(|e|format!("Strict 8.64 final stat: {e}"))?.len();
+  if bytes<1_000_000{return Err(format!("Strict 8.64 final file too small: {} bytes",bytes))}
   let d=probe_duration(app,out.to_string_lossy().as_ref()).await?;
   if (d-expected).abs()>1.0{return Err(format!("Strict 8.57 final duration: {:.3} вместо {:.3}",d,expected))}
   let args=vec!["-v","error","-show_entries","stream=codec_type,codec_name,pix_fmt,width,height,avg_frame_rate,sample_rate,channels","-of","json",out.to_string_lossy().as_ref()].into_iter().map(String::from).collect();
@@ -842,9 +842,17 @@ async fn verify_strict_857_result(app:&AppHandle,out:&Path,expected:f64,original
     let ss=format!("{pos:.3}");let args=vec!["-v","error","-ss",ss.as_str(),"-i",out.to_string_lossy().as_ref(),"-map","0:v:0","-frames:v","2","-f","null","-"].into_iter().map(String::from).collect();
     output(app,"ffmpeg",args).await.map_err(|e|format!("Strict 8.57 video seek/decode @ {ss}s: {e}"))?;
   }
-  for pos in [0.0,(expected*0.5).max(0.0),(expected-2.0).max(0.0)]{
+  let mut audio_positions=vec![0.0,(expected*0.5).max(0.0),(expected-10.0).max(0.0),(expected-2.0).max(0.0)];
+  if original_audio&&track_durations.len()>1{
+    let boundary=track_durations[0].max(0.2);
+    audio_positions.push((boundary-0.20).max(0.0));
+    audio_positions.push((boundary+0.20).min((expected-0.1).max(0.0)));
+  }
+  audio_positions.sort_by(|a,b|a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+  audio_positions.dedup_by(|a,b|(*a-*b).abs()<0.05);
+  for pos in audio_positions{
     let ss=format!("{pos:.3}");let args=vec!["-v","error","-ss",ss.as_str(),"-i",out.to_string_lossy().as_ref(),"-map","0:a:0","-t","0.25","-f","null","-"].into_iter().map(String::from).collect();
-    output(app,"ffmpeg",args).await.map_err(|e|format!("Strict 8.57 audio seek/decode @ {ss}s: {e}"))?;
+    output(app,"ffmpeg",args).await.map_err(|e|format!("Strict 8.64 audio seek/decode @ {ss}s: {e}"))?;
   }
   Ok(())
 }
@@ -919,10 +927,11 @@ async fn concat_video_parts_852(app:&AppHandle,job:&QueueJob,parts:&[PathBuf],ou
 }
 
 
-const STRICT_856_MAX_BYTES:u64=700_000_000;
 fn strict_856_validate_natural_size(path:&Path)->Result<(),String>{
-  let current=std::fs::metadata(path).map_err(|e|format!("8.62 size gate: {e}"))?.len();
-  if current>STRICT_856_MAX_BYTES{return Err(format!("Strict 8.62: естественный итоговый файл {} MB превышает 700 MB",current/1_000_000))}
+  let current=std::fs::metadata(path).map_err(|e|format!("8.64 size sanity gate: {e}"))?.len();
+  // 8.64: file-size ranges are targets, never a reason to damage or reject original audio.
+  // Only reject an obviously broken/truncated result here; no artificial upper cap.
+  if current<1_000_000{return Err(format!("Strict 8.64: итоговый файл подозрительно мал: {} bytes",current))}
   Ok(())
 }
 
@@ -1081,7 +1090,7 @@ pub async fn render_job(app:&AppHandle,job:&QueueJob,cancel:Arc<AtomicBool>)->Re
         args.extend(vec!["-t",&final_duration.to_string(),"-map","0:v:0","-map","1:a:0","-c:v","copy","-c:a","copy","-movflags","+faststart","-progress","pipe:1","-y",out.to_string_lossy().as_ref()].into_iter().map(String::from));
         run_ffmpeg(app,job,started,&timer,args,"Собираю итоговое видео",90.0,6.0,final_duration,&encoder,attempt,&cancel).await?;emit_timing(app,&job.project.id,"final-mux",mux_mark.elapsed().as_secs_f64());
       }
-      ensure_license_allowed()?;emit_progress(app,job,started,&timer,97.0,"Финальная проверка FFprobe",&encoder,attempt,None);let verify_mark=Instant::now();verify_result(app,&out,final_duration,&job.settings).await?;if smart_repeat{verify_strict_857_result(app,&out,final_duration,!processed_audio).await?;}let validation_seconds=verify_mark.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"ffprobe-validation",validation_seconds);emit_timing(app,&job.project.id,"validation",validation_seconds);ensure_license_allowed()?;
+      ensure_license_allowed()?;emit_progress(app,job,started,&timer,97.0,"Финальная проверка FFprobe",&encoder,attempt,None);let verify_mark=Instant::now();verify_result(app,&out,final_duration,&job.settings).await?;if smart_repeat{verify_strict_857_result(app,&out,final_duration,!processed_audio,&durations).await?;}let validation_seconds=verify_mark.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"ffprobe-validation",validation_seconds);emit_timing(app,&job.project.id,"validation",validation_seconds);ensure_license_allowed()?;
       let result_stem=out.file_stem().and_then(|x|x.to_str()).unwrap_or(&job.project.name);let side_mark=Instant::now();if let Err(err)=write_side_files(job,&out_dir,&durations,final_duration,result_stem){emit_warning(app,&job.project.id,&format!("Видео готово, но служебные файлы не записаны: {err}"));}emit_timing(app,&job.project.id,"side-files",side_mark.elapsed().as_secs_f64());ensure_license_allowed()?;
       Ok((durations,final_duration))
     }.await;

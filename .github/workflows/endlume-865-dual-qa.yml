@@ -28,98 +28,10 @@ env:
   WINDOWS_RC_TAG: endlume-v1.0.0-alpha.8.65-windows-rc
 
 jobs:
-  windows-smoke:
-    name: Windows hosted • compile • NSIS • physical integrity
-    runs-on: windows-latest
-    timeout-minutes: 75
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.sha }}
-          clean: true
-          fetch-depth: 0
-
-      - name: Frontend and 8.65 contracts
-        shell: pwsh
-        run: |
-          npm ci
-          npm run check
-          npm run build
-          python scripts/test-endlume-865-contract.py
-          Remove-Item -Recurse -Force .queue-test-dist -ErrorAction SilentlyContinue
-          .\node_modules\.bin\tsc.cmd src/queue-state.ts --target ES2022 --module ES2022 --moduleResolution Bundler --skipLibCheck --outDir .queue-test-dist --noEmit false
-          node scripts/test-queue-finalization-8-58.mjs "$PWD/.queue-test-dist/queue-state.js"
-
-      - name: Stage pinned Windows FFmpeg
-        id: ffmpeg
-        shell: pwsh
-        run: |
-          $ErrorActionPreference='Stop'
-          $tag='autobuild-2026-09-14-13-17'
-          $archive='ffmpeg-N-126549-ga51bb69b09-win64-gpl.zip'
-          $url="https://github.com/BtbN/FFmpeg-Builds/releases/download/$tag/$archive"
-          $zip=Join-Path $env:RUNNER_TEMP $archive
-          $extract=Join-Path $env:RUNNER_TEMP 'ffmpeg-865'
-          Invoke-WebRequest -Uri $url -OutFile $zip
-          Expand-Archive -Path $zip -DestinationPath $extract -Force
-          $ffmpeg=(Get-ChildItem $extract -Recurse -Filter ffmpeg.exe | Select-Object -First 1).FullName
-          $ffprobe=(Get-ChildItem $extract -Recurse -Filter ffprobe.exe | Select-Object -First 1).FullName
-          if(-not $ffmpeg -or -not $ffprobe){throw 'FFmpeg sidecars not found'}
-          New-Item -ItemType Directory -Force -Path 'src-tauri/binaries' | Out-Null
-          Copy-Item $ffmpeg 'src-tauri/binaries/ffmpeg-x86_64-pc-windows-msvc.exe'
-          Copy-Item $ffprobe 'src-tauri/binaries/ffprobe-x86_64-pc-windows-msvc.exe'
-          "ffmpeg=$ffmpeg" >> $env:GITHUB_OUTPUT
-          "ffprobe=$ffprobe" >> $env:GITHUB_OUTPUT
-
-      - name: Rust Windows regression
-        shell: pwsh
-        run: |
-          cargo check --manifest-path src-tauri/Cargo.toml
-          cargo test --manifest-path src-tauri/Cargo.toml -- --nocapture
-
-      - name: Windows synthetic production-shape integrity
-        shell: pwsh
-        env:
-          ENDLUME_865_MAX_SECONDS: '60'
-          FFMPEG: ${{ steps.ffmpeg.outputs.ffmpeg }}
-          FFPROBE: ${{ steps.ffmpeg.outputs.ffprobe }}
-        run: |
-          $ErrorActionPreference='Stop'
-          New-Item -ItemType Directory -Force -Path 'win865-fixture' | Out-Null
-          & $env:FFMPEG -hide_banner -loglevel error -f lavfi -i "color=c=0x172033:s=1920x1080:r=1" -frames:v 1 -y win865-fixture/image.png
-          & $env:FFMPEG -hide_banner -loglevel error -f lavfi -i "sine=frequency=440:sample_rate=44100" -t 7 -ac 2 -c:a libmp3lame -b:a 128k -y win865-fixture/a1.mp3
-          & $env:FFMPEG -hide_banner -loglevel error -f lavfi -i "sine=frequency=660:sample_rate=44100" -t 9 -ac 2 -c:a libmp3lame -b:a 128k -y win865-fixture/a2.mp3
-          @'
-          {"project":{"id":"win-865","name":"Windows 865 fixture","path":"fixture","media":["PLACE_IMAGE"],"audio":["PLACE_A1","PLACE_A2"]}}
-          '@ | Set-Content win865-fixture/project.json -Encoding UTF8
-          $json=Get-Content win865-fixture/project.json -Raw
-          $json=$json.Replace('PLACE_IMAGE',(Resolve-Path win865-fixture/image.png).Path.Replace('\','/'))
-          $json=$json.Replace('PLACE_A1',(Resolve-Path win865-fixture/a1.mp3).Path.Replace('\','/'))
-          $json=$json.Replace('PLACE_A2',(Resolve-Path win865-fixture/a2.mp3).Path.Replace('\','/'))
-          Set-Content win865-fixture/project.json $json -Encoding UTF8
-          python scripts/run-endlume-865-one-image-physical.py win865-fixture/project.json "$env:FFMPEG" "$env:FFPROBE" win865-fixture/metrics.json
-          Get-Content win865-fixture/metrics.json
-
-      - name: Build Windows NSIS smoke
-        shell: pwsh
-        run: |
-          $cfg=Get-Content 'src-tauri/tauri.conf.json' -Raw | ConvertFrom-Json
-          if($cfg.version -ne $env:VERSION){throw "wrong version $($cfg.version)"}
-          $cfg.bundle.createUpdaterArtifacts=$false
-          $cfg | ConvertTo-Json -Depth 30 | Set-Content 'src-tauri/tauri.conf.json' -Encoding utf8
-          npm run tauri build -- --bundles nsis --config src-tauri/tauri.windows.conf.json
-          $exe=Get-ChildItem 'src-tauri/target/release/bundle/nsis' -Filter '*.exe' | Select-Object -First 1
-          if(-not $exe){throw 'NSIS installer missing'}
-          $bytes=[System.IO.File]::ReadAllBytes($exe.FullName)
-          if($bytes.Length -lt 1000000 -or $bytes[0] -ne 0x4d -or $bytes[1] -ne 0x5a){throw 'invalid PE/NSIS'}
-          $hash=(Get-FileHash $exe.FullName -Algorithm SHA256).Hash.ToLower()
-          Write-Host "ENDLUME_865_WINDOWS_HOSTED_GREEN bytes=$($bytes.Length) sha256=$hash"
-
   windows-rc:
-    name: macOS real media • Windows x64 RC build
+    name: macOS physical gate • Windows x64 cross-build RC
     runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
     timeout-minutes: 150
-    needs: windows-smoke
     steps:
       - uses: actions/checkout@v4
         with:

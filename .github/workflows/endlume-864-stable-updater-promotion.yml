@@ -63,7 +63,8 @@ jobs:
           cargo=Path('src-tauri/Cargo.toml').read_text()
           assert re.search(r'^version\s*=\s*"'+re.escape(expected)+r'"$',cargo,re.M)
           embedded=Path(os.environ['RUNNER_TEMP'],'embedded.pub').read_text().replace('\r\n','\n').strip()
-          assert cfg['plugins']['updater']['pubkey'].strip()==embedded,'tauri.conf updater pubkey mismatch'
+          # Tauri stores the minisign public-key file as base64 text in tauri.conf.
+          assert cfg['plugins']['updater']['pubkey'].strip()==os.environ['EXPECTED_UPDATER_PUBKEY_B64'].strip(),'tauri.conf updater pubkey mismatch'
           expected_key_line=embedded.splitlines()[-1]
           home=Path.home()
           roots=[home/'.endlume-updater',home/'.tauri',home/'.endlume-release-bridge',home/'.config',home/'Desktop',home/'Documents',home/'Downloads']

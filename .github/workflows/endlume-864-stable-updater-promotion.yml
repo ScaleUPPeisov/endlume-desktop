@@ -18,6 +18,9 @@ env:
   VERSION: 1.0.0-alpha.8.64
   WINDOWS_TARGET: x86_64-pc-windows-msvc
   WINDOWS_ASSET: ENDLUME-YT-Studio-PEISOV-Setup-1.0.0-alpha.8.64-x64.exe
+  WINDOWS_RC_TAG: endlume-v1.0.0-alpha.8.64-windows-rc
+  WINDOWS_EXPECTED_SIZE: '98313637'
+  WINDOWS_EXPECTED_SHA256: 4ed036c47e9eb305b14a515e84eabd65e1eed84d6f2fbca3750910650afc27f6
   MAC_ASSET: ENDLUME-YT-Studio-PEISOV-1.0.0-alpha.8.64-macOS-ARM64.app.tar.gz
   STABLE_REPO: ScaleUPPeisov/scaleup-site
   STABLE_TAG: endlume-stable
@@ -188,86 +191,50 @@ jobs:
           echo "MAC_BYTES=$(stat -f%z "$MAC_PATH")"
           echo "MAC_SHA256=$(shasum -a 256 "$MAC_PATH" | awk '{print $1}')"
 
-      - name: Install Windows cross-build prerequisites
+      - name: Download immutable Windows 8.64 RC and verify exact bytes
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -Eeuo pipefail
-          command -v brew >/dev/null
-          brew list nsis >/dev/null 2>&1 || brew install nsis
-          brew list llvm >/dev/null 2>&1 || brew install llvm
-          LLVM_BIN="$(brew --prefix llvm)/bin"
-          echo "$LLVM_BIN" >> "$GITHUB_PATH"
-          export PATH="$LLVM_BIN:$HOME/.cargo/bin:$PATH"
-          rustup target add "$WINDOWS_TARGET"
-          command -v cargo-xwin >/dev/null 2>&1 || cargo install --locked cargo-xwin
-          makensis -VERSION
-          cargo xwin --version
-
-      - name: Stage pinned Windows FFmpeg sidecars
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          FFMPEG_TAG='autobuild-2026-09-14-13-17'
-          ARCHIVE='ffmpeg-N-126549-ga51bb69b09-win64-gpl.zip'
-          URL="https://github.com/BtbN/FFmpeg-Builds/releases/download/$FFMPEG_TAG/$ARCHIVE"
-          CACHE="$RUNNER_TEMP/endlume-ffmpeg-864-stable"
-          ZIP="$CACHE/$ARCHIVE"
-          EXTRACT="$CACHE/extract"
-          mkdir -p "$CACHE" "$EXTRACT" src-tauri/binaries
-          if [ ! -s "$ZIP" ]; then curl --fail --location --retry 3 --output "$ZIP" "$URL"; fi
-          rm -rf "$EXTRACT"; mkdir -p "$EXTRACT"
-          ditto -x -k "$ZIP" "$EXTRACT"
-          FFMPEG="$(find "$EXTRACT" -type f -name ffmpeg.exe -print -quit)"
-          FFPROBE="$(find "$EXTRACT" -type f -name ffprobe.exe -print -quit)"
-          test -n "$FFMPEG" -a -n "$FFPROBE"
-          cp "$FFMPEG" "src-tauri/binaries/ffmpeg-$WINDOWS_TARGET.exe"
-          cp "$FFPROBE" "src-tauri/binaries/ffprobe-$WINDOWS_TARGET.exe"
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$WINDOWS_RC_TAG" > stable-864/windows-rc-release.json
           python3 - <<'PY'
-          from pathlib import Path
-          for n in ('ffmpeg','ffprobe'):
-              p=Path('src-tauri/binaries')/f'{n}-x86_64-pc-windows-msvc.exe'
-              assert p.stat().st_size>1_000_000
-              assert p.read_bytes()[:2]==b'MZ'
-          print('WINDOWS_SIDECARS_PE_GREEN')
+          import json,os
+          r=json.load(open('stable-864/windows-rc-release.json'))
+          a=next((x for x in r.get('assets',[]) if x.get('name')==os.environ['WINDOWS_ASSET']),None)
+          assert a,a
+          assert a.get('state')=='uploaded',a
+          assert int(a.get('size',0))==int(os.environ['WINDOWS_EXPECTED_SIZE']),a
+          assert a.get('digest')=='sha256:'+os.environ['WINDOWS_EXPECTED_SHA256'],a
+          open('stable-864/windows_rc_asset_id','w').write(str(a['id']))
+          print('WINDOWS_864_RC_METADATA_GREEN')
           PY
-
-      - name: Build Windows x64 NSIS and sign exact updater EXE
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          LLVM_BIN="$(brew --prefix llvm)/bin"
-          export PATH="$LLVM_BIN:$HOME/.cargo/bin:$PATH"
+          gh api -H 'Accept: application/octet-stream'             "repos/$GITHUB_REPOSITORY/releases/assets/$(cat stable-864/windows_rc_asset_id)"             > "stable-864/$WINDOWS_ASSET"
           python3 - <<'PY'
-          import json
-          from pathlib import Path
-          p=Path('src-tauri/tauri.conf.json')
-          cfg=json.loads(p.read_text())
-          assert cfg['version']=='1.0.0-alpha.8.64'
-          cfg['bundle']['createUpdaterArtifacts']=False
-          p.write_text(json.dumps(cfg,ensure_ascii=False,indent=2)+'\n')
-          PY
-          npm run tauri build -- --runner cargo-xwin --target "$WINDOWS_TARGET" --bundles nsis --config src-tauri/tauri.windows.conf.json
-          NSIS_DIR="src-tauri/target/$WINDOWS_TARGET/release/bundle/nsis"
-          CANDIDATE="$(find "$NSIS_DIR" -maxdepth 1 -type f -name '*.exe' -print -quit)"
-          test -n "$CANDIDATE" -a -s "$CANDIDATE"
-          WIN_PATH="$GITHUB_WORKSPACE/stable-864/$WINDOWS_ASSET"
-          cp "$CANDIDATE" "$WIN_PATH"
-          python3 - "$WIN_PATH" <<'PY'
-          from pathlib import Path
-          import sys
-          p=Path(sys.argv[1])
-          assert p.stat().st_size>1_000_000
+          import hashlib,os,pathlib
+          p=pathlib.Path('stable-864')/os.environ['WINDOWS_ASSET']
+          assert p.stat().st_size==int(os.environ['WINDOWS_EXPECTED_SIZE']),p.stat().st_size
           assert p.read_bytes()[:2]==b'MZ'
-          print('WINDOWS_NSIS_PE_GREEN',p.stat().st_size)
+          sha=hashlib.sha256(p.read_bytes()).hexdigest()
+          assert sha==os.environ['WINDOWS_EXPECTED_SHA256'],sha
+          print('WINDOWS_864_RC_EXACT_BYTES_GREEN size='+str(p.stat().st_size)+' sha256='+sha)
           PY
+
+      - name: Sign exact Windows 8.64 RC for updater
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          WIN_PATH="$GITHUB_WORKSPACE/stable-864/$WINDOWS_ASSET"
           KEY="$(cat "$RUNNER_TEMP/endlume-864-signing-key-path")"
+          test -s "$KEY"
           export TAURI_SIGNING_PRIVATE_KEY_PATH="$KEY"
-          export TAURI_SIGNING_PRIVATE_KEY="$KEY"
-          export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
-          npx tauri signer sign "$WIN_PATH"
+          unset TAURI_SIGNING_PRIVATE_KEY_PASSWORD || true
+          npx --yes @tauri-apps/cli@2.10.1 signer sign "$WIN_PATH"
           test -s "$WIN_PATH.sig"
+          test "$(shasum -a 256 "$WIN_PATH" | awk '{print $1}')" = "$WINDOWS_EXPECTED_SHA256"
           echo "WIN_BYTES=$(stat -f%z "$WIN_PATH")"
-          echo "WIN_SHA256=$(shasum -a 256 "$WIN_PATH" | awk '{print $1}')"
+          echo "WIN_SHA256=$WINDOWS_EXPECTED_SHA256"
+          echo 'WINDOWS_864_UPDATER_SIGNATURE_GREEN'
 
       - name: Build dual-platform latest.json
         shell: bash

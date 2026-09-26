@@ -52,6 +52,26 @@ fn done_fallback_payload(job:&QueueJob)->Value{
   json!({"id":job.project.id,"project":job.project,"status":"done","progress":100.0,"stage":"Готово","etaSec":0.0,"resultPath":result_path,"resultBytes":result_bytes})
 }
 
+pub(crate) fn done_payload_from_summary(job:&QueueJob,id:&str,summary:&render::RenderOutcome)->Value{
+  json!({
+    "id":id,
+    "project":job.project,
+    "status":"done",
+    "progress":100.0,
+    "stage":"Готово",
+    "etaSec":0.0,
+    "resultPath":summary.output_path,
+    "resultBytes":summary.output_bytes,
+    "encoder":summary.encoder,
+    "finalDuration":summary.final_video_duration_seconds,
+    "fastPath":summary.fast_path,
+    "fastPathReason":summary.fast_path_reason,
+    "audioMode":summary.audio_mode,
+    "videoCodec":summary.video_codec,
+    "audioCodec":summary.audio_codec
+  })
+}
+
 #[tauri::command]
 pub async fn enqueue_projects(app:AppHandle,runtime:State<'_,Arc<QueueRuntime>>,projects:Vec<ProjectScanItem>,settings:RenderSettings,effects:Vec<EffectPreset>,subscribes:Vec<SubscribePreset>,ambient:Option<String>)->Result<(),String>{
   license::assert_production_allowed(&app).await?;
@@ -122,23 +142,7 @@ fn start_worker_if_needed(app:AppHandle,runtime:Arc<QueueRuntime>){
         match outcome{
           Ok(summary)=>{
             license::telemetry_render_completed(&job,&summary,job_timer.elapsed().as_secs_f64());
-            let payload=json!({
-              "id":id,
-              "project":job.project,
-              "status":"done",
-              "progress":100.0,
-              "stage":"Готово",
-              "etaSec":0.0,
-              "resultPath":summary.output_path,
-              "resultBytes":summary.output_bytes,
-              "encoder":summary.encoder,
-              "finalDuration":summary.final_video_duration_seconds,
-              "fastPath":summary.fast_path,
-              "fastPathReason":summary.fast_path_reason,
-              "audioMode":summary.audio_mode,
-              "videoCodec":summary.video_codec,
-              "audioCodec":summary.audio_codec
-            });
+            let payload=done_payload_from_summary(&job,&id,&summary);
             runtime.remember_terminal(payload.clone());
             let _=app.emit("render-terminal",payload);
           }

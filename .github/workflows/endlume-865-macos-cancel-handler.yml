@@ -70,7 +70,7 @@ jobs:
           q.write_text(json.dumps(d,ensure_ascii=False,indent=2)+'\n')
           PY
           npm ci
-          CARGO_TARGET_DIR="$RUNNER_TEMP/e865-cancel-build" npm run tauri build -- --bundles app
+          CARGO_TARGET_DIR="$RUNNER_TEMP/e865-cancel-build" npm run tauri build -- --bundles app --features e2e-render
           APP="$(find "$RUNNER_TEMP/e865-cancel-build/release/bundle/macos" -maxdepth 1 -type d -name '*.app' -print -quit)"
           test -n "$APP"
           echo "AUDIT_APP=$APP" >> "$GITHUB_ENV"
@@ -82,7 +82,7 @@ jobs:
           RESULT="$RUNNER_TEMP/e865-cancel-result.json"
           rm -f "$RESULT"
           EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$AUDIT_APP/Contents/Info.plist")"
-          ENDLUME_AUDIT_CANCEL_JOB="$RUNNER_TEMP/e865-cancel-job.json" ENDLUME_AUDIT_CANCEL_RESULT="$RESULT" "$AUDIT_APP/Contents/MacOS/$EXE" >"$RUNNER_TEMP/e865-cancel.stdout" 2>"$RUNNER_TEMP/e865-cancel.stderr" &
+          ENDLUME_E2E_RENDER_JOB="$RUNNER_TEMP/e865-cancel-job.json" ENDLUME_AUDIT_CANCEL_JOB="$RUNNER_TEMP/e865-cancel-job.json" ENDLUME_AUDIT_CANCEL_RESULT="$RESULT" "$AUDIT_APP/Contents/MacOS/$EXE" >"$RUNNER_TEMP/e865-cancel.stdout" 2>"$RUNNER_TEMP/e865-cancel.stderr" &
           PID=$!
           for i in $(seq 1 180); do [ -s "$RESULT" ] && break; sleep 1; done
           test -s "$RESULT"

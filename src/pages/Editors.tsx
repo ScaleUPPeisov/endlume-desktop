@@ -281,7 +281,7 @@ function SubscribeEditor() {
           <PreviewStage title="LIVE PREVIEW" assets={assets} busy={previewBusy} current={current} onMove={(x, y) => patch({ x, y })} onScale={(scale) => patch({ scale })} onPickColor={(hex) => patch({ keyColor: hex, similarity: 0.10, blend: 0.06 })} />
           <div className="previewTime"><span>Стартовый кадр Subscribe-видео</span><Range value={current.previewFrameTime} min={0} max={60} step={0.1} onChange={(value) => patch({ previewFrameTime: value })} minLabel="0:00" maxLabel="1:00" /><b>{current.previewFrameTime.toFixed(1)} сек</b></div>
           <button className="refreshPreview" disabled={previewBusy} onClick={() => void loadLive()}><Icon name="refresh" /> {previewBusy ? 'ГОТОВЛЮ PROXY…' : 'ОБНОВИТЬ LIVE PREVIEW'}</button>
-          <SubscribeTimeline current={current} />
+          <SubscribeTimeline current={current} onChange={patch} />
         </> : <div className="emptyEditor"><Icon name="subscribe" /><h3>Добавьте Subscribe-видео</h3></div>}
       </main>
 
@@ -580,8 +580,9 @@ function Timeline({ start, end, total, onChange }: { start: number; end: number 
   </div>;
 }
 
-function SubscribeTimeline({ current }: { current: SubscribePreset }) {
+function SubscribeTimeline({ current, onChange }: { current: SubscribePreset; onChange:(patch:Partial<SubscribePreset>)=>void }) {
   const total = useApp((s) => s.settings.durationHours * 3600);
+  const trackRef=useRef<HTMLDivElement>(null);
   const marks = useMemo(() => {
     const values = [current.firstAtSec, current.secondAtSec].filter((value, index, all) => value >= 0 && value < total && all.indexOf(value) === index);
     if (current.repeatEverySec > 0) {
@@ -590,9 +591,24 @@ function SubscribeTimeline({ current }: { current: SubscribePreset }) {
     return values.sort((a, b) => a - b);
   }, [current.firstAtSec, current.secondAtSec, current.repeatEverySec, total]);
   const last = marks.at(-1) ?? current.secondAtSec;
+  const beginDrag=(key:'firstAtSec'|'secondAtSec',event:React.PointerEvent<HTMLButtonElement>)=>{
+    event.preventDefault();event.stopPropagation();
+    const move=(ev:PointerEvent)=>{
+      const rect=trackRef.current?.getBoundingClientRect();if(!rect)return;
+      const ratio=Math.max(0,Math.min(1,(ev.clientX-rect.left)/Math.max(1,rect.width)));
+      const value=Math.round(ratio*total);
+      onChange({[key]:value} as Partial<SubscribePreset>);
+    };
+    const up=()=>{window.removeEventListener('pointermove',move);window.removeEventListener('pointerup',up);window.removeEventListener('pointercancel',up)};
+    window.addEventListener('pointermove',move,{passive:true});window.addEventListener('pointerup',up,{once:true});window.addEventListener('pointercancel',up,{once:true});
+  };
   return <div className="timeline subscribeTimeline smartTiming">
-    <div className="timelineHead"><b>РАСПИСАНИЕ SUBSCRIBE</b><span>{marks.length} показов</span></div>
+    <div className="timelineHead"><b>РАСПИСАНИЕ SUBSCRIBE</b><span>{marks.length} показов • точки можно двигать мышкой</span></div>
     <div className="smartTimingSummary compact"><span><small>ПЕРВОЕ</small><b>{fmtEditorTime(current.firstAtSec)}</b></span><span><small>ВТОРОЕ</small><b>{fmtEditorTime(current.secondAtSec)}</b></span><span><small>ПОСЛЕДНЕЕ</small><b>{fmtEditorTime(last)}</b></span><span><small>ИНТЕРВАЛ</small><b>{fmtEditorTime(current.repeatEverySec)}</b></span></div>
-    <div className="timeTrack">{marks.map((mark, index) => <i key={`${mark}-${index}`} style={{ left: `${mark / Math.max(1, total) * 100}%` }} title={fmtEditorTime(mark)} />)}</div>
+    <div className="timeTrack interactive" ref={trackRef}>
+      {marks.map((mark, index) => <i key={`${mark}-${index}`} style={{ left: `${mark / Math.max(1, total) * 100}%` }} title={fmtEditorTime(mark)} />)}
+      <button className="timelineHandle first" style={{left:`${current.firstAtSec/Math.max(1,total)*100}%`}} onPointerDown={e=>beginDrag('firstAtSec',e)} title="Перетащить первое появление"><span>1</span></button>
+      <button className="timelineHandle second" style={{left:`${current.secondAtSec/Math.max(1,total)*100}%`}} onPointerDown={e=>beginDrag('secondAtSec',e)} title="Перетащить второе появление"><span>2</span></button>
+    </div>
   </div>;
 }

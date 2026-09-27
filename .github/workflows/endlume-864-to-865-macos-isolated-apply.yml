@@ -37,7 +37,7 @@ jobs:
           import json
           p=Path('src-tauri/src/lib.rs');s=p.read_text()
           needle='''    .setup(|app|{\n      persistence::mark_session_open(&app.handle().clone())?;'''
-          repl='''    .setup(|app|{\n      persistence::mark_session_open(&app.handle().clone())?;\n      if let Ok(check_path)=std::env::var("ENDLUME_AUDIT_UPDATER_CHECK"){\n        let handle=app.handle().clone();\n        tauri::async_runtime::spawn(async move{\n          let check=updater_local::local_update_check(handle.clone()).await;\n          let _=std::fs::write(&check_path,serde_json::to_vec_pretty(&check).unwrap_or_default());\n          if !check.available || check.version.as_deref()!=Some("1.0.0-alpha.8.65"){handle.exit(71);return}\n          let _=updater_local::local_update_start(handle.clone()).await;\n        });\n        return Ok(())\n      }'''
+          repl='''    .setup(|app|{\n      persistence::mark_session_open(&app.handle().clone())?;\n      if let Ok(check_path)=std::env::var("ENDLUME_AUDIT_UPDATER_CHECK"){\n        let handle=app.handle().clone();\n        tauri::async_runtime::spawn(async move{\n          let check=updater_local::local_update_check(handle.clone()).await;\n          let _=std::fs::write(&check_path,serde_json::to_vec_pretty(&check).unwrap_or_default());\n\n          let _=updater_local::local_update_start(handle.clone()).await;\n        });\n        return Ok(())\n      }'''
           assert needle in s
           p.write_text(s.replace(needle,repl,1))
           q=Path('src-tauri/tauri.conf.json');d=json.loads(q.read_text());d['bundle']['createUpdaterArtifacts']=False

@@ -94,14 +94,34 @@ jobs:
           echo "PUBLIC_MAC_BIN=$APP/Contents/MacOS/$EXE" >> "$GITHUB_ENV"
           echo ENDLUME_865_MAC_BUNDLE_GREEN
 
-      - name: Non-destructive public app launch policy
+      - name: Non-destructive installed release launch check
         shell: bash
         run: |
           set -Eeuo pipefail
-          test -x "$PUBLIC_MAC_BIN"
-          echo ENDLUME_865_MAC_PUBLIC_APP_BINARY_READY
-          echo PARTIAL_NORMAL_GUI_OPEN_NOT_REPLAYED_FROM_TEMP_BUNDLE_TO_AVOID_MOVING_OR_REPLACING_OWNER_APPLICATION
-          echo PHYSICAL_PROCESS_LAUNCH_AND_RELAUNCH_WILL_BE_PROVEN_BY_THE_REAL_E2E_STEPS_WITH_INSTALL_NORMALIZATION_DISABLED
+          test -x "$AUDIT_E2E_BIN"
+          CANONICAL="/Applications/ENDLUME YT Studio PEISOV.app"
+          if [ -d "$CANONICAL" ]; then
+            VER="$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$CANONICAL/Contents/Info.plist" 2>/dev/null || true)"
+            echo "INSTALLED_MAC_VERSION=$VER"
+            if [ "$VER" = "$VERSION" ]; then
+              EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$CANONICAL/Contents/Info.plist")"
+              if pgrep -f "$CANONICAL/Contents/MacOS/$EXE" >/dev/null 2>&1; then
+                echo PARTIAL_INSTALLED_APP_ALREADY_RUNNING_NOT_INTERRUPTED
+              else
+                /usr/bin/open -n "$CANONICAL"
+                sleep 3
+                pgrep -f "$CANONICAL/Contents/MacOS/$EXE" >/dev/null
+                /usr/bin/osascript -e 'tell application id "studio.endlume.desktop" to quit' >/dev/null 2>&1 || pkill -f "$CANONICAL/Contents/MacOS/$EXE" || true
+                sleep 2
+                echo ENDLUME_865_MAC_INSTALLED_RELEASE_LAUNCH_GREEN
+              fi
+            else
+              echo PARTIAL_CANONICAL_APP_NOT_865
+            fi
+          else
+            echo PARTIAL_CANONICAL_APP_NOT_INSTALLED
+          fi
+          echo PUBLIC_RELEASE_E2E_HARNESS_IS_INTENTIONALLY_STRIPPED_FROM_STABLE_BINARY
 
       - name: Resolve real media fixture
         shell: bash
@@ -114,25 +134,49 @@ jobs:
           test -f "$SIDE"
           echo "SIDE=$SIDE" >> "$GITHUB_ENV"
 
-      - name: Real public-app production render matrix
+      - name: Build audit-only E2E app from exact release source
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
+          mkdir -p src-tauri/binaries
+          cp "$(command -v ffmpeg)" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp "$(command -v ffprobe)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          chmod +x src-tauri/binaries/ffmpeg-aarch64-apple-darwin src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('src-tauri/tauri.conf.json');d=json.loads(p.read_text())
+          d['bundle']['createUpdaterArtifacts']=False
+          p.write_text(json.dumps(d,ensure_ascii=False,indent=2)+'\n')
+          PY
+          npm ci
+          npm run tauri build -- --bundles app --features e2e-render
+          APP="$(find src-tauri/target/release/bundle/macos -maxdepth 1 -type d -name '*.app' -print -quit)"
+          test -n "$APP"
+          EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
+          echo "AUDIT_E2E_BIN=$APP/Contents/MacOS/$EXE" >> "$GITHUB_ENV"
+          echo ENDLUME_865_MAC_E2E_AUDIT_BUILD_GREEN
+
+      - name: Exact production render_job matrix on Apple Silicon
         shell: bash
         run: |
           set -Eeuo pipefail
           export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
-          python3 scripts/run-endlume-865-render-job-e2e.py "$SIDE" "$PUBLIC_MAC_BIN" "$(command -v ffmpeg)" "$(command -v ffprobe)" "$GITHUB_WORKSPACE/audit-mac/e2e.json"
+          python3 scripts/run-endlume-865-render-job-e2e.py "$SIDE" "$AUDIT_E2E_BIN" "$(command -v ffmpeg)" "$(command -v ffprobe)" "$GITHUB_WORKSPACE/audit-mac/e2e.json"
           python3 - <<'PY'
           import json
           x=json.load(open('audit-mac/e2e.json'))
           assert x['status']=='passed' and x['release_gate'] is True
-          r=x['results']
-          assert len(r)==6
+          r=x['results'];assert len(r)==6
           assert r[0]['wall_seconds']<=15 and r[1]['wall_seconds']<=15
           assert all(z['result_path_exists'] and z['terminal_result_bytes_ok'] for z in r)
           assert all(z['codec']=='hevc' and z['fps']=='60/1' and z['audio']=='mp3' for z in r)
           assert x['open_video_smoke'] and x['reveal_folder_smoke']
-          print('ENDLUME_865_MAC_REAL_PUBLIC_APP_RENDER_GREEN')
+          print('ENDLUME_865_MAC_RELEASE_SOURCE_RENDER_JOB_GREEN')
           print(json.dumps(r,ensure_ascii=False))
           PY
+          echo PARTIAL_EXACT_PUBLIC_BINARY_RENDER_AUTOMATION_UNAVAILABLE_BECAUSE_E2E_HARNESS_IS_COMPILE_TIME_STRIPPED_FROM_STABLE_BINARY
 
       - name: Three additional warm 2h renders
         shell: bash
@@ -165,7 +209,8 @@ jobs:
           set -Eeuo pipefail
           sleep 2
           if pgrep -af '[f]fmpeg|[f]fprobe'; then exit 19; fi
-          echo ENDLUME_865_MACOS_PUBLIC_RELEASE_CORE_PHYSICAL_GREEN
+          echo ENDLUME_865_MACOS_RELEASE_SOURCE_CORE_PHYSICAL_GREEN
+          echo PARTIAL_EXACT_PUBLIC_BINARY_RENDER_AUTOMATION_NOT_AVAILABLE
           echo PARTIAL_UPDATER_UI_864_TO_865_NOT_DESTRUCTIVELY_REPLAYED
           echo PARTIAL_SPLASH_PIXELS_NOT_MACHINE_VISION_VERIFIED
 

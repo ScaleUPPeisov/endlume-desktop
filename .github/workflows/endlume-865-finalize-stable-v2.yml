@@ -1,0 +1,332 @@
+name: ENDLUME 8.65 Finalize Stable V2
+
+on:
+  push:
+    branches: [endlume-8.64-turbo]
+    paths:
+      - '.github/workflows/endlume-865-finalize-stable-v2.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-865-dual-stable-v6
+  cancel-in-progress: true
+
+env:
+  VERSION: 1.0.0-alpha.8.65
+  WINDOWS_TARGET: x86_64-pc-windows-msvc
+  WINDOWS_ASSET: ENDLUME-YT-Studio-PEISOV-Setup-1.0.0-alpha.8.65-x64.exe
+  MAC_ASSET: ENDLUME-YT-Studio-PEISOV-1.0.0-alpha.8.65-macOS-ARM64.app.tar.gz
+  STABLE_REPO: ScaleUPPeisov/scaleup-site
+  STABLE_TAG: endlume-stable
+
+jobs:
+  finalize:
+    name: Real M1 E2E • build/sign Windows + macOS • publish updater
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 150
+    env:
+      RELEASE_TOKEN: ${{ secrets.ENDLUME_RELEASE_TOKEN }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify source/key and enable persistent build cache
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
+          test -n "${RELEASE_TOKEN:-}"
+          KEY="$HOME/.endlume-updater/endlume.key"
+          PUB="$HOME/.endlume-updater/endlume.key.pub"
+          test -s "$KEY"; test -s "$PUB"
+          CARGO_CACHE="$HOME/.endlume-build-cache/endlume-865"
+          mkdir -p "$CARGO_CACHE"
+          echo "CARGO_TARGET_DIR=$CARGO_CACHE" >> "$GITHUB_ENV"
+          python3 - <<'PY'
+          import json,os,re
+          from pathlib import Path
+          v=os.environ['VERSION']
+          assert json.loads(Path('package.json').read_text())['version']==v
+          assert json.loads(Path('package-lock.json').read_text())['version']==v
+          cfg=json.loads(Path('src-tauri/tauri.conf.json').read_text())
+          assert cfg['version']==v and cfg['productName']=='ENDLUME YT Studio PEISOV'
+          assert re.search(r'^version\s*=\s*"'+re.escape(v)+r'"$',Path('src-tauri/Cargo.toml').read_text(),re.M)
+          disk=(Path.home()/'.endlume-updater/endlume.key.pub').read_text().replace('\r','').replace('\n','').strip()
+          assert disk==cfg['plugins']['updater']['pubkey'].strip()
+          print('ENDLUME_865_V2_SOURCE_KEY_GREEN')
+          PY
+          GH_TOKEN="$RELEASE_TOKEN" gh api "repos/$STABLE_REPO" --jq .full_name
+          rm -rf final-865-v2
+          mkdir -p final-865-v2
+          echo "ENDLUME_865_V2_BUILD_CACHE=$CARGO_CACHE"
+
+      - name: Stage native FFmpeg and lightweight regression gate
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
+          mkdir -p src-tauri/binaries
+          cp "$(command -v ffmpeg)" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp "$(command -v ffprobe)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          chmod +x src-tauri/binaries/ffmpeg-aarch64-apple-darwin src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          npm ci
+          npm run check
+          npm run build
+          python3 scripts/test-endlume-865-contract.py
+          python3 scripts/test-managed-license-render-gate.py
+          python3 scripts/test-runtime-safety-8-62.py
+          rm -rf .queue-test-dist
+          ./node_modules/.bin/tsc src/queue-state.ts --target ES2022 --module ES2022 --moduleResolution Bundler --skipLibCheck --outDir .queue-test-dist --noEmit false
+          node scripts/test-queue-finalization-8-58.mjs "$GITHUB_WORKSPACE/.queue-test-dist/queue-state.js"
+          echo 'ENDLUME_865_V2_REGRESSION_GREEN'
+
+      - name: Resolve real fixture and prepare Tauri config
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+          TMP="$(mktemp -d /tmp/e865-v2.XXXXXX)"
+          python3 scripts/find-endlume-real-fixture.py "$TMP/env"
+          cat "$TMP/env" >> "$GITHUB_ENV"
+          source "$TMP/env"
+          test "$AUDIO_COUNT" = 15
+          test -f "$SIDE"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('src-tauri/tauri.conf.json');c=json.loads(p.read_text())
+          assert c['version']=='1.0.0-alpha.8.65'
+          c['bundle']['createUpdaterArtifacts']=False
+          p.write_text(json.dumps(c,ensure_ascii=False,indent=2)+'\n')
+          PY
+
+      - name: Build E2E-enabled macOS ARM64 app
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
+          npm run tauri build -- --bundles app --features e2e-render
+          APP="$(find "$CARGO_TARGET_DIR/release/bundle/macos" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          test -n "$APP" -a -d "$APP"
+          VER="$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist")"
+          EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
+          test "$VER" = "$VERSION"
+          /usr/bin/lipo -archs "$APP/Contents/MacOS/$EXE" | grep -qw arm64
+          /usr/bin/codesign --force --deep --sign - "$APP"
+          /usr/bin/codesign --verify --deep --strict "$APP"
+          echo "ENDLUME_E2E_APP=$APP" >> "$GITHUB_ENV"
+          echo "ENDLUME_E2E_BIN=$APP/Contents/MacOS/$EXE" >> "$GITHUB_ENV"
+          echo 'ENDLUME_865_V2_E2E_BUILD_GREEN'
+
+      - name: REAL production render_job E2E on Apple Silicon
+        shell: bash
+        env:
+          ENDLUME_865_REAL_E2E_MAX_SECONDS: '15'
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+          python3 scripts/run-endlume-865-render-job-e2e.py "$SIDE" "$ENDLUME_E2E_BIN" "$(command -v ffmpeg)" "$(command -v ffprobe)" "$GITHUB_WORKSPACE/final-865-v2/e2e.json"
+          python3 - <<'PY'
+          import json
+          x=json.load(open('final-865-v2/e2e.json'))
+          assert x['status']=='passed' and x['release_gate'] is True,x
+          assert x['kind']=='REAL_ENDLUME_RENDER_JOB_E2E_865',x
+          assert x['open_video_smoke'] is True and x['reveal_folder_smoke'] is True,x
+          rows=x['results'];assert len(rows)==6,rows
+          assert rows[0]['wall_seconds']<=15 and rows[1]['wall_seconds']<=15,rows[:2]
+          assert rows[0]['wall_seconds']<46 and rows[1]['wall_seconds']<46,rows[:2]
+          assert all(r['output_bytes']>0 and r['terminal_result_bytes_ok'] and r['result_path_exists'] for r in rows),rows
+          assert all(r['codec']=='hevc' and r['fps']=='60/1' and r['audio']=='mp3' for r in rows),rows
+          print('ENDLUME_865_V2_REAL_E2E_GREEN')
+          print(json.dumps(rows,ensure_ascii=False))
+          PY
+
+      - name: Rebuild clean production macOS app and sign updater payload
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
+          rm -rf "$CARGO_TARGET_DIR/release/bundle/macos"
+          npm run tauri build -- --bundles app
+          APP="$(find "$CARGO_TARGET_DIR/release/bundle/macos" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          test -n "$APP" -a -d "$APP"
+          VER="$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist")"
+          BID="$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$APP/Contents/Info.plist")"
+          EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
+          test "$VER" = "$VERSION"
+          test "$BID" = 'studio.endlume.desktop'
+          /usr/bin/lipo -archs "$APP/Contents/MacOS/$EXE" | grep -qw arm64
+          if strings "$APP/Contents/MacOS/$EXE" | grep -q 'ENDLUME_E2E_RENDER_JOB'; then echo 'E2E marker leaked into production binary'; exit 43; fi
+          /usr/bin/codesign --force --deep --sign - "$APP"
+          /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP"
+          MAC="$GITHUB_WORKSPACE/final-865-v2/$MAC_ASSET"
+          /usr/bin/tar -czf "$MAC" -C "$(dirname "$APP")" "$(basename "$APP")"
+          export TAURI_SIGNING_PRIVATE_KEY_PATH="$HOME/.endlume-updater/endlume.key"
+          export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
+          unset TAURI_SIGNING_PRIVATE_KEY || true
+          npx --yes @tauri-apps/cli@2.10.1 signer sign "$MAC"
+          test -s "$MAC" -a -s "$MAC.sig"
+          echo "MAC_BYTES=$(stat -f%z "$MAC")"
+          echo "MAC_SHA256=$(shasum -a 256 "$MAC"|awk '{print $1}')"
+          echo 'ENDLUME_865_V2_MAC_SIGNED_GREEN'
+
+      - name: Install Windows cross-build prerequisites and sidecars
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
+          brew list nsis >/dev/null 2>&1 || brew install nsis
+          brew list llvm >/dev/null 2>&1 || brew install llvm
+          LLVM_BIN="$(brew --prefix llvm)/bin"
+          export PATH="$LLVM_BIN:$HOME/.cargo/bin:$PATH"
+          rustup target add "$WINDOWS_TARGET"
+          command -v cargo-xwin >/dev/null 2>&1 || cargo install --locked cargo-xwin
+          TAG='autobuild-2026-09-14-13-17'
+          ARCHIVE='ffmpeg-N-126549-ga51bb69b09-win64-gpl.zip'
+          ZIP="$HOME/.endlume-build-cache/$ARCHIVE"
+          EXTRACT="$HOME/.endlume-build-cache/ffmpeg-865-win"
+          mkdir -p "$HOME/.endlume-build-cache"
+          [ -s "$ZIP" ] || curl -fL --retry 3 -o "$ZIP" "https://github.com/BtbN/FFmpeg-Builds/releases/download/$TAG/$ARCHIVE"
+          rm -rf "$EXTRACT"; mkdir -p "$EXTRACT"
+          ditto -x -k "$ZIP" "$EXTRACT"
+          FFMPEG="$(find "$EXTRACT" -type f -name ffmpeg.exe -print -quit)"
+          FFPROBE="$(find "$EXTRACT" -type f -name ffprobe.exe -print -quit)"
+          test -n "$FFMPEG" -a -n "$FFPROBE"
+          cp "$FFMPEG" "src-tauri/binaries/ffmpeg-$WINDOWS_TARGET.exe"
+          cp "$FFPROBE" "src-tauri/binaries/ffprobe-$WINDOWS_TARGET.exe"
+          file "src-tauri/binaries/ffmpeg-$WINDOWS_TARGET.exe" | grep -E 'PE32|MS Windows'
+          echo 'ENDLUME_865_V2_WINDOWS_TOOLCHAIN_GREEN'
+
+      - name: Build Windows x64 NSIS and sign exact updater payload
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="$(brew --prefix llvm)/bin:$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+          npm run tauri build -- --runner cargo-xwin --target "$WINDOWS_TARGET" --bundles nsis --config src-tauri/tauri.windows.conf.json
+          NSIS="$CARGO_TARGET_DIR/$WINDOWS_TARGET/release/bundle/nsis"
+          CAND="$(find "$NSIS" -maxdepth 1 -type f -name '*.exe' -print -quit)"
+          test -n "$CAND" -a -s "$CAND"
+          WIN="$GITHUB_WORKSPACE/final-865-v2/$WINDOWS_ASSET"
+          cp "$CAND" "$WIN"
+          python3 - "$WIN" <<'PY'
+          import sys
+          from pathlib import Path
+          p=Path(sys.argv[1])
+          assert p.stat().st_size>1_000_000
+          assert p.read_bytes()[:2]==b'MZ'
+          print('ENDLUME_865_V2_WINDOWS_PE_GREEN',p.stat().st_size)
+          PY
+          export TAURI_SIGNING_PRIVATE_KEY_PATH="$HOME/.endlume-updater/endlume.key"
+          export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
+          unset TAURI_SIGNING_PRIVATE_KEY || true
+          npx --yes @tauri-apps/cli@2.10.1 signer sign "$WIN"
+          test -s "$WIN.sig"
+          echo "WINDOWS_BYTES=$(stat -f%z "$WIN")"
+          echo "WINDOWS_SHA256=$(shasum -a 256 "$WIN"|awk '{print $1}')"
+          echo 'ENDLUME_865_V2_WINDOWS_SIGNED_GREEN'
+
+      - name: Build dual updater manifest
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          WIN="$GITHUB_WORKSPACE/final-865-v2/$WINDOWS_ASSET"
+          MAC="$GITHUB_WORKSPACE/final-865-v2/$MAC_ASSET"
+          WIN_SHA="$(shasum -a 256 "$WIN"|awk '{print $1}')"
+          MAC_SHA="$(shasum -a 256 "$MAC"|awk '{print $1}')"
+          WIN_SIG="$(tr -d '\r\n' < "$WIN.sig")"
+          MAC_SIG="$(tr -d '\r\n' < "$MAC.sig")"
+          python3 - "$GITHUB_WORKSPACE/final-865-v2/latest.json" "$WIN_SIG" "$MAC_SIG" "$WIN_SHA" "$MAC_SHA" <<'PY'
+          import datetime,json,os,sys
+          out,wsig,msig,wsha,msha=sys.argv[1:]
+          repo=os.environ['STABLE_REPO'];tag=os.environ['STABLE_TAG']
+          base=f'https://github.com/{repo}/releases/download/{tag}'
+          wa=os.environ['WINDOWS_ASSET'];ma=os.environ['MAC_ASSET']
+          d={
+            'version':os.environ['VERSION'],
+            'notes':'ENDLUME 8.65: result path/file size fixed, Open Video/Reveal restored, FAST_ONE_IMAGE zero-copy accelerated, real render_job E2E, Homer startup.',
+            'pub_date':datetime.datetime.now(datetime.timezone.utc).isoformat().replace('+00:00','Z'),
+            'platforms':{
+              'windows-x86_64':{'url':f'{base}/{wa}','signature':wsig,'sha256':wsha},
+              'darwin-aarch64':{'url':f'{base}/{ma}','signature':msig,'sha256':msha}
+            }
+          }
+          json.dump(d,open(out,'w'),ensure_ascii=False,indent=2)
+          PY
+          echo 'ENDLUME_865_V2_MANIFEST_GREEN'
+
+      - name: Publish Windows + macOS assets and latest.json last
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export GH_TOKEN="$RELEASE_TOKEN"
+          WIN="$GITHUB_WORKSPACE/final-865-v2/$WINDOWS_ASSET"
+          MAC="$GITHUB_WORKSPACE/final-865-v2/$MAC_ASSET"
+          gh release upload "$STABLE_TAG" "$WIN" "$WIN.sig" "$MAC" "$MAC.sig" --clobber --repo "$STABLE_REPO"
+          gh release upload "$STABLE_TAG" "$GITHUB_WORKSPACE/final-865-v2/latest.json" --clobber --repo "$STABLE_REPO"
+          echo 'ENDLUME_865_V2_STABLE_UPLOAD_GREEN'
+
+      - name: Verify stable assets byte-for-byte and public updater
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export GH_TOKEN="$RELEASE_TOKEN"
+          gh api "repos/$STABLE_REPO/releases/tags/$STABLE_TAG" > final-865-v2/release.json
+          python3 - <<'PY'
+          import json,os
+          r=json.load(open('final-865-v2/release.json'));m={a['name']:a for a in r['assets']}
+          for n in (os.environ['WINDOWS_ASSET'],os.environ['WINDOWS_ASSET']+'.sig',os.environ['MAC_ASSET'],os.environ['MAC_ASSET']+'.sig','latest.json'):
+              assert n in m,n
+          for key,name in [('win',os.environ['WINDOWS_ASSET']),('mac',os.environ['MAC_ASSET']),('latest','latest.json')]:
+              open(f'final-865-v2/{key}-id','w').write(str(m[name]['id']))
+          PY
+          gh api -H 'Accept: application/octet-stream' "repos/$STABLE_REPO/releases/assets/$(cat final-865-v2/win-id)" > final-865-v2/windows-public.exe
+          gh api -H 'Accept: application/octet-stream' "repos/$STABLE_REPO/releases/assets/$(cat final-865-v2/mac-id)" > final-865-v2/macos-public.tar.gz
+          gh api -H 'Accept: application/octet-stream' "repos/$STABLE_REPO/releases/assets/$(cat final-865-v2/latest-id)" > final-865-v2/latest-api.json
+          test "$(shasum -a 256 final-865-v2/windows-public.exe|awk '{print $1}')" = "$(shasum -a 256 final-865-v2/$WINDOWS_ASSET|awk '{print $1}')"
+          test "$(shasum -a 256 final-865-v2/macos-public.tar.gz|awk '{print $1}')" = "$(shasum -a 256 final-865-v2/$MAC_ASSET|awk '{print $1}')"
+          python3 - <<'PY'
+          import json,os,hashlib,pathlib
+          d=json.load(open('final-865-v2/latest-api.json'))
+          assert d['version']==os.environ['VERSION'],d
+          assert set(d['platforms'])>={'windows-x86_64','darwin-aarch64'}
+          win=pathlib.Path('final-865-v2')/os.environ['WINDOWS_ASSET']
+          mac=pathlib.Path('final-865-v2')/os.environ['MAC_ASSET']
+          assert d['platforms']['windows-x86_64']['sha256']==hashlib.sha256(win.read_bytes()).hexdigest()
+          assert d['platforms']['darwin-aarch64']['sha256']==hashlib.sha256(mac.read_bytes()).hexdigest()
+          assert d['platforms']['windows-x86_64']['signature']
+          assert d['platforms']['darwin-aarch64']['signature']
+          print('ENDLUME_865_V2_API_MANIFEST_GREEN')
+          PY
+          URL="https://github.com/$STABLE_REPO/releases/download/$STABLE_TAG/latest.json"
+          PUBLIC="$RUNNER_TEMP/latest-865-v2.json"
+          OK=0
+          for i in {1..30}; do
+            if curl -fsSL --connect-timeout 10 --max-time 30 "$URL?run=${GITHUB_RUN_ID:-0}-$i" -o "$PUBLIC"; then
+              if python3 - "$PUBLIC" "$VERSION" <<'PY'
+          import json,sys
+          d=json.load(open(sys.argv[1]))
+          assert d['version']==sys.argv[2]
+          assert set(d['platforms'])>={'windows-x86_64','darwin-aarch64'}
+          PY
+              then OK=1;break;fi
+            fi
+            sleep 5
+          done
+          test "$OK" = 1
+          curl -fsIL "https://github.com/$STABLE_REPO/releases/download/$STABLE_TAG/$WINDOWS_ASSET" >/dev/null
+          curl -fsIL "https://github.com/$STABLE_REPO/releases/download/$STABLE_TAG/$MAC_ASSET" >/dev/null
+          python3 - "$PUBLIC" <<'PY'
+          import json,sys
+          d=json.load(open(sys.argv[1]))
+          print('PUBLIC_UPDATER_VERSION='+d['version'])
+          print('PUBLIC_UPDATER_PLATFORMS='+','.join(sorted(d['platforms'])))
+          PY
+          echo 'ENDLUME_865_DUAL_STABLE_UPDATER_GREEN'

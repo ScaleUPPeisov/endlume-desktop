@@ -1,0 +1,170 @@
+name: ENDLUME 8.64 to 8.65 macOS autonomous updater audit
+
+on:
+  push:
+    branches: [endlume-8.64-turbo]
+    paths:
+      - '.github/workflows/endlume-864-to-865-macos-autonomous-updater.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  updater:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 45
+    env:
+      RELEASE_TOKEN: ${{ secrets.ENDLUME_RELEASE_TOKEN }}
+      STABLE_REPO: ScaleUPPeisov/scaleup-site
+      STABLE_TAG: endlume-stable
+      ASSET_864: ENDLUME-YT-Studio-PEISOV-1.0.0-alpha.8.64-macOS-ARM64.app.tar.gz
+      ASSET_865: ENDLUME-YT-Studio-PEISOV-1.0.0-alpha.8.65-macOS-ARM64.app.tar.gz
+      SRC_864: e95294a7d0c80fba5e1cca8d1c20e5d3f4c7e43d
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SRC_864 }}
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Preserve canonical installed 8.65 fingerprint
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          CANON="/Applications/ENDLUME YT Studio PEISOV.app"
+          test -d "$CANON"
+          echo "CANON_BEFORE=$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$CANON/Contents/Info.plist")"
+          test "$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$CANON/Contents/Info.plist")" = "1.0.0-alpha.8.65"
+          EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$CANON/Contents/Info.plist")"
+          /usr/bin/shasum -a 256 "$CANON/Contents/MacOS/$EXE" | awk '{print $1}' > "$RUNNER_TEMP/canon-before.sha"
+
+      - name: Download public 8.64 and latest manifest
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export GH_TOKEN="$RELEASE_TOKEN"
+          rm -rf audit-updater && mkdir audit-updater
+          gh release download "$STABLE_TAG" --repo "$STABLE_REPO" --pattern "$ASSET_864" --dir audit-updater --clobber
+          gh api "repos/$STABLE_REPO/releases/tags/$STABLE_TAG" > audit-updater/release.json
+          python3 - <<'PY'
+          import json
+          r=json.load(open('audit-updater/release.json'))
+          a=next(x for x in r['assets'] if x['name']=='latest.json')
+          print(a['id'])
+          open('audit-updater/latest-id','w').write(str(a['id']))
+          PY
+          gh api -H 'Accept: application/octet-stream' "repos/$STABLE_REPO/releases/assets/$(cat audit-updater/latest-id)" > audit-updater/latest.json
+          python3 - <<'PY'
+          import json
+          d=json.load(open('audit-updater/latest.json'))
+          assert d['version']=='1.0.0-alpha.8.65',d
+          p=d['platforms']['darwin-aarch64']
+          assert '8.65' in p['url'] and p.get('signature') and p.get('sha256')
+          print('PUBLIC_LATEST_865_MANIFEST_GREEN',p['sha256'])
+          PY
+
+      - name: Launch public 8.64 from isolated writable volume and capture update detection
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          VOL="$RUNNER_TEMP/endlume-864-audit.dmg"
+          MOUNT="/Volumes/ENDLUME864AUDIT"
+          hdiutil detach "$MOUNT" -force >/dev/null 2>&1 || true
+          rm -f "$VOL"
+          hdiutil create -size 500m -fs APFS -volname ENDLUME864AUDIT "$VOL" >/dev/null
+          hdiutil attach "$VOL" -mountpoint "$MOUNT" >/dev/null
+          mkdir -p "$MOUNT/app"
+          tar -xzf "audit-updater/$ASSET_864" -C "$MOUNT/app"
+          APP="$(find "$MOUNT/app" -maxdepth 2 -type d -name '*.app' -print -quit)"
+          test -n "$APP"
+          echo "PUBLIC_864_APP=$APP" >> "$GITHUB_ENV"
+          VER="$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist")"
+          echo "PUBLIC_864_VERSION=$VER"
+          test "$VER" = "1.0.0-alpha.8.64"
+          /usr/bin/open -n "$APP"
+          sleep 5
+          /usr/sbin/screencapture -x "$RUNNER_TEMP/endlume-864-update.png"
+          /usr/bin/sips -Z 1000 "$RUNNER_TEMP/endlume-864-update.png" --out "$RUNNER_TEMP/endlume-864-update-small.png" >/dev/null
+          echo "PUBLIC_864_SCREEN_B64_START"
+          base64 -i "$RUNNER_TEMP/endlume-864-update-small.png" | tr -d '\n'
+          echo
+          echo "PUBLIC_864_SCREEN_B64_END"
+          echo PUBLIC_864_LAUNCH_PHYSICAL_GREEN
+
+      - name: Prepare exact 8.64 source with audit-only updater auto-invoke hook
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
+          test "$(node -p "require('./package.json').version")" = "1.0.0-alpha.8.64"
+          test "$(grep '^version = ' src-tauri/Cargo.toml | head -1 | cut -d\" -f2)" = "1.0.0-alpha.8.64"
+          mkdir -p src-tauri/binaries
+          cp "$(command -v ffmpeg)" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp "$(command -v ffprobe)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          chmod +x src-tauri/binaries/*
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('src-tauri/src/lib.rs')
+          s=p.read_text()
+          needle='''    .setup(|app|{\n      persistence::mark_session_open(&app.handle().clone())?;'''
+          repl='''    .setup(|app|{\n      persistence::mark_session_open(&app.handle().clone())?;\n      if let Ok(result_path)=std::env::var("ENDLUME_AUDIT_UPDATER_RESULT"){\n        let handle=app.handle().clone();\n        tauri::async_runtime::spawn(async move{\n          let check=updater_local::local_update_check(handle.clone()).await;\n          let check_json=serde_json::to_value(&check).unwrap_or_default();\n          let start=updater_local::local_update_start(handle.clone()).await;\n          let start_json=match start{Ok(v)=>serde_json::json!({"ok":true,"status":v}),Err(e)=>serde_json::json!({"ok":false,"error":e})};\n          let payload=serde_json::json!({"check":check_json,"start":start_json});\n          let _=std::fs::write(&result_path,serde_json::to_vec_pretty(&payload).unwrap_or_default());\n          if !start_json.get("ok").and_then(|v|v.as_bool()).unwrap_or(false){handle.exit(41);}\n        });\n        return Ok(())\n      }'''
+          assert needle in s
+          p.write_text(s.replace(needle,repl,1))
+          import json
+          q=Path('src-tauri/tauri.conf.json');d=json.loads(q.read_text());d['bundle']['createUpdaterArtifacts']=False
+          q.write_text(json.dumps(d,ensure_ascii=False,indent=2)+'\n')
+          PY
+          npm ci
+          CARGO_TARGET_DIR="$RUNNER_TEMP/e864-updater-build" npm run tauri build -- --bundles app
+          APP="$(find "$RUNNER_TEMP/e864-updater-build/release/bundle/macos" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          test -n "$APP"
+          echo "AUDIT_864_APP=$APP" >> "$GITHUB_ENV"
+          test "$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist")" = "1.0.0-alpha.8.64"
+
+      - name: Execute exact production updater handler in isolated audit app
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          RESULT="$RUNNER_TEMP/e864-updater-result.json"
+          rm -f "$RESULT"
+          EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$AUDIT_864_APP/Contents/Info.plist")"
+          ENDLUME_AUDIT_UPDATER_RESULT="$RESULT" "$AUDIT_864_APP/Contents/MacOS/$EXE" >"$RUNNER_TEMP/e864-updater.stdout" 2>"$RUNNER_TEMP/e864-updater.stderr" &
+          PID=$!
+          for i in $(seq 1 180); do
+            [ -s "$RESULT" ] && break
+            sleep 1
+          done
+          test -s "$RESULT"
+          cat "$RESULT"
+          python3 - "$RESULT" <<'PY'
+          import json,sys
+          x=json.load(open(sys.argv[1]))
+          c=x['check']
+          assert c['supported'] is True,c
+          assert c['available'] is True,c
+          assert c['current']=='1.0.0-alpha.8.64',c
+          assert c['version']=='1.0.0-alpha.8.65',c
+          s=x['start']
+          assert s['ok'] is True,s
+          st=s['status']
+          assert st['state']=='RESTART_REQUIRED',st
+          assert st['progress']==100.0,st
+          assert int(st['downloadedBytes'])>0,st
+          print('PRODUCTION_UPDATER_HANDLER_GREEN',c['current'],'->',c['version'],st['downloadedBytes'])
+          PY
+          kill "$PID" >/dev/null 2>&1 || true
+          wait "$PID" 2>/dev/null || true
+
+      - name: Prove canonical 8.65 untouched
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          CANON="/Applications/ENDLUME YT Studio PEISOV.app"
+          test "$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$CANON/Contents/Info.plist")" = "1.0.0-alpha.8.65"
+          EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$CANON/Contents/Info.plist")"
+          /usr/bin/shasum -a 256 "$CANON/Contents/MacOS/$EXE" | awk '{print $1}' > "$RUNNER_TEMP/canon-after.sha"
+          cmp "$RUNNER_TEMP/canon-before.sha" "$RUNNER_TEMP/canon-after.sha"
+          hdiutil detach /Volumes/ENDLUME864AUDIT -force >/dev/null 2>&1 || true
+          echo CANONICAL_865_UNTOUCHED_GREEN

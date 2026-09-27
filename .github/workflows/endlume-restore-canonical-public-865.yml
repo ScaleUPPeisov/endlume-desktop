@@ -1,0 +1,57 @@
+name: ENDLUME restore canonical public 8.65
+
+on:
+  push:
+    branches: [endlume-8.64-turbo]
+    paths:
+      - '.github/workflows/endlume-restore-canonical-public-865.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  restore:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 10
+    env:
+      RELEASE_TOKEN: ${{ secrets.ENDLUME_RELEASE_TOKEN }}
+      ASSET: ENDLUME-YT-Studio-PEISOV-1.0.0-alpha.8.65-macOS-ARM64.app.tar.gz
+      SHA: 9a5393deac24dcd4ceacdb65ec973599f05da35379d4a04c06a116acb698da2a
+      SIZE: '7197249'
+    steps:
+      - name: Restore canonical app from immutable public 8.65 artifact
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export GH_TOKEN="$RELEASE_TOKEN"
+          ROOT="$RUNNER_TEMP/e865-public-restore"
+          rm -rf "$ROOT"; mkdir -p "$ROOT"
+          gh release download endlume-stable --repo ScaleUPPeisov/scaleup-site --pattern "$ASSET" --dir "$ROOT" --clobber
+          PKG="$ROOT/$ASSET"
+          test "$(stat -f %z "$PKG")" = "$SIZE"
+          ACTUAL="$(/usr/bin/shasum -a 256 "$PKG" | awk '{print $1}')"
+          test "$ACTUAL" = "$SHA"
+          mkdir "$ROOT/extract"
+          tar -xzf "$PKG" -C "$ROOT/extract"
+          APP="$(find "$ROOT/extract" -maxdepth 2 -type d -name '*.app' -print -quit)"
+          test -n "$APP"
+          test "$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist")" = "1.0.0-alpha.8.65"
+          /usr/bin/codesign --verify --deep --strict "$APP"
+          CANON="/Applications/ENDLUME YT Studio PEISOV.app"
+          /usr/bin/osascript -e 'tell application id "studio.endlume.desktop" to quit' >/dev/null 2>&1 || true
+          pkill -f "$CANON/Contents/MacOS/" >/dev/null 2>&1 || true
+          sleep 1
+          rm -rf "$CANON"
+          /usr/bin/ditto "$APP" "$CANON"
+          /usr/bin/codesign --verify --deep --strict "$CANON"
+          VER="$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$CANON/Contents/Info.plist")"
+          test "$VER" = "1.0.0-alpha.8.65"
+          EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$CANON/Contents/Info.plist")"
+          /usr/bin/lipo -archs "$CANON/Contents/MacOS/$EXE" | grep -qw arm64
+          /usr/bin/open -n "$CANON"
+          sleep 4
+          pgrep -f "$CANON/Contents/MacOS/$EXE" >/dev/null
+          echo "RESTORED_PUBLIC_SHA256=$ACTUAL"
+          echo "RESTORED_VERSION=$VER"
+          echo ENDLUME_CANONICAL_PUBLIC_865_RESTORED_GREEN

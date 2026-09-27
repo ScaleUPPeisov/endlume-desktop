@@ -24,7 +24,7 @@ env:
 
 jobs:
   audit:
-    runs-on: windows-latest
+    runs-on: [self-hosted, Windows, X64]
     timeout-minutes: 75
     env:
       RELEASE_TOKEN: ${{ secrets.ENDLUME_RELEASE_TOKEN }}

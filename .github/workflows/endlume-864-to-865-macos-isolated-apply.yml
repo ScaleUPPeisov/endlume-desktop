@@ -1,0 +1,157 @@
+name: ENDLUME 8.64 to 8.65 macOS isolated apply audit
+
+on:
+  push:
+    branches: [endlume-8.64-turbo]
+    paths:
+      - '.github/workflows/endlume-864-to-865-macos-isolated-apply.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  update:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: e95294a7d0c80fba5e1cca8d1c20e5d3f4c7e43d
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Build exact 8.64 updater harness that only auto-invokes production commands
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
+          test "$(node -p "require('./package.json').version")" = "1.0.0-alpha.8.64"
+          mkdir -p src-tauri/binaries
+          cp "$(command -v ffmpeg)" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp "$(command -v ffprobe)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          chmod +x src-tauri/binaries/*
+          python3 - <<'PY'
+          from pathlib import Path
+          import json
+          p=Path('src-tauri/src/lib.rs');s=p.read_text()
+          needle='''    .setup(|app|{\n      persistence::mark_session_open(&app.handle().clone())?;'''
+          repl='''    .setup(|app|{\n      persistence::mark_session_open(&app.handle().clone())?;\n      if let Ok(check_path)=std::env::var("ENDLUME_AUDIT_UPDATER_CHECK"){\n        let handle=app.handle().clone();\n        tauri::async_runtime::spawn(async move{\n          let check=updater_local::local_update_check(handle.clone()).await;\n          let _=std::fs::write(&check_path,serde_json::to_vec_pretty(&check).unwrap_or_default());\n          if !check.available || check.version.as_deref()!=Some("1.0.0-alpha.8.65"){handle.exit(71);return}\n          let _=updater_local::local_update_start(handle.clone()).await;\n        });\n        return Ok(())\n      }'''
+          assert needle in s
+          p.write_text(s.replace(needle,repl,1))
+          q=Path('src-tauri/tauri.conf.json');d=json.loads(q.read_text());d['bundle']['createUpdaterArtifacts']=False
+          q.write_text(json.dumps(d,ensure_ascii=False,indent=2)+'\n')
+          PY
+          npm ci
+          CARGO_TARGET_DIR="$HOME/.endlume-build-cache/endlume-864-isolated-updater" npm run tauri build -- --bundles app
+          APP="$(find "$HOME/.endlume-build-cache/endlume-864-isolated-updater/release/bundle/macos" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          test -n "$APP"
+          rm -rf "$HOME/.endlume-audit/updater864"
+          mkdir -p "$HOME/.endlume-audit/updater864"
+          /usr/bin/ditto "$APP" "$HOME/.endlume-audit/updater864/ENDLUME YT Studio PEISOV.app"
+          echo "AUDIT_APP=$HOME/.endlume-audit/updater864/ENDLUME YT Studio PEISOV.app" >> "$GITHUB_ENV"
+
+      - name: Run exact production updater and prove physical bundle replacement
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          AUDIT="$AUDIT_APP"
+          CANON="/Applications/ENDLUME YT Studio PEISOV.app"
+          test "$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$AUDIT/Contents/Info.plist")" = "1.0.0-alpha.8.64"
+          test "$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$CANON/Contents/Info.plist")" = "1.0.0-alpha.8.65"
+
+          CANON_EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$CANON/Contents/Info.plist")"
+          /usr/bin/shasum -a 256 "$CANON/Contents/MacOS/$CANON_EXE" | awk '{print $1}' > "$HOME/.endlume-audit/canonical-before.sha"
+
+          STATE_DIR="$HOME/Library/Application Support/studio.endlume.desktop"
+          mkdir -p "$STATE_DIR"
+          SENTINEL="$STATE_DIR/ENDLUME-UPDATER-AUDIT-SENTINEL.txt"
+          printf 'preserve-user-state-%s\n' "$GITHUB_RUN_ID" > "$SENTINEL"
+          /usr/bin/shasum -a 256 "$SENTINEL" | awk '{print $1}' > "$HOME/.endlume-audit/sentinel-before.sha"
+
+          CHECK="$HOME/.endlume-audit/updater864/check.json"
+          rm -f "$CHECK"
+          EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$AUDIT/Contents/Info.plist")"
+          ENDLUME_AUDIT_UPDATER_CHECK="$CHECK" "$AUDIT/Contents/MacOS/$EXE" >"$HOME/.endlume-audit/updater864/stdout.log" 2>"$HOME/.endlume-audit/updater864/stderr.log" &
+          PID=$!
+
+          for i in $(seq 1 80); do [ -s "$CHECK" ] && break; sleep 0.25; done
+          test -s "$CHECK"
+          cat "$CHECK"
+          python3 - "$CHECK" <<'PY'
+          import json,sys
+          x=json.load(open(sys.argv[1]))
+          assert x['supported'] is True,x
+          assert x['available'] is True,x
+          assert x['current']=='1.0.0-alpha.8.64',x
+          assert x['version']=='1.0.0-alpha.8.65',x
+          assert not x.get('reason'),x
+          print('UPDATER_DETECTION_864_TO_865_GREEN')
+          PY
+
+          UPDATE_STATE="$HOME/Library/Caches/studio.endlume.desktop/update-center/state.json"
+          for i in $(seq 1 240); do
+            V="$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$AUDIT/Contents/Info.plist" 2>/dev/null || true)"
+            S="$(python3 - "$UPDATE_STATE" 2>/dev/null <<'PY' || true
+          import json,sys,pathlib
+          p=pathlib.Path(sys.argv[1])
+          print(json.load(open(p)).get('state','') if p.is_file() else '')
+          PY
+          )"
+            if [ "$V" = "1.0.0-alpha.8.65" ] && [ "$S" = "RESTART_REQUIRED" ]; then break; fi
+            sleep 0.5
+          done
+
+          V="$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$AUDIT/Contents/Info.plist")"
+          echo "ISOLATED_AFTER_VERSION=$V"
+          test "$V" = "1.0.0-alpha.8.65"
+          test -s "$UPDATE_STATE"
+          cat "$UPDATE_STATE"
+          python3 - "$UPDATE_STATE" <<'PY'
+          import json,sys
+          x=json.load(open(sys.argv[1]))
+          assert x['state']=='RESTART_REQUIRED',x
+          assert float(x['progress'])==100.0,x
+          assert int(x['downloadedBytes'])==7197249,x
+          assert int(x['totalBytes'])==7197249,x
+          print('UPDATER_DOWNLOAD_SIGNATURE_SHA_INSTALL_GREEN')
+          PY
+
+          /usr/bin/codesign --verify --deep --strict "$AUDIT"
+          test "$(/usr/bin/lipo -archs "$AUDIT/Contents/MacOS/$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$AUDIT/Contents/Info.plist")")" = "arm64"
+          echo ISOLATED_UPDATED_BUNDLE_865_GREEN
+
+          test -s "$SENTINEL"
+          /usr/bin/shasum -a 256 "$SENTINEL" | awk '{print $1}' > "$HOME/.endlume-audit/sentinel-after.sha"
+          cmp "$HOME/.endlume-audit/sentinel-before.sha" "$HOME/.endlume-audit/sentinel-after.sha"
+          echo USER_STATE_SENTINEL_PRESERVED_GREEN
+
+          test "$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$CANON/Contents/Info.plist")" = "1.0.0-alpha.8.65"
+          /usr/bin/shasum -a 256 "$CANON/Contents/MacOS/$CANON_EXE" | awk '{print $1}' > "$HOME/.endlume-audit/canonical-after.sha"
+          cmp "$HOME/.endlume-audit/canonical-before.sha" "$HOME/.endlume-audit/canonical-after.sha"
+          echo CANONICAL_APPLICATION_UNTOUCHED_GREEN
+
+      - name: Relaunch isolated updated 8.65 and capture physical screen
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          AUDIT="$AUDIT_APP"
+          /usr/bin/open -n "$AUDIT"
+          sleep 4
+          EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$AUDIT/Contents/Info.plist")"
+          pgrep -f "$AUDIT/Contents/MacOS/$EXE" >/dev/null
+          /usr/sbin/screencapture -x "$HOME/.endlume-audit/updater864/relaunch.png"
+          /usr/bin/sips -Z 900 "$HOME/.endlume-audit/updater864/relaunch.png" --out "$HOME/.endlume-audit/updater864/relaunch-small.png" >/dev/null
+          echo RELAUNCH_SCREEN_B64_START
+          base64 -i "$HOME/.endlume-audit/updater864/relaunch-small.png" | tr -d '\n'
+          echo
+          echo RELAUNCH_SCREEN_B64_END
+          echo UPDATED_865_RELAUNCH_PHYSICAL_GREEN
+
+      - name: Cleanup isolated audit state only
+        if: always()
+        shell: bash
+        run: |
+          rm -f "$HOME/Library/Application Support/studio.endlume.desktop/ENDLUME-UPDATER-AUDIT-SENTINEL.txt" || true
+          pkill -f "$HOME/.endlume-audit/updater864/ENDLUME YT Studio PEISOV.app/Contents/MacOS/" || true

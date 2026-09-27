@@ -160,7 +160,7 @@ async fn probe_audio_duration(app:&AppHandle,path:&str)->Result<f64,String>{
   String::from_utf8_lossy(&out.stdout).trim().parse::<f64>().map_err(|e|format!("Некорректная длительность '{}': {e}",path))
 }
 
-async fn write_success_metadata(app:&AppHandle,job:&QueueJob,summary:&render::RenderOutcome)->Result<(String,String,String),String>{
+pub(crate) async fn write_success_metadata(app:&AppHandle,job:&QueueJob,summary:&render::RenderOutcome)->Result<(String,String,String),String>{
   let output=PathBuf::from(&summary.output_path);
   let root=output.parent().ok_or("У итогового видео нет родительской папки")?;
   let stem=output_stem(&output,job);

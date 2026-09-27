@@ -1,0 +1,61 @@
+name: ENDLUME 8.65 macOS visual progression audit
+
+on:
+  push:
+    branches: [endlume-8.64-turbo]
+    paths:
+      - '.github/workflows/endlume-865-macos-visual-progression.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  visual:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 10
+    steps:
+      - name: Capture installed 8.65 at 1s 3s 6s 10s
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          APP="/Applications/ENDLUME YT Studio PEISOV.app"
+          test -d "$APP"
+          EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
+          BIN="$APP/Contents/MacOS/$EXE"
+          echo "VERSION=$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist")"
+          echo "BUNDLE=$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$APP/Contents/Info.plist")"
+          echo "ARCHS=$(/usr/bin/lipo -archs "$BIN")"
+          echo "CONSOLE_USER=$(stat -f '%Su' /dev/console)"
+          /usr/bin/osascript -e 'tell application id "studio.endlume.desktop" to quit' >/dev/null 2>&1 || true
+          pkill -f "$BIN" >/dev/null 2>&1 || true
+          sleep 2
+          rm -rf /tmp/e865-visual && mkdir -p /tmp/e865-visual
+          /usr/bin/open -n "$APP"
+          START=$(python3 - <<'PY'
+          import time
+          print(time.time())
+          PY
+          )
+          for S in 1 3 6 10; do
+            python3 - "$START" "$S" <<'PY'
+          import sys,time
+          start=float(sys.argv[1]); target=float(sys.argv[2]); now=time.time()
+          if now < start+target: time.sleep(start+target-now)
+          PY
+            pgrep -af "$BIN" || { echo "APP_EXITED_AT_${S}s"; exit 31; }
+            /usr/sbin/screencapture -x "/tmp/e865-visual/t${S}.png"
+            /usr/bin/sips -Z 900 "/tmp/e865-visual/t${S}.png" --out "/tmp/e865-visual/t${S}-small.png" >/dev/null
+            echo "IMG_T${S}_START"
+            base64 -i "/tmp/e865-visual/t${S}-small.png" | tr -d '\n'
+            echo
+            echo "IMG_T${S}_END"
+          done
+          echo "PROCESS_STATE_START"
+          ps -o pid,ppid,state,etime,%cpu,%mem,command -p "$(pgrep -f "$BIN" | head -1)" || true
+          echo "PROCESS_STATE_END"
+          echo "SYSTEM_LOG_START"
+          /usr/bin/log show --style compact --last 2m --predicate 'process == "endlume"' 2>/dev/null | tail -n 200 || true
+          echo "SYSTEM_LOG_END"
+          echo "ACCESSIBILITY=$(/usr/bin/osascript -e 'tell application "System Events" to return UI elements enabled' 2>/dev/null || echo false)"
+          echo ENDLUME_865_MAC_VISUAL_PROGRESSION_CAPTURED

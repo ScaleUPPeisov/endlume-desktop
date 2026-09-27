@@ -1,0 +1,44 @@
+name: ENDLUME 8.65 macOS System Evidence
+
+on:
+  push:
+    branches: [endlume-8.64-turbo]
+    paths:
+      - '.github/workflows/endlume-865-macos-system-evidence.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  evidence:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          persist-credentials: false
+      - name: Physical Mac evidence
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          echo "AUDIT_HEAD=$GITHUB_SHA"
+          echo "ARCH=$(uname -m)"
+          echo "MACOS_VERSION=$(sw_vers -productVersion)"
+          echo "MACOS_BUILD=$(sw_vers -buildVersion)"
+          /usr/sbin/system_profiler SPHardwareDataType | egrep 'Model Name|Model Identifier|Chip|Memory|Hardware UUID' | sed 's/Hardware UUID:.*/Hardware UUID: [REDACTED]/'
+          echo "FFMPEG=$(command -v ffmpeg)"
+          ffmpeg -version | head -1
+          APP="/Applications/ENDLUME YT Studio PEISOV.app"
+          if [ -d "$APP" ]; then
+            echo "INSTALLED_VERSION=$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist")"
+            echo "INSTALLED_BUNDLE_ID=$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$APP/Contents/Info.plist")"
+            EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
+            echo "INSTALLED_ARCHS=$(/usr/bin/lipo -archs "$APP/Contents/MacOS/$EXE")"
+            /usr/bin/codesign --verify --deep --strict "$APP"
+          else
+            echo "INSTALLED_APP_MISSING"
+          fi
+          echo ENDLUME_865_MAC_SYSTEM_EVIDENCE_GREEN

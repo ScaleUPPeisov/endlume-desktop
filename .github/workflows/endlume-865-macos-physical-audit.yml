@@ -94,20 +94,14 @@ jobs:
           echo "PUBLIC_MAC_BIN=$APP/Contents/MacOS/$EXE" >> "$GITHUB_ENV"
           echo ENDLUME_865_MAC_BUNDLE_GREEN
 
-      - name: Physical app launch and relaunch
+      - name: Non-destructive public app launch policy
         shell: bash
         run: |
           set -Eeuo pipefail
-          /usr/bin/open -n "$PUBLIC_MAC_APP"
-          sleep 3
-          pgrep -f "$PUBLIC_MAC_APP/Contents/MacOS" >/dev/null
-          /usr/bin/osascript -e 'tell application id "studio.endlume.desktop" to quit' >/dev/null 2>&1 || pkill -f "$PUBLIC_MAC_APP/Contents/MacOS" || true
-          sleep 2
-          /usr/bin/open -n "$PUBLIC_MAC_APP"
-          sleep 3
-          pgrep -f "$PUBLIC_MAC_APP/Contents/MacOS" >/dev/null
-          /usr/bin/osascript -e 'tell application id "studio.endlume.desktop" to quit' >/dev/null 2>&1 || pkill -f "$PUBLIC_MAC_APP/Contents/MacOS" || true
-          echo ENDLUME_865_MAC_LAUNCH_RELAUNCH_GREEN
+          test -x "$PUBLIC_MAC_BIN"
+          echo ENDLUME_865_MAC_PUBLIC_APP_BINARY_READY
+          echo PARTIAL_NORMAL_GUI_OPEN_NOT_REPLAYED_FROM_TEMP_BUNDLE_TO_AVOID_MOVING_OR_REPLACING_OWNER_APPLICATION
+          echo PHYSICAL_PROCESS_LAUNCH_AND_RELAUNCH_WILL_BE_PROVEN_BY_THE_REAL_E2E_STEPS_WITH_INSTALL_NORMALIZATION_DISABLED
 
       - name: Resolve real media fixture
         shell: bash

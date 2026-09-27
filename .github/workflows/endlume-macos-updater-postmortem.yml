@@ -1,0 +1,64 @@
+name: ENDLUME macOS updater postmortem
+
+on:
+  push:
+    branches: [endlume-8.64-turbo]
+    paths:
+      - '.github/workflows/endlume-macos-updater-postmortem.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 8
+    env:
+      RELEASE_TOKEN: ${{ secrets.ENDLUME_RELEASE_TOKEN }}
+    steps:
+      - name: Inspect canonical and prior isolated updater target
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          CANON="/Applications/ENDLUME YT Studio PEISOV.app"
+          echo "CANONICAL_START"
+          test -d "$CANON"
+          CVER="$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$CANON/Contents/Info.plist")"
+          CBID="$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$CANON/Contents/Info.plist")"
+          CEXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$CANON/Contents/Info.plist")"
+          echo "version=$CVER"
+          echo "bundle=$CBID"
+          echo "arch=$(/usr/bin/lipo -archs "$CANON/Contents/MacOS/$CEXE")"
+          /usr/bin/codesign --verify --deep --strict "$CANON"
+          test "$CVER" = "1.0.0-alpha.8.65"
+          echo "CANONICAL_865_GREEN"
+          echo "CANONICAL_END"
+
+          echo "ISOLATED_BUILD_START"
+          ROOT="$HOME/.github-runners/endlume-desktop-macos-arm64/_work/_temp/e864-updater-build"
+          if [ -d "$ROOT" ]; then
+            find "$ROOT" -maxdepth 8 -type d -name '*.app' -print | while read APP; do
+              echo "app=$APP"
+              /usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist" 2>/dev/null | sed 's/^/version=/' || true
+              /usr/bin/plutil -extract CFBundleIdentifier raw -o - "$APP/Contents/Info.plist" 2>/dev/null | sed 's/^/bundle=/' || true
+            done
+          else
+            echo "isolated_build_missing"
+          fi
+          echo "ISOLATED_BUILD_END"
+
+          echo "UPDATE_STATE_START"
+          find "$HOME/Library/Caches" "$HOME/Library/Application Support" -maxdepth 5 -type f -path '*studio.endlume.desktop*update-center*state.json' -print 2>/dev/null | while read F; do
+            echo "state_file=$F"
+            cat "$F" || true
+            echo
+          done
+          echo "UPDATE_STATE_END"
+
+          echo "MOUNT_START"
+          mount | grep 'ENDLUME864AUDIT' || true
+          echo "MOUNT_END"
+          echo "PROCESS_START"
+          pgrep -af '[e]ndlume|ENDLUME' || true
+          echo "PROCESS_END"

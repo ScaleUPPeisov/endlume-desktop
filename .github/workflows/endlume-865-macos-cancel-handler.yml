@@ -1,0 +1,114 @@
+name: ENDLUME 8.65 macOS production cancel handler audit
+
+on:
+  push:
+    branches: [endlume-8.64-turbo]
+    paths:
+      - '.github/workflows/endlume-865-macos-cancel-handler.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cancel:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Resolve real fixture and prepare cancel/recovery jobs
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+          TMP="$(mktemp -d /tmp/e865cancel.XXXXXX)"
+          python3 scripts/find-endlume-real-fixture.py "$TMP/env"
+          source "$TMP/env"
+          test "$AUDIO_COUNT" = 15
+          mkdir -p "$RUNNER_TEMP/e865-cancel-out"
+          python3 - "$SIDE" "$RUNNER_TEMP/e865-cancel-out" "$RUNNER_TEMP/e865-cancel-job.json" <<'PY'
+          import json,sys,pathlib
+          side,out,target=sys.argv[1:]
+          d=json.load(open(side));p=d['project']
+          media=[x for x in p['media'] if pathlib.Path(x).is_file()]
+          audio=[x for x in p['audio'] if pathlib.Path(x).is_file()]
+          assert len(media)>=7 and len(audio)>=15,(len(media),len(audio))
+          job={
+            'project':{'id':'cancel-physical-handler','name':'Cancel Physical Handler','path':p.get('path',''),'media':media[:7],'audio':audio[:15],'valid':True,'error':None},
+            'settings':{'width':1920,'height':1080,'fps':60,'codec':'h265','bitrateMbps':4.0,'durationHours':2.0,'durationMode':'whole-track','loopMode':'loop','crossfadeSec':0.0,'normalizeLufs':False,'outputDir':out,'preset':'fast','encoderPreference':'auto'},
+            'effects':[],'subscribes':[],'ambient':None
+          }
+          pathlib.Path(target).write_text(json.dumps(job,ensure_ascii=False))
+          PY
+
+      - name: Build exact 8.65 source with audit-only auto-invoke hook
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
+          test "$(node -p "require('./package.json').version")" = "1.0.0-alpha.8.65"
+          mkdir -p src-tauri/binaries
+          cp "$(command -v ffmpeg)" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp "$(command -v ffprobe)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          chmod +x src-tauri/binaries/*
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('src-tauri/src/lib.rs')
+          s=p.read_text()
+          needle='''    .setup(|app|{\n      persistence::mark_session_open(&app.handle().clone())?;'''
+          repl='''    .setup(|app|{\n      persistence::mark_session_open(&app.handle().clone())?;\n      if let (Ok(fixture),Ok(result_path))=(std::env::var("ENDLUME_AUDIT_CANCEL_JOB"),std::env::var("ENDLUME_AUDIT_CANCEL_RESULT")){\n        let handle=app.handle().clone();\n        tauri::async_runtime::spawn(async move{\n          use tauri::Manager;\n          use serde_json::json;\n          let parsed=std::fs::read(&fixture).ok().and_then(|b|serde_json::from_slice::<model::QueueJob>(&b).ok());\n          let Some(job)=parsed else{let _=std::fs::write(&result_path,b"{\\\"status\\\":\\\"fixture-failed\\\"}");handle.exit(51);return};\n          let id=job.project.id.clone();\n          let state=handle.state::<Arc<queue::QueueRuntime>>();\n          let enq=queue::enqueue_projects(handle.clone(),state,vec![job.project.clone()],job.settings.clone(),job.effects.clone(),job.subscribes.clone(),job.ambient.clone()).await;\n          if let Err(e)=enq{let _=std::fs::write(&result_path,serde_json::to_vec_pretty(&json!({"status":"enqueue-failed","error":e})).unwrap());handle.exit(52);return}\n          tokio::time::sleep(std::time::Duration::from_millis(450)).await;\n          let state=handle.state::<Arc<queue::QueueRuntime>>();\n          let cancel_result=queue::cancel_project(handle.clone(),state,id.clone());\n          let mut cancel_terminal=serde_json::Value::Null;\n          for _ in 0..200{\n            let state=handle.state::<Arc<queue::QueueRuntime>>();\n            let snap=queue::queue_snapshot(state);\n            if let Some(x)=snap.get("finished").and_then(|v|v.as_array()).and_then(|a|a.iter().find(|x|x.get("id").and_then(|v|v.as_str())==Some(id.as_str()))){cancel_terminal=x.clone();break}\n            tokio::time::sleep(std::time::Duration::from_millis(100)).await;\n          }\n          let mut next=job.clone();\n          next.project.id="cancel-followup-success".into();\n          next.project.name="Cancel Followup Success".into();\n          next.project.media.truncate(1);next.project.audio.truncate(2);\n          let next_id=next.project.id.clone();\n          let state=handle.state::<Arc<queue::QueueRuntime>>();\n          let enq2=queue::enqueue_projects(handle.clone(),state,vec![next.project.clone()],next.settings.clone(),next.effects.clone(),next.subscribes.clone(),next.ambient.clone()).await;\n          let mut next_terminal=serde_json::Value::Null;\n          if enq2.is_ok(){\n            for _ in 0..300{\n              let state=handle.state::<Arc<queue::QueueRuntime>>();\n              let snap=queue::queue_snapshot(state);\n              if let Some(x)=snap.get("finished").and_then(|v|v.as_array()).and_then(|a|a.iter().find(|x|x.get("id").and_then(|v|v.as_str())==Some(next_id.as_str()))){next_terminal=x.clone();break}\n              tokio::time::sleep(std::time::Duration::from_millis(100)).await;\n            }\n          }\n          let payload=json!({"status":"complete","cancelCommandOk":cancel_result.is_ok(),"cancelTerminal":cancel_terminal,"followupEnqueueOk":enq2.is_ok(),"followupTerminal":next_terminal});\n          let _=std::fs::write(&result_path,serde_json::to_vec_pretty(&payload).unwrap_or_default());\n          handle.exit(0);\n        });\n        return Ok(())\n      }'''
+          assert needle in s
+          p.write_text(s.replace(needle,repl,1))
+          import json
+          q=Path('src-tauri/tauri.conf.json');d=json.loads(q.read_text());d['bundle']['createUpdaterArtifacts']=False
+          q.write_text(json.dumps(d,ensure_ascii=False,indent=2)+'\n')
+          PY
+          npm ci
+          CARGO_TARGET_DIR="$RUNNER_TEMP/e865-cancel-build" npm run tauri build -- --bundles app
+          APP="$(find "$RUNNER_TEMP/e865-cancel-build/release/bundle/macos" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          test -n "$APP"
+          echo "AUDIT_APP=$APP" >> "$GITHUB_ENV"
+
+      - name: Execute real queue then exact cancel_project handler then successful followup
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          RESULT="$RUNNER_TEMP/e865-cancel-result.json"
+          rm -f "$RESULT"
+          EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$AUDIT_APP/Contents/Info.plist")"
+          ENDLUME_AUDIT_CANCEL_JOB="$RUNNER_TEMP/e865-cancel-job.json" ENDLUME_AUDIT_CANCEL_RESULT="$RESULT" "$AUDIT_APP/Contents/MacOS/$EXE" >"$RUNNER_TEMP/e865-cancel.stdout" 2>"$RUNNER_TEMP/e865-cancel.stderr" &
+          PID=$!
+          for i in $(seq 1 180); do [ -s "$RESULT" ] && break; sleep 1; done
+          test -s "$RESULT"
+          cat "$RESULT"
+          wait "$PID" 2>/dev/null || true
+          python3 - "$RESULT" <<'PY'
+          import json,sys,pathlib
+          x=json.load(open(sys.argv[1]))
+          assert x['status']=='complete',x
+          assert x['cancelCommandOk'] is True,x
+          c=x['cancelTerminal']
+          assert c and c['id']=='cancel-physical-handler',c
+          assert c['status']=='error',c
+          assert 'Остановлено пользователем' in c.get('stage',''),c
+          assert not c.get('resultPath'),c
+          assert not c.get('resultBytes'),c
+          assert x['followupEnqueueOk'] is True,x
+          f=x['followupTerminal']
+          assert f and f['id']=='cancel-followup-success',f
+          assert f['status']=='done',f
+          assert pathlib.Path(f['resultPath']).is_file(),f
+          assert int(f['resultBytes'])==pathlib.Path(f['resultPath']).stat().st_size,f
+          print('PRODUCTION_CANCEL_HANDLER_PHYSICALLY_VERIFIED')
+          print('FOLLOWUP_RENDER_AFTER_CANCEL_GREEN',f['resultPath'],f['resultBytes'])
+          PY
+          sleep 2
+          if pgrep -af '[f]fmpeg|[f]fprobe'; then echo ORPHAN_MEDIA_PROCESS_FOUND; exit 61; fi
+          echo NO_ORPHAN_FFMPEG_GREEN
+          echo OS_LEVEL_POINTER_CLICK_NOT_VERIFIED

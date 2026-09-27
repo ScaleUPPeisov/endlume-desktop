@@ -130,6 +130,28 @@ fn output_stem(path:&Path,job:&QueueJob)->String{
     .unwrap_or_else(||format!("{} — Ready Videos",queue_safe_name(&job.project.name)))
 }
 
+fn timecode_positions(durations:&[f64],final_duration:f64,effective_crossfade:f64)->Vec<(f64,usize)>{
+  if durations.is_empty()||final_duration<=0.0{return Vec::new()}
+  let mut offsets=Vec::with_capacity(durations.len());
+  let mut cursor=0.0;
+  for (i,d) in durations.iter().enumerate(){
+    offsets.push(cursor);
+    cursor+=*d;
+    if i+1<durations.len(){cursor=(cursor-effective_crossfade).max(0.0)}
+  }
+  let cycle_duration=cursor.max(0.001);
+  let mut rows=Vec::new();let mut cycle_start=0.0;
+  while cycle_start<final_duration-0.001&&rows.len()<100_000{
+    for (i,offset) in offsets.iter().enumerate(){
+      let t=cycle_start+offset;
+      if t>=final_duration-0.001{break}
+      rows.push((t,i));
+    }
+    cycle_start+=cycle_duration;
+  }
+  rows
+}
+
 async fn probe_audio_duration(app:&AppHandle,path:&str)->Result<f64,String>{
   let out=app.shell().sidecar("ffprobe").map_err(|e|format!("FFprobe недоступен для timecodes: {e}"))?
     .args(["-v","error","-show_entries","format=duration","-of","default=nw=1:nk=1",path])
@@ -155,26 +177,11 @@ async fn write_success_metadata(app:&AppHandle,job:&QueueJob,summary:&render::Re
     let min_track=durations.iter().copied().fold(f64::INFINITY,f64::min);
     job.settings.crossfade_sec.clamp(0.0,10.0).min((min_track*0.40).max(0.0))
   }else{0.0};
-  let mut offsets=Vec::with_capacity(durations.len());
-  let mut cursor=0.0;
-  for (i,d) in durations.iter().enumerate(){
-    offsets.push(cursor);
-    cursor+=*d;
-    if i+1<durations.len(){cursor=(cursor-effective_crossfade).max(0.0)}
-  }
-  let cycle_duration=cursor.max(0.001);
   let mut tc=String::new();
   tc.push_str(&format!("ENDLUME TIMECODES\nProject: {}\nVideo: {}\nDuration: {:.3} sec\n\n",job.project.name,summary.output_path,summary.final_video_duration_seconds));
-  let mut cycle_start=0.0;let mut rows=0usize;
-  while cycle_start<summary.final_video_duration_seconds-0.001&&rows<100_000{
-    for (i,offset) in offsets.iter().enumerate(){
-      let t=cycle_start+offset;
-      if t>=summary.final_video_duration_seconds-0.001{break}
-      let name=Path::new(&job.project.audio[i]).file_name().and_then(|x|x.to_str()).unwrap_or(&job.project.audio[i]);
-      tc.push_str(&format!("{} — {}\n",format_timecode(t),name));
-      rows+=1;
-    }
-    cycle_start+=cycle_duration;
+  for (t,i) in timecode_positions(&durations,summary.final_video_duration_seconds,effective_crossfade){
+    let name=Path::new(&job.project.audio[i]).file_name().and_then(|x|x.to_str()).unwrap_or(&job.project.audio[i]);
+    tc.push_str(&format!("{} — {}\n",format_timecode(t),name));
   }
   let timecodes_path=timecodes_dir.join(format!("{stem} — timecodes.txt"));
   fs::write(&timecodes_path,tc).map_err(|e|format!("Не удалось записать timecodes: {e}"))?;
@@ -292,4 +299,28 @@ pub async fn resume_recovery(app:AppHandle,runtime:State<'_,Arc<QueueRuntime>>)-
 #[tauri::command]
 pub async fn resume_license_queue(app:AppHandle,runtime:State<'_,Arc<QueueRuntime>>)->Result<(),String>{
   license::assert_production_allowed(&app).await?;start_worker_if_needed(app,runtime.inner().clone());Ok(())
+}
+
+#[cfg(test)]
+mod metadata_tests{
+  use super::{format_timecode,timecode_positions};
+
+  #[test]
+  fn timecode_format_is_youtube_friendly(){
+    assert_eq!(format_timecode(0.0),"00:00:00");
+    assert_eq!(format_timecode(65.9),"00:01:05");
+    assert_eq!(format_timecode(3661.2),"01:01:01");
+  }
+
+  #[test]
+  fn timecodes_repeat_tracks_without_crossfade(){
+    let rows=timecode_positions(&[7.0,9.0],40.0,0.0);
+    assert_eq!(rows,vec![(0.0,0),(7.0,1),(16.0,0),(23.0,1),(32.0,0),(39.0,1)]);
+  }
+
+  #[test]
+  fn timecodes_follow_processed_crossfade_cycle(){
+    let rows=timecode_positions(&[7.0,9.0],30.0,2.0);
+    assert_eq!(rows,vec![(0.0,0),(5.0,1),(14.0,0),(19.0,1),(28.0,0)]);
+  }
 }

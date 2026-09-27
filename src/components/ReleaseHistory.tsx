@@ -3,7 +3,14 @@ import React from 'react';
 type Release={version:string;date:string;current?:boolean;title:string;items:string[]};
 
 const releases:Release[]=[
-  {version:'1.0.0-alpha.8.65',date:'26.09.2026',current:true,title:'Real Result State • FAST_ONE_IMAGE • Homer Startup',items:[
+  {version:'1.0.0-alpha.9.0',date:'27.09.2026',current:true,title:'Mac-first Product Generation • Live Library • Direct Timeline',items:[
+    'Новая feature-линия развивается отдельно от опубликованной стабильной 8.65: production release не перезаписывается до прохождения Mac physical gate.',
+    'Библиотека Effects/Subscribe получила живой hover-preview из managed assets и явный счётчик готового/ожидающего render-cache.',
+    'Subscribe timeline получил прямые draggable-точки первого и второго появления; повторяющиеся события пересчитываются сразу.',
+    'Сохранены Tauri 2, Apple Silicon M1+, VideoToolbox/HEVC fast path, Original MP3 packet-copy, zero-copy manifest, очередь, crash recovery и signed updater.',
+    'Результаты по-прежнему создают отдельные timecodes, tracklist и технический project log; exact mode завершает музыку мягким fade-out, whole-track не режет последнюю песню.'
+  ]},
+  {version:'1.0.0-alpha.8.65',date:'26.09.2026',current:false,title:'Real Result State • FAST_ONE_IMAGE • Homer Startup',items:[
     'Успешный render теперь сохраняет точные resultPath и resultBytes прямо из RenderOutcome; поздний terminal snapshot больше не может затереть валидные данные null-значениями.',
     'Кнопки «Открыть видео» и «Открыть папку вывода» снова получают настоящий путь результата, а размер файла отображается из фактически созданного output.',
     'Обычный проект с одной картинкой без активных Effects/Subscribe переведён на короткий physical still + zero-copy sample-table вместо кодирования 12–60 секунд одинакового strict master.',

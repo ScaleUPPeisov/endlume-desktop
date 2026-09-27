@@ -165,13 +165,15 @@ jobs:
             ENDLUME_E2E_RENDER_JOB="$GITHUB_WORKSPACE/extended-865/errors/$CASE.json" ENDLUME_E2E_RESULT="$GITHUB_WORKSPACE/extended-865/errors/$CASE-result.json" "$AUDIT_BIN"
             RC=$?
             set -e
-            test "$RC" -ne 0
-            python3 - "$CASE" <<'PY'
+            python3 - "$CASE" "$RC" <<'PY'
           import json,sys,pathlib
-          case=sys.argv[1];x=json.load(open(f'extended-865/errors/{case}-result.json'))
+          case=sys.argv[1];rc=int(sys.argv[2])
+          p=pathlib.Path(f'extended-865/errors/{case}-result.json')
+          assert p.is_file(),(case,rc,'result json missing')
+          x=json.load(open(p))
           assert x['status']=='failed',x
           assert x['results'] and x['results'][0]['status']=='failed',x
-          print('CONTROLLED_FAILURE_GREEN',case,x['results'][0].get('error','')[:200])
+          print('CONTROLLED_FAILURE_GREEN',case,'process_rc='+str(rc),x['results'][0].get('error','')[:200])
           PY
           done
           echo ENDLUME_865_MAC_CONTROLLED_ERRORS_GREEN

@@ -68,6 +68,8 @@ export interface SubscribePreset extends EffectPreset {
   firstAtSec: number;
   secondAtSec: number;
   repeatEverySec: number;
+  /** Additional one-off appearances placed directly on the timeline. */
+  manualAtSec?: number[];
 }
 
 export interface RenderSettings {

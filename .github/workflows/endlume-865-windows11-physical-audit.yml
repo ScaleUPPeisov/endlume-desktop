@@ -24,7 +24,7 @@ env:
 
 jobs:
   audit:
-    runs-on: windows-2025
+    runs-on: windows-latest
     timeout-minutes: 75
     env:
       RELEASE_TOKEN: ${{ secrets.ENDLUME_RELEASE_TOKEN }}

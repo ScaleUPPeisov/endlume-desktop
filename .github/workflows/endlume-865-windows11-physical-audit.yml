@@ -1,0 +1,223 @@
+name: ENDLUME 8.65 Windows 11 Physical Audit
+
+on:
+  push:
+    branches: [endlume-8.64-turbo]
+    paths:
+      - '.github/workflows/endlume-865-windows11-physical-audit.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-865-windows11-physical-audit
+  cancel-in-progress: true
+
+env:
+  VERSION: 1.0.0-alpha.8.65
+  STABLE_REPO: ScaleUPPeisov/scaleup-site
+  STABLE_TAG: endlume-stable
+  WINDOWS_ASSET: ENDLUME-YT-Studio-PEISOV-Setup-1.0.0-alpha.8.65-x64.exe
+  WINDOWS_SHA256: 4a4be729cb34d93f6e55d03b9e727f4c80006043f404b84b6cb2a3cb659d695a
+  WINDOWS_SIZE: '98330820'
+
+jobs:
+  audit:
+    runs-on: windows-2025
+    timeout-minutes: 75
+    env:
+      RELEASE_TOKEN: ${{ secrets.ENDLUME_RELEASE_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Record Windows VM hardware
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          New-Item -ItemType Directory -Force -Path audit-win | Out-Null
+          Get-ComputerInfo | Select-Object WindowsProductName,WindowsVersion,OsBuildNumber,OsArchitecture | ConvertTo-Json | Set-Content audit-win/os.json
+          Get-CimInstance Win32_Processor | Select-Object Name,NumberOfCores,NumberOfLogicalProcessors | ConvertTo-Json | Set-Content audit-win/cpu.json
+          Get-CimInstance Win32_VideoController | Select-Object Name,DriverVersion | ConvertTo-Json | Set-Content audit-win/gpu.json
+          Get-Content audit-win/os.json
+          Get-Content audit-win/cpu.json
+          Get-Content audit-win/gpu.json
+
+      - name: Download and verify public Setup EXE and manifest
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:GH_TOKEN=$env:RELEASE_TOKEN
+          if(-not $env:GH_TOKEN){throw 'release token missing'}
+          gh release download $env:STABLE_TAG --repo $env:STABLE_REPO --pattern $env:WINDOWS_ASSET --dir audit-win --clobber
+          $exe=Join-Path audit-win $env:WINDOWS_ASSET
+          $size=(Get-Item $exe).Length
+          $sha=(Get-FileHash $exe -Algorithm SHA256).Hash.ToLower()
+          if($size -ne [int64]$env:WINDOWS_SIZE){throw "size mismatch $size"}
+          if($sha -ne $env:WINDOWS_SHA256){throw "sha mismatch $sha"}
+          gh api "repos/$env:STABLE_REPO/releases/tags/$env:STABLE_TAG" | Set-Content audit-win/release.json
+          $rel=Get-Content audit-win/release.json -Raw | ConvertFrom-Json
+          $latest=$rel.assets | Where-Object {$_.name -eq 'latest.json'} | Select-Object -First 1
+          gh api -H 'Accept: application/octet-stream' "repos/$env:STABLE_REPO/releases/assets/$($latest.id)" | Set-Content audit-win/latest.json
+          $m=Get-Content audit-win/latest.json -Raw | ConvertFrom-Json
+          if($m.version -ne $env:VERSION){throw 'wrong updater version'}
+          if($m.platforms.'windows-x86_64'.sha256 -ne $env:WINDOWS_SHA256){throw 'manifest sha mismatch'}
+          if([string]::IsNullOrWhiteSpace($m.platforms.'windows-x86_64'.signature)){throw 'signature missing'}
+          if(-not $m.platforms.'windows-x86_64'.url.Contains($env:WINDOWS_ASSET)){throw 'wrong Windows URL'}
+          if(-not $m.platforms.'darwin-aarch64'){throw 'macOS mapping missing'}
+          Write-Host "ENDLUME_865_WINDOWS_PUBLIC_ARTIFACT_GREEN size=$size sha256=$sha"
+
+      - name: Clean install public 8.65
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $setup=(Resolve-Path (Join-Path audit-win $env:WINDOWS_ASSET)).Path
+          $p=Start-Process -FilePath $setup -ArgumentList '/S' -PassThru -Wait
+          if($p.ExitCode -ne 0){throw "installer exit $($p.ExitCode)"}
+          Start-Sleep -Seconds 3
+          $roots=@("$env:LOCALAPPDATA\Programs","$env:ProgramFiles")
+          $x86=[Environment]::GetFolderPath('ProgramFilesX86')
+          if($x86){$roots+=$x86}
+          $apps=@()
+          foreach($root in $roots){
+            if(Test-Path $root){
+              $apps+=Get-ChildItem $root -Recurse -Filter '*.exe' -ErrorAction SilentlyContinue |
+                Where-Object {$_.Name -match 'ENDLUME' -or $_.DirectoryName -match 'ENDLUME'} |
+                Select-Object -ExpandProperty FullName
+            }
+          }
+          $app=$apps | Where-Object {$_ -notmatch 'uninstall|unins'} | Select-Object -First 1
+          if(-not $app){throw "installed ENDLUME app not found"}
+          "PUBLIC_WIN_APP=$app" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          $u=Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*','HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*','HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*' -ErrorAction SilentlyContinue |
+            Where-Object {$_.DisplayName -match 'ENDLUME'} | Select-Object -First 1
+          $u | Select-Object DisplayName,DisplayVersion,InstallLocation,UninstallString | ConvertTo-Json | Set-Content audit-win/install.json
+          Write-Host "ENDLUME_865_WINDOWS_CLEAN_INSTALL_GREEN app=$app"
+
+      - name: Launch and relaunch installed app
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $p=Start-Process -FilePath $env:PUBLIC_WIN_APP -PassThru
+          Start-Sleep -Seconds 4
+          if($p.HasExited){throw "app exited early"}
+          Stop-Process -Id $p.Id -Force
+          Start-Sleep -Seconds 2
+          $p2=Start-Process -FilePath $env:PUBLIC_WIN_APP -PassThru
+          Start-Sleep -Seconds 4
+          if($p2.HasExited){throw "app relaunch exited early"}
+          Stop-Process -Id $p2.Id -Force
+          Write-Host ENDLUME_865_WINDOWS_LAUNCH_RELAUNCH_GREEN
+
+      - name: Stage pinned FFmpeg tools
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $tag='autobuild-2026-09-14-13-17'
+          $archive='ffmpeg-N-126549-ga51bb69b09-win64-gpl.zip'
+          $url="https://github.com/BtbN/FFmpeg-Builds/releases/download/$tag/$archive"
+          $zip=Join-Path $env:RUNNER_TEMP $archive
+          $dir=Join-Path $env:RUNNER_TEMP 'e865-audit-ffmpeg'
+          Invoke-WebRequest -Uri $url -OutFile $zip
+          Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue
+          Expand-Archive -Path $zip -DestinationPath $dir -Force
+          $ffm=(Get-ChildItem $dir -Recurse -Filter ffmpeg.exe | Select-Object -First 1).FullName
+          $ffp=(Get-ChildItem $dir -Recurse -Filter ffprobe.exe | Select-Object -First 1).FullName
+          if(-not $ffm -or -not $ffp){throw 'ffmpeg tools missing'}
+          "AUDIT_FFMPEG=$ffm" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "AUDIT_FFPROBE=$ffp" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          & $ffm -version | Select-Object -First 1
+
+      - name: Create Unicode physical fixture and render jobs
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          New-Item -ItemType Directory -Force -Path audit-win/fixture | Out-Null
+          & $env:AUDIT_FFMPEG -hide_banner -loglevel error -f lavfi -i "color=c=0x162238:s=1920x1080:r=1" -frames:v 1 -y "audit-win/fixture/Картинка 01 (Final).png"
+          foreach($i in 1..15){
+            $freq=300+$i*31
+            $file=("audit-win/fixture/Песня {0:d2} (Final).mp3" -f $i)
+            $lavfi="sine=frequency=$($freq):sample_rate=44100"
+            & $env:AUDIT_FFMPEG -hide_banner -loglevel error -f lavfi -i $lavfi -t (6+$i%4) -ac 2 -c:a libmp3lame -b:a 192k -y $file
+          }
+          $img=(Resolve-Path "audit-win/fixture/Картинка 01 (Final).png").Path
+          $audio=Get-ChildItem audit-win/fixture -Filter '*.mp3' | Sort-Object Name | ForEach-Object {$_.FullName}
+          $out=(Resolve-Path audit-win).Path+"\outputs"
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          function MakeJob($id,$hours,$count){
+            return @{
+              project=@{id=$id;name=$id;path=(Resolve-Path audit-win/fixture).Path;media=@($img);audio=@($audio | Select-Object -First $count);valid=$true;error=$null}
+              settings=@{width=1920;height=1080;fps=60;codec='h265';bitrateMbps=4.0;durationHours=$hours;durationMode='whole-track';loopMode='loop';crossfadeSec=0.0;normalizeLufs=$false;outputDir=$out;preset='fast';encoderPreference='auto'}
+              effects=@();subscribes=@();ambient=$null
+            }
+          }
+          $jobs=@(
+            (MakeJob 'win-cold' 2 2),
+            (MakeJob 'win-warm1' 2 2),
+            (MakeJob 'win-warm2' 2 2),
+            (MakeJob 'win-warm3' 2 2),
+            (MakeJob 'win-1h' 1 2),
+            (MakeJob 'win-3h' 3 2),
+            (MakeJob 'win-15tracks' 2 15)
+          )
+          @{jobs=$jobs} | ConvertTo-Json -Depth 12 | Set-Content audit-win/jobs.json -Encoding utf8
+
+      - name: Installed-app production render_job E2E
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:ENDLUME_E2E_RENDER_JOB=(Resolve-Path audit-win/jobs.json).Path
+          $env:ENDLUME_E2E_RESULT=(Resolve-Path audit-win).Path+"\e2e.json"
+          $p=Start-Process -FilePath $env:PUBLIC_WIN_APP -PassThru -Wait
+          Remove-Item Env:ENDLUME_E2E_RENDER_JOB -ErrorAction SilentlyContinue
+          Remove-Item Env:ENDLUME_E2E_RESULT -ErrorAction SilentlyContinue
+          if($p.ExitCode -ne 0){throw "E2E exit $($p.ExitCode)"}
+          $x=Get-Content audit-win/e2e.json -Raw | ConvertFrom-Json
+          if($x.status -ne 'passed' -or $x.results.Count -ne 7){throw ($x | ConvertTo-Json -Depth 10)}
+          foreach($r in $x.results){
+            if(-not (Test-Path $r.outputPath)){throw "output missing $($r.id)"}
+            $bytes=(Get-Item $r.outputPath).Length
+            if([int64]$r.outputBytes -ne $bytes){throw "resultBytes mismatch $($r.id)"}
+            if($r.terminal.resultPath -ne $r.outputPath){throw "resultPath mismatch $($r.id)"}
+            if([int64]$r.terminal.resultBytes -ne $bytes){throw "terminal bytes mismatch $($r.id)"}
+            $probe=& $env:AUDIT_FFPROBE -v error -show_entries stream=codec_type,codec_name,width,height,avg_frame_rate -of json $r.outputPath | ConvertFrom-Json
+            $v=$probe.streams | Where-Object {$_.codec_type -eq 'video'} | Select-Object -First 1
+            $a=$probe.streams | Where-Object {$_.codec_type -eq 'audio'} | Select-Object -First 1
+            if($v.codec_name -ne 'hevc' -or $v.width -ne 1920 -or $v.height -ne 1080 -or $v.avg_frame_rate -ne '60/1'){throw "video mismatch $($r.id)"}
+            if($a.codec_name -ne 'mp3'){throw "audio mismatch $($r.id)"}
+          }
+          $t=$x.results | Where-Object {$_.id -like 'win-warm*'} | ForEach-Object {[double]$_.wallSeconds} | Sort-Object
+          Write-Host "ENDLUME_865_WINDOWS_INSTALLED_RENDER_GREEN warm_min=$($t[0]) warm_median=$($t[1]) warm_max=$($t[2])"
+
+      - name: Open/reveal commands, process cleanup and restart
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $x=Get-Content audit-win/e2e.json -Raw | ConvertFrom-Json
+          $file=$x.results[0].outputPath
+          Start-Process explorer.exe -ArgumentList @($file)
+          Start-Sleep -Seconds 2
+          Start-Process explorer.exe -ArgumentList @("/select,$file")
+          Start-Sleep -Seconds 2
+          if(Get-Process ffmpeg,ffprobe -ErrorAction SilentlyContinue){throw 'orphan ffmpeg/ffprobe'}
+          $p=Start-Process $env:PUBLIC_WIN_APP -PassThru
+          Start-Sleep -Seconds 4
+          if($p.HasExited){throw 'restart failed'}
+          Stop-Process $p.Id -Force
+          Write-Host ENDLUME_865_WINDOWS_PUBLIC_RELEASE_CORE_PHYSICAL_GREEN
+          Write-Host PARTIAL_UPDATER_UI_864_TO_865_NOT_AUTOMATED
+          Write-Host PARTIAL_SPLASH_PIXELS_AND_DPI_NOT_MACHINE_VISION_VERIFIED
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        continue-on-error: true
+        with:
+          name: ENDLUME-865-Windows11-audit
+          path: audit-win/**
+          if-no-files-found: warn
+          retention-days: 30

@@ -1,0 +1,115 @@
+name: ENDLUME 9.0 Mac-first validation
+
+on:
+  push:
+    branches:
+      - feature/endlume-9-mac-first
+    paths:
+      - 'src/**'
+      - 'src-tauri/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/endlume-90-mac-first-validation.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-90-mac-first-validation
+  cancel-in-progress: true
+
+jobs:
+  mac-first:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/endlume-9-mac-first
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Record physical Mac
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          echo "RUNNER_NAME=$RUNNER_NAME"
+          echo "RUNNER_ARCH=$RUNNER_ARCH"
+          sw_vers
+          uname -m
+          sysctl -n machdep.cpu.brand_string 2>/dev/null || true
+
+      - name: Frontend type and production build
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          npm ci
+          npm run check
+          npm run build
+          echo ENDLUME_90_FRONTEND_GREEN
+
+      - name: Stage bundled FFmpeg sidecars
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+          FFMPEG="$(command -v ffmpeg)"
+          FFPROBE="$(command -v ffprobe)"
+          test -x "$FFMPEG"
+          test -x "$FFPROBE"
+          mkdir -p src-tauri/binaries
+          cp "$FFMPEG" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp "$FFPROBE" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          chmod +x src-tauri/binaries/*
+          ffmpeg -version | head -1
+          echo ENDLUME_90_SIDECARS_GREEN
+
+      - name: Rust regression
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cargo check --manifest-path src-tauri/Cargo.toml
+          cargo test --manifest-path src-tauri/Cargo.toml -- --nocapture
+          echo ENDLUME_90_RUST_GREEN
+
+      - name: Build isolated macOS app
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import json
+          p='src-tauri/tauri.conf.json'
+          d=json.load(open(p))
+          d['bundle']['createUpdaterArtifacts']=False
+          open(p,'w').write(json.dumps(d,ensure_ascii=False,indent=2)+'\n')
+          PY
+          export CARGO_TARGET_DIR="$HOME/.endlume-build-cache/endlume-90-mac-first"
+          npm run tauri build -- --bundles app
+          APP="$(find "$CARGO_TARGET_DIR/release/bundle/macos" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          test -n "$APP"
+          VER="$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist")"
+          EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
+          ARCHS="$(/usr/bin/lipo -archs "$APP/Contents/MacOS/$EXE")"
+          echo "FEATURE_APP=$APP" >> "$GITHUB_ENV"
+          echo "FEATURE_EXE=$EXE" >> "$GITHUB_ENV"
+          echo "FEATURE_VERSION=$VER"
+          echo "FEATURE_ARCHS=$ARCHS"
+          test "$VER" = "1.0.0-alpha.9.0"
+          echo "$ARCHS" | grep -qw arm64
+          echo ENDLUME_90_APP_BUILD_GREEN
+
+      - name: Physical launch without replacing stable 8.65
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          /usr/bin/open -n "$FEATURE_APP"
+          sleep 5
+          PID="$(pgrep -f "$FEATURE_APP/Contents/MacOS/$FEATURE_EXE" | head -1 || true)"
+          test -n "$PID"
+          ps -o pid,ppid,state,etime,%cpu,%mem,command -p "$PID"
+          /usr/sbin/screencapture -x "$RUNNER_TEMP/endlume-90-main.png" || true
+          echo "ENDLUME_90_PROCESS_PID=$PID"
+          echo ENDLUME_90_PHYSICAL_LAUNCH_GREEN
+          kill "$PID" >/dev/null 2>&1 || true

@@ -173,7 +173,7 @@ fn load_persistent_encoder(app:&AppHandle)->Option<String>{
 fn save_persistent_encoder(app:&AppHandle,selected:&str){
   let Some(path)=encoder_cache_path(app) else{return};
   if let Some(parent)=path.parent(){let _=std::fs::create_dir_all(parent);}
-  let payload=json!({"version":"1.0.0-alpha.8.65","fingerprint":encoder_hardware_fingerprint(),"selected":selected});
+  let payload=json!({"version":env!("CARGO_PKG_VERSION"),"fingerprint":encoder_hardware_fingerprint(),"selected":selected});
   let _=std::fs::write(path,serde_json::to_vec(&payload).unwrap_or_default());
 }
 

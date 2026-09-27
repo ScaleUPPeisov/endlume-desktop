@@ -1,0 +1,74 @@
+name: ENDLUME 8.65 macOS updater no-loop check
+
+on:
+  push:
+    branches: [endlume-8.64-turbo]
+    paths:
+      - '.github/workflows/endlume-865-macos-updater-no-loop.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Build exact 8.65 source with audit-only local_update_check hook
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
+          test "$(node -p "require('./package.json').version")" = "1.0.0-alpha.8.65"
+          mkdir -p src-tauri/binaries
+          cp "$(command -v ffmpeg)" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp "$(command -v ffprobe)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          chmod +x src-tauri/binaries/*
+          python3 - <<'PY'
+          from pathlib import Path
+          import json
+          p=Path('src-tauri/src/lib.rs');s=p.read_text()
+          needle='''    .setup(|app|{\n      persistence::mark_session_open(&app.handle().clone())?;'''
+          repl='''    .setup(|app|{\n      persistence::mark_session_open(&app.handle().clone())?;\n      if let Ok(result_path)=std::env::var("ENDLUME_AUDIT_UPDATE_CHECK_RESULT"){\n        let handle=app.handle().clone();\n        tauri::async_runtime::spawn(async move{\n          let check=updater_local::local_update_check(handle.clone()).await;\n          let _=std::fs::write(&result_path,serde_json::to_vec_pretty(&check).unwrap_or_default());\n          handle.exit(0);\n        });\n        return Ok(())\n      }'''
+          assert needle in s
+          p.write_text(s.replace(needle,repl,1))
+          q=Path('src-tauri/tauri.conf.json');d=json.loads(q.read_text());d['bundle']['createUpdaterArtifacts']=False
+          q.write_text(json.dumps(d,ensure_ascii=False,indent=2)+'\n')
+          PY
+          npm ci
+          CARGO_TARGET_DIR="$RUNNER_TEMP/e865-update-check-build" npm run tauri build -- --bundles app
+          APP="$(find "$RUNNER_TEMP/e865-update-check-build/release/bundle/macos" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          test -n "$APP"
+          echo "AUDIT_APP=$APP" >> "$GITHUB_ENV"
+
+      - name: Prove current 8.65 does not offer 8.65 again
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          RESULT="$RUNNER_TEMP/e865-update-check.json"
+          rm -f "$RESULT"
+          EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$AUDIT_APP/Contents/Info.plist")"
+          ENDLUME_AUDIT_UPDATE_CHECK_RESULT="$RESULT" "$AUDIT_APP/Contents/MacOS/$EXE" >/dev/null 2>&1 &
+          PID=$!
+          for i in $(seq 1 40); do [ -s "$RESULT" ] && break; sleep 0.5; done
+          test -s "$RESULT"
+          cat "$RESULT"
+          wait "$PID" 2>/dev/null || true
+          python3 - "$RESULT" <<'PY'
+          import json,sys
+          x=json.load(open(sys.argv[1]))
+          assert x['supported'] is True,x
+          assert x['available'] is False,x
+          assert x['current']=='1.0.0-alpha.8.65',x
+          assert not x.get('version'),x
+          assert not x.get('reason'),x
+          print('ENDLUME_865_UPDATER_NO_LOOP_GREEN')
+          PY

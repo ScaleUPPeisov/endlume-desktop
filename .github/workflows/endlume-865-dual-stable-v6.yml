@@ -3,14 +3,21 @@ name: ENDLUME 8.65 Dual Stable V6
 on:
   push:
     branches: [endlume-8.64-turbo]
-    paths: ['.github/workflows/endlume-865-dual-stable-v6.yml']
+    paths:
+      - '.github/workflows/endlume-865-dual-stable-v6.yml'
+      - 'scripts/run-endlume-865-render-job-e2e.py'
+      - 'scripts/test-endlume-865-contract.py'
+      - 'src/**'
+      - 'src-tauri/**'
+      - 'package.json'
+      - 'package-lock.json'
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: endlume-865-dual-stable-v3
+  group: endlume-865-dual-stable-v6
   cancel-in-progress: true
 
 env:

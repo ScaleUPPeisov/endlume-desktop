@@ -149,7 +149,7 @@ async fn write_success_metadata(app:&AppHandle,job:&QueueJob,summary:&render::Re
 
   let mut durations=Vec::with_capacity(job.project.audio.len());
   for audio in &job.project.audio{durations.push(probe_audio_duration(app,audio).await?)}
-  if durations.iter().any(|x|!*x>0.0||!x.is_finite()){return Err("Один из аудиотреков имеет некорректную длительность для timecodes".into())}
+  if durations.iter().any(|x|!x.is_finite()||*x<=0.0){return Err("Один из аудиотреков имеет некорректную длительность для timecodes".into())}
 
   let effective_crossfade=if summary.audio_mode=="PROCESSED_AUDIO"&&!durations.is_empty(){
     let min_track=durations.iter().copied().fold(f64::INFINITY,f64::min);

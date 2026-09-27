@@ -1,6 +1,6 @@
 [package]
 name = "endlume"
-version = "1.0.0-alpha.8.65"
+version = "1.0.0-alpha.9.0"
 description = "ENDLUME YT Studio PEISOV"
 authors = ["ENDLUME YT Studio PEISOV"]
 edition = "2021"

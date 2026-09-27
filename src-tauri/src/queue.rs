@@ -1,8 +1,9 @@
 use crate::{license,model::{EffectPreset,ProjectScanItem,QueueJob,RenderSettings,SubscribePreset},persistence,render};
 use parking_lot::Mutex;
 use serde_json::{json,Value};
-use std::{collections::{HashSet,VecDeque},fs,path::PathBuf,sync::{Arc,atomic::{AtomicBool,Ordering}},time::{Instant,UNIX_EPOCH}};
+use std::{collections::{HashSet,VecDeque},fs,path::{Path,PathBuf},sync::{Arc,atomic::{AtomicBool,Ordering}},time::{Instant,UNIX_EPOCH}};
 use tauri::{AppHandle,Emitter,State};
+use tauri_plugin_shell::ShellExt;
 
 const LICENSE_BLOCKED:&str="__ENDLUME_LICENSE_BLOCKED__";
 
@@ -117,6 +118,88 @@ fn save_error_log(job:&QueueJob,raw:&str)->Option<String>{
   fs::write(&path,body).ok().map(|_|path.to_string_lossy().into_owned())
 }
 
+
+fn format_timecode(sec:f64)->String{
+  let total=sec.max(0.0).floor() as u64;
+  let h=total/3600;let m=(total%3600)/60;let s=total%60;
+  format!("{h:02}:{m:02}:{s:02}")
+}
+
+fn output_stem(path:&Path,job:&QueueJob)->String{
+  path.file_stem().and_then(|x|x.to_str()).filter(|x|!x.trim().is_empty()).map(str::to_string)
+    .unwrap_or_else(||format!("{} — Ready Videos",queue_safe_name(&job.project.name)))
+}
+
+async fn probe_audio_duration(app:&AppHandle,path:&str)->Result<f64,String>{
+  let out=app.shell().sidecar("ffprobe").map_err(|e|format!("FFprobe недоступен для timecodes: {e}"))?
+    .args(["-v","error","-show_entries","format=duration","-of","default=nw=1:nk=1",path])
+    .output().await.map_err(|e|format!("Не удалось запустить FFprobe для '{}': {e}",path))?;
+  if !out.status.success(){return Err(format!("FFprobe не смог определить длительность '{}': {}",path,String::from_utf8_lossy(&out.stderr).trim()))}
+  String::from_utf8_lossy(&out.stdout).trim().parse::<f64>().map_err(|e|format!("Некорректная длительность '{}': {e}",path))
+}
+
+async fn write_success_metadata(app:&AppHandle,job:&QueueJob,summary:&render::RenderOutcome)->Result<(String,String,String),String>{
+  let output=PathBuf::from(&summary.output_path);
+  let root=output.parent().ok_or("У итогового видео нет родительской папки")?;
+  let stem=output_stem(&output,job);
+  let timecodes_dir=root.join("timecodes");
+  let logs_dir=root.join("logs");
+  fs::create_dir_all(&timecodes_dir).map_err(|e|format!("Не удалось создать папку timecodes: {e}"))?;
+  fs::create_dir_all(&logs_dir).map_err(|e|format!("Не удалось создать папку logs: {e}"))?;
+
+  let mut durations=Vec::with_capacity(job.project.audio.len());
+  for audio in &job.project.audio{durations.push(probe_audio_duration(app,audio).await?)}
+  if durations.iter().any(|x|!*x>0.0||!x.is_finite()){return Err("Один из аудиотреков имеет некорректную длительность для timecodes".into())}
+
+  let effective_crossfade=if summary.audio_mode=="PROCESSED_AUDIO"&&!durations.is_empty(){
+    let min_track=durations.iter().copied().fold(f64::INFINITY,f64::min);
+    job.settings.crossfade_sec.clamp(0.0,10.0).min((min_track*0.40).max(0.0))
+  }else{0.0};
+  let mut offsets=Vec::with_capacity(durations.len());
+  let mut cursor=0.0;
+  for (i,d) in durations.iter().enumerate(){
+    offsets.push(cursor);
+    cursor+=*d;
+    if i+1<durations.len(){cursor=(cursor-effective_crossfade).max(0.0)}
+  }
+  let cycle_duration=cursor.max(0.001);
+  let mut tc=String::new();
+  tc.push_str(&format!("ENDLUME TIMECODES\nProject: {}\nVideo: {}\nDuration: {:.3} sec\n\n",job.project.name,summary.output_path,summary.final_video_duration_seconds));
+  let mut cycle_start=0.0;let mut rows=0usize;
+  while cycle_start<summary.final_video_duration_seconds-0.001&&rows<100_000{
+    for (i,offset) in offsets.iter().enumerate(){
+      let t=cycle_start+offset;
+      if t>=summary.final_video_duration_seconds-0.001{break}
+      let name=Path::new(&job.project.audio[i]).file_name().and_then(|x|x.to_str()).unwrap_or(&job.project.audio[i]);
+      tc.push_str(&format!("{} — {}\n",format_timecode(t),name));
+      rows+=1;
+    }
+    cycle_start+=cycle_duration;
+  }
+  let timecodes_path=timecodes_dir.join(format!("{stem} — timecodes.txt"));
+  fs::write(&timecodes_path,tc).map_err(|e|format!("Не удалось записать timecodes: {e}"))?;
+
+  let mut tracks=String::new();
+  tracks.push_str(&format!("ENDLUME TRACK LIST\nProject: {}\nTracks: {}\n\n",job.project.name,job.project.audio.len()));
+  for (i,audio) in job.project.audio.iter().enumerate(){
+    let name=Path::new(audio).file_name().and_then(|x|x.to_str()).unwrap_or(audio);
+    tracks.push_str(&format!("{:02}. {} — {:.3} sec\n",i+1,name,durations[i]));
+  }
+  let tracks_path=timecodes_dir.join(format!("{stem} — track list.txt"));
+  fs::write(&tracks_path,tracks).map_err(|e|format!("Не удалось записать список песен: {e}"))?;
+
+  let log_path=logs_dir.join(format!("{stem} — render.txt"));
+  let log=format!(
+    "ENDLUME successful render\nVersion: {}\nCompleted: {}\nProject: {}\nProject path: {}\nOutput: {}\nOutput bytes: {}\nFinal duration: {:.3} sec\nEncoder: {}\nFast path: {}\nFast path reason: {}\nAudio mode: {}\nVideo codec: {}\nAudio codec: {}\nMedia files: {}\nAudio tracks: {}\nTimecodes: {}\nTrack list: {}\n",
+    env!("CARGO_PKG_VERSION"),chrono::Utc::now().to_rfc3339(),job.project.name,job.project.path,
+    summary.output_path,summary.output_bytes.unwrap_or(0),summary.final_video_duration_seconds,summary.encoder,
+    summary.fast_path,summary.fast_path_reason,summary.audio_mode,summary.video_codec,summary.audio_codec,
+    job.project.media.len(),job.project.audio.len(),timecodes_path.display(),tracks_path.display()
+  );
+  fs::write(&log_path,log).map_err(|e|format!("Не удалось записать render log: {e}"))?;
+  Ok((timecodes_path.to_string_lossy().into_owned(),tracks_path.to_string_lossy().into_owned(),log_path.to_string_lossy().into_owned()))
+}
+
 fn start_worker_if_needed(app:AppHandle,runtime:Arc<QueueRuntime>){
   if license::production_blocked(){return}
   if runtime.running.compare_exchange(false,true,Ordering::SeqCst,Ordering::SeqCst).is_err(){return}
@@ -142,7 +225,10 @@ fn start_worker_if_needed(app:AppHandle,runtime:Arc<QueueRuntime>){
         match outcome{
           Ok(summary)=>{
             license::telemetry_render_completed(&job,&summary,job_timer.elapsed().as_secs_f64());
-            let payload=done_payload_from_summary(&job,&id,&summary);
+            let metadata=write_success_metadata(&app,&job,&summary).await;
+            if let Err(error)=metadata.as_ref(){let _=app.emit("render-warning",json!({"id":id,"message":format!("Видео готово, но не удалось создать timecodes/список песен/log: {error}")}));}
+            let mut payload=done_payload_from_summary(&job,&id,&summary);
+            if let Ok((timecodes,track_list,render_log))=metadata{if let Some(o)=payload.as_object_mut(){o.insert("timecodesPath".into(),json!(timecodes));o.insert("trackListPath".into(),json!(track_list));o.insert("renderLogPath".into(),json!(render_log));}}
             runtime.remember_terminal(payload.clone());
             let _=app.emit("render-terminal",payload);
           }

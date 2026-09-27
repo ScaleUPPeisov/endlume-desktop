@@ -98,7 +98,7 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-          test -x "$AUDIT_E2E_BIN"
+          test -x "$PUBLIC_MAC_BIN"
           CANONICAL="/Applications/ENDLUME YT Studio PEISOV.app"
           if [ -d "$CANONICAL" ]; then
             VER="$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$CANONICAL/Contents/Info.plist" 2>/dev/null || true)"

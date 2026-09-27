@@ -63,7 +63,8 @@ pub struct SubscribePreset{
   #[serde(flatten)] pub effect:EffectPreset,
   pub first_at_sec:f64,
   pub second_at_sec:f64,
-  pub repeat_every_sec:f64
+  pub repeat_every_sec:f64,
+  #[serde(default)] pub manual_at_sec:Vec<f64>
 }
 
 #[derive(Debug,Clone,Serialize,Deserialize)]

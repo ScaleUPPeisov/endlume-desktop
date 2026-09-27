@@ -108,12 +108,18 @@ jobs:
               if pgrep -f "$CANONICAL/Contents/MacOS/$EXE" >/dev/null 2>&1; then
                 echo PARTIAL_INSTALLED_APP_ALREADY_RUNNING_NOT_INTERRUPTED
               else
-                /usr/bin/open -n "$CANONICAL"
-                sleep 3
-                pgrep -f "$CANONICAL/Contents/MacOS/$EXE" >/dev/null
-                /usr/bin/osascript -e 'tell application id "studio.endlume.desktop" to quit' >/dev/null 2>&1 || pkill -f "$CANONICAL/Contents/MacOS/$EXE" || true
-                sleep 2
-                echo ENDLUME_865_MAC_INSTALLED_RELEASE_LAUNCH_GREEN
+                if /usr/bin/open -n "$CANONICAL"; then
+                  sleep 3
+                  if pgrep -f "$CANONICAL/Contents/MacOS/$EXE" >/dev/null 2>&1; then
+                    echo ENDLUME_865_MAC_INSTALLED_RELEASE_LAUNCH_GREEN
+                    /usr/bin/osascript -e 'tell application id "studio.endlume.desktop" to quit' >/dev/null 2>&1 || pkill -f "$CANONICAL/Contents/MacOS/$EXE" || true
+                    sleep 2
+                  else
+                    echo PARTIAL_INSTALLED_GUI_PROCESS_NOT_OBSERVABLE_FROM_RUNNER_SESSION
+                  fi
+                else
+                  echo PARTIAL_LAUNCHSERVICES_OPEN_FAILED_IN_RUNNER_SESSION
+                fi
               fi
             else
               echo PARTIAL_CANONICAL_APP_NOT_865

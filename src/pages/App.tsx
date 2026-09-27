@@ -119,6 +119,16 @@ export function App(){
 
   useEffect(()=>{
     if(!license?.valid)return;
+    const key='endlume-auto-benchmark-v1';
+    if(window.localStorage.getItem(key))return;
+    const timer=window.setTimeout(()=>{
+      api.benchmark().then(result=>window.localStorage.setItem(key,JSON.stringify({at:Date.now(),result}))).catch(()=>{});
+    },2500);
+    return()=>window.clearTimeout(timer);
+  },[license?.valid]);
+
+  useEffect(()=>{
+    if(!license?.valid)return;
     const screen=editor?`editor:${editor.kind}`:`page:${page}`;
     api.setLicenseScreen(screen).catch(()=>{});
   },[license?.valid,page,editor?.kind]);

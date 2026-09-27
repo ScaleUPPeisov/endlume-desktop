@@ -60,27 +60,32 @@ jobs:
           echo "AUDIT_BIN=$BIN" >> "$GITHUB_ENV"
           echo ENDLUME_NEXT_M1_AUDIT_BUILD_GREEN
 
-      - name: Create synthetic Unicode fixture
+      - name: Resolve real media fixture into Unicode output
         shell: bash
         run: |
           set -Eeuo pipefail
           export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+          TMP="$(mktemp -d /tmp/endlume-next-real.XXXXXX)"
+          python3 scripts/find-endlume-real-fixture.py "$TMP/env"
+          source "$TMP/env"
+          test -f "$SIDE"
           ROOT="$RUNNER_TEMP/ENDLUME Next [M1]/Музыка для YouTube"
           OUT="$ROOT/Готовые видео [тест]"
           mkdir -p "$ROOT" "$OUT"
-          ffmpeg -hide_banner -loglevel error -f lavfi -i "color=c=0x172033:s=1920x1080:r=1" -frames:v 1 -y "$ROOT/Картинка 01 [Final].png"
-          ffmpeg -hide_banner -loglevel error -f lavfi -i "sine=frequency=440:sample_rate=44100" -t 7 -ac 2 -c:a libmp3lame -b:a 192k -y "$ROOT/Песня 01 [Final].mp3"
-          ffmpeg -hide_banner -loglevel error -f lavfi -i "sine=frequency=660:sample_rate=44100" -t 9 -ac 2 -c:a libmp3lame -b:a 192k -y "$ROOT/Песня 02 [Final].mp3"
-          python3 - "$ROOT" "$OUT" <<'PY'
+          python3 - "$SIDE" "$ROOT" "$OUT" <<'PY'
           import json,pathlib,sys
-          root=pathlib.Path(sys.argv[1]);out=pathlib.Path(sys.argv[2])
+          side=json.load(open(sys.argv[1],encoding='utf-8'))
+          root=pathlib.Path(sys.argv[2]);out=pathlib.Path(sys.argv[3]);p=side['project']
+          media=[x for x in p['media'] if pathlib.Path(x).is_file()]
+          audio=[x for x in p['audio'] if pathlib.Path(x).is_file()]
+          assert media and len(audio)>=2,(media,audio)
           job={
             "project":{
               "id":"next-m1-companion-physical",
               "name":"Канал M1 [Тест]",
-              "path":str(root),
-              "media":[str(root/"Картинка 01 [Final].png")],
-              "audio":[str(root/"Песня 01 [Final].mp3"),str(root/"Песня 02 [Final].mp3")],
+              "path":p.get("path") or str(pathlib.Path(media[0]).parent),
+              "media":media[:1],
+              "audio":audio[:2],
               "valid":True,"error":None
             },
             "settings":{
@@ -91,7 +96,7 @@ jobs:
             "effects":[],"subscribes":[],"ambient":None
           }
           (root/"job.json").write_text(json.dumps({"jobs":[job]},ensure_ascii=False),encoding="utf-8")
-          print(root/"job.json")
+          (root/"expected-tracks.json").write_text(json.dumps([pathlib.Path(x).name for x in audio[:2]],ensure_ascii=False),encoding="utf-8")
           PY
           echo "FIX_ROOT=$ROOT" >> "$GITHUB_ENV"
           echo "FIX_OUT=$OUT" >> "$GITHUB_ENV"
@@ -103,7 +108,7 @@ jobs:
           RESULT="$RUNNER_TEMP/endlume-next-m1-result.json"
           ENDLUME_E2E_RENDER_JOB="$FIX_ROOT/job.json" ENDLUME_E2E_RESULT="$RESULT" "$AUDIT_BIN"
           python3 - "$RESULT" <<'PY'
-          import json,pathlib,sys
+          import json,os,pathlib,sys
           x=json.load(open(sys.argv[1],encoding='utf-8'))
           assert x['status']=='passed',x
           assert len(x['results'])==1,x
@@ -121,8 +126,9 @@ jobs:
           t=tc.read_text(encoding='utf-8')
           l=tracks.read_text(encoding='utf-8')
           g=log.read_text(encoding='utf-8')
-          assert '00:00:00' in t and 'Песня 01 [Final].mp3' in t and 'Песня 02 [Final].mp3' in t
-          assert '01. Песня 01 [Final].mp3' in l and '02. Песня 02 [Final].mp3' in l
+          names=json.loads((pathlib.Path(r['timecodesPath']).parent.parent.parent/"expected-tracks.json").read_text(encoding='utf-8')) if False else json.loads((pathlib.Path(os.environ['FIX_ROOT'])/"expected-tracks.json").read_text(encoding='utf-8'))
+          assert '00:00:00' in t and names[0] in t and names[1] in t
+          assert ('01. '+names[0]) in l and ('02. '+names[1]) in l
           assert str(output) in g and 'ENDLUME successful render' in g
           print('OUTPUT='+str(output))
           print('OUTPUT_BYTES='+str(output.stat().st_size))

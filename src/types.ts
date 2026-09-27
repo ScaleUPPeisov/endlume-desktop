@@ -27,6 +27,7 @@ export interface RenderProject extends ProjectScanItem {
   timecodesPath?: string;
   trackListPath?: string;
   renderLogPath?: string;
+  logPath?: string;
   actualVideoBitrate?: number;
   cpuPct?: number;
   ramBytes?: number;

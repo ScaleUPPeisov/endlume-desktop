@@ -1,0 +1,206 @@
+name: ENDLUME 8.65 macOS Extended Physical Audit
+
+on:
+  push:
+    branches: [endlume-8.64-turbo]
+    paths:
+      - '.github/workflows/endlume-865-macos-extended-audit.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-865-macos-extended-audit
+  cancel-in-progress: true
+
+env:
+  VERSION: 1.0.0-alpha.8.65
+  STABLE_REPO: ScaleUPPeisov/scaleup-site
+  STABLE_TAG: endlume-stable
+  MAC_ASSET: ENDLUME-YT-Studio-PEISOV-1.0.0-alpha.8.65-macOS-ARM64.app.tar.gz
+  MAC_SHA256: 9a5393deac24dcd4ceacdb65ec973599f05da35379d4a04c06a116acb698da2a
+
+jobs:
+  extended:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 90
+    env:
+      RELEASE_TOKEN: ${{ secrets.ENDLUME_RELEASE_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Prove audit-only commits did not change production source after release
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          RELEASE_HEAD=10be84496775911b725687ba6d08480f0dae6958
+          CHANGED="$(git diff --name-only "$RELEASE_HEAD" HEAD | grep -v '^.github/workflows/endlume-865-.*audit.yml$' || true)"
+          if [ -n "$CHANGED" ]; then echo "$CHANGED"; exit 41; fi
+          test "$(node -p "require('./package.json').version")" = "$VERSION"
+          python3 scripts/test-endlume-865-contract.py
+          echo ENDLUME_865_AUDIT_SOURCE_FROZEN_GREEN
+
+      - name: Prepare exact release-source E2E build
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
+          export CARGO_TARGET_DIR="$HOME/.endlume-build-cache/endlume-865-extended"
+          echo "CARGO_TARGET_DIR=$CARGO_TARGET_DIR" >> "$GITHUB_ENV"
+          mkdir -p src-tauri/binaries "$CARGO_TARGET_DIR"
+          cp "$(command -v ffmpeg)" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp "$(command -v ffprobe)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          chmod +x src-tauri/binaries/ffmpeg-aarch64-apple-darwin src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('src-tauri/tauri.conf.json');d=json.loads(p.read_text());d['bundle']['createUpdaterArtifacts']=False
+          p.write_text(json.dumps(d,ensure_ascii=False,indent=2)+'\n')
+          PY
+          npm ci
+          npm run tauri build -- --bundles app --features e2e-render
+          APP="$(find "$CARGO_TARGET_DIR/release/bundle/macos" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
+          echo "AUDIT_BIN=$APP/Contents/MacOS/$EXE" >> "$GITHUB_ENV"
+          echo ENDLUME_865_EXTENDED_E2E_BUILD_GREEN
+
+      - name: Resolve durable real fixture
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          TMP="$(mktemp -d /tmp/e865extended.XXXXXX)"
+          python3 scripts/find-endlume-real-fixture.py "$TMP/env"
+          source "$TMP/env"
+          test "$AUDIO_COUNT" = 15
+          echo "SIDE=$SIDE" >> "$GITHUB_ENV"
+          echo "IMG=$IMG" >> "$GITHUB_ENV"
+          echo "ENDLUME_865_EXTENDED_REAL_FIXTURE_GREEN audio=$AUDIO_COUNT"
+
+      - name: Ten sequential render stability jobs
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          rm -rf extended-865 && mkdir -p extended-865/out
+          python3 - <<'PY'
+          import json,os,pathlib
+          d=json.load(open(os.environ['SIDE']));p=d['project']
+          media=[x for x in p['media'] if pathlib.Path(x).is_file()]
+          audio=[x for x in p['audio'] if pathlib.Path(x).is_file()]
+          out=pathlib.Path('extended-865/out').resolve()
+          specs=[(.02,1),(1,2),(2,2),(2,15),(3,2),(.03,2),(1,15),(2,2),(.02,1),(2,2)]
+          jobs=[]
+          for i,(hours,n) in enumerate(specs,1):
+            jobs.append({'project':{'id':f'stability-{i:02}','name':f'Stability {i:02}','path':p.get('path',''),'media':media[:1],'audio':audio[:n],'valid':True,'error':None},
+              'settings':{'width':1920,'height':1080,'fps':60,'codec':'h265','bitrateMbps':4.0,'durationHours':hours,'durationMode':'whole-track','loopMode':'loop','crossfadeSec':0.0,'normalizeLufs':False,'outputDir':str(out),'preset':'fast','encoderPreference':'auto'},
+              'effects':[],'subscribes':[],'ambient':None})
+          pathlib.Path('extended-865/jobs.json').write_text(json.dumps({'jobs':jobs},ensure_ascii=False))
+          PY
+          ENDLUME_E2E_RENDER_JOB="$GITHUB_WORKSPACE/extended-865/jobs.json" ENDLUME_E2E_RESULT="$GITHUB_WORKSPACE/extended-865/results.json" "$AUDIT_BIN"
+          python3 - <<'PY'
+          import json,pathlib
+          x=json.load(open('extended-865/results.json'));assert x['status']=='passed',x
+          r=x['results'];assert len(r)==10,r
+          paths=[z['outputPath'] for z in r]
+          assert len(set(paths))==10,paths
+          for z in r:
+            p=pathlib.Path(z['outputPath']);assert p.is_file() and p.stat().st_size==int(z['outputBytes'])
+            assert z['terminal']['resultPath']==z['outputPath']
+            assert int(z['terminal']['resultBytes'])==p.stat().st_size
+          print('ENDLUME_865_MAC_10_RENDER_STABILITY_GREEN')
+          print([(z['id'],round(float(z['wallSeconds']),3),z['outputBytes']) for z in r])
+          PY
+
+      - name: Unicode spaces parentheses and long-path render
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ROOT="$GITHUB_WORKSPACE/extended-865/Папка для YouTube (Финал)/Очень длинное имя проекта ENDLUME 2026"
+          mkdir -p "$ROOT/input" "$ROOT/output"
+          cp "$IMG" "$ROOT/input/Картинка 01 (Final версия).png"
+          python3 - <<'PY'
+          import json,os,pathlib,shutil
+          d=json.load(open(os.environ['SIDE']));audio=[pathlib.Path(x) for x in d['project']['audio'] if pathlib.Path(x).is_file()]
+          root=pathlib.Path('extended-865/Папка для YouTube (Финал)/Очень длинное имя проекта ENDLUME 2026').resolve()
+          copied=[]
+          for i,p in enumerate(audio[:2],1):
+              q=root/'input'/f'Песня {i:02} (Final версия).mp3';shutil.copy2(p,q);copied.append(str(q))
+          img=str((root/'input'/'Картинка 01 (Final версия).png').resolve())
+          job={'project':{'id':'unicode-path','name':'Проект с пробелами (Финал)','path':str(root/'input'),'media':[img],'audio':copied,'valid':True,'error':None},
+            'settings':{'width':1920,'height':1080,'fps':60,'codec':'h265','bitrateMbps':4.0,'durationHours':.05,'durationMode':'whole-track','loopMode':'loop','crossfadeSec':0.0,'normalizeLufs':False,'outputDir':str(root/'output'),'preset':'fast','encoderPreference':'auto'},
+            'effects':[],'subscribes':[],'ambient':None}
+          pathlib.Path('extended-865/unicode-job.json').write_text(json.dumps(job,ensure_ascii=False))
+          PY
+          ENDLUME_E2E_RENDER_JOB="$GITHUB_WORKSPACE/extended-865/unicode-job.json" ENDLUME_E2E_RESULT="$GITHUB_WORKSPACE/extended-865/unicode-result.json" "$AUDIT_BIN"
+          python3 - <<'PY'
+          import json,pathlib
+          x=json.load(open('extended-865/unicode-result.json'));assert x['status']=='passed',x
+          r=x['results'][0];p=pathlib.Path(r['outputPath']);assert p.is_file() and p.stat().st_size==int(r['outputBytes'])
+          print('ENDLUME_865_MAC_UNICODE_PATH_GREEN',r['outputPath'],r['outputBytes'])
+          PY
+
+      - name: Controlled missing-media and corrupt-MP3 failures
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p extended-865/errors
+          python3 - <<'PY'
+          import json,os,pathlib
+          d=json.load(open(os.environ['SIDE']));p=d['project'];audio=[x for x in p['audio'] if pathlib.Path(x).is_file()];media=[x for x in p['media'] if pathlib.Path(x).is_file()]
+          out=str(pathlib.Path('extended-865/errors').resolve())
+          base={'width':1920,'height':1080,'fps':60,'codec':'h265','bitrateMbps':4.0,'durationHours':.02,'durationMode':'whole-track','loopMode':'loop','crossfadeSec':0.0,'normalizeLufs':False,'outputDir':out,'preset':'fast','encoderPreference':'auto'}
+          missing={'project':{'id':'missing-media','name':'Missing media','path':out,'media':[out+'/NO-SUCH-IMAGE.png'],'audio':audio[:1],'valid':True,'error':None},'settings':base,'effects':[],'subscribes':[],'ambient':None}
+          corrupt=pathlib.Path('extended-865/errors/corrupt.mp3');corrupt.write_bytes(b'not-an-mp3')
+          bad={'project':{'id':'corrupt-audio','name':'Corrupt audio','path':out,'media':media[:1],'audio':[str(corrupt.resolve())],'valid':True,'error':None},'settings':base,'effects':[],'subscribes':[],'ambient':None}
+          pathlib.Path('extended-865/errors/missing.json').write_text(json.dumps(missing))
+          pathlib.Path('extended-865/errors/corrupt.json').write_text(json.dumps(bad))
+          PY
+          for CASE in missing corrupt; do
+            set +e
+            ENDLUME_E2E_RENDER_JOB="$GITHUB_WORKSPACE/extended-865/errors/$CASE.json" ENDLUME_E2E_RESULT="$GITHUB_WORKSPACE/extended-865/errors/$CASE-result.json" "$AUDIT_BIN"
+            RC=$?
+            set -e
+            test "$RC" -ne 0
+            python3 - "$CASE" <<'PY'
+          import json,sys,pathlib
+          case=sys.argv[1];x=json.load(open(f'extended-865/errors/{case}-result.json'))
+          assert x['status']=='failed',x
+          assert x['results'] and x['results'][0]['status']=='failed',x
+          print('CONTROLLED_FAILURE_GREEN',case,x['results'][0].get('error','')[:200])
+          PY
+          done
+          echo ENDLUME_865_MAC_CONTROLLED_ERRORS_GREEN
+
+      - name: Production bundle secret and dev-path sanity
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export GH_TOKEN="$RELEASE_TOKEN"
+          gh release download "$STABLE_TAG" --repo "$STABLE_REPO" --pattern "$MAC_ASSET" --dir extended-865 --clobber
+          ROOT="$RUNNER_TEMP/e865-security";rm -rf "$ROOT";mkdir -p "$ROOT"
+          tar -xzf "extended-865/$MAC_ASSET" -C "$ROOT"
+          APP="$(find "$ROOT" -maxdepth 2 -type d -name '*.app' -print -quit)"
+          EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
+          BIN="$APP/Contents/MacOS/$EXE"
+          test -z "$(find "$APP" -type f -name '*.map' -print -quit)"
+          ! strings "$BIN" | grep -F 'BEGIN PRIVATE KEY'
+          ! strings "$BIN" | grep -F 'TAURI_SIGNING_PRIVATE_KEY'
+          ! strings "$BIN" | grep -F '/Users/peisov/.endlume-updater/endlume.key'
+          ! strings "$BIN" | grep -F 'ENDLUME_E2E_RENDER_JOB'
+          echo ENDLUME_865_MAC_SECURITY_SANITY_GREEN
+
+      - name: Final extended verdict
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sleep 2
+          if pgrep -af '[f]fmpeg|[f]fprobe'; then exit 29; fi
+          echo ENDLUME_865_MAC_EXTENDED_PHYSICAL_GREEN
+          echo PARTIAL_CANCEL_BUTTON_GUI_NOT_AUTOMATED
+          echo PARTIAL_CLOSE_DURING_RENDER_GUI_NOT_AUTOMATED
+          echo PARTIAL_DPI_RETINA_PIXELS_NOT_MACHINE_VISION_VERIFIED

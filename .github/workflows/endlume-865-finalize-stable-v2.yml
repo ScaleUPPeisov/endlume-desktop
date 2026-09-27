@@ -1,4 +1,5 @@
 name: ENDLUME 8.65 Finalize Stable V2
+# V2 retry after superseding V1
 
 on:
   push:

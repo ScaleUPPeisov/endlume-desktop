@@ -5,7 +5,7 @@ import { useApp } from '../store';
 import type { LoopMode, RenderProject } from '../types';
 import { Icon,Range,Toggle } from '../components/ui';
 
-const resolutions=[{w:3840,h:2160,label:'4K UHD'},{w:2560,h:1440,label:'2K QHD'},{w:1920,h:1080,label:'1080P FULL HD'}];
+const resolutions=[{w:1920,h:1080,label:'1080P FULL HD'},{w:2560,h:1440,label:'2K QHD'},{w:3840,h:2160,label:'4K UHD'}];
 const modes:Array<{id:LoopMode;title:string;subtitle:string;icon:'image'|'crossfade'|'pingpong'|'original'}>=[
   {id:'image',title:'Image',subtitle:'Зацикливание из статичной картинки',icon:'image'},
   {id:'crossfade',title:'Crossfade',subtitle:'Плавный переход между концом и началом',icon:'crossfade'},
@@ -13,12 +13,19 @@ const modes:Array<{id:LoopMode;title:string;subtitle:string;icon:'image'|'crossf
   {id:'original',title:'Без обработки',subtitle:'Стыковка начала и конца без перехода',icon:'original'}
 ];
 
+type FeatureFlags={subscribe:boolean;effects:boolean;ambient:boolean};
+const featureKey='endlume-feature-flags-v2';
+function loadFeatures():FeatureFlags{try{return {...{subscribe:true,effects:true,ambient:true},...JSON.parse(localStorage.getItem(featureKey)||'{}')}}catch{return {subscribe:true,effects:true,ambient:true}}}
+const imageExt=new Set(['jpg','jpeg','png','webp','bmp','tif','tiff','heic','avif']);
+function isImagePath(path:string){const clean=path.split(/[?#]/)[0]||'';const ext=clean.includes('.')?clean.split('.').pop()?.toLowerCase()||'':'';return imageExt.has(ext)}
+
 export function ProjectPage(){
   const {
     draftProjects,setDraftProjects,invalidProjects,setInvalidProjects,appendProjects,
     settings,patchSettings,effects,subscribes,ambient,setAmbient,openEditor,setPage,setLastRoot
   }=useApp();
-  const [busy,setBusy]=useState(false),[scanNote,setScanNote]=useState('');
+  const [busy,setBusy]=useState(false),[scanNote,setScanNote]=useState(''),[features,setFeatures]=useState<FeatureFlags>(loadFeatures);
+  const setFeature=(key:keyof FeatureFlags,value:boolean)=>setFeatures(prev=>{const next={...prev,[key]:value};localStorage.setItem(featureKey,JSON.stringify(next));return next});
 
   const scanRoots=useCallback(async(roots:string[])=>{
     if(busy||!roots.length)return;setBusy(true);setScanNote('');setInvalidProjects([]);
@@ -34,7 +41,6 @@ export function ProjectPage(){
           }
         }catch(e){bad.push({name:root.split(/[\\/]/).pop()||root,path:root,error:String(e)});}
       }
-      // If several selected roots contain the same project, keep only one copy.
       const unique=Array.from(new Map(all.map(x=>[x.path,x])).values()) as RenderProject[];
       setDraftProjects(unique);setInvalidProjects(bad);
       setScanNote(`Найдено проектов: ${unique.length}${bad.length?` • ошибок: ${bad.length}`:''}`);
@@ -61,10 +67,17 @@ export function ProjectPage(){
           await api.showInfo(`MacBook работает от аккумулятора${power.percent!=null?` (${power.percent}%)`:''}. ENDLUME продолжит рендер на полной мощности — подключите питание, если очередь большая.`);
         }
       }catch{}
-      const activeEffects=effects.filter(e=>e.enabled);
-      const activeSubscribes=subscribes.filter(e=>e.enabled);
-      await api.enqueue(draftProjects,settings,activeEffects,activeSubscribes,ambient);
-      appendProjects(draftProjects.map(p=>({...p,status:'queued',stage:'Ожидает в очереди'})));
+      const activeEffects=features.effects?effects.filter(e=>e.enabled):[];
+      const activeSubscribes=features.subscribe?subscribes.filter(e=>e.enabled):[];
+      const activeAmbient=features.ambient?ambient:undefined;
+      const fastStaticProjects=draftProjects.filter(p=>p.media.length>0&&p.media.every(isImagePath)&&(p.media.length===1||(activeEffects.length===0&&activeSubscribes.length===0)));
+      if(fastStaticProjects.length&&(settings.crossfadeSec>0||settings.normalizeLufs||!!activeAmbient)){
+        await api.showInfo(`Processed Audio включён для ${fastStaticProjects.length} статичных проектов. Быстрый visual/manifest pipeline сохраняется, но музыка будет реально декодирована и обработана (crossfade / LUFS / ambient), поэтому MP3 packet-copy отключается и рендер может быть медленнее или больше. Чтобы получить Original MP3 bitstream-copy, выключите audio processing.`);
+      }
+      const stamp=Date.now().toString(36);
+      const queuedProjects=draftProjects.map((p,i)=>({...p,id:`${p.id}-${stamp}-${i}-${Math.random().toString(36).slice(2,8)}`,status:'queued' as const,progress:0,stage:'Ожидает в очереди',elapsedSec:0}));
+      await api.enqueue(queuedProjects,settings,activeEffects,activeSubscribes,activeAmbient);
+      appendProjects(queuedProjects);
       setDraftProjects([]);setInvalidProjects([]);setScanNote('');setPage('render');
     }catch(e){await api.showError(String(e))}
   };
@@ -98,8 +111,8 @@ export function ProjectPage(){
 
         <div className="bigControl"><div><b>Длительность</b><small>Целевое время финального видео</small></div><div className="bigValue">{settings.durationHours} ч</div><Range value={settings.durationHours} min={.5} max={12} step={.5} onChange={v=>patchSettings({durationHours:v})} minLabel="0.5 ч" maxLabel="12 ч"/></div>
         <div className="durationPresets">{[1,1.5,2,3,4,8,10,12].map(v=><button className={settings.durationHours===v?'selected':''} key={v} onClick={()=>patchSettings({durationHours:v})}>{v}ч</button>)}</div>
-        <div className="bigControl"><div><b>Битрейт</b><small>Для видео/эффектов. У проектов с одной картинкой Smart Size автоматически уменьшает размер без повторного 2-часового кодирования.</small></div><div className="bigValue">{settings.bitrateMbps} Мбит/с</div><Range value={settings.bitrateMbps} min={1} max={100} onChange={v=>patchSettings({bitrateMbps:v})} minLabel="1 Мбит/с" maxLabel="100 Мбит/с"/></div>
-        <div className="bigControl compactControl"><div><b>Кроссфейд между треками</b><small>Плавный переход без резкого стыка</small></div><div className="bigValue small">{settings.crossfadeSec} сек</div><Range value={settings.crossfadeSec} min={1} max={10} onChange={v=>patchSettings({crossfadeSec:v})} minLabel="1 сек" maxLabel="10 сек"/></div>
+        <div className="bigControl"><div><b>Битрейт</b><small>Для обычных видео-проектов. Для статичного проекта ENDLUME автоматически выбирает компактный режим без жёсткого ухудшения качества.</small></div><div className="bigValue">{settings.bitrateMbps} Мбит/с</div><Range value={settings.bitrateMbps} min={1} max={100} onChange={v=>patchSettings({bitrateMbps:v})} minLabel="1 Мбит/с" maxLabel="100 Мбит/с"/></div>
+        <div className="bigControl compactControl"><div><b>Кроссфейд между треками</b><small>{settings.crossfadeSec>0?'Processed Audio: переход реально сводится; MP3 packet-copy отключён. Быстрый static visual/manifest path остаётся, но обработка музыки может занять больше времени.':'Original Audio: совместимые MP3 идут bitstream-copy без повторного кодирования. Fast static path сохраняет музыку в исходном виде.'}</small></div><div className="bigValue small">{settings.crossfadeSec>0?`${settings.crossfadeSec} сек`:'Выкл'}</div><Range value={settings.crossfadeSec} min={0} max={10} step={0.5} onChange={v=>patchSettings({crossfadeSec:v})} minLabel="Выкл" maxLabel="10 сек"/></div><div className="durationPresets"><button className={settings.crossfadeSec===0?'selected':''} onClick={()=>patchSettings({crossfadeSec:0})}>ВЫКЛ</button>{[1,2,3,5,7,10].map(v=><button className={settings.crossfadeSec===v?'selected':''} key={`cf-${v}`} onClick={()=>patchSettings({crossfadeSec:v})}>{v}с</button>)}</div>
 
         <div className="toggles">
           <Toggle checked={settings.normalizeLufs} onChange={v=>patchSettings({normalizeLufs:v})} label="Нормализация звука до -14 LUFS"/>
@@ -111,17 +124,16 @@ export function ProjectPage(){
 
     <section className="sectionBlock">
       <div className="sectionTitle">КНОПКА SUBSCRIBE</div>
-      <div className="featureRow"><span className="featureIcon pink"><Icon name="subscribe"/></span><div><b>Subscribe Button</b><small>{subscribes.filter(s=>s.enabled).length?`Активно пресетов: ${subscribes.filter(s=>s.enabled).length}`:'Не настроено'}</small></div><button onClick={()=>openEditor({kind:'subscribe'})}>НАСТРОИТЬ →</button></div>
+      <div className="featureRow"><span className="featureIcon pink"><Icon name="subscribe"/></span><div><b>Subscribe Button</b><small>{!features.subscribe?'Отключено для текущих рендеров':subscribes.filter(s=>s.enabled).length?`Активно пресетов: ${subscribes.filter(s=>s.enabled).length}`:'Не настроено'}</small></div><div className="rowButtons"><button onClick={()=>setFeature('subscribe',!features.subscribe)}>{features.subscribe?'ВЫКЛЮЧИТЬ':'ВКЛЮЧИТЬ'}</button><button onClick={()=>openEditor({kind:'subscribe'})}>НАСТРОИТЬ →</button></div></div>
     </section>
 
     <section className="sectionBlock">
       <div className="sectionTitle">ЭФФЕКТЫ</div>
-      <div className="featureRow"><span className="featureIcon blue"><Icon name="effects"/></span><div><b>Набор эффектов поверх видео</b><small>{effects.filter(e=>e.enabled).length?`Активно: ${effects.filter(e=>e.enabled).length} • сохранено в библиотеке: ${effects.length}`:'Эффекты не выбраны'}</small></div><button onClick={()=>openEditor({kind:'effects'})}>НАСТРОИТЬ →</button></div>
+      <div className="featureRow"><span className="featureIcon blue"><Icon name="effects"/></span><div><b>Набор эффектов поверх видео</b><small>{!features.effects?'Отключено для текущих рендеров':effects.filter(e=>e.enabled).length?`Активно: ${effects.filter(e=>e.enabled).length} • сохранено: ${effects.length}`:'Эффекты не выбраны'}</small></div><div className="rowButtons"><button onClick={()=>setFeature('effects',!features.effects)}>{features.effects?'ВЫКЛЮЧИТЬ':'ВКЛЮЧИТЬ'}</button><button onClick={()=>openEditor({kind:'effects'})}>НАСТРОИТЬ →</button></div></div>
     </section>
-
     <section className="sectionBlock">
       <div className="sectionTitle">ФОНОВЫЙ ЗВУК</div>
-      <div className="featureRow"><span className="featureIcon"><Icon name="ambient"/></span><div><b>Добавить ambient-звук</b><small>{ambient||'Не выбран'}</small></div><div className="rowButtons"><button onClick={async()=>{const p=await api.chooseAmbient();if(p)setAmbient(p)}}>ВЫБРАТЬ</button>{ambient&&<button className="dangerText" onClick={()=>setAmbient(undefined)}>УДАЛИТЬ</button>}</div></div>
+      <div className="featureRow"><span className="featureIcon"><Icon name="ambient"/></span><div><b>Добавить ambient-звук</b><small>{!features.ambient?'Отключено для текущих рендеров':ambient||'Не выбран'}</small></div><div className="rowButtons"><button onClick={()=>setFeature('ambient',!features.ambient)}>{features.ambient?'ВЫКЛЮЧИТЬ':'ВКЛЮЧИТЬ'}</button><button onClick={async()=>{const p=await api.chooseAmbient();if(p)setAmbient(p)}}>ВЫБРАТЬ</button>{ambient&&<button className="dangerText" onClick={()=>setAmbient(undefined)}>УДАЛИТЬ</button>}</div></div>
     </section>
 
     <section className="sectionBlock outputSection">

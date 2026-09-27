@@ -1,0 +1,38 @@
+name: ENDLUME isolated updater residual evidence
+
+on:
+  push:
+    branches: [endlume-8.64-turbo]
+    paths:
+      - '.github/workflows/endlume-isolated-updater-residual-evidence.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 5
+    steps:
+      - name: Read persistent isolated updater evidence
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ROOT="$HOME/.endlume-audit/updater864"
+          echo "ROOT_EXISTS=$([ -d "$ROOT" ] && echo true || echo false)"
+          if [ -d "$ROOT" ]; then
+            find "$ROOT" -maxdepth 3 -type f -print | sed 's/^/FILE=/'
+            echo "STDOUT_START"; cat "$ROOT/stdout.log" 2>/dev/null || true; echo "STDOUT_END"
+            echo "STDERR_START"; cat "$ROOT/stderr.log" 2>/dev/null || true; echo "STDERR_END"
+            if [ -f "$ROOT/check.json" ]; then echo "CHECK_START"; cat "$ROOT/check.json"; echo; echo "CHECK_END"; fi
+            APP="$ROOT/ENDLUME YT Studio PEISOV.app"
+            if [ -d "$APP" ]; then
+              echo "APP_VERSION=$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist" 2>/dev/null || true)"
+              echo "APP_BUNDLE=$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$APP/Contents/Info.plist" 2>/dev/null || true)"
+            fi
+          fi
+          STATE="$HOME/Library/Caches/studio.endlume.desktop/update-center/state.json"
+          if [ -f "$STATE" ]; then echo "STATE_START"; cat "$STATE"; echo; echo "STATE_END"; fi
+          CANON="/Applications/ENDLUME YT Studio PEISOV.app"
+          echo "CANONICAL_VERSION=$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$CANON/Contents/Info.plist")"

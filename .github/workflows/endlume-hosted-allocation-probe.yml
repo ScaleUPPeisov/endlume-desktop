@@ -1,0 +1,40 @@
+name: ENDLUME hosted runner allocation probe
+
+on:
+  push:
+    branches: [endlume-8.64-turbo]
+    paths:
+      - '.github/workflows/endlume-hosted-allocation-probe.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ubuntu:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Allocation proof
+        run: |
+          echo "HOSTED_ALLOCATED=ubuntu"
+          echo "RUNNER_OS=$RUNNER_OS RUNNER_ARCH=$RUNNER_ARCH RUNNER_NAME=$RUNNER_NAME"
+
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - name: Allocation proof
+        shell: pwsh
+        run: |
+          Write-Host "HOSTED_ALLOCATED=windows"
+          Write-Host "RUNNER_OS=$env:RUNNER_OS RUNNER_ARCH=$env:RUNNER_ARCH RUNNER_NAME=$env:RUNNER_NAME"
+
+  macos:
+    runs-on: macos-latest
+    timeout-minutes: 5
+    steps:
+      - name: Allocation proof
+        run: |
+          echo "HOSTED_ALLOCATED=macos"
+          echo "RUNNER_OS=$RUNNER_OS RUNNER_ARCH=$RUNNER_ARCH RUNNER_NAME=$RUNNER_NAME"

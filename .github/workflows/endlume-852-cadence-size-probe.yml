@@ -1,0 +1,48 @@
+name: ENDLUME 8.52 Cadence Size Probe
+on:
+  push:
+    branches: [candidate/endlume-852-build]
+    paths: ['.github/workflows/endlume-852-cadence-size-probe.yml']
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: candidate/endlume-852-build
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Exact cadence and full-cycle size tests
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          WORK="$HOME/.endlume-local-builder/endlume-desktop-8.40-bootstrap"
+          FFMPEG="$(find "$WORK/src-tauri/binaries" -maxdepth 1 -type f -name 'ffmpeg*' -perm -111 -print -quit)"
+          FFPROBE="$(find "$WORK/src-tauri/binaries" -maxdepth 1 -type f -name 'ffprobe*' -perm -111 -print -quit)"
+          IMG='/Volumes/TOSHIBA EXT/ВАЙРОН/ProductionManager/Batches/2e0e14ba-d97a-48d5-ab32-2fb2b27754bf/Neon Drive FM_BATCH_2026-09-05_001/001/image.png'
+          FX1="$HOME/Library/Application Support/studio.endlume.desktop/library-assets/effects/3c501bb14fd159efad59285bb11bd197.mp4"
+          FX2="$HOME/Library/Application Support/studio.endlume.desktop/library-assets/effects/e8054c2afef438886500ce4e6e27fda0.mp4"
+          REF="$HOME/Library/Caches/studio.endlume.desktop/render-v1-fidelity-849/variant-7c3f453554e0150b370b9975738e9985.mp4"
+          test -s "$IMG"; test -s "$FX1"; test -s "$FX2"; test -s "$REF"
+          TMP="$(mktemp -d /tmp/endlume-cadence.XXXXXX)"; trap 'rm -rf "$TMP"' EXIT
+          G30="[0:v]scale=1920:1080:force_original_aspect_ratio=increase:flags=lanczos+accurate_rnd,crop=1920:1080:(iw-ow)/2:(ih-oh)/2,fps=30,setsar=1[b0];[1:v]fps=30,format=rgba,colorkey=0x0aa843:0.6:0.184,scale=252:-2:flags=lanczos[fx0];[b0][fx0]overlay=x='max(0,min(W-w,W*0.5-w/2))':y='max(0,min(H-h,H*0.8834535728307813-h/2))':shortest=1:eof_action=repeat:format=auto[b1];[2:v]fps=30,format=rgba,colorkey=0x2bdc0a:0.6:0.188,scale=2128:-2:flags=lanczos[fx1];[b1][fx1]overlay=x='max(0,min(W-w,W*0.49-w/2))':y='max(0,min(H-h,H*0.49-h/2))':shortest=1:eof_action=repeat:format=auto[b2];[b2]fps=60,format=yuv420p[outv]"
+          T0="$(python3 -c 'import time;print(time.time())')"
+          "$FFMPEG" -hide_banner -loglevel error -loop 1 -framerate 30 -i "$IMG" -stream_loop -1 -i "$FX1" -stream_loop -1 -i "$FX2" -filter_complex "$G30" -map '[outv]' -t 12 -an -c:v hevc_videotoolbox -realtime 1 -prio_speed 0 -power_efficient 0 -q:v 100 -b:v 500k -maxrate 12M -bufsize 64M -g 720 -tag:v hvc1 -pix_fmt yuv420p -y "$TMP/c30.mp4"
+          T1="$(python3 -c 'import time;print(time.time())')"
+          SS="$($FFMPEG -hide_banner -loglevel info -i "$REF" -i "$TMP/c30.mp4" -filter_complex "[0:v]trim=duration=12,setpts=PTS-STARTPTS,format=yuv420p[a];[1:v]setpts=PTS-STARTPTS,format=yuv420p[b];[a][b]ssim" -t 12 -f null - 2>&1 | grep -oE 'All:[0-9.]+' | tail -1 | cut -d: -f2)"
+          KB="$($FFPROBE -v error -select_streams v:0 -show_entries stream=bit_rate -of default=nw=1:nk=1 "$TMP/c30.mp4" | awk '{printf "%.0f",$1/1000}')"
+          python3 -c "print('CADENCE30_DUP60 seconds=' + format(float('$T1')-float('$T0'),'.3f') + ' ssim=' + format(float('$SS'),'.6f') + ' kbps=$KB')"
+          G60="[0:v]scale=1920:1080:force_original_aspect_ratio=increase:flags=lanczos+accurate_rnd,crop=1920:1080:(iw-ow)/2:(ih-oh)/2,fps=60,setsar=1[b0];[1:v]fps=60,format=rgba,colorkey=0x0aa843:0.6:0.184,scale=252:-2:flags=lanczos[fx0];[b0][fx0]overlay=x='max(0,min(W-w,W*0.5-w/2))':y='max(0,min(H-h,H*0.8834535728307813-h/2))':shortest=1:eof_action=repeat:format=auto[b1];[2:v]fps=60,format=rgba,colorkey=0x2bdc0a:0.6:0.188,scale=2128:-2:flags=lanczos[fx1];[b1][fx1]overlay=x='max(0,min(W-w,W*0.49-w/2))':y='max(0,min(H-h,H*0.49-h/2))':shortest=1:eof_action=repeat:format=auto[b2];[b2]format=yuv420p[outv]"
+          for SPEC in 'q99_500 -q:v 99 -b:v 500k -maxrate 12M -bufsize 64M' 'q99_400 -q:v 99 -b:v 400k -maxrate 8M -bufsize 48M' 'abr400 -b:v 400k -maxrate 650k -bufsize 8M'; do
+            NAME="${SPEC%% *}"; OPTS="${SPEC#* }"; OUT="$TMP/$NAME.mp4"
+            T0="$(python3 -c 'import time;print(time.time())')"
+            "$FFMPEG" -hide_banner -loglevel error -loop 1 -framerate 60 -i "$IMG" -stream_loop -1 -i "$FX1" -stream_loop -1 -i "$FX2" -filter_complex "$G60" -map '[outv]' -t 56.35 -an -c:v hevc_videotoolbox -realtime 1 -prio_speed 0 -power_efficient 0 $OPTS -g 3381 -tag:v hvc1 -pix_fmt yuv420p -y "$OUT"
+            T1="$(python3 -c 'import time;print(time.time())')"
+            KB="$($FFPROBE -v error -select_streams v:0 -show_entries stream=bit_rate -of default=nw=1:nk=1 "$OUT" | awk '{printf "%.0f",$1/1000}')"
+            SS="$($FFMPEG -hide_banner -loglevel info -i "$REF" -i "$OUT" -filter_complex "[0:v]trim=duration=56.3,setpts=PTS-STARTPTS,format=yuv420p[a];[1:v]trim=duration=56.3,setpts=PTS-STARTPTS,format=yuv420p[b];[a][b]ssim" -t 56.3 -f null - 2>&1 | grep -oE 'All:[0-9.]+' | tail -1 | cut -d: -f2)"
+            python3 -c "n='$NAME';sec=float('$T1')-float('$T0');kb=float('$KB');ss=float('$SS');mb=(kb+329.5)*1000*7502.892/8/1e6;print(f'{n} seconds={sec:.3f} video_kbps={kb:.0f} ssim={ss:.6f} projected_MB={mb:.1f}')"
+          done

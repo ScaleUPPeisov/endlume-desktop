@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "ENDLUME Studio",
-  "version": "1.0.0-alpha.8.5",
+  "productName": "ENDLUME YT Studio PEISOV",
+  "version": "1.0.0-alpha.8.65",
   "identifier": "studio.endlume.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "ENDLUME Studio",
+        "title": "ENDLUME YT Studio PEISOV",
         "width": 1280,
         "height": 860,
         "minWidth": 980,
@@ -40,12 +40,8 @@
     "active": true,
     "targets": "all",
     "category": "Video",
-    "shortDescription": "Fast long-video factory",
-    "longDescription": "ENDLUME Studio creates long-form videos from images, short loops and music using a cache-first FFmpeg pipeline.",
-    "externalBin": [
-      "binaries/ffmpeg",
-      "binaries/ffprobe"
-    ],
+    "shortDescription": "ENDLUME YT Studio PEISOV",
+    "longDescription": "ENDLUME YT Studio PEISOV",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -54,30 +50,19 @@
       "icons/icon.ico"
     ],
     "macOS": {
-      "minimumSystemVersion": "11.0",
-      "bundleName": "ENDLUME Studio",
-      "dmg": {
-        "windowSize": {
-          "width": 660,
-          "height": 400
-        },
-        "appPosition": {
-          "x": 180,
-          "y": 220
-        },
-        "applicationFolderPosition": {
-          "x": 480,
-          "y": 220
-        }
-      }
+      "minimumSystemVersion": "12.0"
     },
+    "externalBin": [
+      "binaries/ffmpeg",
+      "binaries/ffprobe"
+    ],
     "createUpdaterArtifacts": true
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEU5NDU1MkRFODQyRUM0OTUKUldTVnhDNkUzbEpGNmZmNUdyb2lUZVM0enU3WkVzdDlsSCtxcVpobitZc3Z0ZWMxQ1hucFZXRUUK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEQzMjJDRDUwNDkxRDM1MDAKUldRQU5SMUpVTTBpMCs2TTF5UjZkS1h3K0N5UUlBb0srYmVtN1lianVCdEY2ZkxuN2FlM1AyQmoK",
       "endpoints": [
-        "https://endlume-updates.vercel.app/api/update?target={{target}}&arch={{arch}}&current_version={{current_version}}"
+        "https://github.com/ScaleUPPeisov/scaleup-site/releases/download/endlume-stable/latest.json"
       ]
     }
   }

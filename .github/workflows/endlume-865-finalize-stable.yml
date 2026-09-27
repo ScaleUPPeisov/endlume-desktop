@@ -1,0 +1,20 @@
+name: ENDLUME 8.65 Finalize Stable Superseded
+
+on:
+  push:
+    branches: [endlume-8.64-turbo]
+    paths:
+      - '.github/workflows/endlume-865-finalize-stable.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: endlume-865-dual-stable-v6
+  cancel-in-progress: true
+
+jobs:
+  superseded:
+    name: Superseded by Finalize Stable V2
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 5
+    steps:
+      - run: echo "ENDLUME 8.65 finalizer V1 superseded by V2"

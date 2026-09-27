@@ -1,0 +1,22 @@
+name: ENDLUME 8.51 Diagnose Full Project Speed
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [candidate/full-project-speed-8.51]
+    paths:
+      - '.github/workflows/endlume-851-diagnose.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-851-diagnose
+  cancel-in-progress: true
+
+jobs:
+  retired:
+    if: ${{ false }}
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    steps:
+      - run: echo 'obsolete diagnostic retired; 8.51 candidate owns the M1 runner'

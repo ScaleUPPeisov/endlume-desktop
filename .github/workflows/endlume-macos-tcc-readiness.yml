@@ -1,0 +1,36 @@
+name: ENDLUME macOS TCC readiness probe
+
+on:
+  push:
+    branches: [endlume-8.64-turbo]
+    paths:
+      - '.github/workflows/endlume-macos-tcc-readiness.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tcc:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 5
+    steps:
+      - name: Check Accessibility and Screen Recording
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          echo "CONSOLE_USER=$(stat -f '%Su' /dev/console)"
+          UI=$(/usr/bin/osascript -e 'tell application "System Events" to return UI elements enabled' 2>/dev/null || echo false)
+          echo "UI_ELEMENTS_ENABLED=$UI"
+          rm -f /tmp/endlume-tcc-probe.png
+          if /usr/sbin/screencapture -x /tmp/endlume-tcc-probe.png >/tmp/endlume-screen.out 2>&1 && [ -s /tmp/endlume-tcc-probe.png ]; then
+            echo "SCREEN_CAPTURE_ALLOWED=true"
+          else
+            echo "SCREEN_CAPTURE_ALLOWED=false"
+            cat /tmp/endlume-screen.out || true
+          fi
+          if [ "$UI" = "true" ] && [ -s /tmp/endlume-tcc-probe.png ]; then
+            echo "ENDLUME_MAC_TCC_READY=true"
+          else
+            echo "ENDLUME_MAC_TCC_READY=false"
+          fi

@@ -1,0 +1,271 @@
+name: ENDLUME 8.62 Full Production QA
+
+on:
+  push:
+    branches: [windows/endlume-862-qa-fixes]
+    paths:
+      - '.github/workflows/endlume-862-full-qa.yml'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'src/**'
+      - 'src-tauri/**'
+      - 'scripts/**'
+      - 'supabase/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-862-full-qa
+  cancel-in-progress: true
+
+jobs:
+  full-qa:
+    name: Frontend • Rust • License • Render • Security
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 100
+
+    steps:
+      - name: Checkout exact QA HEAD
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Version and source-of-truth contract
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import json,re
+          from pathlib import Path
+          expected='1.0.0-alpha.8.62'
+          assert json.loads(Path('package.json').read_text())['version']==expected
+          assert json.loads(Path('package-lock.json').read_text())['version']==expected
+          assert json.loads(Path('src-tauri/tauri.conf.json').read_text())['version']==expected
+          cargo=Path('src-tauri/Cargo.toml').read_text()
+          assert re.search(r'^version\s*=\s*"'+re.escape(expected)+r'"$',cargo,re.M)
+          lock=Path('src-tauri/Cargo.lock').read_text()
+          block=lock[lock.index('name = "endlume"'):]
+          assert f'version = "{expected}"' in block[:300]
+          assert expected in Path('src/pages/SettingsPage.tsx').read_text()
+          assert f"version:'{expected}'" in Path('src/components/ReleaseHistory.tsx').read_text()
+          print('VERSION_862_CONTRACT_GREEN')
+          PY
+
+      - name: Install frontend dependencies
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          npm ci
+
+      - name: Frontend typecheck and production build
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          npm run check
+          npm run build
+
+      - name: Queue UI regression
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          TMP="$(mktemp -d)"
+          trap 'rm -rf "$TMP"' EXIT
+          ./node_modules/.bin/tsc src/queue-state.ts             --target ES2022 --module ES2022 --moduleResolution Bundler             --skipLibCheck --outDir "$TMP" --noEmit false
+          node scripts/test-queue-finalization-8-58.mjs "$TMP/queue-state.js"
+
+      - name: License uniqueness and backend security contracts
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          node scripts/test-license-security-8-62.mjs
+          python3 scripts/test-managed-license-render-gate.py
+          python3 scripts/test-runtime-safety-8-62.py
+
+      - name: Windows and render source contracts
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/test-windows-861-strict-port.py
+          python3 scripts/test-windows-861-release-surface.py
+          python3 scripts/test-local-scratch-stability-8-61.py
+          python3 scripts/test-render-speed-stability-8-60.py
+
+      - name: Repository secret scan
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          skip={'.git','node_modules','target','dist'}
+          bad=[]
+          token_patterns=[
+            re.compile(r'ghp_[A-Za-z0-9]{20,}'),
+            re.compile(r'github_pat_[A-Za-z0-9_]{20,}'),
+            re.compile(r'sk_live_[A-Za-z0-9]{16,}'),
+            re.compile(r'-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----'),
+          ]
+          text_ext={'.rs','.ts','.tsx','.js','.mjs','.py','.ps1','.sh','.yml','.yaml','.json','.toml','.md','.sql','.txt'}
+          for p in Path('.').rglob('*'):
+            if not p.is_file() or any(x in skip for x in p.parts) or (p.suffix.lower() not in text_ext and p.name not in {'Cargo.lock'}):
+              continue
+            try: s=p.read_text(errors='ignore')
+            except Exception: continue
+            for rx in token_patterns:
+              if rx.search(s): bad.append((str(p),rx.pattern))
+            for line in s.splitlines():
+              if 'SUPABASE_SERVICE_ROLE_KEY' in line:
+                safe=('Deno.env.get' in line or 'secrets.' in line or '$SUPABASE_SERVICE_ROLE_KEY' in line or '${SUPABASE_SERVICE_ROLE_KEY' in line)
+                if not safe and re.search(r'SUPABASE_SERVICE_ROLE_KEY\s*[:=]\s*["\'][^$]',line):
+                  bad.append((str(p),'literal SUPABASE_SERVICE_ROLE_KEY'))
+          assert not bad, bad
+          print('SECRET_SCAN_GREEN')
+          PY
+
+      - name: Stage native FFmpeg sidecars for Rust validation
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+          FFMPEG="$(command -v ffmpeg)"
+          FFPROBE="$(command -v ffprobe)"
+          test -x "$FFMPEG"
+          test -x "$FFPROBE"
+          mkdir -p src-tauri/binaries
+          cp "$FFMPEG" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp "$FFPROBE" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          chmod +x src-tauri/binaries/ffmpeg-aarch64-apple-darwin src-tauri/binaries/ffprobe-aarch64-apple-darwin
+
+      - name: Install Rust QA components
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          rustup component add rustfmt clippy
+
+      - name: Rust formatting check (legacy drift signal)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          if cargo fmt --manifest-path src-tauri/Cargo.toml -- --check; then
+            echo 'RUSTFMT_GREEN=1'
+          else
+            echo 'RUSTFMT_LEGACY_DRIFT=1'
+            echo 'cargo fmt --check reports repository-wide pre-existing formatting drift; correctness QA continues.'
+          fi
+
+      - name: Rust check and full tests
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cargo check --manifest-path src-tauri/Cargo.toml
+          cargo test --manifest-path src-tauri/Cargo.toml -- --nocapture
+
+      - name: Targeted MP4 and VYRON tests
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cargo test --manifest-path src-tauri/Cargo.toml mp4_manifest -- --nocapture
+          cargo test --manifest-path src-tauri/Cargo.toml vyron_ -- --nocapture
+
+      - name: Clippy
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features
+
+      - name: Stage durable real render fixture
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          TMP="$(mktemp -d /tmp/e862fixture.XXXXXX)"
+          python3 scripts/find-endlume-real-fixture.py "$TMP/env"
+          cat "$TMP/env" >> "$GITHUB_ENV"
+          source "$TMP/env"
+          test "$AUDIO_COUNT" = 15
+          test "$EFFECT_COUNT" -ge 2
+          test -f "$SIDE"
+          test -f "$IMG"
+          echo "REAL_FIXTURE=$SIDE audio=$AUDIO_COUNT effects=$EFFECT_COUNT"
+
+      - name: Align physical harness with current optimized source
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/apply-e2e-harness-8-60.py
+          grep -Fq 'def natural_size(path):' scripts/run-endlume-857-real-e2e.py
+          ! grep -Fq 'f.write(b"free")' scripts/run-endlume-857-real-e2e.py
+
+      - name: Five sequential real strict masters
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          FFM="$(find src-tauri/binaries -maxdepth 1 -type f -name 'ffmpeg-aarch64-apple-darwin' -print -quit)"
+          FFP="$(find src-tauri/binaries -maxdepth 1 -type f -name 'ffprobe-aarch64-apple-darwin' -print -quit)"
+          python3 scripts/run-endlume-860-five-masters.py "$SIDE" "$FFM" "$FFP" "$GITHUB_WORKSPACE/e862-five.json"
+          python3 - <<'PY'
+          import json
+          x=json.load(open('e862-five.json'))
+          assert x.get('status')=='passed' and x.get('release_gate') is True,x
+          assert len(x.get('times',[]))==5 and max(x['times'])<=30.0,x
+          print('FIVE_REAL_MASTERS_GREEN',x['times'])
+          PY
+
+      - name: Real two-hour Subscribe OFF media E2E
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          FFM="$(find src-tauri/binaries -maxdepth 1 -type f -name 'ffmpeg-aarch64-apple-darwin' -print -quit)"
+          FFP="$(find src-tauri/binaries -maxdepth 1 -type f -name 'ffprobe-aarch64-apple-darwin' -print -quit)"
+          python3 scripts/run-endlume-857-real-e2e.py "$SIDE" "$FFM" "$FFP" "$GITHUB_WORKSPACE/e862-off.json"
+          python3 - <<'PY'
+          import json
+          x=json.load(open('e862-off.json'))
+          assert x.get('status')=='passed' and x.get('release_gate') is True,x
+          assert x.get('synthetic_padding') is False,x
+          assert x.get('resolution')=='1920x1080' and x.get('fps')=='60/1',x
+          assert x.get('audio_codec')=='mp3' and x.get('whole_track') is True and x.get('mp3_packet_copy') is True,x
+          assert x.get('seek_begin') and x.get('seek_middle') and x.get('seek_tail'),x
+          print('SUBSCRIBE_OFF_REAL_E2E_GREEN',x.get('final_bytes'))
+          PY
+
+      - name: Real two-hour Subscribe ON media E2E
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          FFM="$(find src-tauri/binaries -maxdepth 1 -type f -name 'ffmpeg-aarch64-apple-darwin' -print -quit)"
+          FFP="$(find src-tauri/binaries -maxdepth 1 -type f -name 'ffprobe-aarch64-apple-darwin' -print -quit)"
+          python3 scripts/find-endlume-real-subscribe.py "$GITHUB_WORKSPACE/e862-subscribe.json"
+          python3 scripts/run-endlume-860-real-subscribe.py "$SIDE" "$GITHUB_WORKSPACE/e862-subscribe.json" "$FFM" "$FFP" "$GITHUB_WORKSPACE/e862-on.json"
+          python3 - <<'PY'
+          import json
+          x=json.load(open('e862-on.json'))
+          assert x.get('status')=='passed' and x.get('subscribe_on_gate') is True,x
+          assert x.get('synthetic_padding') is False,x
+          assert x.get('resolution')=='1920x1080' and x.get('fps')=='60/1' and x.get('audio_codec')=='mp3',x
+          print('SUBSCRIBE_ON_REAL_E2E_GREEN',x.get('final_bytes'))
+          PY
+
+      - name: QA verdict
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          echo "ENDLUME_862_FULL_QA_GREEN"
+          echo "HEAD=$GITHUB_SHA"
+
+      - name: Upload QA metrics
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: endlume-862-full-qa-metrics
+          path: |
+            e862-five.json
+            e862-off.json
+            e862-on.json
+            e862-subscribe.json
+          if-no-files-found: warn

@@ -1,0 +1,178 @@
+name: ENDLUME 8.64 to 8.65 macOS canonical-slot updater audit
+
+on:
+  push:
+    branches: [endlume-8.64-turbo]
+    paths:
+      - '.github/workflows/endlume-864-to-865-macos-canonical-slot.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  updater:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: e95294a7d0c80fba5e1cca8d1c20e5d3f4c7e43d
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Build exact 8.64 with audit-only production-updater autoinvoke
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
+          test "$(node -p "require('./package.json').version")" = "1.0.0-alpha.8.64"
+          mkdir -p src-tauri/binaries
+          cp "$(command -v ffmpeg)" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp "$(command -v ffprobe)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          chmod +x src-tauri/binaries/*
+          python3 - <<'PY'
+          from pathlib import Path
+          import json
+          p=Path('src-tauri/src/lib.rs');s=p.read_text()
+          needle='''    .setup(|app|{\n      persistence::mark_session_open(&app.handle().clone())?;'''
+          repl='''    .setup(|app|{\n      persistence::mark_session_open(&app.handle().clone())?;\n      if let Ok(check_path)=std::env::var("ENDLUME_AUDIT_CANONICAL_UPDATE"){\n        let handle=app.handle().clone();\n        tauri::async_runtime::spawn(async move{\n          let check=updater_local::local_update_check(handle.clone()).await;\n          let _=std::fs::write(&check_path,serde_json::to_vec_pretty(&check).unwrap_or_default());\n          let _=updater_local::local_update_start(handle.clone()).await;\n        });\n        return Ok(())\n      }'''
+          assert needle in s
+          p.write_text(s.replace(needle,repl,1))
+          q=Path('src-tauri/tauri.conf.json');d=json.loads(q.read_text());d['bundle']['createUpdaterArtifacts']=False
+          q.write_text(json.dumps(d,ensure_ascii=False,indent=2)+'\n')
+          PY
+          npm ci
+          CARGO_TARGET_DIR="$HOME/.endlume-build-cache/e864-canonical-slot" npm run tauri build -- --bundles app
+          APP="$(find "$HOME/.endlume-build-cache/e864-canonical-slot/release/bundle/macos" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          test -n "$APP"
+          test "$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist")" = "1.0.0-alpha.8.64"
+          echo "AUDIT_864=$APP" >> "$GITHUB_ENV"
+
+      - name: Backup canonical public 8.65 and fingerprint
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          CANON="/Applications/ENDLUME YT Studio PEISOV.app"
+          BACKUP="$HOME/.endlume-audit/canonical-slot-backup-865.app"
+          test -d "$CANON"
+          test "$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$CANON/Contents/Info.plist")" = "1.0.0-alpha.8.65"
+          /usr/bin/codesign --verify --deep --strict "$CANON"
+          rm -rf "$BACKUP"
+          /usr/bin/ditto "$CANON" "$BACKUP"
+          EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$CANON/Contents/Info.plist")"
+          /usr/bin/shasum -a 256 "$CANON/Contents/MacOS/$EXE" | awk '{print $1}' > "$HOME/.endlume-audit/canonical-slot-backup.sha"
+          echo "CANON=$CANON" >> "$GITHUB_ENV"
+          echo "BACKUP=$BACKUP" >> "$GITHUB_ENV"
+          echo CANONICAL_865_BACKUP_GREEN
+
+      - name: Temporarily install exact 8.64 audit wrapper into canonical slot and run production updater
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          /usr/bin/osascript -e 'tell application id "studio.endlume.desktop" to quit' >/dev/null 2>&1 || true
+          pkill -f "$CANON/Contents/MacOS/" >/dev/null 2>&1 || true
+          sleep 2
+          rm -rf "$CANON"
+          /usr/bin/ditto "$AUDIT_864" "$CANON"
+          test "$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$CANON/Contents/Info.plist")" = "1.0.0-alpha.8.64"
+          echo CANONICAL_SLOT_864_READY
+
+          STATE_DIR="$HOME/Library/Application Support/studio.endlume.desktop"
+          mkdir -p "$STATE_DIR" "$HOME/.endlume-audit/canonical-slot"
+          SENTINEL="$STATE_DIR/ENDLUME-CANONICAL-SLOT-SENTINEL.txt"
+          printf 'canonical-slot-%s\n' "$GITHUB_RUN_ID" > "$SENTINEL"
+          /usr/bin/shasum -a 256 "$SENTINEL" | awk '{print $1}' > "$HOME/.endlume-audit/canonical-slot/sentinel-before.sha"
+
+          CHECK="$HOME/.endlume-audit/canonical-slot/check.json"
+          UPDATE_STATE="$HOME/Library/Caches/studio.endlume.desktop/update-center/state.json"
+          rm -f "$CHECK" "$UPDATE_STATE"
+          EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$CANON/Contents/Info.plist")"
+          ENDLUME_AUDIT_CANONICAL_UPDATE="$CHECK" "$CANON/Contents/MacOS/$EXE" >"$HOME/.endlume-audit/canonical-slot/stdout.log" 2>"$HOME/.endlume-audit/canonical-slot/stderr.log" &
+          PID=$!
+
+          for i in $(seq 1 120); do [ -s "$CHECK" ] && break; sleep 0.25; done
+          test -s "$CHECK"
+          cat "$CHECK"
+          python3 - "$CHECK" <<'PY'
+          import json,sys
+          x=json.load(open(sys.argv[1]))
+          assert x['supported'] is True,x
+          assert x['available'] is True,x
+          assert x['current']=='1.0.0-alpha.8.64',x
+          assert x['version']=='1.0.0-alpha.8.65',x
+          assert not x.get('reason'),x
+          print('CANONICAL_SLOT_UPDATER_DETECTS_865_GREEN')
+          PY
+
+          for i in $(seq 1 240); do
+            VER="$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$CANON/Contents/Info.plist" 2>/dev/null || true)"
+            [ "$VER" = "1.0.0-alpha.8.65" ] && break
+            sleep 0.5
+          done
+          VER="$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$CANON/Contents/Info.plist" 2>/dev/null || true)"
+          echo "CANONICAL_SLOT_VERSION_AFTER=$VER"
+          test "$VER" = "1.0.0-alpha.8.65"
+          /usr/bin/codesign --verify --deep --strict "$CANON"
+
+          test -s "$UPDATE_STATE"
+          cat "$UPDATE_STATE"
+          python3 - "$UPDATE_STATE" <<'PY'
+          import json,sys
+          x=json.load(open(sys.argv[1]))
+          assert x['state']=='RESTART_REQUIRED',x
+          assert float(x['progress'])==100.0,x
+          assert int(x['downloadedBytes'])==7197249,x
+          assert int(x['totalBytes'])==7197249,x
+          print('CANONICAL_SLOT_DOWNLOAD_VERIFY_APPLY_GREEN')
+          PY
+
+          test -s "$SENTINEL"
+          /usr/bin/shasum -a 256 "$SENTINEL" | awk '{print $1}' > "$HOME/.endlume-audit/canonical-slot/sentinel-after.sha"
+          cmp "$HOME/.endlume-audit/canonical-slot/sentinel-before.sha" "$HOME/.endlume-audit/canonical-slot/sentinel-after.sha"
+          echo CANONICAL_SLOT_USER_STATE_GREEN
+
+          NEWEXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$CANON/Contents/Info.plist")"
+          /usr/bin/shasum -a 256 "$CANON/Contents/MacOS/$NEWEXE" | awk '{print $1}' > "$HOME/.endlume-audit/canonical-slot/updated.sha"
+          cmp "$HOME/.endlume-audit/canonical-slot-backup.sha" "$HOME/.endlume-audit/canonical-slot/updated.sha"
+          echo CANONICAL_SLOT_UPDATED_BINARY_MATCHES_PUBLIC_865_GREEN
+
+          kill "$PID" >/dev/null 2>&1 || true
+          wait "$PID" 2>/dev/null || true
+
+      - name: Relaunch updated 8.65 and prove no repeated update modal visually
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          /usr/bin/open -n "$CANON"
+          sleep 6
+          EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$CANON/Contents/Info.plist")"
+          pgrep -f "$CANON/Contents/MacOS/$EXE" >/dev/null
+          /usr/sbin/screencapture -x "$HOME/.endlume-audit/canonical-slot/relaunch.png"
+          /usr/bin/sips -Z 900 "$HOME/.endlume-audit/canonical-slot/relaunch.png" --out "$HOME/.endlume-audit/canonical-slot/relaunch-small.png" >/dev/null
+          echo RELAUNCH_B64_START
+          base64 -i "$HOME/.endlume-audit/canonical-slot/relaunch-small.png" | tr -d '\n'
+          echo
+          echo RELAUNCH_B64_END
+          echo CANONICAL_SLOT_865_RELAUNCH_GREEN
+
+      - name: Restore original canonical 8.65 bytes and cleanup
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          CANON="/Applications/ENDLUME YT Studio PEISOV.app"
+          BACKUP="$HOME/.endlume-audit/canonical-slot-backup-865.app"
+          /usr/bin/osascript -e 'tell application id "studio.endlume.desktop" to quit' >/dev/null 2>&1 || true
+          pkill -f "$CANON/Contents/MacOS/" >/dev/null 2>&1 || true
+          sleep 1
+          if [ -d "$BACKUP" ]; then
+            rm -rf "$CANON"
+            /usr/bin/ditto "$BACKUP" "$CANON"
+          fi
+          rm -f "$HOME/Library/Application Support/studio.endlume.desktop/ENDLUME-CANONICAL-SLOT-SENTINEL.txt"
+          if [ -d "$CANON" ]; then
+            echo "RESTORED_VERSION=$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$CANON/Contents/Info.plist" 2>/dev/null)"
+            /usr/bin/codesign --verify --deep --strict "$CANON" || true
+          fi

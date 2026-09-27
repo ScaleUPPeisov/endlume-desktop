@@ -1,0 +1,40 @@
+name: ENDLUME local GitHub auth public repo bootstrap
+
+on:
+  push:
+    branches: [endlume-8.64-turbo]
+    paths:
+      - '.github/workflows/endlume-local-gh-auth-public-repo-bootstrap.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bootstrap:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 15
+    steps:
+      - name: Check local gh credential store without Actions token
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          unset GH_TOKEN GITHUB_TOKEN
+          echo LOCAL_GH_AUTH_STATUS_START
+          gh auth status --hostname github.com 2>&1 | sed -E 's/(Token: ).*/\1*** hidden ***/'
+          echo LOCAL_GH_AUTH_STATUS_END
+
+      - name: Create dedicated public black-box repository if local auth allows
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          unset GH_TOKEN GITHUB_TOKEN
+          FULL="ScaleUPPeisov/endlume-windows-public-audit"
+          if gh api "repos/$FULL" >/dev/null 2>&1; then
+            test "$(gh api "repos/$FULL" --jq .visibility)" = "public"
+            echo "DEDICATED_PUBLIC_REPO_ALREADY_EXISTS=$FULL"
+            exit 0
+          fi
+          gh repo create "$FULL"             --public             --description "Public black-box Windows acceptance harness for already-published ENDLUME binaries. No source, secrets, or customer data."             --add-readme
+          test "$(gh api "repos/$FULL" --jq .visibility)" = "public"
+          echo "DEDICATED_PUBLIC_REPO_CREATED=$FULL"

@@ -1,0 +1,159 @@
+name: ENDLUME public Windows audit bootstrap
+
+on:
+  push:
+    branches: [endlume-8.64-turbo]
+    paths:
+      - '.github/workflows/endlume-public-windows-audit-bootstrap.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bootstrap:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 30
+    env:
+      OWNER: ScaleUPPeisov
+      PUBLIC_REPO: endlume-windows-public-audit
+      RELEASE_REPO: ScaleUPPeisov/scaleup-site
+      RELEASE_TAG: endlume-stable
+      INSTALLER: ENDLUME-YT-Studio-PEISOV-Setup-1.0.0-alpha.8.65-x64.exe
+      EXPECTED_SIZE: '98330820'
+      EXPECTED_SHA: 4a4be729cb34d93f6e55d03b9e727f4c80006043f404b84b6cb2a3cb659d695a
+      ADMIN_TOKEN: ${{ secrets.ENDLUME_RELEASE_TOKEN }}
+
+    steps:
+      - name: Anonymous public release verification
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ROOT="$RUNNER_TEMP/endlume-public-bootstrap"
+          rm -rf "$ROOT"; mkdir -p "$ROOT"
+          LATEST_URL="https://github.com/$RELEASE_REPO/releases/download/$RELEASE_TAG/latest.json"
+          INSTALLER_URL="https://github.com/$RELEASE_REPO/releases/download/$RELEASE_TAG/$INSTALLER"
+
+          # Deliberately anonymous HTTP: do not attach any GitHub credential.
+          env -u GH_TOKEN -u GITHUB_TOKEN curl -L --fail --silent --show-error "$LATEST_URL" -o "$ROOT/latest.json"
+          env -u GH_TOKEN -u GITHUB_TOKEN curl -L --fail --silent --show-error "$INSTALLER_URL" -o "$ROOT/$INSTALLER"
+
+          SIZE="$(stat -f %z "$ROOT/$INSTALLER")"
+          SHA="$(shasum -a 256 "$ROOT/$INSTALLER" | awk '{print $1}')"
+          echo "ANON_INSTALLER_SIZE=$SIZE"
+          echo "ANON_INSTALLER_SHA256=$SHA"
+          test "$SIZE" = "$EXPECTED_SIZE"
+          test "$SHA" = "$EXPECTED_SHA"
+
+          python3 - "$ROOT/latest.json" "$INSTALLER_URL" "$EXPECTED_SHA" <<'PY'
+          import json,sys
+          path,url,sha=sys.argv[1:]
+          x=json.load(open(path,encoding='utf-8'))
+          assert x.get('version')=='1.0.0-alpha.8.65',x
+          p=(x.get('platforms') or {}).get('windows-x86_64') or {}
+          assert p.get('url')==url,(p.get('url'),url)
+          assert p.get('sha256')==sha,(p.get('sha256'),sha)
+          assert isinstance(p.get('signature'),str) and p['signature'].strip(),p
+          print('ANONYMOUS_PUBLIC_INSTALLER_VERIFIED')
+          print('LATEST_JSON_WINDOWS_MAPPING_GREEN')
+          PY
+
+      - name: Create isolated public repository and seed allocation workflow
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$ADMIN_TOKEN"
+          export GH_TOKEN="$ADMIN_TOKEN"
+          FULL="$OWNER/$PUBLIC_REPO"
+
+          if gh api "repos/$FULL" >/dev/null 2>&1; then
+            VIS="$(gh api "repos/$FULL" --jq .visibility)"
+            test "$VIS" = "public"
+            echo "PUBLIC_REPO_ALREADY_EXISTS=$FULL"
+          else
+            gh api --method POST /user/repos               -f name="$PUBLIC_REPO"               -f description='Public black-box Windows acceptance harness for already-published ENDLUME binaries. Contains no ENDLUME source or secrets.'               -F private=false               -F has_issues=false               -F has_projects=false               -F has_wiki=false               -F auto_init=true >/dev/null
+            echo "PUBLIC_REPO_CREATED=$FULL"
+          fi
+
+          README=$(cat <<'EOF'
+          # ENDLUME Windows Public Black-Box Audit
+
+          This public repository exists only to run black-box acceptance tests against already-public ENDLUME release binaries on standard GitHub-hosted Windows runners.
+
+          It contains **no ENDLUME production source code**, no private repository history, no customer data, no credentials, no signing keys, and no private tokens.
+
+          The harness downloads only anonymously accessible public release artifacts at workflow runtime and independently verifies their expected size and SHA-256 before execution.
+          EOF
+          )
+
+          PROBE=$(cat <<'EOF'
+          name: ENDLUME Public Windows Allocation Probe
+
+          on:
+            push:
+              paths:
+                - '.github/workflows/windows-allocation-probe.yml'
+            workflow_dispatch:
+
+          permissions:
+            contents: read
+
+          jobs:
+            allocation:
+              runs-on: windows-latest
+              timeout-minutes: 10
+              steps:
+                - name: Real Windows hosted runner evidence
+                  shell: pwsh
+                  run: |
+                    $ErrorActionPreference='Stop'
+                    Write-Host "RUNNER_OS=$env:RUNNER_OS"
+                    Write-Host "RUNNER_ARCH=$env:RUNNER_ARCH"
+                    Write-Host "RUNNER_NAME=$env:RUNNER_NAME"
+                    Get-CimInstance Win32_OperatingSystem | Select-Object Caption,Version,BuildNumber,OSArchitecture | Format-List
+                    Get-CimInstance Win32_Processor | Select-Object Name,NumberOfCores,NumberOfLogicalProcessors | Format-List
+                    Get-CimInstance Win32_ComputerSystem | Select-Object TotalPhysicalMemory | Format-List
+                    if($env:RUNNER_OS -ne 'Windows'){ throw "Expected Windows runner" }
+                    if($env:RUNNER_ARCH -ne 'X64'){ throw "Expected X64 runner" }
+                    Write-Host ENDLUME_PUBLIC_WINDOWS_RUNNER_ALLOCATED
+          EOF
+          )
+
+          # Safety scan public payload before any upload.
+          PAYLOAD="$README"$'\n'"$PROBE"
+          if printf '%s' "$PAYLOAD" | grep -Eiq '(ENDLUME_RELEASE_TOKEN|ghp_[A-Za-z0-9]+|github_pat_[A-Za-z0-9_]+|BEGIN [A-Z ]*PRIVATE KEY|client_secret|credentials\.json)'; then
+            echo "PUBLIC_PAYLOAD_SECRET_PATTERN_DETECTED"
+            exit 91
+          fi
+          if printf '%s' "$PAYLOAD" | grep -Eiq '(src-tauri|src/components|rust production|frontend production)'; then
+            echo "PUBLIC_PAYLOAD_PRIVATE_SOURCE_REFERENCE_DETECTED"
+            exit 92
+          fi
+
+          put_content() {
+            local path="$1" content="$2" msg="$3"
+            local b64 sha
+            b64="$(printf '%s' "$content" | base64 | tr -d '\n')"
+            sha="$(gh api "repos/$FULL/contents/$path" --jq .sha 2>/dev/null || true)"
+            if [ -n "$sha" ]; then
+              gh api --method PUT "repos/$FULL/contents/$path" -f message="$msg" -f content="$b64" -f sha="$sha" >/dev/null
+            else
+              gh api --method PUT "repos/$FULL/contents/$path" -f message="$msg" -f content="$b64" >/dev/null
+            fi
+          }
+
+          put_content "README.md" "$README" "docs: define public black-box audit boundary"
+          put_content ".github/workflows/windows-allocation-probe.yml" "$PROBE" "ci: probe real GitHub-hosted Windows x64 allocation"
+
+          gh api "repos/$FULL" --jq '{full_name,visibility,default_branch}'
+          echo "PUBLIC_AUDIT_REPOSITORY_SEEDED=$FULL"
+
+      - name: Dispatch allocation probe
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export GH_TOKEN="$ADMIN_TOKEN"
+          FULL="$OWNER/$PUBLIC_REPO"
+          sleep 3
+          gh workflow run windows-allocation-probe.yml --repo "$FULL"
+          echo "PUBLIC_WINDOWS_ALLOCATION_PROBE_DISPATCHED"

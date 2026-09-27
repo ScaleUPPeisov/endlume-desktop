@@ -1,0 +1,215 @@
+name: ENDLUME 8.61 Windows Production Promotion
+
+on:
+  push:
+    branches: [windows/endlume-861-managed-access]
+    paths:
+      - '.github/workflows/endlume-861-windows-production-promotion.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: endlume-861-windows-production-promotion
+  cancel-in-progress: true
+
+env:
+  PROMOTION_TARGET: 34d35d2448c810baa276031f4b74b8be0fde81c8
+  RC_TAG: endlume-v1.0.0-alpha.8.61-windows-rc
+  PROD_TAG: endlume-v1.0.0-alpha.8.61-windows
+  RELEASE_NAME: ENDLUME YT Studio PEISOV 1.0.0-alpha.8.61 Windows
+  EXE_NAME: ENDLUME-YT-Studio-PEISOV-Setup-1.0.0-alpha.8.61-x64.exe
+  SHA_NAME: ENDLUME-YT-Studio-PEISOV-Setup-1.0.0-alpha.8.61-x64.exe.sha256
+  EXPECTED_SIZE: '98228835'
+  EXPECTED_SHA256: 3029774d277833194588488c82211b07bb5e52c402442581c139d151da98f1a2
+
+jobs:
+  promote:
+    name: Promote exact RC binary to Windows Production
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 30
+
+    steps:
+      - name: Download exact RC assets and verify
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          rm -rf promote
+          mkdir -p promote
+
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RC_TAG" > promote/rc-release.json
+          python3 - <<'PY'
+          import json, os
+          r=json.load(open('promote/rc-release.json'))
+          names={a['name']:a for a in r.get('assets',[])}
+          exe=os.environ['EXE_NAME']; sha=os.environ['SHA_NAME']
+          assert exe in names, f"RC EXE missing: {exe}"
+          assert sha in names, f"RC SHA missing: {sha}"
+          a=names[exe]
+          assert a.get('state')=='uploaded', a
+          assert int(a.get('size',0))==int(os.environ['EXPECTED_SIZE']), a.get('size')
+          assert a.get('digest')=='sha256:'+os.environ['EXPECTED_SHA256'], a.get('digest')
+          open('promote/exe_asset_id','w').write(str(a['id']))
+          open('promote/sha_asset_id','w').write(str(names[sha]['id']))
+          PY
+
+          gh api -H "Accept: application/octet-stream"             "repos/$GITHUB_REPOSITORY/releases/assets/$(cat promote/exe_asset_id)" > "promote/$EXE_NAME"
+          gh api -H "Accept: application/octet-stream"             "repos/$GITHUB_REPOSITORY/releases/assets/$(cat promote/sha_asset_id)" > "promote/$SHA_NAME"
+
+          python3 - <<'PY'
+          import hashlib, os, pathlib
+          exe=pathlib.Path('promote')/os.environ['EXE_NAME']
+          sha=pathlib.Path('promote')/os.environ['SHA_NAME']
+          size=exe.stat().st_size
+          digest=hashlib.sha256(exe.read_bytes()).hexdigest()
+          raw=sha.read_text().replace('\r','').strip()
+          parts=raw.split(maxsplit=1)
+          assert parts and parts[0]==os.environ['EXPECTED_SHA256'], repr(raw)
+          assert len(parts)==2 and parts[1].endswith(os.environ['EXE_NAME']), repr(raw)
+          assert size==int(os.environ['EXPECTED_SIZE']), size
+          assert digest==os.environ['EXPECTED_SHA256'], digest
+          sha.write_text(f"{os.environ['EXPECTED_SHA256']}  {os.environ['EXE_NAME']}\n")
+          print('RC_EXACT_BINARY_VERIFIED=YES')
+          print('RC_SIZE='+str(size))
+          print('RC_SHA256='+digest)
+          print('PRODUCTION_SHA_FILE_NORMALIZED=YES')
+          PY
+
+      - name: Create or verify production tag
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$PROD_TAG" > promote/prod-tag.json 2>/dev/null; then
+            TARGET="$(python3 -c 'import json;print(json.load(open("promote/prod-tag.json"))["object"]["sha"])')"
+            test "$TARGET" = "$PROMOTION_TARGET"
+            echo "PRODUCTION_TAG_VERIFIED=$TARGET"
+          else
+            gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs"               -f ref="refs/tags/$PROD_TAG"               -f sha="$PROMOTION_TARGET" > promote/prod-tag-created.json
+            TARGET="$(python3 -c 'import json;print(json.load(open("promote/prod-tag-created.json"))["object"]["sha"])')"
+            test "$TARGET" = "$PROMOTION_TARGET"
+            echo "PRODUCTION_TAG_CREATED=$TARGET"
+          fi
+
+      - name: Create or normalize production Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          cat > promote/release-notes.txt <<'EOF'
+          ENDLUME YT Studio PEISOV
+          Windows x64
+          Version 1.0.0-alpha.8.61
+
+          Build verified.
+          NSIS installer verified.
+
+          Hardware acceptance on a physical Windows machine is still pending.
+          EOF
+
+          if gh api "repos/$GITHUB_REPOSITORY/releases/tags/$PROD_TAG" > promote/prod-release.json 2>/dev/null; then
+            RELEASE_ID="$(python3 -c 'import json;print(json.load(open("promote/prod-release.json"))["id"])')"
+            NOTES="$(cat promote/release-notes.txt)"
+            gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID"               -f tag_name="$PROD_TAG"               -f target_commitish="$PROMOTION_TARGET"               -f name="$RELEASE_NAME"               -f body="$NOTES"               -F draft=false               -F prerelease=false > promote/prod-release-normalized.json
+          else
+            NOTES="$(cat promote/release-notes.txt)"
+            gh api --method POST "repos/$GITHUB_REPOSITORY/releases"               -f tag_name="$PROD_TAG"               -f target_commitish="$PROMOTION_TARGET"               -f name="$RELEASE_NAME"               -f body="$NOTES"               -F draft=false               -F prerelease=false               -f make_latest=true > promote/prod-release-created.json
+          fi
+
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$PROD_TAG" > promote/prod-release.json
+          python3 - <<'PY'
+          import json,os
+          r=json.load(open('promote/prod-release.json'))
+          assert r['tag_name']==os.environ['PROD_TAG']
+          assert r['name']==os.environ['RELEASE_NAME']
+          assert r['draft'] is False
+          assert r['prerelease'] is False
+          print('PRODUCTION_RELEASE_ID='+str(r['id']))
+          open('promote/release_id','w').write(str(r['id']))
+          PY
+
+      - name: Verify existing production assets without reupload
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$PROD_TAG" > promote/prod-assets.json
+          python3 - <<'PY'
+          import json,os
+          r=json.load(open('promote/prod-assets.json'))
+          names={a['name']:a for a in r.get('assets',[])}
+          exe=os.environ['EXE_NAME']; sha=os.environ['SHA_NAME']
+          assert exe in names, names.keys()
+          assert sha in names, names.keys()
+          e=names[exe]; s=names[sha]
+          assert e.get('state')=='uploaded',e
+          assert int(e.get('size',0))==int(os.environ['EXPECTED_SIZE']),e
+          assert e.get('digest')=='sha256:'+os.environ['EXPECTED_SHA256'],e
+          assert s.get('state')=='uploaded',s
+          assert int(s.get('size',0))==122,s
+          open('promote/prod_exe_asset_id','w').write(str(e['id']))
+          open('promote/prod_sha_asset_id','w').write(str(s['id']))
+          print('PRODUCTION_EXE_METADATA_GREEN=1')
+          print('PRODUCTION_SHA_METADATA_GREEN=1')
+          PY
+
+          gh api -H "Accept: application/octet-stream"             "repos/$GITHUB_REPOSITORY/releases/assets/$(cat promote/prod_sha_asset_id)" > "promote/production.sha256"
+
+          python3 - <<'PY'
+          import os,pathlib
+          p=pathlib.Path('promote/production.sha256')
+          expected=f"{os.environ['EXPECTED_SHA256']}  {os.environ['EXE_NAME']}\n"
+          actual=p.read_text().replace('\r\n','\n')
+          assert actual==expected,(repr(actual),repr(expected))
+          print('PRODUCTION_SHA_FILE_GREEN=1')
+          PY
+
+      - name: Verify production Release assets and download exact EXE back
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$PROD_TAG" > promote/prod-release-final.json
+          python3 - <<'PY'
+          import json, os
+          r=json.load(open('promote/prod-release-final.json'))
+          assert r['tag_name']==os.environ['PROD_TAG'], r['tag_name']
+          assert r['name']==os.environ['RELEASE_NAME'], r['name']
+          assert r['draft'] is False, r['draft']
+          assert r['prerelease'] is False, r['prerelease']
+          names={a['name']:a for a in r.get('assets',[])}
+          exe=os.environ['EXE_NAME']; sha=os.environ['SHA_NAME']
+          assert exe in names, names.keys()
+          assert sha in names, names.keys()
+          a=names[exe]
+          assert a['state']=='uploaded', a
+          assert int(a['size'])==int(os.environ['EXPECTED_SIZE']), a['size']
+          assert a.get('digest')=='sha256:'+os.environ['EXPECTED_SHA256'], a.get('digest')
+          open('promote/prod_exe_asset_id','w').write(str(a['id']))
+          print('PRODUCTION_EXE_BYTES='+str(a['size']))
+          print('PRODUCTION_EXE_DIGEST='+str(a.get('digest')))
+          PY
+
+          gh api -H "Accept: application/octet-stream"             "repos/$GITHUB_REPOSITORY/releases/assets/$(cat promote/prod_exe_asset_id)" > promote/production-download.exe
+
+          python3 - <<'PY'
+          import hashlib,os,pathlib
+          p=pathlib.Path('promote/production-download.exe')
+          size=p.stat().st_size
+          digest=hashlib.sha256(p.read_bytes()).hexdigest()
+          assert size==int(os.environ['EXPECTED_SIZE']),size
+          assert digest==os.environ['EXPECTED_SHA256'],digest
+          print('FINAL_PROMOTION_TARGET='+os.environ['PROMOTION_TARGET'])
+          print('FINAL_PRODUCTION_TAG='+os.environ['PROD_TAG'])
+          print('FINAL_SIZE='+str(size))
+          print('FINAL_SHA256='+digest)
+          print('HARDWARE_E2E_VERIFIED=NO')
+          print('WINDOWS_PRODUCTION_RELEASE_PUBLISHED=YES')
+          PY

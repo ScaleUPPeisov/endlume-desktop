@@ -1,0 +1,213 @@
+name: ENDLUME Self-Hosted Release
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [release]
+    paths:
+      - 'updates/github/build-request.json'
+      - '.github/workflows/endlume-self-hosted-release.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-self-hosted-macos-release
+  cancel-in-progress: true
+
+jobs:
+  macos-arm64-release:
+    name: macOS ARM64 • Self-Hosted • Signed Build
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 240
+    env:
+      GH_TOKEN: ${{ github.token }}
+      ENDLUME_IN_APP_UPDATE: '1'
+
+    steps:
+      - name: Checkout ENDLUME release
+        uses: actions/checkout@v4
+        with:
+          ref: release
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify self-hosted Mac and toolchain
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          test "$(uname -s)" = "Darwin"
+          test "$(uname -m)" = "arm64"
+          command -v gh
+          command -v node
+          command -v npm
+          command -v npx
+          command -v cargo
+          command -v rustup
+          gh api /repos/${{ github.repository }} --jq .full_name
+          test -s "$HOME/.endlume-updater/endlume.key"
+          test -s "$HOME/.endlume-updater/endlume.key.pub"
+          echo "Runner: ${RUNNER_NAME:-unknown}"
+          echo "Mac: $(sw_vers -productVersion) / $(uname -m)"
+          echo "GitHub-hosted minutes used: 0"
+
+      - name: Validate release request
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import json, pathlib
+          r=json.loads(pathlib.Path('updates/github/build-request.json').read_text())
+          assert r.get('enabled') is True, 'release request disabled'
+          assert r.get('version'), 'version missing'
+          b=r.get('builder','')
+          assert b.startswith('BUILD_ENDLUME_') and b.endswith('.command') and '/' not in b and '..' not in b, b
+          assert pathlib.Path(b).is_file(), b
+          print('Release:',r['version'])
+          print('Builder:',b)
+          print('Generation:',r.get('generation'))
+          PY
+
+      - name: Build and sign ENDLUME
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          VERSION="$(python3 -c 'import json;print(json.load(open("updates/github/build-request.json"))["version"])')"
+          BUILDER="$(python3 -c 'import json;print(json.load(open("updates/github/build-request.json"))["builder"])')"
+          KEY="$HOME/.endlume-updater/endlume.key"
+          PUB="$KEY.pub"
+          BRIDGE="$HOME/.endlume-release-bridge/endlume"
+          ART="$BRIDGE/current"
+          rm -rf "$ART"
+          mkdir -p "$ART"
+          export TAURI_SIGNING_PRIVATE_KEY_PATH="$KEY"
+          export TAURI_SIGNING_PRIVATE_KEY="$KEY"
+          export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
+          export ENDLUME_RELEASE_ARTIFACT_DIR="$ART"
+          export ENDLUME_RELEASE_PLATFORM="darwin-aarch64"
+          export ENDLUME_RELEASE_VERSION="$VERSION"
+          export ENDLUME_UPDATER_PUBLIC_KEY_FILE="$PUB"
+          export ENDLUME_UPDATER_ENDPOINT="https://github.com/ScaleUPPeisov/scaleup-site/releases/download/endlume-stable/latest.json"
+          chmod +x "$BUILDER"
+          /bin/bash "$BUILDER"
+          TAR="$(find "$ART" -type f -name '*.app.tar.gz' -print -quit)"
+          test -n "$TAR" -a -s "$TAR"
+          test -s "$TAR.sig"
+          if test "$TAR" != "$ART/ENDLUME-macos-aarch64.app.tar.gz"; then
+            cp "$TAR" "$ART/ENDLUME-macos-aarch64.app.tar.gz"
+            cp "$TAR.sig" "$ART/ENDLUME-macos-aarch64.app.tar.gz.sig"
+          fi
+          printf '%s\n' "$VERSION" > "$ART/version.txt"
+
+      - name: Verify staged ENDLUME app archive
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          VERSION="$(python3 -c 'import json;print(json.load(open("updates/github/build-request.json"))["version"])')"
+          ART="$HOME/.endlume-release-bridge/endlume/current"
+          TAR="$ART/ENDLUME-macos-aarch64.app.tar.gz"
+          UNPACK="$ART/unpack"
+          USER_ZIP="$HOME/.endlume-release-bridge/endlume/ENDLUME_Studio_${VERSION}_MAC.zip"
+          rm -rf "$UNPACK"
+          mkdir -p "$UNPACK"
+          /usr/bin/tar -xzf "$TAR" -C "$UNPACK"
+          APP="$(find "$UNPACK" -maxdepth 4 -type d -name '*.app' -print -quit)"
+          test -n "$APP" -a -d "$APP"
+          if test "$VERSION" = '1.0.0-alpha.8.49'; then
+            test "$(basename "$APP")" = 'ENDLUME STUDIO PEISOV.app'
+          fi
+          BID="$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$APP/Contents/Info.plist")"
+          VER="$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist")"
+          EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
+          test "$BID" = 'studio.endlume.desktop'
+          test "$VER" = "$VERSION"
+          /usr/bin/lipo -archs "$APP/Contents/MacOS/$EXE" | grep -qw arm64
+          FFMPEG="$(find "$APP/Contents/MacOS" -maxdepth 1 -type f -name 'ffmpeg*' -print -quit)"
+          FFPROBE="$(find "$APP/Contents/MacOS" -maxdepth 1 -type f -name 'ffprobe*' -print -quit)"
+          test -x "$FFMPEG"
+          test -x "$FFPROBE"
+          /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP"
+          test -s "$APP/Contents/_CodeSignature/CodeResources"
+          rm -f "$USER_ZIP"
+          /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$APP" "$USER_ZIP"
+          test -s "$USER_ZIP"
+          echo "PASS: staged $VER / $BID / arm64 / strict-valid archive codesign"
+          echo "PASS: local emergency ZIP $USER_ZIP"
+          echo "PASS: installed /Applications copy was NOT replaced or launched"
+
+      - name: Publish signed updater channel
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.ENDLUME_RELEASE_TOKEN }}
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          test -n "${GH_TOKEN:-}" || { echo 'ENDLUME_RELEASE_TOKEN repository secret is missing' >&2; exit 1; }
+          VERSION="$(python3 -c 'import json;print(json.load(open("updates/github/build-request.json"))["version"])')"
+          ART="$HOME/.endlume-release-bridge/endlume/current"
+          TAR="$ART/ENDLUME-macos-aarch64.app.tar.gz"
+          SIGFILE="$ART/ENDLUME-macos-aarch64.app.tar.gz.sig"
+          LATEST="$ART/latest.json"
+          HOST_REPO="ScaleUPPeisov/scaleup-site"
+          TAG="endlume-stable"
+          ASSET_URL="https://github.com/$HOST_REPO/releases/download/$TAG/ENDLUME-macos-aarch64.app.tar.gz"
+          test -s "$TAR"
+          test -s "$SIGFILE"
+          SIG="$(tr -d '\r\n' < "$SIGFILE")"
+          test -n "$SIG"
+          python3 - "$LATEST" "$VERSION" "$ASSET_URL" "$SIG" <<'PY'
+          import datetime,json,sys
+          out,version,url,sig=sys.argv[1:]
+          data={
+            "version":version,
+            "notes":"Online Update System validation",
+            "pub_date":datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00","Z"),
+            "platforms":{"darwin-aarch64":{"url":url,"signature":sig}}
+          }
+          json.dump(data,open(out,"w"),ensure_ascii=False,indent=2)
+          PY
+          gh api "/repos/$HOST_REPO" --jq .full_name >/dev/null
+          if ! gh release view "$TAG" --repo "$HOST_REPO" >/dev/null 2>&1; then
+            gh release create "$TAG" --repo "$HOST_REPO" --title "ENDLUME Stable Updates" --notes "Signed updater channel for ENDLUME Studio."
+          fi
+          gh release upload "$TAG" "$TAR" "$SIGFILE" "$LATEST" --clobber --repo "$HOST_REPO"
+          gh api "/repos/$HOST_REPO/releases/tags/$TAG" --jq '.assets[].name' > "$ART/release-assets.txt"
+          grep -Fxq 'latest.json' "$ART/release-assets.txt"
+          grep -Fxq 'ENDLUME-macos-aarch64.app.tar.gz' "$ART/release-assets.txt"
+          grep -Fxq 'ENDLUME-macos-aarch64.app.tar.gz.sig' "$ART/release-assets.txt"
+          rm -f "$ART/public-latest.json"
+          for i in {1..18}; do
+            if /usr/bin/curl -fsSL --connect-timeout 10 --max-time 30 "https://github.com/$HOST_REPO/releases/download/$TAG/latest.json?run=${GITHUB_RUN_ID:-0}-$i" -o "$ART/public-latest.json"; then
+              if python3 - "$ART/public-latest.json" "$VERSION" <<'PY'
+          import json,sys
+          d=json.load(open(sys.argv[1]))
+          assert d.get('version')==sys.argv[2]
+          p=d.get('platforms',{}).get('darwin-aarch64',{})
+          assert p.get('url') and p.get('signature')
+          PY
+              then break; fi
+            fi
+            sleep 5
+          done
+          python3 - "$ART/public-latest.json" "$VERSION" <<'PY'
+          import json,sys
+          d=json.load(open(sys.argv[1]))
+          assert d.get('version')==sys.argv[2],d.get('version')
+          p=d.get('platforms',{}).get('darwin-aarch64',{})
+          assert p.get('url') and p.get('signature')
+          PY
+          /usr/bin/curl -fsIL --connect-timeout 10 --max-time 30 "$ASSET_URL" >/dev/null
+          /usr/bin/curl -fsIL --connect-timeout 10 --max-time 30 "$ASSET_URL.sig" >/dev/null
+          echo "PASS: public updater channel $VERSION"
+
+      - name: Build complete
+        shell: bash
+        run: |
+          VERSION="$(python3 -c 'import json;print(json.load(open("updates/github/build-request.json"))["version"])')"
+          echo "✅ ENDLUME $VERSION built, verified and published on self-hosted Mac"
+          echo '✅ Installed ENDLUME was not touched by the build job'
+          echo '✅ GitHub-hosted Actions minutes used: 0'
+          echo '✅ Next step: installed ENDLUME checks and installs this signed update itself'

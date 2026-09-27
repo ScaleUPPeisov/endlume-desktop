@@ -1,0 +1,38 @@
+name: ENDLUME 8.52 Exact Subscribe Inspect
+on:
+  push:
+    branches: [candidate/endlume-852-build]
+    paths: ['.github/workflows/endlume-852-exact-subscribe-inspect.yml']
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: candidate/endlume-852-build
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Extract exact project Effects/Subscribe schedule
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ROOT='/Volumes/TOSHIBA EXT/ВАЙРОН/ProductionManager/Batches/2e0e14ba-d97a-48d5-ab32-2fb2b27754bf/Neon Drive FM_BATCH_2026-09-05_001/Rendered'
+          echo '=== project json candidates ==='
+          find "$ROOT" -maxdepth 3 -type f -name '*project.json' -print
+          P="$(find "$ROOT" -maxdepth 3 -type f -name '*project.json' -print -quit)"
+          if [[ -n "$P" ]]; then
+            python3 - "$P" <<'PY'
+          import json,sys
+          p=sys.argv[1];d=json.load(open(p))
+          print('PROJECT_JSON=',p)
+          print('settings=',json.dumps(d.get('settings',{}),ensure_ascii=False))
+          print('effects=',json.dumps(d.get('effects',[]),ensure_ascii=False,indent=2))
+          print('subscribes=',json.dumps(d.get('subscribes',[]),ensure_ascii=False,indent=2))
+          PY
+          fi
+          echo '=== subscribe diagnostic lines ==='
+          find "$ROOT" -maxdepth 3 -type f -name '*render-diagnostic.log' -exec grep -E '\[subscribe\]|MANIFEST_READY|segment [0-9]+/' {} \; | tail -n 300 || true

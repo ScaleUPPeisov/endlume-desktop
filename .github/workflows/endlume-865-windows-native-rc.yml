@@ -1,0 +1,156 @@
+name: ENDLUME 8.65 Windows Native RC
+
+on:
+  push:
+    branches: [endlume-8.64-turbo]
+    paths:
+      - '.github/workflows/endlume-865-windows-native-rc.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: endlume-865-windows-native-rc
+  cancel-in-progress: true
+
+env:
+  VERSION: 1.0.0-alpha.8.65
+  FINAL_INSTALLER: ENDLUME-YT-Studio-PEISOV-Setup-1.0.0-alpha.8.65-x64.exe
+  RELEASE_TAG: endlume-v1.0.0-alpha.8.65-windows-rc
+
+jobs:
+  native-windows:
+    name: Windows X64 • native build • physical integrity • RC
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 0
+
+      - name: Verify native Windows runner
+        shell: pwsh
+        run: |
+          if($env:RUNNER_OS -ne 'Windows'){throw "Expected Windows runner"}
+          if($env:RUNNER_ARCH -ne 'X64'){throw "Expected X64 runner"}
+          Write-Host "RUNNER_NAME=$env:RUNNER_NAME"
+          Get-CimInstance Win32_VideoController | Select-Object Name,DriverVersion | Format-Table -AutoSize
+
+      - name: Frontend and result contracts
+        shell: pwsh
+        run: |
+          npm ci
+          npm run check
+          npm run build
+          python scripts/test-endlume-865-contract.py
+          Remove-Item -Recurse -Force .queue-test-dist -ErrorAction SilentlyContinue
+          .\node_modules\.bin\tsc.cmd src/queue-state.ts --target ES2022 --module ES2022 --moduleResolution Bundler --skipLibCheck --outDir .queue-test-dist --noEmit false
+          node scripts/test-queue-finalization-8-58.mjs "$PWD/.queue-test-dist/queue-state.js"
+
+      - name: Download pinned FFmpeg sidecars
+        id: ffmpeg
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $tag='autobuild-2026-09-14-13-17'
+          $archive='ffmpeg-N-126549-ga51bb69b09-win64-gpl.zip'
+          $url="https://github.com/BtbN/FFmpeg-Builds/releases/download/$tag/$archive"
+          $zip=Join-Path $env:RUNNER_TEMP $archive
+          $extract=Join-Path $env:RUNNER_TEMP 'ffmpeg-865-native'
+          if(!(Test-Path $zip)){Invoke-WebRequest -Uri $url -OutFile $zip}
+          Remove-Item -Recurse -Force $extract -ErrorAction SilentlyContinue
+          Expand-Archive -Path $zip -DestinationPath $extract -Force
+          $ffmpeg=(Get-ChildItem $extract -Recurse -Filter ffmpeg.exe | Select-Object -First 1).FullName
+          $ffprobe=(Get-ChildItem $extract -Recurse -Filter ffprobe.exe | Select-Object -First 1).FullName
+          if(-not $ffmpeg -or -not $ffprobe){throw 'FFmpeg sidecars missing'}
+          New-Item -ItemType Directory -Force -Path src-tauri/binaries | Out-Null
+          Copy-Item $ffmpeg src-tauri/binaries/ffmpeg-x86_64-pc-windows-msvc.exe
+          Copy-Item $ffprobe src-tauri/binaries/ffprobe-x86_64-pc-windows-msvc.exe
+          "ffmpeg=$ffmpeg" >> $env:GITHUB_OUTPUT
+          "ffprobe=$ffprobe" >> $env:GITHUB_OUTPUT
+
+      - name: Rust regression
+        shell: pwsh
+        run: |
+          cargo check --manifest-path src-tauri/Cargo.toml
+          cargo test --manifest-path src-tauri/Cargo.toml -- --nocapture
+
+      - name: Native Windows one-image physical integrity
+        shell: pwsh
+        env:
+          ENDLUME_865_MAX_SECONDS: '60'
+          FFMPEG: ${{ steps.ffmpeg.outputs.ffmpeg }}
+          FFPROBE: ${{ steps.ffmpeg.outputs.ffprobe }}
+        run: |
+          $ErrorActionPreference='Stop'
+          New-Item -ItemType Directory -Force -Path win865-fixture | Out-Null
+          & $env:FFMPEG -hide_banner -loglevel error -f lavfi -i "color=c=0x172033:s=1920x1080:r=1" -frames:v 1 -y win865-fixture/image.png
+          & $env:FFMPEG -hide_banner -loglevel error -f lavfi -i "sine=frequency=440:sample_rate=44100" -t 7 -ac 2 -c:a libmp3lame -b:a 128k -y win865-fixture/a1.mp3
+          & $env:FFMPEG -hide_banner -loglevel error -f lavfi -i "sine=frequency=660:sample_rate=44100" -t 9 -ac 2 -c:a libmp3lame -b:a 128k -y win865-fixture/a2.mp3
+          $obj=@{
+            project=@{
+              id='win-865';name='Windows 865 fixture';path='fixture';
+              media=@((Resolve-Path win865-fixture/image.png).Path);
+              audio=@((Resolve-Path win865-fixture/a1.mp3).Path,(Resolve-Path win865-fixture/a2.mp3).Path)
+            }
+          }
+          $obj | ConvertTo-Json -Depth 8 | Set-Content win865-fixture/project.json -Encoding utf8
+          python scripts/run-endlume-865-one-image-physical.py win865-fixture/project.json "$env:FFMPEG" "$env:FFPROBE" win865-fixture/metrics.json
+          Get-Content win865-fixture/metrics.json
+
+      - name: Build Windows 8.65 NSIS
+        shell: pwsh
+        run: |
+          $cfg=Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json
+          if($cfg.version -ne $env:VERSION){throw "wrong version"}
+          $cfg.bundle.createUpdaterArtifacts=$false
+          $cfg | ConvertTo-Json -Depth 30 | Set-Content src-tauri/tauri.conf.json -Encoding utf8
+          npm run tauri build -- --bundles nsis --config src-tauri/tauri.windows.conf.json
+          $dir='src-tauri/target/release/bundle/nsis'
+          $exe=Get-ChildItem $dir -Filter '*.exe' | Select-Object -First 1
+          if(-not $exe){throw 'NSIS missing'}
+          $final=Join-Path $dir $env:FINAL_INSTALLER
+          if($exe.FullName -ne (Join-Path $PWD $final)){Copy-Item $exe.FullName $final -Force}
+          $bytes=[IO.File]::ReadAllBytes($final)
+          if($bytes.Length -lt 1000000 -or $bytes[0] -ne 0x4d -or $bytes[1] -ne 0x5a){throw 'invalid PE'}
+          $sha=(Get-FileHash $final -Algorithm SHA256).Hash.ToLower()
+          "$sha  $env:FINAL_INSTALLER" | Set-Content "$final.sha256"
+          Write-Host "ENDLUME_865_WINDOWS_NATIVE_BUILD_GREEN bytes=$($bytes.Length) sha256=$sha"
+
+      - name: Publish Windows 8.65 RC
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference='Stop'
+          $dir='src-tauri/target/release/bundle/nsis'
+          $final=Join-Path $dir $env:FINAL_INSTALLER
+          $checksum="$final.sha256"
+          $notes=Join-Path $env:RUNNER_TEMP 'endlume-865-windows-rc.md'
+          @"
+          ENDLUME YT Studio PEISOV 1.0.0-alpha.8.65 Windows RC
+
+          Source: $env:GITHUB_SHA
+          Native Windows X64 compile: PASS
+          Native one-image physical integrity: PASS
+          Result path/bytes queue regression: PASS
+          NSIS PE verification: PASS
+          "@ | Set-Content $notes -Encoding utf8
+          gh release view $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY *> $null
+          if($LASTEXITCODE -eq 0){
+            gh release upload $env:RELEASE_TAG $final $checksum --clobber --repo $env:GITHUB_REPOSITORY
+            gh release edit $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA --title "ENDLUME YT Studio PEISOV 1.0.0-alpha.8.65 Windows RC" --notes-file $notes --prerelease
+          }else{
+            gh release create $env:RELEASE_TAG $final $checksum --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA --title "ENDLUME YT Studio PEISOV 1.0.0-alpha.8.65 Windows RC" --notes-file $notes --prerelease
+          }
+          $sha=(Get-FileHash $final -Algorithm SHA256).Hash.ToLower()
+          $size=(Get-Item $final).Length
+          $release=gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/$env:RELEASE_TAG" | ConvertFrom-Json
+          $asset=$release.assets | Where-Object {$_.name -eq $env:FINAL_INSTALLER} | Select-Object -First 1
+          if(-not $asset){throw 'published RC missing'}
+          if([int64]$asset.size -ne $size){throw 'published size mismatch'}
+          if([string]$asset.digest -ne "sha256:$sha"){throw 'published digest mismatch'}
+          Write-Host "ENDLUME_865_WINDOWS_RC_PUBLISHED_GREEN size=$size sha256=$sha"

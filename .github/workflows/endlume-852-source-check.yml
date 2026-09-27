@@ -1,0 +1,27 @@
+name: ENDLUME 8.52 Source Check
+on:
+  push:
+    branches: [candidate/endlume-852-effective-source]
+    paths:
+      - 'src-tauri/src/**'
+      - 'src-tauri/Cargo.toml'
+      - '.github/workflows/endlume-852-source-check.yml'
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: candidate/endlume-852-effective-source
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Rust compile and MP4 manifest unit tests
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cargo check --manifest-path src-tauri/Cargo.toml
+          cargo test --manifest-path src-tauri/Cargo.toml mp4_manifest::tests -- --nocapture

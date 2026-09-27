@@ -1,0 +1,86 @@
+name: ENDLUME 8.65 macOS GUI Evidence Probe
+
+on:
+  push:
+    branches: [endlume-8.64-turbo]
+    paths:
+      - '.github/workflows/endlume-865-macos-gui-evidence.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  gui:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 15
+    steps:
+      - name: Physical GUI session evidence
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          APP="/Applications/ENDLUME YT Studio PEISOV.app"
+          test -d "$APP"
+          EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
+          echo "VERSION=$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist")"
+          echo "CONSOLE_USER=$(stat -f '%Su' /dev/console)"
+          echo "SCREEN_INFO_START"
+          /usr/sbin/system_profiler SPDisplaysDataType | egrep 'Resolution|UI Looks like|Retina|Main Display|Display Type' || true
+          echo "SCREEN_INFO_END"
+
+          /usr/bin/osascript -e 'tell application id "studio.endlume.desktop" to quit' >/dev/null 2>&1 || true
+          pkill -f "$APP/Contents/MacOS/$EXE" >/dev/null 2>&1 || true
+          sleep 2
+
+          /usr/bin/open -n "$APP"
+          sleep 0.45
+          mkdir -p /tmp/endlume-gui-evidence
+          /usr/sbin/screencapture -x /tmp/endlume-gui-evidence/splash.png || true
+          /usr/bin/sips -Z 800 /tmp/endlume-gui-evidence/splash.png --out /tmp/endlume-gui-evidence/splash-small.png >/dev/null 2>&1 || true
+          echo "SPLASH_B64_START"
+          base64 -i /tmp/endlume-gui-evidence/splash-small.png | tr -d '\n' || true
+          echo
+          echo "SPLASH_B64_END"
+
+          sleep 2.2
+          /usr/sbin/screencapture -x /tmp/endlume-gui-evidence/main.png || true
+          /usr/bin/sips -Z 1000 /tmp/endlume-gui-evidence/main.png --out /tmp/endlume-gui-evidence/main-small.png >/dev/null 2>&1 || true
+          echo "MAIN_B64_START"
+          base64 -i /tmp/endlume-gui-evidence/main-small.png | tr -d '\n' || true
+          echo
+          echo "MAIN_B64_END"
+
+          echo "GUI_TREE_START"
+          /usr/bin/osascript <<'OSA' || true
+          tell application "System Events"
+            set uiEnabled to UI elements enabled
+            log "UI_ELEMENTS_ENABLED=" & uiEnabled
+            set matches to every application process whose unix id is not 0
+            repeat with p in matches
+              try
+                if name of p contains "ENDLUME" or name of p is "endlume" then
+                  log "PROCESS=" & (name of p)
+                  log "FRONTMOST=" & (frontmost of p)
+                  log "WINDOW_COUNT=" & (count of windows of p)
+                  repeat with w in windows of p
+                    try
+                      log "WINDOW=" & (name of w)
+                    end try
+                    try
+                      set btns to every button of w
+                      repeat with b in btns
+                        try
+                          log "BUTTON=" & (name of b)
+                        end try
+                      end repeat
+                    end try
+                  end repeat
+                end if
+              end try
+            end repeat
+          end tell
+          OSA
+          echo "GUI_TREE_END"
+
+          pgrep -af "$APP/Contents/MacOS/$EXE" || { echo "APP_NOT_RUNNING"; exit 31; }
+          echo ENDLUME_865_MAC_GUI_PROCESS_AND_SCREEN_CAPTURE_GREEN

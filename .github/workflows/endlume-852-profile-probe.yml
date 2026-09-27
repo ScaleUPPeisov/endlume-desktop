@@ -1,0 +1,57 @@
+name: ENDLUME 8.52 Production Profile Probe
+
+on:
+  push:
+    branches: [candidate/endlume-852-production-speed-size]
+    paths:
+      - '.github/workflows/endlume-852-profile-probe.yml'
+      - 'scripts/probe-production-profile-8-52.sh'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-852-profile-probe
+  cancel-in-progress: true
+
+jobs:
+  profile-probe:
+    name: macOS ARM64 • real quality/speed/size sweep
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 120
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: candidate/endlume-852-production-speed-size
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Resolve embedded FFmpeg
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          WORK="$HOME/.endlume-local-builder/endlume-desktop-8.40-bootstrap"
+          FFMPEG="$(find "$WORK/src-tauri/binaries" -maxdepth 1 -type f -name 'ffmpeg*' -perm -111 -print -quit 2>/dev/null || true)"
+          FFPROBE="$(find "$WORK/src-tauri/binaries" -maxdepth 1 -type f -name 'ffprobe*' -perm -111 -print -quit 2>/dev/null || true)"
+          if [[ -z "$FFMPEG" || -z "$FFPROBE" ]]; then
+            echo 'Embedded tools absent; reconstructing proven 8.50 workspace'
+            export ENDLUME_RELEASE_ARTIFACT_DIR="$RUNNER_TEMP/endlume-850-probe-artifacts"
+            export ENDLUME_RELEASE_VERSION="1.0.0-alpha.8.50"
+            export ENDLUME_850_PATCH_REF="release"
+            chmod +x ./BUILD_ENDLUME_850_SELFHOSTED.command
+            ./BUILD_ENDLUME_850_SELFHOSTED.command
+            FFMPEG="$(find "$WORK/src-tauri/binaries" -maxdepth 1 -type f -name 'ffmpeg*' -perm -111 -print -quit)"
+            FFPROBE="$(find "$WORK/src-tauri/binaries" -maxdepth 1 -type f -name 'ffprobe*' -perm -111 -print -quit)"
+          fi
+          test -x "$FFMPEG"; test -x "$FFPROBE"
+          echo "FFMPEG=$FFMPEG" >> "$GITHUB_ENV"
+          echo "FFPROBE=$FFPROBE" >> "$GITHUB_ENV"
+      - name: Physical profile sweep
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          chmod +x scripts/probe-production-profile-8-52.sh
+          scripts/probe-production-profile-8-52.sh "$FFMPEG" "$FFPROBE"

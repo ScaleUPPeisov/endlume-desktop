@@ -1,0 +1,256 @@
+name: ENDLUME 8.65 Dual QA
+
+on:
+  push:
+    branches: [endlume-8.64-turbo]
+    paths:
+      - '.github/workflows/endlume-865-dual-qa.yml'
+      - 'src/**'
+      - 'src-tauri/**'
+      - 'scripts/test-endlume-865-contract.py'
+      - 'scripts/run-endlume-865-one-image-physical.py'
+      - 'scripts/run-endlume-865-render-job-e2e.py'
+      - 'scripts/test-queue-finalization-8-58.mjs'
+      - 'package.json'
+      - 'package-lock.json'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: endlume-865-dual-qa
+  cancel-in-progress: true
+
+env:
+  VERSION: 1.0.0-alpha.8.65
+  WINDOWS_TARGET: x86_64-pc-windows-msvc
+  WINDOWS_ASSET: ENDLUME-YT-Studio-PEISOV-Setup-1.0.0-alpha.8.65-x64.exe
+  WINDOWS_RC_TAG: endlume-v1.0.0-alpha.8.65-windows-rc
+
+jobs:
+  windows-rc:
+    name: macOS physical gate • Windows x64 cross-build RC
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Stage native Apple Silicon FFmpeg
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+          mkdir -p src-tauri/binaries
+          cp "$(command -v ffmpeg)" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp "$(command -v ffprobe)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          chmod +x src-tauri/binaries/ffmpeg-aarch64-apple-darwin src-tauri/binaries/ffprobe-aarch64-apple-darwin
+
+      - name: Full Mac regression and result-state contract
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
+          npm ci
+          npm run check
+          npm run build
+          python3 scripts/test-endlume-865-contract.py
+          python3 scripts/test-managed-license-render-gate.py
+          python3 scripts/test-runtime-safety-8-62.py
+          rm -rf .queue-test-dist
+          ./node_modules/.bin/tsc src/queue-state.ts --target ES2022 --module ES2022 --moduleResolution Bundler --skipLibCheck --outDir .queue-test-dist --noEmit false
+          node scripts/test-queue-finalization-8-58.mjs "$GITHUB_WORKSPACE/.queue-test-dist/queue-state.js"
+          cargo check --manifest-path src-tauri/Cargo.toml
+          cargo test --manifest-path src-tauri/Cargo.toml -- --nocapture
+
+      - name: Resolve durable real-media fixture
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          TMP="$(mktemp -d /tmp/e865fixture.XXXXXX)"
+          python3 scripts/find-endlume-real-fixture.py "$TMP/env"
+          cat "$TMP/env" >> "$GITHUB_ENV"
+          source "$TMP/env"
+          test "$AUDIO_COUNT" = 15
+          test -f "$SIDE"; test -f "$IMG"
+
+      - name: Build macOS app for real production E2E
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('src-tauri/tauri.conf.json')
+          cfg=json.loads(p.read_text())
+          assert cfg['version']=='1.0.0-alpha.8.65'
+          cfg['bundle']['createUpdaterArtifacts']=False
+          p.write_text(json.dumps(cfg,ensure_ascii=False,indent=2)+'\n')
+          PY
+          npm run tauri build -- --bundles app --features e2e-render
+          APP="$(find src-tauri/target/release/bundle/macos -maxdepth 1 -type d -name '*.app' -print -quit)"
+          test -n "$APP" -a -d "$APP"
+          EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
+          BIN="$APP/Contents/MacOS/$EXE"
+          test -x "$BIN"
+          echo "ENDLUME_E2E_APP_BIN=$BIN" >> "$GITHUB_ENV"
+          echo "ENDLUME_865_MAC_APP_BUILD_GREEN=$APP"
+
+      - name: REAL ENDLUME render_job E2E 8.65
+        shell: bash
+        env:
+          ENDLUME_865_REAL_E2E_MAX_SECONDS: '15'
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+          python3 scripts/run-endlume-865-render-job-e2e.py "$SIDE" "$ENDLUME_E2E_APP_BIN" "$(command -v ffmpeg)" "$(command -v ffprobe)" "$GITHUB_WORKSPACE/865-real-render-job-e2e.json"
+          python3 - <<'PY'
+          import json
+          x=json.load(open('865-real-render-job-e2e.json'))
+          assert x.get('status')=='passed' and x.get('release_gate') is True,x
+          assert x.get('kind')=='REAL_ENDLUME_RENDER_JOB_E2E_865',x
+          assert x.get('open_video_smoke') is True,x
+          assert x.get('reveal_folder_smoke') is True,x
+          rows=x.get('results') or []
+          assert len(rows)==6,rows
+          assert rows[0]['wall_seconds']<=15 and rows[1]['wall_seconds']<=15,rows[:2]
+          assert all(r['output_bytes']>0 and r['result_path_exists'] and r['terminal_result_bytes_ok'] for r in rows),rows
+          assert all(r['codec']=='hevc' and r['fps']=='60/1' and r['audio']=='mp3' for r in rows),rows
+          print('ENDLUME_865_REAL_RENDER_JOB_GATE_GREEN',rows)
+          PY
+
+      - name: Engine microbenchmark • one-image physical path
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+          python3 scripts/run-endlume-865-one-image-physical.py "$SIDE" "$(command -v ffmpeg)" "$(command -v ffprobe)" "$GITHUB_WORKSPACE/865-one-image-real.json"
+          python3 - <<'PY'
+          import json
+          x=json.load(open('865-one-image-real.json'))
+          assert x.get('status')=='passed' and x.get('release_gate') is True,x
+          runs=x.get('runs') or []
+          assert len(runs)==2,runs
+          assert runs[0]['wall_seconds']<=15 and runs[1]['wall_seconds']<=15,runs
+          assert all(r['output_bytes']>0 and r['codec']=='hevc' and r['fps']=='60/1' and r['audio']=='mp3' for r in runs),runs
+          print('ENDLUME_865_REAL_ONE_IMAGE_GREEN',runs)
+          PY
+
+      - name: Engine microbenchmark • existing 7-image / 15-MP3 regression
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/run-endlume-863-fast-multistill.py "$SIDE" "$(command -v ffmpeg)" "$(command -v ffprobe)" "$GITHUB_WORKSPACE/865-multistill-regression.json"
+          python3 - <<'PY'
+          import json
+          x=json.load(open('865-multistill-regression.json'))
+          assert x.get('status')=='passed' and x.get('release_gate') is True,x
+          print('ENDLUME_865_MULTISTILL_GREEN')
+          PY
+
+      - name: Install Windows cross-build prerequisites
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          brew list nsis >/dev/null 2>&1 || brew install nsis
+          brew list llvm >/dev/null 2>&1 || brew install llvm
+          command -v gh >/dev/null 2>&1 || brew install gh
+          LLVM_BIN="$(brew --prefix llvm)/bin"
+          echo "$LLVM_BIN" >> "$GITHUB_PATH"
+          export PATH="$LLVM_BIN:$HOME/.cargo/bin:$PATH"
+          rustup target add "$WINDOWS_TARGET"
+          command -v cargo-xwin >/dev/null 2>&1 || cargo install --locked cargo-xwin
+          makensis -VERSION
+          cargo xwin --version
+
+      - name: Stage pinned Windows FFmpeg sidecars
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          TAG='autobuild-2026-09-14-13-17'
+          ARCHIVE='ffmpeg-N-126549-ga51bb69b09-win64-gpl.zip'
+          CACHE="$RUNNER_TEMP/endlume-ffmpeg-865"
+          ZIP="$CACHE/$ARCHIVE"; EXTRACT="$CACHE/extract"
+          mkdir -p "$CACHE" src-tauri/binaries
+          [ -s "$ZIP" ] || curl --fail --location --retry 3 --output "$ZIP" "https://github.com/BtbN/FFmpeg-Builds/releases/download/$TAG/$ARCHIVE"
+          rm -rf "$EXTRACT"; mkdir -p "$EXTRACT"; ditto -x -k "$ZIP" "$EXTRACT"
+          FFMPEG="$(find "$EXTRACT" -type f -name ffmpeg.exe -print -quit)"
+          FFPROBE="$(find "$EXTRACT" -type f -name ffprobe.exe -print -quit)"
+          test -n "$FFMPEG" -a -n "$FFPROBE"
+          cp "$FFMPEG" "src-tauri/binaries/ffmpeg-$WINDOWS_TARGET.exe"
+          cp "$FFPROBE" "src-tauri/binaries/ffprobe-$WINDOWS_TARGET.exe"
+
+      - name: Build Windows 8.65 x64 NSIS RC
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="$(brew --prefix llvm)/bin:$HOME/.cargo/bin:$PATH"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('src-tauri/tauri.conf.json');cfg=json.loads(p.read_text())
+          assert cfg['version']=='1.0.0-alpha.8.65'
+          cfg['bundle']['createUpdaterArtifacts']=False
+          p.write_text(json.dumps(cfg,ensure_ascii=False,indent=2)+'\n')
+          PY
+          npm run tauri build -- --runner cargo-xwin --target "$WINDOWS_TARGET" --bundles nsis --config src-tauri/tauri.windows.conf.json
+          NSIS="src-tauri/target/$WINDOWS_TARGET/release/bundle/nsis"
+          FINAL="$NSIS/$WINDOWS_ASSET"
+          if [ ! -s "$FINAL" ]; then CAND="$(find "$NSIS" -maxdepth 1 -type f -name '*.exe' -print -quit)"; test -n "$CAND"; cp "$CAND" "$FINAL"; fi
+          python3 - "$FINAL" <<'PY'
+          from pathlib import Path
+          import sys
+          p=Path(sys.argv[1]);assert p.stat().st_size>1_000_000;assert p.read_bytes()[:2]==b'MZ'
+          print('ENDLUME_865_WINDOWS_RC_PE_GREEN',p.stat().st_size)
+          PY
+          shasum -a 256 "$FINAL" | tee "$FINAL.sha256"
+
+      - name: Publish immutable Windows 8.65 RC
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          NSIS="src-tauri/target/$WINDOWS_TARGET/release/bundle/nsis"
+          FINAL="$NSIS/$WINDOWS_ASSET"
+          NOTES="$RUNNER_TEMP/865-windows-rc.md"
+          cat > "$NOTES" <<EOF
+          ENDLUME YT Studio PEISOV 1.0.0-alpha.8.65 Windows RC
+
+          Source: $GITHUB_SHA
+          Windows hosted compile / NSIS / integrity smoke: PASS
+          macOS real fixture one-image 2-MP3 physical gate: PASS
+          7-image / 15-MP3 regression: PASS
+          resultPath/resultBytes terminal-state regression: PASS
+          EOF
+          if gh release view "$WINDOWS_RC_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$WINDOWS_RC_TAG" "$FINAL" "$FINAL.sha256" --clobber --repo "$GITHUB_REPOSITORY"
+            gh release edit "$WINDOWS_RC_TAG" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "ENDLUME YT Studio PEISOV 1.0.0-alpha.8.65 Windows RC" --notes-file "$NOTES" --prerelease
+          else
+            gh release create "$WINDOWS_RC_TAG" "$FINAL" "$FINAL.sha256" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "ENDLUME YT Studio PEISOV 1.0.0-alpha.8.65 Windows RC" --notes-file "$NOTES" --prerelease
+          fi
+          SHA="$(shasum -a 256 "$FINAL"|awk '{print $1}')";SIZE="$(stat -f%z "$FINAL")"
+          JSON="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$WINDOWS_RC_TAG")"
+          test "$(printf '%s' "$JSON"|jq -r --arg n "$WINDOWS_ASSET" '.assets[]|select(.name==$n)|.size')" = "$SIZE"
+          test "$(printf '%s' "$JSON"|jq -r --arg n "$WINDOWS_ASSET" '.assets[]|select(.name==$n)|.digest')" = "sha256:$SHA"
+          echo "ENDLUME_865_WINDOWS_RC_PUBLISHED_GREEN size=$SIZE sha256=$SHA"
+
+      - name: Upload QA provenance
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: ENDLUME-8.65-Dual-QA
+          path: |
+            865-real-render-job-e2e.json
+            865-one-image-real.json
+            865-multistill-regression.json
+            src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.sha256
+          if-no-files-found: warn
+          retention-days: 30

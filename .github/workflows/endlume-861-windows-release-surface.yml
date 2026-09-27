@@ -1,0 +1,124 @@
+name: ENDLUME 8.61 Windows Release Surface
+
+on:
+  push:
+    branches: [windows/endlume-861-managed-access]
+    paths:
+      - 'src/**'
+      - 'src-tauri/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'scripts/build-windows.ps1'
+      - 'scripts/selfhosted-release-windows.ps1'
+      - 'infra/cloudflare-update/src/index.js'
+      - 'scripts/apply-windows-861-final-branding.py'
+      - 'scripts/apply-windows-861-system-adapters.py'
+      - 'scripts/test-windows-861-release-surface.py'
+      - '.github/workflows/endlume-861-windows-release-surface.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: endlume-861-windows-release-surface
+  cancel-in-progress: true
+
+jobs:
+  validate-and-apply:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: windows/endlume-861-managed-access
+          fetch-depth: 0
+
+      - name: Apply Windows release adapters
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/apply-windows-861-final-branding.py
+          python3 scripts/apply-windows-861-system-adapters.py
+
+      - name: Install frontend dependencies
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          npm ci
+
+      - name: TypeScript check
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          npm run check
+
+      - name: Frontend production build
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          npm run build
+
+      - name: Windows strict port contract
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/test-windows-861-strict-port.py
+
+      - name: Windows release surface contract
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/test-windows-861-release-surface.py
+
+      - name: Stage host sidecars for Rust validation
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          FFMPEG="$(command -v ffmpeg)"
+          FFPROBE="$(command -v ffprobe)"
+          test -x "$FFMPEG"
+          test -x "$FFPROBE"
+          mkdir -p src-tauri/binaries
+          cp "$FFMPEG" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp "$FFPROBE" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          chmod +x src-tauri/binaries/ffmpeg-aarch64-apple-darwin src-tauri/binaries/ffprobe-aarch64-apple-darwin
+
+      - name: Rust check
+        id: rust_check
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo check --manifest-path src-tauri/Cargo.toml 2>&1 | tee rust-check.log
+
+      - name: Upload Rust check diagnostics on failure
+        if: failure() && steps.rust_check.outcome == 'failure'
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: endlume-861-rust-check-diagnostics
+          path: rust-check.log
+          if-no-files-found: warn
+          retention-days: 3
+
+      - name: Rust tests
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cargo test --manifest-path src-tauri/Cargo.toml
+
+      - name: Commit applied Windows adapters
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          TARGETS=(src/pages/SettingsPage.tsx src-tauri/src/system.rs)
+          if git diff --quiet -- "${TARGETS[@]}"; then
+            echo 'Release surface already materialized'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- "${TARGETS[@]}"
+          git diff --cached --quiet && { echo 'Release surface already materialized'; exit 0; }
+          git commit -m 'feat(windows): finalize product surfaces and system adapters'
+          git push origin HEAD:windows/endlume-861-managed-access

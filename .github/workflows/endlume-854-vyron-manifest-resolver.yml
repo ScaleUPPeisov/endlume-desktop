@@ -1,0 +1,56 @@
+name: ENDLUME 8.54 VYRON Manifest Recovery
+on:
+  push:
+    branches: [candidate/endlume-854-vyron-manifest-resolver]
+permissions:
+  contents: read
+jobs:
+  gate:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: candidate/endlume-854-vyron-manifest-resolver
+          clean: true
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Restore embedded FFmpeg sidecars
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          FOUNDATION="$HOME/.endlume-local-builder/endlume-desktop-8.40-bootstrap"
+          test -d "$FOUNDATION/src-tauri/binaries"
+          mkdir -p src-tauri/binaries
+          rsync -a "$FOUNDATION/src-tauri/binaries/" src-tauri/binaries/
+      - name: Prove render engine is unchanged
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(git hash-object src-tauri/src/render.rs)" = "9e011adc207872a23105e525a9d5bdab27242b5f"
+          grep -Fq 'files.sort_by_key(|p|std::cmp::Reverse' src-tauri/src/vyron_bridge.rs
+          grep -Fq 'resolve_vyron_manifest_for_request' src-tauri/src/vyron_bridge.rs
+          grep -Fq 'Duration::from_secs(5)' src-tauri/src/vyron_bridge.rs
+          grep -Fq 'ВАЙРОН' src-tauri/src/vyron_bridge.rs
+          python3 - <<'PY'
+          import json,re,pathlib
+          assert json.load(open('package.json'))['version']=='1.0.0-alpha.8.54'
+          assert json.load(open('src-tauri/tauri.conf.json'))['version']=='1.0.0-alpha.8.54'
+          c=pathlib.Path('src-tauri/Cargo.toml').read_text()
+          assert re.search(r'^version\s*=\s*"1\.0\.0-alpha\.8\.54"$',c,re.M)
+          PY
+      - name: Frontend compile
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          npm ci
+          npm run check
+          npm run build
+      - name: Native compile and VYRON recovery tests
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cargo check --manifest-path src-tauri/Cargo.toml
+          cargo test --manifest-path src-tauri/Cargo.toml vyron_ -- --nocapture
+          cargo test --manifest-path src-tauri/Cargo.toml mp4_manifest::tests -- --nocapture
+          echo 'PASS: ENDLUME 8.54 VYRON manifest recovery; render core byte-identical to 8.52/8.53'

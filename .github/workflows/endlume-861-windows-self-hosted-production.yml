@@ -1,0 +1,103 @@
+name: ENDLUME 8.61 Windows Self-Hosted Production
+
+on:
+  push:
+    branches: [windows/endlume-861-managed-access]
+    paths:
+      - '.github/workflows/endlume-861-windows-self-hosted-production.yml'
+      - 'scripts/build-windows.ps1'
+      - 'scripts/prepare-windows-sidecars.ps1'
+      - 'scripts/selfhosted-release-windows.ps1'
+      - 'infra/cloudflare-update/src/index.js'
+      - 'scripts/test-windows-861-strict-port.py'
+      - 'scripts/test-windows-861-release-surface.py'
+      - 'scripts/test-local-scratch-stability-8-61.py'
+      - 'scripts/test-managed-license-render-gate.py'
+      - 'scripts/test-render-speed-stability-8-60.py'
+      - 'scripts/test-windows-installed-smoke.ps1'
+      - 'src/**'
+      - 'src-tauri/**'
+      - 'package.json'
+      - 'package-lock.json'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-861-windows-self-hosted-production
+  cancel-in-progress: true
+
+jobs:
+  windows-native-production:
+    name: Windows x64 • Native • NSIS
+    runs-on: [self-hosted, endlume, windows, x64]
+    timeout-minutes: 120
+    steps:
+      - name: Checkout current Windows 8.61 source
+        uses: actions/checkout@v4
+        with:
+          ref: windows/endlume-861-managed-access
+          clean: true
+          fetch-depth: 1
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Setup Rust MSVC target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Verify native Windows runner
+        shell: pwsh
+        run: |
+          if ($env:RUNNER_OS -ne 'Windows') { throw "Expected Windows runner, got $env:RUNNER_OS" }
+          node --version
+          npm --version
+          python --version
+          cargo --version
+          rustc --version
+          Write-Host "Runner: $env:RUNNER_NAME"
+
+      - name: Build test and package ENDLUME Windows 8.61
+        shell: pwsh
+        run: ./scripts/build-windows.ps1
+
+      - name: Verify exact installer artifact
+        shell: pwsh
+        run: |
+          $target = 'x86_64-pc-windows-msvc'
+          $version = '1.0.0-alpha.8.61'
+          $expected = "src-tauri/target/$target/release/bundle/nsis/ENDLUME-YT-Studio-PEISOV-Setup-$version-x64.exe"
+          if (!(Test-Path $expected)) { throw "Installer missing: $expected" }
+          foreach ($sidecar in @('ffmpeg','ffprobe')) {
+            $p = "src-tauri/binaries/$sidecar-$target.exe"
+            if (!(Test-Path $p)) { throw "Sidecar missing: $p" }
+          }
+          $installer = Get-Item $expected
+          if ($installer.Length -le 0) { throw 'Installer is empty' }
+          Write-Host "ENDLUME_WINDOWS_NATIVE_INSTALLER_GREEN=$($installer.FullName)"
+          Write-Host "ENDLUME_WINDOWS_NATIVE_INSTALLER_BYTES=$($installer.Length)"
+
+      - name: Install launch uninstall reinstall smoke
+        shell: pwsh
+        run: |
+          $installer = 'src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/ENDLUME-YT-Studio-PEISOV-Setup-1.0.0-alpha.8.61-x64.exe'
+          ./scripts/test-windows-installed-smoke.ps1 -Installer $installer
+
+      - name: Upload ENDLUME Windows installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: ENDLUME-YT-Studio-PEISOV-Setup-1.0.0-alpha.8.61-x64
+          path: src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/ENDLUME-YT-Studio-PEISOV-Setup-1.0.0-alpha.8.61-x64.exe
+          if-no-files-found: error
+          retention-days: 14

@@ -1,0 +1,255 @@
+name: ENDLUME 8.63 Full macOS QA
+
+on:
+  push:
+    branches: [feature/endlume-863-macos-factory]
+    paths:
+      - '.github/workflows/endlume-863-full-macos-qa.yml'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'src/**'
+      - 'src-tauri/**'
+      - 'scripts/**'
+      - 'supabase/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-863-full-macos-qa
+  cancel-in-progress: true
+
+jobs:
+  full-macos-qa:
+    name: macOS ARM64 • Managed Access • Real Media QA
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify Apple Silicon and 8.63 surfaces
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(uname -s)" = "Darwin"
+          test "$(uname -m)" = "arm64"
+          python3 - <<'PY'
+          import json,re
+          from pathlib import Path
+          expected='1.0.0-alpha.8.63'
+          assert json.loads(Path('package.json').read_text())['version']==expected
+          assert json.loads(Path('package-lock.json').read_text())['version']==expected
+          t=json.loads(Path('src-tauri/tauri.conf.json').read_text())
+          assert t['version']==expected
+          assert t['productName']=='ENDLUME YT Studio PEISOV'
+          assert t['app']['windows'][0]['title']=='ENDLUME YT Studio PEISOV'
+          cargo=Path('src-tauri/Cargo.toml').read_text()
+          lock=Path('src-tauri/Cargo.lock').read_text()
+          assert re.search(r'^version\s*=\s*"'+re.escape(expected)+r'"$',cargo,re.M)
+          block=lock[lock.index('name = "endlume"'):]
+          assert f'version = "{expected}"' in block[:300]
+          assert expected in Path('src/pages/SettingsPage.tsx').read_text()
+          assert f"version:'{expected}'" in Path('src/components/ReleaseHistory.tsx').read_text()
+          print('ENDLUME_863_VERSION_SURFACE_GREEN')
+          PY
+
+      - name: Verify managed macOS licensing contract
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          c=Path('src-tauri/src/license.rs').read_text()
+          cargo=Path('src-tauri/Cargo.toml').read_text()
+          assert '#[cfg(any(target_os="windows",target_os="macos"))]' in c
+          assert '"platform":std::env::consts::OS' in c
+          assert 'HEARTBEAT_SECS:u64=25' in c
+          assert 'MANAGED_GRACE_MS:i64=15*60*1000' in c
+          assert 'keyring = { version = "3.6.3", features = ["apple-native", "windows-native"] }' in cargo
+          assert 'endlume-client-api' in c
+          print('MACOS_MANAGED_LICENSE_GREEN')
+          PY
+
+      - name: Verify signed SHA updater contract
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          lib=Path('src-tauri/src/lib.rs').read_text()
+          updater=Path('src-tauri/src/updater_windows.rs').read_text()
+          ui=Path('src/tauri.ts').read_text()
+          assert '#[cfg(any(target_os="windows",target_os="macos"))]' in lib
+          assert 'expected_sha256' in updater
+          assert 'update.download(' in updater
+          assert 'actual!=expected' in updater
+          assert 'update.install(bytes)' in updater
+          assert "invoke<NativeUpdateInfo>('local_update_check')" in ui
+          assert 'isMacRuntime()' in ui
+          assert 'GitHub CLI' not in updater
+          print('MACOS_SIGNED_SHA_UPDATER_GREEN')
+          PY
+
+      - name: Verify updater public key continuity
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -s "$HOME/.endlume-updater/endlume.key.pub"
+          python3 - <<'PY'
+          import json,os
+          from pathlib import Path
+          embedded=json.loads(Path('src-tauri/tauri.conf.json').read_text())['plugins']['updater']['pubkey'].strip()
+          disk=Path(os.path.expanduser('~/.endlume-updater/endlume.key.pub')).read_text().strip()
+          assert embedded==disk, 'self-hosted signing public key does not match embedded updater public key'
+          print('MACOS_UPDATER_PUBLIC_KEY_MATCH_GREEN')
+          PY
+
+      - name: Stage bundled Apple Silicon FFmpeg
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          FOUNDATION="$HOME/.endlume-local-builder/endlume-desktop-8.40-bootstrap"
+          test -d "$FOUNDATION/src-tauri/binaries"
+          mkdir -p src-tauri/binaries
+          rsync -a "$FOUNDATION/src-tauri/binaries/" src-tauri/binaries/
+          chmod +x src-tauri/binaries/ffmpeg* src-tauri/binaries/ffprobe*
+          FFM="$(find src-tauri/binaries -maxdepth 1 -type f -name 'ffmpeg-aarch64-apple-darwin' -print -quit)"
+          FFP="$(find src-tauri/binaries -maxdepth 1 -type f -name 'ffprobe-aarch64-apple-darwin' -print -quit)"
+          test -x "$FFM" -a -x "$FFP"
+          file "$FFM" | grep -E 'arm64|Mach-O'
+          file "$FFP" | grep -E 'arm64|Mach-O'
+
+      - name: Frontend production regression
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          npm ci
+          npm run check
+          npm run build
+
+      - name: License, queue, runtime and render contracts
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          node scripts/test-license-security-8-62.mjs
+          python3 scripts/test-managed-license-render-gate.py
+          python3 scripts/test-runtime-safety-8-62.py
+          python3 scripts/test-local-scratch-stability-8-61.py
+          python3 scripts/test-render-speed-stability-8-60.py
+
+      - name: Rust full regression
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cargo check --manifest-path src-tauri/Cargo.toml
+          cargo test --manifest-path src-tauri/Cargo.toml -- --nocapture
+          cargo test --manifest-path src-tauri/Cargo.toml mp4_manifest -- --nocapture
+          cargo test --manifest-path src-tauri/Cargo.toml vyron_ -- --nocapture
+
+      - name: Stage real media fixture
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          TMP="$(mktemp -d /tmp/e863fixture.XXXXXX)"
+          python3 scripts/find-endlume-real-fixture.py "$TMP/env"
+          cat "$TMP/env" >> "$GITHUB_ENV"
+          source "$TMP/env"
+          test "$AUDIO_COUNT" = 15
+          test "$EFFECT_COUNT" -ge 2
+          test -f "$SIDE"
+          python3 scripts/find-endlume-real-subscribe.py "$GITHUB_WORKSPACE/e863-subscribe.json"
+          test -s "$GITHUB_WORKSPACE/e863-subscribe.json"
+
+      - name: Align natural-size physical harness
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/apply-e2e-harness-8-60.py
+          grep -Fq 'def natural_size(path):' scripts/run-endlume-857-real-e2e.py
+          ! grep -Fq 'f.write(b"free")' scripts/run-endlume-857-real-e2e.py
+
+      - name: Five sequential real strict masters
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          FFM="$(find src-tauri/binaries -maxdepth 1 -type f -name 'ffmpeg-aarch64-apple-darwin' -print -quit)"
+          FFP="$(find src-tauri/binaries -maxdepth 1 -type f -name 'ffprobe-aarch64-apple-darwin' -print -quit)"
+          python3 scripts/run-endlume-860-five-masters.py "$SIDE" "$FFM" "$FFP" "$GITHUB_WORKSPACE/e863-five.json"
+          python3 - <<'PY'
+          import json
+          x=json.load(open('e863-five.json'))
+          assert x.get('status')=='passed' and len(x.get('times',[]))==5,x
+          assert max(x['times'])<=30.0,x
+          assert x['times'][-1] <= x['times'][0] + 5.0,x
+          print('E863_FIVE_REAL_MASTERS_GREEN',x['times'])
+          PY
+
+      - name: Real two-hour Subscribe OFF
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          FFM="$(find src-tauri/binaries -maxdepth 1 -type f -name 'ffmpeg-aarch64-apple-darwin' -print -quit)"
+          FFP="$(find src-tauri/binaries -maxdepth 1 -type f -name 'ffprobe-aarch64-apple-darwin' -print -quit)"
+          python3 scripts/run-endlume-857-real-e2e.py "$SIDE" "$FFM" "$FFP" "$GITHUB_WORKSPACE/e863-off.json"
+          python3 - <<'PY'
+          import json
+          x=json.load(open('e863-off.json'))
+          assert x.get('status')=='passed' and x.get('release_gate') is True,x
+          assert x.get('synthetic_padding') is False,x
+          assert x.get('resolution')=='1920x1080' and x.get('fps')=='60/1',x
+          assert x.get('audio_codec')=='mp3' and x.get('whole_track') is True and x.get('mp3_packet_copy') is True,x
+          assert x.get('seek_begin') and x.get('seek_middle') and x.get('seek_tail'),x
+          print('E863_SUBSCRIBE_OFF_GREEN',x.get('final_bytes'))
+          PY
+
+      - name: Real two-hour Subscribe ON
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          FFM="$(find src-tauri/binaries -maxdepth 1 -type f -name 'ffmpeg-aarch64-apple-darwin' -print -quit)"
+          FFP="$(find src-tauri/binaries -maxdepth 1 -type f -name 'ffprobe-aarch64-apple-darwin' -print -quit)"
+          python3 scripts/run-endlume-860-real-subscribe.py "$SIDE" "$GITHUB_WORKSPACE/e863-subscribe.json" "$FFM" "$FFP" "$GITHUB_WORKSPACE/e863-on.json"
+          python3 - <<'PY'
+          import json
+          x=json.load(open('e863-on.json'))
+          assert x.get('status')=='passed' and x.get('subscribe_on_gate') is True,x
+          assert x.get('synthetic_padding') is False,x
+          assert x.get('resolution')=='1920x1080' and x.get('fps')=='60/1',x
+          print('E863_SUBSCRIBE_ON_GREEN',x.get('final_bytes'))
+          PY
+
+      - name: Build local macOS application candidate
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('src-tauri/tauri.conf.json')
+          cfg=json.loads(p.read_text())
+          cfg['bundle']['createUpdaterArtifacts']=False
+          p.write_text(json.dumps(cfg,ensure_ascii=False,indent=2)+'\n')
+          PY
+          npm run tauri build -- --bundles app
+          APP="$(find src-tauri/target/release/bundle/macos -maxdepth 1 -type d -name '*.app' -print -quit)"
+          test -n "$APP" -a -d "$APP"
+          BID="$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$APP/Contents/Info.plist")"
+          VER="$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist")"
+          EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
+          test "$BID" = 'studio.endlume.desktop'
+          test "$VER" = '1.0.0-alpha.8.63'
+          /usr/bin/lipo -archs "$APP/Contents/MacOS/$EXE" | grep -qw arm64
+          echo 'ENDLUME_863_MACOS_APP_GREEN'
+
+      - name: QA verdict
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          echo "ENDLUME_863_FULL_MACOS_QA_GREEN"
+          echo "HEAD=$GITHUB_SHA"

@@ -1,0 +1,36 @@
+{
+  "contractVersion": 1,
+  "scope": "ENDLUME Studio production releases",
+  "immutable": true,
+  "oneImageWorkflow": {
+    "expectedAudioTracks": 15,
+    "resolution": "1920x1080",
+    "fps": 60,
+    "codec": "h265",
+    "renderWallSecondsMin": 20,
+    "renderWallSecondsMax": 30,
+    "outputBytesMin": 400000000,
+    "outputBytesMax": 700000000,
+    "music": {
+      "allowReencode": false,
+      "allowNormalization": false,
+      "allowCrossfade": false,
+      "allowMidTrackCut": false,
+      "finishCurrentTrackAfterNominalDuration": true
+    },
+    "visual": {
+      "allowResolutionReduction": false,
+      "allowFpsReduction": false,
+      "allowQualityReduction": false,
+      "preserveEffects": true,
+      "preserveSubscribeWhenEnabled": true
+    }
+  },
+  "integrations": {
+    "vyronHandoffMustRemainCompatible": true
+  },
+  "changePolicy": {
+    "unrelatedFunctionalChangesAllowed": false,
+    "releaseOnFailedContractGate": false
+  }
+}

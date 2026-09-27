@@ -1,0 +1,63 @@
+name: ENDLUME 8.52 SampleTable POC
+on:
+  push:
+    branches: [candidate/endlume-852-build]
+    paths:
+      - 'scripts/endlume-sampletable-repeat-poc.py'
+      - '.github/workflows/endlume-852-sampletable-poc.yml'
+permissions:
+  contents: read
+jobs:
+  poc:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: candidate/endlume-852-build
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Validate repeated sample tables in FFmpeg and AVFoundation
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          WORK="$HOME/.endlume-local-builder/endlume-desktop-8.40-bootstrap"
+          FFMPEG="$(find "$WORK/src-tauri/binaries" -maxdepth 1 -type f -name 'ffmpeg*' -perm -111 -print -quit)"
+          FFPROBE="$(find "$WORK/src-tauri/binaries" -maxdepth 1 -type f -name 'ffprobe*' -perm -111 -print -quit)"
+          TMP="$(mktemp -d /tmp/endlume-sampletable.XXXXXX)"; trap 'rm -rf "$TMP"' EXIT
+          "$FFMPEG" -hide_banner -loglevel error -f lavfi -i 'testsrc2=size=640x360:rate=2' -t 2 -an -c:v libx264 -preset ultrafast -bf 0 -g 4 -pix_fmt yuv420p -y "$TMP/base.mp4"
+          python3 scripts/endlume-sampletable-repeat-poc.py "$TMP/base.mp4" "$TMP/repeat.mp4" --repeats 4
+          echo '=== ffprobe repeat ==='
+          "$FFPROBE" -v error -show_entries format=duration,size:stream=duration,nb_frames,r_frame_rate,avg_frame_rate -of default=nw=1 "$TMP/repeat.mp4"
+          DUR="$($FFPROBE -v error -show_entries format=duration -of default=nw=1:nk=1 "$TMP/repeat.mp4")"
+          FRAMES="$($FFPROBE -v error -select_streams v:0 -show_entries stream=nb_frames -of default=nw=1:nk=1 "$TMP/repeat.mp4")"
+          python3 -c "d=float('$DUR');assert abs(d-8.0)<0.05,d;assert int('$FRAMES')==16,'$FRAMES';print('PASS_FFPROBE_DURATION_FRAMES')"
+          "$FFMPEG" -hide_banner -loglevel error -ss 1 -i "$TMP/base.mp4" -frames:v 1 -f framemd5 - > "$TMP/base1.md5"
+          "$FFMPEG" -hide_banner -loglevel error -ss 3 -i "$TMP/repeat.mp4" -frames:v 1 -f framemd5 - > "$TMP/repeat3.md5"
+          "$FFMPEG" -hide_banner -loglevel error -ss 7 -i "$TMP/repeat.mp4" -frames:v 1 -f framemd5 - > "$TMP/repeat7.md5"
+          grep -E '^[0-9]' "$TMP/base1.md5" | tail -1 > "$TMP/a"
+          grep -E '^[0-9]' "$TMP/repeat3.md5" | tail -1 > "$TMP/b"
+          grep -E '^[0-9]' "$TMP/repeat7.md5" | tail -1 > "$TMP/c"
+          python3 -c "get=lambda p:open(p).read().split(',')[-1].strip();a=get('$TMP/a');b=get('$TMP/b');c=get('$TMP/c');assert a==b==c,(a,b,c);print('PASS_REPEAT_FRAME_CONTENT')"
+          cat > "$TMP/check.swift" <<'SWIFT'
+          import Foundation
+          import AVFoundation
+          let u=URL(fileURLWithPath:CommandLine.arguments[1])
+          let a=AVURLAsset(url:u)
+          let sem=DispatchSemaphore(value:0)
+          Task {
+            do {
+              let d=try await a.load(.duration)
+              let tracks=try await a.loadTracks(withMediaType:.video)
+              print("AV_DURATION=\(CMTimeGetSeconds(d)) VIDEO_TRACKS=\(tracks.count)")
+              if abs(CMTimeGetSeconds(d)-8.0)>0.05 || tracks.count != 1 { exit(4) }
+            } catch { print("AV_ERROR=\(error)"); exit(3) }
+            sem.signal()
+          }
+          sem.wait()
+          SWIFT
+          xcrun swift "$TMP/check.swift" "$TMP/repeat.mp4"
+          BASE_SIZE="$(stat -f%z "$TMP/base.mp4")"; REP_SIZE="$(stat -f%z "$TMP/repeat.mp4")"
+          python3 -c "b=int('$BASE_SIZE');r=int('$REP_SIZE');assert r < b*1.35,(b,r);print('PASS_ZERO_COPY_SIZE base=',b,'repeat=',r)"
+          echo 'PASS_SAMPLETABLE_POC'

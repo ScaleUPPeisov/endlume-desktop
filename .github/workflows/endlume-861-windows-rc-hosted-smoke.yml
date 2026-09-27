@@ -1,0 +1,61 @@
+name: ENDLUME 8.61 Published RC Hosted Windows Smoke
+
+on:
+  push:
+    branches: [windows/endlume-861-managed-access]
+    paths:
+      - '.github/workflows/endlume-861-windows-rc-hosted-smoke.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  RC_TAG: endlume-v1.0.0-alpha.8.61-windows-rc
+  RC_EXE: ENDLUME-YT-Studio-PEISOV-Setup-1.0.0-alpha.8.61-x64.exe
+  RC_SHA256: 3029774d277833194588488c82211b07bb5e52c402442581c139d151da98f1a2
+
+jobs:
+  hosted-rc-smoke:
+    name: Windows 2022 • Exact Published RC • Installed Smoke
+    runs-on: windows-2022
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: windows/endlume-861-managed-access
+          fetch-depth: 1
+
+      - name: Download exact published RC and verify SHA
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference='Stop'
+          New-Item -ItemType Directory -Force rc | Out-Null
+          $release = gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/$env:RC_TAG" | ConvertFrom-Json
+          $asset = $release.assets | Where-Object { $_.name -eq $env:RC_EXE } | Select-Object -First 1
+          if (-not $asset) { throw "RC asset missing" }
+          if ([string]$asset.digest -ne "sha256:$env:RC_SHA256") { throw "GitHub asset digest mismatch: $($asset.digest)" }
+          if ([int64]$asset.size -ne 98228835) { throw "GitHub asset size mismatch: $($asset.size)" }
+          $out = Join-Path $PWD "rc\$env:RC_EXE"
+          gh api -H "Accept: application/octet-stream" "repos/$env:GITHUB_REPOSITORY/releases/assets/$($asset.id)" --output $out
+          $actual=(Get-FileHash -Algorithm SHA256 -LiteralPath $out).Hash.ToLowerInvariant()
+          $size=(Get-Item $out).Length
+          if ($actual -ne $env:RC_SHA256) { throw "Downloaded RC SHA mismatch: $actual" }
+          if ($size -ne 98228835) { throw "Downloaded RC size mismatch: $size" }
+          Write-Host "HOSTED_RC_SHA256=$actual"
+          Write-Host "HOSTED_RC_BYTES=$size"
+
+      - name: Installed smoke on exact published RC
+        shell: pwsh
+        run: |
+          $installer=Join-Path $PWD "rc\$env:RC_EXE"
+          ./scripts/test-windows-installed-smoke.ps1 -Installer $installer
+
+      - name: Hosted checkpoint
+        shell: pwsh
+        run: |
+          Write-Host 'CHECKPOINT=hosted Windows exact-RC installed smoke PASS'
+          Write-Host 'HOSTED_WINDOWS_INSTALLED_SMOKE=YES'
+          Write-Host 'PHYSICAL_HARDWARE_E2E=NO'

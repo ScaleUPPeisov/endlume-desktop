@@ -1,5 +1,14 @@
 import React from 'react';
 import { createRoot } from 'react-dom/client';
 import { App } from './pages/App';
+import { PRODUCT_NAME } from './platform-brand';
 import './styles.css';
+import './nav-polish.css';
+import './project-polish.css';
+import './motion-polish.css';
+import './motion-interactions.css';
+import './chroma-fidelity.css';
+import './smart-align.css';
+import './update-experience.css';
+document.title=PRODUCT_NAME;
 createRoot(document.getElementById('root')!).render(<React.StrictMode><App/></React.StrictMode>);

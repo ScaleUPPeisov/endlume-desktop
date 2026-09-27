@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type { EffectPreset, LibraryPayload, Page, RenderProject, RenderSettings, SubscribePreset } from './types';
+import { applyProjectPatch } from './queue-state';
 
 type Editor = null | {kind:'effects'|'subscribe'; id?:string};
 interface State {
@@ -20,6 +21,7 @@ interface State {
   setProjects:(p:RenderProject[])=>void;
   setDraftProjects:(p:RenderProject[])=>void;
   appendProjects:(p:RenderProject[])=>void;
+  syncQueueProjects:(p:RenderProject[])=>void;
   patchProject:(id:string,p:Partial<RenderProject>)=>void;
   removeProject:(id:string)=>void;
   clearFinished:()=>void;
@@ -34,7 +36,7 @@ interface State {
 }
 
 const initialSettings:RenderSettings={
-  width:3840,height:2160,fps:60,codec:'h264',bitrateMbps:30,durationHours:2,
+  width:1920,height:1080,fps:60,codec:'h265',bitrateMbps:30,durationHours:2,
   durationMode:'whole-track',loopMode:'image',crossfadeSec:3,normalizeLufs:false,
   outputDir:'',preset:'fast',encoderPreference:'auto'
 };
@@ -45,16 +47,23 @@ export const useApp=create<State>()(persist((set)=>({
   openEditor:(editor)=>set({editor}),
   setProjects:(projects)=>set({projects}),
   setDraftProjects:(draftProjects)=>set({draftProjects}),
-  appendProjects:(v)=>set(s=>({projects:[...s.projects,...v.filter(n=>!s.projects.some(p=>p.path===n.path&&p.status!=='done'))]})),
-  patchProject:(id,patch)=>set(s=>({projects:s.projects.map(p=>p.id===id?{...p,...patch}:p)})),
+  appendProjects:(v)=>set(s=>{const known=new Set(s.projects.map(p=>p.id));return {projects:[...s.projects,...v.filter(n=>!known.has(n.id))]}}),
+  syncQueueProjects:(incoming)=>set(s=>{
+    const incomingIds=new Set(incoming.map(p=>p.id));
+    const oldById=new Map(s.projects.map(p=>[p.id,p]));
+    const terminal=s.projects.filter(p=>['done','error'].includes(p.status)&&!incomingIds.has(p.id));
+    const live=incoming.map(p=>{const old=oldById.get(p.id);if(!old)return p;if(['done','error'].includes(old.status))return old;return {...old,...p,progress:p.status==='rendering'?Math.max(old.progress||0,p.progress||0):p.progress,stage:p.status==='rendering'&&old.stage?old.stage:p.stage,elapsedSec:p.status==='rendering'?Math.max(old.elapsedSec||0,p.elapsedSec||0):p.elapsedSec}});
+    return {projects:[...terminal,...live]};
+  }),
+  patchProject:(id,patch)=>set(s=>({projects:applyProjectPatch(s.projects,id,patch) as RenderProject[]})),
   removeProject:(id)=>set(s=>({projects:s.projects.filter(p=>p.id!==id)})),
   clearFinished:()=>set(s=>({projects:s.projects.filter(p=>!['done','error'].includes(p.status))})),
   setInvalidProjects:(invalidProjects)=>set({invalidProjects}),
   setEffects:(effects)=>set({effects}),
   setSubscribes:(subscribes)=>set({subscribes}),
   setAmbient:(ambient)=>set({ambient}),
-  setLibrary:(v)=>set({effects:v.effects||[],subscribes:v.subscribes||[],ambient:v.ambient,libraryLoaded:true}),
+  setLibrary:(v)=>set({effects:(v.effects||[]).map(e=>({...e,despill:e.despill>0?e.despill:0.35})),subscribes:(v.subscribes||[]).map(e=>({...e,despill:e.despill>0?e.despill:0.35})),ambient:v.ambient,libraryLoaded:true}),
   setLibraryLoaded:(libraryLoaded)=>set({libraryLoaded}),
   patchSettings:(patch)=>set(s=>({settings:{...s.settings,...patch}})),
   setLastRoot:(lastRoot)=>set({lastRoot})
-}),{name:'endlume-1-ui',partialize:(s)=>({settings:s.settings,lastRoot:s.lastRoot})}));
+}),{name:'endlume-1-ui',version:6,migrate:(persisted:any)=>{const p:any=persisted||{};if(p.settings){p.settings={...p.settings,width:1920,height:1080,fps:60,crossfadeSec:3,normalizeLufs:false,codec:'h265'};}p.projects=[];return p;},partialize:(s)=>({settings:s.settings,lastRoot:s.lastRoot})}));

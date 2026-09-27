@@ -1,0 +1,100 @@
+name: ENDLUME 8.61 Windows Apply Source
+
+on:
+  push:
+    branches: [windows/endlume-861-managed-access]
+    paths:
+      - 'scripts/apply-windows-861-strict-port.py'
+      - 'scripts/test-windows-861-strict-port.py'
+      - 'scripts/apply-managed-license-render-gate.py'
+      - 'scripts/test-managed-license-render-gate.py'
+      - 'src-tauri/src/updater_windows.rs'
+      - 'src-tauri/src/license.rs'
+      - 'src-tauri/src/queue.rs'
+      - 'src-tauri/src/lib.rs'
+      - '.github/workflows/endlume-861-windows-apply-source.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: endlume-861-windows-apply-source
+  cancel-in-progress: true
+
+jobs:
+  apply-source:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: windows/endlume-861-managed-access
+          fetch-depth: 0
+
+      - name: Apply and validate isolated Windows 8.61 strict + managed access patches
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/apply-windows-861-strict-port.py
+          python3 scripts/test-windows-861-strict-port.py
+          python3 scripts/apply-managed-license-render-gate.py
+          python3 scripts/test-managed-license-render-gate.py
+
+      - name: Persist patched effective source
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          if git diff --quiet -- src-tauri/src/render.rs; then
+            echo 'Windows strict/managed source already committed'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src-tauri/src/render.rs
+          git commit -m 'fix(windows): stop active render on managed license revoke'
+          git push origin HEAD:windows/endlume-861-managed-access
+
+      - name: Prepare macOS Tauri sidecars for regression
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          command -v ffmpeg >/dev/null
+          command -v ffprobe >/dev/null
+          mkdir -p src-tauri/binaries
+          cp "$(command -v ffmpeg)" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp "$(command -v ffprobe)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          chmod +x src-tauri/binaries/ffmpeg-aarch64-apple-darwin src-tauri/binaries/ffprobe-aarch64-apple-darwin
+
+      - name: macOS regression guard
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          npm ci
+          npm run check
+          npm run build
+          cargo check --manifest-path src-tauri/Cargo.toml
+          cargo test --manifest-path src-tauri/Cargo.toml
+
+      - name: Install Windows Rust target and xwin SDK bridge
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          rustup target add x86_64-pc-windows-msvc
+          if ! cargo xwin --version >/dev/null 2>&1; then
+            cargo install cargo-xwin --locked
+          fi
+
+      - name: Prepare Windows sidecar names for cross-check only
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p src-tauri/binaries
+          : > src-tauri/binaries/ffmpeg-x86_64-pc-windows-msvc.exe
+          : > src-tauri/binaries/ffprobe-x86_64-pc-windows-msvc.exe
+
+      - name: Cross-check Windows-only Rust paths with Windows SDK
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cargo xwin check --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-msvc --tests

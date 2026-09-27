@@ -1,0 +1,26 @@
+name: ENDLUME Windows Runner Label Probe
+
+on:
+  push:
+    branches: [windows/endlume-861-managed-access]
+    paths:
+      - '.github/workflows/endlume-windows-runner-label-probe.yml'
+  workflow_dispatch:
+
+jobs:
+  standard-windows-labels:
+    name: Probe self-hosted Windows X64 standard labels
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 5
+    steps:
+      - name: Identify runner
+        shell: pwsh
+        run: |
+          Write-Host "RUNNER_OS=$env:RUNNER_OS"
+          Write-Host "RUNNER_ARCH=$env:RUNNER_ARCH"
+          Write-Host "RUNNER_NAME=$env:RUNNER_NAME"
+          if ($env:RUNNER_OS -ne 'Windows') { throw "Not Windows" }
+          if ($env:RUNNER_ARCH -ne 'X64') { throw "Not X64" }
+          Get-CimInstance Win32_OperatingSystem | Select-Object Caption,Version,OSArchitecture | Format-List
+          Get-CimInstance Win32_VideoController | Select-Object Name,DriverVersion | Format-Table -AutoSize
+          Write-Host 'WINDOWS_STANDARD_LABEL_RUNNER_ONLINE=1'

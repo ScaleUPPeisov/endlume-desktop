@@ -1,0 +1,34 @@
+name: ENDLUME 8.52 Effective Source Inspect
+on:
+  push:
+    branches: [candidate/endlume-852-build]
+    paths: ['.github/workflows/endlume-852-effective-source-inspect.yml']
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: candidate/endlume-852-build
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Extract effective 8.51 render functions
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          R="$HOME/.endlume-local-builder/endlume-desktop-8.40-bootstrap/src-tauri/src/render.rs"
+          C="$HOME/.endlume-local-builder/endlume-desktop-8.40-bootstrap/src-tauri/src/cache.rs"
+          echo '===== prepare_overlays ====='
+          grep -n -A45 -B5 'fn prepare_overlays' "$R" || true
+          echo '===== apply_effects_filter ====='
+          grep -n -A70 -B5 'fn apply_effects_filter' "$R" || true
+          echo '===== build_variant ====='
+          grep -n -A55 -B5 'fn build_variant' "$R" || true
+          echo '===== render_sub_segment ====='
+          grep -n -A45 -B5 'fn render_sub_segment' "$R" || true
+          echo '===== cache prepare ====='
+          grep -n -A55 -B5 'pub async fn prepare' "$C" || true

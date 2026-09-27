@@ -1,0 +1,80 @@
+name: ENDLUME 8.61 Windows Production
+
+on:
+  push:
+    branches:
+      - windows/endlume-861-managed-access
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-861:
+    runs-on: windows-2022
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Verify Windows product contract
+        shell: pwsh
+        run: |
+          $pkg = Get-Content package.json -Raw | ConvertFrom-Json
+          $base = Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json
+          $win = Get-Content src-tauri/tauri.windows.conf.json -Raw | ConvertFrom-Json
+          if ($pkg.version -ne '1.0.0-alpha.8.61') { throw "package version drift: $($pkg.version)" }
+          if ($base.version -ne '1.0.0-alpha.8.61') { throw "tauri version drift: $($base.version)" }
+          if ($base.identifier -ne 'studio.endlume.desktop') { throw "base identifier drift: $($base.identifier)" }
+          if ($win.identifier -ne 'studio.endlume.desktop') { throw "Windows identifier drift: $($win.identifier)" }
+          if ($win.productName -ne 'ENDLUME YT Studio PEISOV') { throw "Windows productName drift: $($win.productName)" }
+          if ($win.mainBinaryName -ne 'ENDLUME YT Studio PEISOV') { throw "Windows binary name drift: $($win.mainBinaryName)" }
+
+      - name: Build, test and package Windows x64
+        shell: pwsh
+        run: ./scripts/build-windows.ps1
+
+      - name: Verify exact production installer
+        shell: pwsh
+        run: |
+          $target = 'x86_64-pc-windows-msvc'
+          $version = '1.0.0-alpha.8.61'
+          foreach ($b in @('ffmpeg','ffprobe')) {
+            $p = "src-tauri/binaries/$b-$target.exe"
+            if (!(Test-Path $p)) { throw "Missing Tauri sidecar $p" }
+          }
+          $expected = "src-tauri/target/$target/release/bundle/nsis/ENDLUME-YT-Studio-PEISOV-Setup-$version-x64.exe"
+          if (!(Test-Path $expected)) { throw "Exact production installer missing: $expected" }
+          $file = Get-Item $expected
+          if ($file.Length -le 0) { throw 'Production installer is empty' }
+          Write-Host "Installer: $($file.FullName)"
+          Write-Host "Installer bytes: $($file.Length)"
+
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: ENDLUME-YT-Studio-PEISOV-Setup-1.0.0-alpha.8.61-x64
+          path: src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/ENDLUME-YT-Studio-PEISOV-Setup-1.0.0-alpha.8.61-x64.exe
+          if-no-files-found: error
+          retention-days: 14

@@ -1,0 +1,37 @@
+name: ENDLUME Actions artifact inventory
+
+on:
+  push:
+    branches: [endlume-8.64-turbo]
+    paths:
+      - '.github/workflows/endlume-actions-artifact-inventory.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  inventory:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: List Actions artifacts without deleting
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          gh api --paginate "/repos/ScaleUPPeisov/endlume-desktop/actions/artifacts?per_page=100"             --jq '.artifacts[] | [.id,.name,.size_in_bytes,.expired,.created_at,.expires_at,.workflow_run.id] | @tsv'             | sort -k5 > "$RUNNER_TEMP/endlume-artifacts.tsv"
+          echo ARTIFACT_INVENTORY_START
+          cat "$RUNNER_TEMP/endlume-artifacts.tsv"
+          echo ARTIFACT_INVENTORY_END
+          python3 - "$RUNNER_TEMP/endlume-artifacts.tsv" <<'PY'
+          import sys
+          rows=[x.rstrip('\n').split('\t') for x in open(sys.argv[1]) if x.strip()]
+          total=sum(int(x[2]) for x in rows)
+          print("ARTIFACT_COUNT",len(rows))
+          print("ARTIFACT_BYTES",total)
+          print("ARTIFACT_GIB",round(total/1024**3,3))
+          PY

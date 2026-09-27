@@ -1,0 +1,40 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "ENDLUME YT Studio PEISOV",
+  "mainBinaryName": "ENDLUME YT Studio PEISOV",
+  "identifier": "studio.endlume.desktop",
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "ENDLUME YT Studio PEISOV",
+        "width": 1280,
+        "height": 860,
+        "minWidth": 980,
+        "minHeight": 700,
+        "center": true,
+        "resizable": true,
+        "decorations": true,
+        "transparent": false,
+        "backgroundThrottling": "disabled",
+        "backgroundColor": "#070914"
+      }
+    ]
+  },
+  "bundle": {
+    "targets": ["nsis"],
+    "publisher": "PEISOV",
+    "shortDescription": "ENDLUME YT Studio PEISOV",
+    "longDescription": "ENDLUME YT Studio PEISOV",
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "displayLanguageSelector": true,
+        "languages": ["Russian", "English"],
+        "installerIcon": "icons/icon.ico",
+        "uninstallerIcon": "icons/icon.ico",
+        "startMenuFolder": "ENDLUME YT Studio PEISOV"
+      }
+    }
+  }
+}

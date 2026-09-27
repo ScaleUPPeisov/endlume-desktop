@@ -1,0 +1,29 @@
+name: ENDLUME repository runner inventory
+
+on:
+  push:
+    branches: [endlume-8.64-turbo]
+    paths:
+      - '.github/workflows/endlume-runner-inventory.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inventory:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ secrets.ENDLUME_RELEASE_TOKEN }}
+    steps:
+      - name: Query repository self-hosted runners via existing authenticated gh
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          command -v gh
+          echo RUNNER_INVENTORY_START
+          test -n "${GH_TOKEN:-}"
+          gh api "/repos/ScaleUPPeisov/endlume-desktop/actions/runners" --jq '.runners[] | {id,name,os,status,busy,labels:[.labels[].name]}'
+          echo RUNNER_INVENTORY_END

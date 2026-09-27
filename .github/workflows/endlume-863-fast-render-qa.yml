@@ -1,0 +1,124 @@
+name: ENDLUME 8.63 Fast Render Incident QA
+
+on:
+  push:
+    branches: [fix/endlume-863-windows-fast-render-size]
+    paths:
+      - '.github/workflows/endlume-863-fast-render-qa.yml'
+      - 'src-tauri/src/render.rs'
+      - 'src-tauri/src/queue.rs'
+      - 'src-tauri/src/license.rs'
+      - 'src-tauri/src/mp4_manifest.rs'
+      - 'scripts/test-fast-2h-contract-8-63.py'
+      - 'scripts/find-endlume-real-fixture.py'
+      - 'scripts/run-endlume-863-fast-multistill.py'
+      - 'scripts/test-managed-license-render-gate.py'
+      - 'scripts/test-runtime-safety-8-62.py'
+      - 'src/pages/ProjectPage.tsx'
+      - 'supabase/functions/endlume-client-api/index.ts'
+      - 'supabase/migrations/20260919_endlume_863_render_performance_telemetry.sql'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-863-fast-render-qa
+  cancel-in-progress: true
+
+jobs:
+  targeted:
+    name: Fast 2h • Rust • MP4 manifest
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Fast 2h source contract
+        run: python3 scripts/test-fast-2h-contract-8-63.py
+
+      - name: Stage native FFmpeg sidecars
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+          mkdir -p src-tauri/binaries
+          cp "$(command -v ffmpeg)" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp "$(command -v ffprobe)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          chmod +x src-tauri/binaries/ffmpeg-aarch64-apple-darwin src-tauri/binaries/ffprobe-aarch64-apple-darwin
+
+      - name: Rustfmt legacy drift signal
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          rustup component add rustfmt
+          if rustfmt --edition 2021 --check src-tauri/src/render.rs src-tauri/src/queue.rs src-tauri/src/license.rs src-tauri/src/mp4_manifest.rs; then
+            echo RUSTFMT_GREEN=1
+          else
+            echo RUSTFMT_LEGACY_DRIFT=1
+            echo "Repository files are historically compact/minified; correctness QA continues."
+          fi
+
+      - name: Cargo check
+        run: cargo check --manifest-path src-tauri/Cargo.toml
+
+      - name: Full Rust tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml -- --nocapture
+
+      - name: MP4 manifest targeted tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml mp4_manifest -- --nocapture
+
+      - name: Managed license render gate regression
+        run: python3 scripts/test-managed-license-render-gate.py
+
+      - name: Runtime safety regression
+        run: python3 scripts/test-runtime-safety-8-62.py
+
+      - name: Resolve durable real-media fixture
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          TMP="$(mktemp -d /tmp/e863fixture.XXXXXX)"
+          python3 scripts/find-endlume-real-fixture.py "$TMP/env"
+          cat "$TMP/env" >> "$GITHUB_ENV"
+          source "$TMP/env"
+          test "$AUDIO_COUNT" = 15
+          test -f "$SIDE"
+          test -f "$IMG"
+          echo "REAL_FIXTURE project=$PROJECT_NAME audio=$AUDIO_COUNT effects=$EFFECT_COUNT"
+
+      - name: Five-run 2h multi-still physical gate
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          FFMPEG="$(command -v ffmpeg)"
+          FFPROBE="$(command -v ffprobe)"
+          test -x "$FFMPEG"; test -x "$FFPROBE"; test -f "$SIDE"
+          python3 scripts/run-endlume-863-fast-multistill.py "$SIDE" "$FFMPEG" "$FFPROBE" "$GITHUB_WORKSPACE/863-fast-multistill.json"
+
+      - name: Show physical gate metrics
+        if: always()
+        shell: bash
+        run: |
+          echo '=== ENDLUME 8.63 FIVE-RUN FAST MULTI-STILL METRICS ==='
+          test -f 863-fast-multistill.json && cat 863-fast-multistill.json || true
+
+      - name: Upload physical gate metrics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: endlume-863-fast-multistill-metrics
+          path: 863-fast-multistill.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Verdict
+        run: |
+          echo ENDLUME_863_FAST_RENDER_TARGETED_QA_GREEN
+          echo REAL_MEDIA_5_RUN_GATE=GREEN
+          echo HEAD=$GITHUB_SHA

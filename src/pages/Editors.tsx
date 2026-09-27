@@ -2,62 +2,597 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useApp } from '../store';
 import { api } from '../tauri';
 import type { EffectPreset, SubscribePreset } from '../types';
-import { Icon,Range } from '../components/ui';
+import { Icon, Range } from '../components/ui';
+import { LiveCompositePreview, type LivePreviewAssets } from '../components/LiveCompositePreview';
 
-const emptyEffect=(source=''):EffectPreset=>({
-  id:crypto.randomUUID(),name:source.split(/[\\/]/).pop()||'Новый эффект',source,enabled:true,mode:'chromakey',keyColor:'#00ff00',similarity:.12,blend:.12,despill:1,
-  lumaThreshold:.03,lumaTolerance:.08,saturation:1.2,x:.5,y:.5,scale:.34,fullscreen:false,previewFrameTime:0,startSec:0,endSec:null
+const clamp01 = (value: number) => Math.max(0, Math.min(1, value));
+
+const emptyEffect = (source = ''): EffectPreset => ({
+  id: crypto.randomUUID(),
+  name: source.split(/[\\/]/).pop() || 'Новый эффект',
+  source,
+  enabled: true,
+  mode: 'chromakey',
+  keyColor: '#00ff00',
+  similarity: 0.10,
+  blend: 0.06,
+  despill: 0.35,
+  lumaThreshold: 0.03,
+  lumaTolerance: 0.08,
+  saturation: 1,
+  x: 0.5,
+  y: 0.5,
+  scale: 0.34,
+  fullscreen: false,
+  previewFrameTime: 0,
+  startSec: 0,
+  endSec: null,
 });
-const emptySubscribe=(source=''):SubscribePreset=>({...emptyEffect(source),name:source.split(/[\\/]/).pop()||'Subscribe',scale:.32,x:.16,y:.16,firstAtSec:10,secondAtSec:20,repeatEverySec:300});
 
-export function EditorRouter(){
-  const editor=useApp(s=>s.editor);if(!editor)return null;
-  return editor.kind==='effects'?<EffectsEditor/>:<SubscribeEditor/>;
+const emptySubscribe = (source = ''): SubscribePreset => ({
+  ...emptyEffect(source),
+  name: source.split(/[\\/]/).pop() || 'Subscribe',
+  x: 0.5,
+  y: 0.5,
+  scale: 0.32,
+  firstAtSec: 10,
+  secondAtSec: 20,
+  repeatEverySec: 300,
+});
+
+export function EditorRouter() {
+  const editor = useApp((s) => s.editor);
+  if (!editor) return null;
+  return editor.kind === 'effects' ? <EffectsEditor /> : <SubscribeEditor />;
 }
 
-function EffectsEditor(){
-  const effects=useApp(s=>s.effects),setEffects=useApp(s=>s.setEffects),openEditor=useApp(s=>s.openEditor),editor=useApp(s=>s.editor),draft=useApp(s=>s.draftProjects),projects=useApp(s=>s.projects),subscribes=useApp(s=>s.subscribes),ambient=useApp(s=>s.ambient);
-  const [selected,setSelected]=useState(editor?.id||effects[0]?.id),[saved,setSaved]=useState(false);const current=effects.find(e=>e.id===selected);const [preview,setPreview]=useState('');const [previewBusy,setPreviewBusy]=useState(false);
-  const projectPath=draft[0]?.path||projects.find(p=>p.status==='rendering')?.path||projects.at(-1)?.path;
-  const saveLibrary=async(next:EffectPreset[])=>{setEffects(next);await api.saveLibrary({effects:next,subscribes,ambient})};
-  const add=async()=>{const source=await api.chooseVideo();if(!source)return;const e=emptyEffect(source);await saveLibrary([...effects,e]);setSelected(e.id)};
-  const patch=(p:Partial<EffectPreset>)=>current&&saveLibrary(effects.map(e=>e.id===current.id?{...e,...p}:e));
-  const remove=async()=>{if(!current)return;const n=effects.filter(e=>e.id!==current.id);await saveLibrary(n);setSelected(n[0]?.id)};
-  const refresh=async()=>{if(!projectPath||!current)return;setPreviewBusy(true);try{const p=await api.generatePreview(projectPath,current.previewFrameTime,effects.filter(e=>e.enabled),[]);setPreview(api.previewUrl(p))}catch(e){await api.showError(`Не удалось создать предпросмотр эффекта.\n${String(e)}`)}finally{setPreviewBusy(false)}};
-  useEffect(()=>{if(current&&projectPath){const t=setTimeout(refresh,220);return()=>clearTimeout(t)}},[current?.previewFrameTime,current?.x,current?.y,current?.scale,current?.mode,current?.keyColor,current?.similarity,current?.blend,current?.fullscreen,projectPath]);
-  return <div className="editorPage"><EditorHeader title="Эффекты" subtitle="Preview • chromakey / luma / screen • постоянный кэш" onBack={()=>openEditor(null)}/><div className="editorLayout">
-    <aside className="assetList"><button className="addAsset" onClick={add}>+ ДОБАВИТЬ</button>{effects.map(e=><button key={e.id} className={`assetItem ${selected===e.id?'active':''}`} onClick={()=>setSelected(e.id)}><span className="assetThumb"><Icon name="effects"/></span><span><b>{e.name}</b><small>{e.mode} • {e.cacheReady?'кэш готов':'кэш при первом рендере'}</small></span><i className={e.enabled?'enabled':'disabled'} onClick={ev=>{ev.stopPropagation();saveLibrary(effects.map(x=>x.id===e.id?{...x,enabled:!x.enabled}:x))}}/></button>)}</aside>
-    <main className="visualEditor">{current?<><PreviewStage title="ПРЕДПРОСМОТР" preview={preview} busy={previewBusy} current={current} onMove={(x,y)=>patch({x,y})} onScale={scale=>patch({scale})}/><div className="previewTime"><span>Кадр выбранного эффекта</span><Range value={current.previewFrameTime} min={0} max={60} step={.1} onChange={v=>patch({previewFrameTime:v})} minLabel="0:00" maxLabel="1:00"/><b>{current.previewFrameTime.toFixed(1)} сек</b></div><button className="refreshPreview" onClick={refresh}><Icon name="refresh"/> ОБНОВИТЬ ПРЕДПРОСМОТР</button><Timeline start={current.startSec} end={current.endSec} total={(useApp.getState().settings.durationHours*3600)} onChange={(start,end)=>patch({startSec:start,endSec:end})}/></>:<div className="emptyEditor"><Icon name="effects"/><h3>Добавьте эффект</h3><p>Видео останется в библиотеке ENDLUME и будет доступно после перезапуска.</p></div>}</main>
-    <aside className="editorControls">{current&&<><label>Название<input value={current.name} onChange={e=>patch({name:e.target.value})}/></label><label>Режим<select value={current.mode} onChange={e=>patch({mode:e.target.value as any})}><option value="chromakey">Chromakey</option><option value="luma">Luma Alpha</option><option value="screen">Screen Blend</option></select></label>{current.mode==='chromakey'&&<><label>Цвет chromakey<input type="color" value={current.keyColor} onChange={e=>patch({keyColor:e.target.value})}/></label><SmallRange label="Similarity" value={current.similarity} min={.001} max={1} step={.001} onChange={v=>patch({similarity:v})}/><SmallRange label="Blend" value={current.blend} min={0} max={1} step={.01} onChange={v=>patch({blend:v})}/></>}{current.mode==='luma'&&<><SmallRange label="Threshold" value={current.lumaThreshold} min={0} max={1} step={.01} onChange={v=>patch({lumaThreshold:v})}/><SmallRange label="Tolerance" value={current.lumaTolerance} min={0} max={1} step={.01} onChange={v=>patch({lumaTolerance:v})}/></>}<label className="checkLine"><input type="checkbox" checked={current.fullscreen} onChange={e=>patch({fullscreen:e.target.checked})}/> На весь экран</label><p className="editorHint">Позицию и размер меняйте прямо мышкой на Preview.</p><button className="savePreset" onClick={async()=>{await saveLibrary([...effects]);setSaved(true);setTimeout(()=>setSaved(false),1200)}}><Icon name="save"/> {saved?'СОХРАНЕНО ✓':'СОХРАНИТЬ PRESET'}</button><button className="deletePreset" onClick={remove}><Icon name="trash"/> УДАЛИТЬ</button></>}</aside>
-  </div></div>
+function useProjectPath() {
+  const draft = useApp((s) => s.draftProjects);
+  const projects = useApp((s) => s.projects);
+  return draft[0]?.path || projects.find((p) => p.status === 'rendering')?.path || projects.at(-1)?.path;
 }
 
-function SubscribeEditor(){
-  const subscribes=useApp(s=>s.subscribes),setSubscribes=useApp(s=>s.setSubscribes),openEditor=useApp(s=>s.openEditor),editor=useApp(s=>s.editor),draft=useApp(s=>s.draftProjects),projects=useApp(s=>s.projects),effects=useApp(s=>s.effects),ambient=useApp(s=>s.ambient);
-  const [selected,setSelected]=useState(editor?.id||subscribes[0]?.id),[preview,setPreview]=useState(''),[previewBusy,setPreviewBusy]=useState(false),[saved,setSaved]=useState(false);const current=subscribes.find(e=>e.id===selected);const projectPath=draft[0]?.path||projects.find(p=>p.status==='rendering')?.path||projects.at(-1)?.path;
-  const saveLibrary=async(next:SubscribePreset[])=>{setSubscribes(next);await api.saveLibrary({effects,subscribes:next,ambient})};
-  const add=async()=>{const source=await api.chooseVideo();if(!source)return;const e=emptySubscribe(source);await saveLibrary([...subscribes,e]);setSelected(e.id)};
-  const patch=(p:Partial<SubscribePreset>)=>current&&saveLibrary(subscribes.map(e=>e.id===current.id?{...e,...p}:e));
-  const refresh=async()=>{if(!projectPath||!current)return;setPreviewBusy(true);try{const p=await api.generatePreview(projectPath,current.previewFrameTime,[],subscribes.filter(s=>s.enabled));setPreview(api.previewUrl(p))}catch(e){await api.showError(`Не удалось создать предпросмотр Subscribe.\n${String(e)}`)}finally{setPreviewBusy(false)}};
-  useEffect(()=>{if(current&&projectPath){const t=setTimeout(refresh,220);return()=>clearTimeout(t)}},[current?.previewFrameTime,current?.x,current?.y,current?.scale,current?.keyColor,current?.similarity,current?.blend,projectPath]);
-  return <div className="editorPage"><EditorHeader title="Кнопка Subscribe" subtitle="Предпросмотр • chromakey • позиция • расписание" onBack={()=>openEditor(null)}/><div className="editorLayout">
-    <aside className="assetList"><button className="addAsset" onClick={add}>+ ДОБАВИТЬ</button>{subscribes.map(e=><button key={e.id} className={`assetItem ${selected===e.id?'active':''}`} onClick={()=>setSelected(e.id)}><span className="assetThumb pink"><Icon name="subscribe"/></span><span><b>{e.name}</b><small>каждые {Math.round(e.repeatEverySec/60)} мин</small></span><i className={e.enabled?'enabled':'disabled'} onClick={ev=>{ev.stopPropagation();saveLibrary(subscribes.map(x=>x.id===e.id?{...x,enabled:!x.enabled}:x))}}/></button>)}</aside>
-    <main className="visualEditor">{current?<><PreviewStage title="ПРЕДПРОСМОТР" preview={preview} busy={previewBusy} current={current} onMove={(x,y)=>patch({x,y})} onScale={scale=>patch({scale})}/><div className="previewTime"><span>Кадр Subscribe-видео</span><Range value={current.previewFrameTime} min={0} max={60} step={.1} onChange={v=>patch({previewFrameTime:v})} minLabel="0:00" maxLabel="1:00"/><b>{current.previewFrameTime.toFixed(1)} сек</b></div><button className="refreshPreview" onClick={refresh}><Icon name="refresh"/> ОБНОВИТЬ ПРЕДПРОСМОТР</button><SubscribeTimeline current={current} onChange={patch}/></>:<div className="emptyEditor"><Icon name="subscribe"/><h3>Добавьте Subscribe-видео</h3></div>}</main>
-    <aside className="editorControls">{current&&<><label>Название<input value={current.name} onChange={e=>patch({name:e.target.value})}/></label><label>Цвет chromakey<input type="color" value={current.keyColor} onChange={e=>patch({keyColor:e.target.value})}/></label><SmallRange label="Similarity" value={current.similarity} min={.001} max={1} step={.001} onChange={v=>patch({similarity:v})}/><SmallRange label="Blend" value={current.blend} min={0} max={1} step={.01} onChange={v=>patch({blend:v})}/><div className="schedule"><label>Первое появление<input type="number" value={current.firstAtSec} onChange={e=>patch({firstAtSec:+e.target.value})}/><small>сек</small></label><label>Второе появление<input type="number" value={current.secondAtSec} onChange={e=>patch({secondAtSec:+e.target.value})}/><small>сек</small></label><label>Затем каждые<input type="number" value={Math.round(current.repeatEverySec/60)} onChange={e=>patch({repeatEverySec:+e.target.value*60})}/><small>мин</small></label></div><p className="editorHint">Позицию и размер меняйте мышкой на Preview.</p><button className="savePreset" onClick={async()=>{await saveLibrary([...subscribes]);setSaved(true);setTimeout(()=>setSaved(false),1200)}}><Icon name="save"/> {saved?'СОХРАНЕНО ✓':'СОХРАНИТЬ PRESET'}</button></>}</aside>
-  </div></div>
+function EffectsEditor() {
+  const effects = useApp((s) => s.effects);
+  const setEffects = useApp((s) => s.setEffects);
+  const openEditor = useApp((s) => s.openEditor);
+  const editor = useApp((s) => s.editor);
+  const projectPath = useProjectPath();
+  const [selected, setSelected] = useState(editor?.id || effects[0]?.id);
+  const [saved, setSaved] = useState(false);
+  const [assets, setAssets] = useState<LivePreviewAssets>();
+  const [previewBusy, setPreviewBusy] = useState(false);
+  const persistTimer = useRef<number | undefined>(undefined);
+  const current = effects.find((e) => e.id === selected);
+
+  const saveLibrary = (next: EffectPreset[], immediate = false) => {
+    setEffects(next);
+    if (persistTimer.current) window.clearTimeout(persistTimer.current);
+    const persist = () => api.saveLibrary({
+      effects: next,
+      subscribes: useApp.getState().subscribes,
+      ambient: useApp.getState().ambient,
+    }).catch(() => undefined);
+    if (immediate) return persist();
+    persistTimer.current = window.setTimeout(persist, 180);
+    return Promise.resolve();
+  };
+
+  useEffect(() => () => {
+    if (persistTimer.current) window.clearTimeout(persistTimer.current);
+  }, []);
+
+  const add = async () => {
+    const source = await api.chooseVideo('effects');
+    if (!source) return;
+    const effect = emptyEffect(source);
+    await saveLibrary([...effects, effect], true);
+    setSelected(effect.id);
+  };
+
+  const patch = (value: Partial<EffectPreset>) => {
+    if (!current) return;
+    void saveLibrary(effects.map((e) => e.id === current.id ? { ...e, ...value } : e));
+  };
+
+  const remove = async () => {
+    if (!current) return;
+    const next = effects.filter((e) => e.id !== current.id);
+    await saveLibrary(next, true);
+    setSelected(next[0]?.id);
+    setAssets(undefined);
+  };
+
+  const loadLive = async () => {
+    const latest = useApp.getState().effects.find((e) => e.id === selected);
+    if (!projectPath || !latest) return;
+    setPreviewBusy(true);
+    try {
+      const result = await api.prepareLivePreview(projectPath, latest.source, latest.previewFrameTime);
+      setAssets({
+        basePath: api.previewUrl(result.basePath),
+        baseKind: result.baseKind,
+        overlayPath: api.previewUrl(result.overlayPath),
+      });
+    } catch (error) {
+      await api.showError(`Не удалось подготовить Live Preview эффекта.\n${String(error)}`);
+    } finally {
+      setPreviewBusy(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!current || !projectPath) return;
+    const timer = window.setTimeout(() => void loadLive(), 120);
+    return () => window.clearTimeout(timer);
+  }, [selected, current?.source, current?.previewFrameTime, projectPath]);
+
+  return <div className="editorPage">
+    <EditorHeader title="Эффекты" subtitle="GPU Live Preview • chromakey / luma / screen • исходные цвета без искажений" onBack={() => openEditor(null)} />
+    <div className="editorLayout">
+      <aside className="assetList">
+        <button className="addAsset" onClick={add}>+ ДОБАВИТЬ</button>
+        {effects.map((effect) => <button key={effect.id} className={`assetItem ${selected === effect.id ? 'active' : ''}`} onClick={() => setSelected(effect.id)}>
+          <span className="assetThumb"><Icon name="effects" /></span>
+          <span><b>{effect.name}</b><small>{effect.enabled ? 'Включён' : 'Выключен'} • {effect.mode} • {effect.cacheReady ? 'render-cache готов' : 'render-cache при первом рендере'}</small></span>
+          <i className={effect.enabled ? 'enabled' : 'disabled'} title={effect.enabled ? 'Выключить' : 'Включить'} onClick={(event) => {
+            event.stopPropagation();
+            void saveLibrary(effects.map((item) => item.id === effect.id ? { ...item, enabled: !item.enabled } : item), true);
+          }} />
+        </button>)}
+      </aside>
+
+      <main className="visualEditor">
+        {current ? <>
+          <PreviewStage
+            title="LIVE PREVIEW"
+            assets={assets}
+            busy={previewBusy}
+            current={current}
+            onMove={(x, y) => patch({ x, y })}
+            onScale={(scale) => patch({ scale })}
+            onPickColor={(hex) => patch({ keyColor: hex, similarity: 0.10, blend: 0.06 })}
+          />
+          <div className="previewTime"><span>Стартовый кадр proxy</span><Range value={current.previewFrameTime} min={0} max={60} step={0.1} onChange={(value) => patch({ previewFrameTime: value })} minLabel="0:00" maxLabel="1:00" /><b>{current.previewFrameTime.toFixed(1)} сек</b></div>
+          <button className="refreshPreview" disabled={previewBusy} onClick={() => void loadLive()}><Icon name="refresh" /> {previewBusy ? 'ГОТОВЛЮ PROXY…' : 'ОБНОВИТЬ LIVE PREVIEW'}</button>
+          <Timeline start={current.startSec} end={current.endSec} total={useApp.getState().settings.durationHours * 3600} onChange={(start, end) => patch({ startSec: start, endSec: end })} />
+        </> : <div className="emptyEditor"><Icon name="effects" /><h3>Добавьте эффект</h3><p>Видео сохраняется во внутренней библиотеке ENDLUME.</p></div>}
+      </main>
+
+      <aside className="editorControls">
+        {current && <>
+          <label>Название<input value={current.name} onChange={(event) => patch({ name: event.target.value })} /></label>
+          <label>Режим<select value={current.mode} onChange={(event) => patch({ mode: event.target.value as EffectPreset['mode'] })}><option value="chromakey">Chromakey</option><option value="luma">Luma Alpha</option><option value="screen">Screen Blend</option></select></label>
+          {current.mode === 'chromakey' && <>
+            <label>Цвет chromakey<input type="color" value={current.keyColor} onChange={(event) => patch({ keyColor: event.target.value })} /></label>
+            <button className="chromaReset" onClick={() => patch({ keyColor: '#00ff00', similarity: 0.10, blend: 0.06, saturation: 1, despill: 0.35 })}>СБРОСИТЬ CHROMAKEY</button>
+            <p className="editorHint chromaHint">Нажми «ПИПЕТКА / КИСТЬ» на Preview и выбери фон. ENDLUME возьмёт цвет из исходного кадра.</p>
+            <SmallRange label="Similarity" value={current.similarity} min={0.001} max={0.6} step={0.001} onChange={(value) => patch({ similarity: value })} />
+            <SmallRange label="Blend / мягкость края" value={current.blend} min={0.001} max={0.35} step={0.001} onChange={(value) => patch({ blend: value })} />
+            <SmallRange label="Despill / убрать зелёный ореол" value={current.despill} min={0} max={1} step={0.01} onChange={(value) => patch({ despill: value })} />
+          </>}
+          {current.mode === 'luma' && <>
+            <SmallRange label="Threshold" value={current.lumaThreshold} min={0} max={1} step={0.01} onChange={(value) => patch({ lumaThreshold: value })} />
+            <SmallRange label="Tolerance" value={current.lumaTolerance} min={0} max={1} step={0.01} onChange={(value) => patch({ lumaTolerance: value })} />
+          </>}
+          <label className="checkLine"><input type="checkbox" checked={current.fullscreen} onChange={(event) => patch({ fullscreen: event.target.checked })} /> На весь экран</label>
+          <p className="editorHint">Preview и Render используют одинаковые X / Y / SIZE. Пропорции исходного эффекта сохраняются.</p>
+          <button className="savePreset" onClick={async () => { await saveLibrary([...effects], true); setSaved(true); window.setTimeout(() => setSaved(false), 1200); }}><Icon name="save" /> {saved ? 'СОХРАНЕНО ✓' : 'СОХРАНИТЬ PRESET'}</button>
+          <button className="savePreset" onClick={() => void saveLibrary(effects.map((e) => e.id === current.id ? { ...e, enabled: !e.enabled } : e), true)}>{current.enabled ? 'ВЫКЛЮЧИТЬ ЭФФЕКТ' : 'ВКЛЮЧИТЬ ЭФФЕКТ'}</button>
+          <button className="deletePreset" onClick={remove}><Icon name="trash" /> УДАЛИТЬ</button>
+        </>}
+      </aside>
+    </div>
+  </div>;
 }
 
-function EditorHeader({title,subtitle,onBack}:{title:string;subtitle:string;onBack:()=>void}){return <div className="editorHeader"><div><small>ENDLUME</small><h1>{title}</h1><p>{subtitle}</p></div><button onClick={onBack}>← ВЕРНУТЬСЯ К ПРОЕКТУ</button></div>}
+function SubscribeEditor() {
+  const subscribes = useApp((s) => s.subscribes);
+  const setSubscribes = useApp((s) => s.setSubscribes);
+  const openEditor = useApp((s) => s.openEditor);
+  const editor = useApp((s) => s.editor);
+  const projectPath = useProjectPath();
+  const [selected, setSelected] = useState(editor?.id || subscribes[0]?.id);
+  const [assets, setAssets] = useState<LivePreviewAssets>();
+  const [previewBusy, setPreviewBusy] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const persistTimer = useRef<number | undefined>(undefined);
+  const current = subscribes.find((e) => e.id === selected);
 
-function PreviewStage({title,preview,busy,current,onMove,onScale}:{title:string;preview:string;busy:boolean;current:EffectPreset;onMove:(x:number,y:number)=>void;onScale:(v:number)=>void}){
-  const ref=useRef<HTMLDivElement>(null),drag=useRef(false),resize=useRef(false);
-  useEffect(()=>{const move=(e:globalThis.PointerEvent)=>{const el=ref.current;if(!el)return;const r=el.getBoundingClientRect();if(drag.current)onMove(Math.max(0,Math.min(1,(e.clientX-r.left)/r.width)),Math.max(0,Math.min(1,(e.clientY-r.top)/r.height)));if(resize.current){const cx=r.left+current.x*r.width,cy=r.top+current.y*r.height;const d=Math.hypot(e.clientX-cx,e.clientY-cy)/(Math.min(r.width,r.height)*.65);onScale(Math.max(.05,Math.min(2,d)))}};const up=()=>{drag.current=false;resize.current=false};window.addEventListener('pointermove',move);window.addEventListener('pointerup',up);return()=>{window.removeEventListener('pointermove',move);window.removeEventListener('pointerup',up)}},[current.x,current.y,onMove,onScale]);
-  const size=current.fullscreen?{left:'0%',top:'0%',width:'100%',height:'100%',transform:'none'}:{left:`${current.x*100}%`,top:`${current.y*100}%`,width:`${Math.max(10,current.scale*65)}%`,aspectRatio:'16 / 9',transform:'translate(-50%,-50%)'};
-  return <div className="previewStage" ref={ref}><div className="previewLabel">{title}</div>{preview?<video key={preview} src={preview} autoPlay loop muted controls playsInline/>:<div className="previewPlaceholder"><Icon name="image"/><span>{busy?'Обновляю предпросмотр…':'Выберите проект на основном экране'}</span></div>}<div className="draggableOverlay" style={size} onPointerDown={(e:React.PointerEvent<HTMLDivElement>)=>{if(current.fullscreen)return;e.currentTarget.setPointerCapture?.(e.pointerId);drag.current=true}}><i className="corner nw"/><i className="corner ne"/><i className="corner sw"/><i className="corner se" onPointerDown={e=>{e.stopPropagation();resize.current=true}}/></div>{busy&&<div className="previewBusy">Обновляю…</div>}</div>
+  const saveLibrary = (next: SubscribePreset[], immediate = false) => {
+    setSubscribes(next);
+    if (persistTimer.current) window.clearTimeout(persistTimer.current);
+    const persist = () => api.saveLibrary({
+      effects: useApp.getState().effects,
+      subscribes: next,
+      ambient: useApp.getState().ambient,
+    }).catch(() => undefined);
+    if (immediate) return persist();
+    persistTimer.current = window.setTimeout(persist, 180);
+    return Promise.resolve();
+  };
+
+  useEffect(() => () => {
+    if (persistTimer.current) window.clearTimeout(persistTimer.current);
+  }, []);
+
+  const add = async () => {
+    const source = await api.chooseVideo('subscribe');
+    if (!source) return;
+    const subscribe = emptySubscribe(source);
+    await saveLibrary([...subscribes, subscribe], true);
+    setSelected(subscribe.id);
+  };
+
+  const patch = (value: Partial<SubscribePreset>) => {
+    if (!current) return;
+    void saveLibrary(subscribes.map((item) => item.id === current.id ? { ...item, ...value } : item));
+  };
+
+  const remove = async () => {
+    if (!current) return;
+    const next = subscribes.filter((item) => item.id !== current.id);
+    await saveLibrary(next, true);
+    setSelected(next[0]?.id);
+    setAssets(undefined);
+  };
+
+  const loadLive = async () => {
+    const latest = useApp.getState().subscribes.find((item) => item.id === selected);
+    if (!projectPath || !latest) return;
+    setPreviewBusy(true);
+    try {
+      const result = await api.prepareLivePreview(projectPath, latest.source, latest.previewFrameTime);
+      setAssets({
+        basePath: api.previewUrl(result.basePath),
+        baseKind: result.baseKind,
+        overlayPath: api.previewUrl(result.overlayPath),
+      });
+    } catch (error) {
+      await api.showError(`Не удалось подготовить Live Preview Subscribe.\n${String(error)}`);
+    } finally {
+      setPreviewBusy(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!current || !projectPath) return;
+    const timer = window.setTimeout(() => void loadLive(), 120);
+    return () => window.clearTimeout(timer);
+  }, [selected, current?.source, current?.previewFrameTime, projectPath]);
+
+  return <div className="editorPage">
+    <EditorHeader title="Кнопка Subscribe" subtitle="GPU Live Preview • chromakey • позиция • расписание" onBack={() => openEditor(null)} />
+    <div className="editorLayout">
+      <aside className="assetList">
+        <button className="addAsset" onClick={add}>+ ДОБАВИТЬ</button>
+        {subscribes.map((item) => <button key={item.id} className={`assetItem ${selected === item.id ? 'active' : ''}`} onClick={() => setSelected(item.id)}>
+          <span className="assetThumb pink"><Icon name="subscribe" /></span>
+          <span><b>{item.name}</b><small>{item.enabled ? 'Включён' : 'Выключен'} • каждые {Math.round(item.repeatEverySec / 60)} мин</small></span>
+          <i className={item.enabled ? 'enabled' : 'disabled'} title={item.enabled ? 'Выключить' : 'Включить'} onClick={(event) => {
+            event.stopPropagation();
+            void saveLibrary(subscribes.map((entry) => entry.id === item.id ? { ...entry, enabled: !entry.enabled } : entry), true);
+          }} />
+        </button>)}
+      </aside>
+
+      <main className="visualEditor">
+        {current ? <>
+          <PreviewStage title="LIVE PREVIEW" assets={assets} busy={previewBusy} current={current} onMove={(x, y) => patch({ x, y })} onScale={(scale) => patch({ scale })} onPickColor={(hex) => patch({ keyColor: hex, similarity: 0.10, blend: 0.06 })} />
+          <div className="previewTime"><span>Стартовый кадр Subscribe-видео</span><Range value={current.previewFrameTime} min={0} max={60} step={0.1} onChange={(value) => patch({ previewFrameTime: value })} minLabel="0:00" maxLabel="1:00" /><b>{current.previewFrameTime.toFixed(1)} сек</b></div>
+          <button className="refreshPreview" disabled={previewBusy} onClick={() => void loadLive()}><Icon name="refresh" /> {previewBusy ? 'ГОТОВЛЮ PROXY…' : 'ОБНОВИТЬ LIVE PREVIEW'}</button>
+          <SubscribeTimeline current={current} />
+        </> : <div className="emptyEditor"><Icon name="subscribe" /><h3>Добавьте Subscribe-видео</h3></div>}
+      </main>
+
+      <aside className="editorControls">
+        {current && <>
+          <label>Название<input value={current.name} onChange={(event) => patch({ name: event.target.value })} /></label>
+          <label>Цвет chromakey<input type="color" value={current.keyColor} onChange={(event) => patch({ keyColor: event.target.value })} /></label>
+          <button className="chromaReset" onClick={() => patch({ keyColor: '#00ff00', similarity: 0.10, blend: 0.06, saturation: 1, despill: 0.35 })}>СБРОСИТЬ CHROMAKEY</button>
+          <p className="editorHint chromaHint">Пипеткой/кистью в Preview выбери фон Subscribe-видео.</p>
+          <SmallRange label="Similarity" value={current.similarity} min={0.001} max={0.6} step={0.001} onChange={(value) => patch({ similarity: value })} />
+          <SmallRange label="Blend / мягкость края" value={current.blend} min={0.001} max={0.35} step={0.001} onChange={(value) => patch({ blend: value })} />
+            <SmallRange label="Despill / убрать зелёный ореол" value={current.despill} min={0} max={1} step={0.01} onChange={(value) => patch({ despill: value })} />
+          <div className="schedule">
+            <label>Первое появление<input type="number" min={0} value={current.firstAtSec} onChange={(event) => patch({ firstAtSec: Math.max(0, Number(event.target.value) || 0) })} /><small>сек</small></label>
+            <label>Второе появление<input type="number" min={0} value={current.secondAtSec} onChange={(event) => patch({ secondAtSec: Math.max(0, Number(event.target.value) || 0) })} /><small>сек</small></label>
+            <label>Затем каждые<input type="number" min={1} value={Math.max(1, Math.round(current.repeatEverySec / 60))} onChange={(event) => patch({ repeatEverySec: Math.max(60, (Number(event.target.value) || 1) * 60) })} /><small>мин</small></label>
+          </div>
+          <p className="editorHint">Subscribe использует тот же aspect-safe compositor, что и Effects.</p>
+          <button className="savePreset" onClick={async () => { await saveLibrary([...subscribes], true); setSaved(true); window.setTimeout(() => setSaved(false), 1200); }}><Icon name="save" /> {saved ? 'СОХРАНЕНО ✓' : 'СОХРАНИТЬ PRESET'}</button>
+          <button className="savePreset" onClick={() => void saveLibrary(subscribes.map((item) => item.id === current.id ? { ...item, enabled: !item.enabled } : item), true)}>{current.enabled ? 'ВЫКЛЮЧИТЬ SUBSCRIBE' : 'ВКЛЮЧИТЬ SUBSCRIBE'}</button>
+          <button className="deletePreset" onClick={remove}><Icon name="trash" /> УДАЛИТЬ</button>
+        </>}
+      </aside>
+    </div>
+  </div>;
 }
 
-function SmallRange({label,value,min,max,step,onChange}:{label:string;value:number;min:number;max:number;step:number;onChange:(v:number)=>void}){return <div className="smallRange"><div><span>{label}</span><b>{value.toFixed(2)}</b></div><Range value={value} min={min} max={max} step={step} onChange={onChange}/></div>}
+function EditorHeader({ title, subtitle, onBack }: { title: string; subtitle: string; onBack: () => void }) {
+  return <div className="editorHeader"><div><small>ENDLUME</small><h1>{title}</h1><p>{subtitle}</p></div><button onClick={onBack}>← ВЕРНУТЬСЯ К ПРОЕКТУ</button></div>;
+}
 
-function Timeline({start,end,total,onChange}:{start:number;end:number|null;total:number;onChange:(s:number,e:number|null)=>void}){const safeEnd=end??total;return <div className="timeline"><div className="timelineHead"><b>ВРЕМЯ ЭФФЕКТА</b><span>{Math.round(start)} сек → {end==null?'до конца':`${Math.round(end)} сек`}</span></div><div className="dualRange"><Range value={start} min={0} max={total} step={1} onChange={v=>onChange(Math.min(v,safeEnd-1),end)} minLabel="0:00" maxLabel="конец видео"/><Range value={safeEnd} min={0} max={total} step={1} onChange={v=>onChange(start,v>=total?null:Math.max(v,start+1))} minLabel="начало" maxLabel="до конца"/></div></div>}
+function PreviewStage({ title, assets, busy, current, onMove, onScale, onPickColor }: {
+  title: string;
+  assets?: LivePreviewAssets;
+  busy: boolean;
+  current: EffectPreset;
+  onMove: (x: number, y: number) => void;
+  onScale: (value: number) => void;
+  onPickColor: (hex: string) => void;
+}) {
+  const stageRef = useRef<HTMLDivElement>(null);
+  const overlayRef = useRef<HTMLDivElement>(null);
+  const modeRef = useRef<'none' | 'drag' | 'resize'>('none');
+  const pointerRef = useRef<globalThis.PointerEvent | undefined>(undefined);
+  const rafRef = useRef<number | undefined>(undefined);
+  const draftRef = useRef({ x: current.x, y: current.y, scale: current.scale });
+  const currentRef = useRef(current);
+  const moveRef = useRef(onMove);
+  const scaleRef = useRef(onScale);
+  const grabRef = useRef({ x: 0, y: 0 });
+  const guideVRef = useRef<HTMLDivElement>(null);
+  const guideHRef = useRef<HTMLDivElement>(null);
+  const snapBadgeRef = useRef<HTMLDivElement>(null);
+  const [snapEnabled, setSnapEnabled] = useState(true);
+  const [guidesEnabled, setGuidesEnabled] = useState(true);
+  const [safeEnabled, setSafeEnabled] = useState(true);
 
-function SubscribeTimeline({current,onChange}:{current:SubscribePreset;onChange:(p:Partial<SubscribePreset>)=>void}){const total=useApp(s=>s.settings.durationHours*3600);const marks=useMemo(()=>{const a=[current.firstAtSec,current.secondAtSec];for(let t=current.secondAtSec+current.repeatEverySec;t<total;t+=current.repeatEverySec)a.push(t);return a},[current.firstAtSec,current.secondAtSec,current.repeatEverySec,total]);return <div className="timeline subscribeTimeline"><div className="timelineHead"><b>РАСПИСАНИЕ SUBSCRIBE</b><span>{marks.length} показов</span></div><div className="timeTrack">{marks.map((m,i)=><i key={i} style={{left:`${(m/total)*100}%`}} title={`${Math.floor(m/60)}:${String(Math.round(m%60)).padStart(2,'0')}`}/>)}</div></div>}
+  currentRef.current = current;
+  moveRef.current = onMove;
+  scaleRef.current = onScale;
+
+  useEffect(() => {
+    if (modeRef.current === 'none') draftRef.current = { x: current.x, y: current.y, scale: current.scale };
+  }, [current.x, current.y, current.scale, current.fullscreen]);
+
+  const clearGuides = () => {
+    if (guideVRef.current) guideVRef.current.style.opacity = '0';
+    if (guideHRef.current) guideHRef.current.style.opacity = '0';
+    if (snapBadgeRef.current) snapBadgeRef.current.style.opacity = '0';
+  };
+
+  const showGuide = (axis: 'x' | 'y', percent: number, label: string) => {
+    if (!guidesEnabled) return;
+    const element = axis === 'x' ? guideVRef.current : guideHRef.current;
+    if (!element) return;
+    element.style.opacity = '1';
+    if (axis === 'x') element.style.left = `${percent}%`;
+    else element.style.top = `${percent}%`;
+    if (snapBadgeRef.current) {
+      snapBadgeRef.current.textContent = label;
+      snapBadgeRef.current.style.opacity = '1';
+    }
+  };
+
+  useEffect(() => {
+    const paint = () => {
+      rafRef.current = undefined;
+      const event = pointerRef.current;
+      const stage = stageRef.current;
+      const overlay = overlayRef.current;
+      const mode = modeRef.current;
+      if (!event || !stage || !overlay || mode === 'none') return;
+
+      const stageRect = stage.getBoundingClientRect();
+      const overlayRect = overlay.getBoundingClientRect();
+      const draft = draftRef.current;
+
+      if (mode === 'drag') {
+        const halfW = Math.min(0.49, overlayRect.width / Math.max(1, stageRect.width) / 2);
+        const halfH = Math.min(0.49, overlayRect.height / Math.max(1, stageRect.height) / 2);
+        let x = (event.clientX - stageRect.left - grabRef.current.x) / Math.max(1, stageRect.width);
+        let y = (event.clientY - stageRect.top - grabRef.current.y) / Math.max(1, stageRect.height);
+        x = Math.max(halfW, Math.min(1 - halfW, x));
+        y = Math.max(halfH, Math.min(1 - halfH, y));
+        clearGuides();
+
+        if (snapEnabled && !event.shiftKey) {
+          const tx = 10 / Math.max(1, stageRect.width);
+          const ty = 10 / Math.max(1, stageRect.height);
+          const safe = 0.06;
+          const xTargets = [
+            { value: halfW, guide: 0, label: 'ЛЕВЫЙ КРАЙ' },
+            { value: 0.5, guide: 50, label: 'ЦЕНТР X' },
+            { value: 1 - halfW, guide: 100, label: 'ПРАВЫЙ КРАЙ' },
+            { value: safe + halfW, guide: 6, label: 'SAFE LEFT' },
+            { value: 1 - safe - halfW, guide: 94, label: 'SAFE RIGHT' },
+          ];
+          const yTargets = [
+            { value: halfH, guide: 0, label: 'ВЕРХ' },
+            { value: 0.5, guide: 50, label: 'ЦЕНТР Y' },
+            { value: 1 - halfH, guide: 100, label: 'НИЗ' },
+            { value: safe + halfH, guide: 6, label: 'SAFE TOP' },
+            { value: 1 - safe - halfH, guide: 94, label: 'SAFE BOTTOM' },
+          ];
+          const xHit = xTargets.reduce<typeof xTargets[number] | undefined>((best, item) => Math.abs(x - item.value) <= tx && (!best || Math.abs(x - item.value) < Math.abs(x - best.value)) ? item : best, undefined);
+          const yHit = yTargets.reduce<typeof yTargets[number] | undefined>((best, item) => Math.abs(y - item.value) <= ty && (!best || Math.abs(y - item.value) < Math.abs(y - best.value)) ? item : best, undefined);
+          if (xHit) { x = xHit.value; showGuide('x', xHit.guide, xHit.label); }
+          if (yHit) { y = yHit.value; showGuide('y', yHit.guide, yHit.label); }
+        }
+
+        draft.x = x;
+        draft.y = y;
+        overlay.style.left = `${x * 100}%`;
+        overlay.style.top = `${y * 100}%`;
+      } else {
+        const width = Math.max(16, event.clientX - overlayRect.left);
+        const scale = Math.max(0.05, Math.min(1.5, width / Math.max(1, stageRect.width)));
+        draft.scale = scale;
+        overlay.style.width = `${scale * 100}%`;
+      }
+    };
+
+    const move = (event: globalThis.PointerEvent) => {
+      if (modeRef.current === 'none') return;
+      pointerRef.current = event;
+      if (rafRef.current == null) rafRef.current = requestAnimationFrame(paint);
+    };
+
+    const up = (event: globalThis.PointerEvent) => {
+      const mode = modeRef.current;
+      if (mode === 'none') return;
+      pointerRef.current = event;
+      if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
+      rafRef.current = undefined;
+      paint();
+      modeRef.current = 'none';
+      clearGuides();
+      const draft = draftRef.current;
+      if (mode === 'drag') moveRef.current(draft.x, draft.y);
+      else scaleRef.current(draft.scale);
+    };
+
+    window.addEventListener('pointermove', move, { passive: true });
+    window.addEventListener('pointerup', up, { passive: true });
+    window.addEventListener('pointercancel', up, { passive: true });
+    return () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      window.removeEventListener('pointercancel', up);
+      if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
+    };
+  }, [snapEnabled, guidesEnabled]);
+
+  const overlayStyle: React.CSSProperties = current.fullscreen ? {
+    left: '0%', top: '0%', width: '100%', height: '100%', transform: 'none', touchAction: 'none',
+  } : {
+    left: `${current.x * 100}%`,
+    top: `${current.y * 100}%`,
+    width: `${Math.max(5, current.scale * 100)}%`,
+    transform: 'translate(-50%, -50%)',
+    touchAction: 'none',
+    willChange: 'left, top, width, transform',
+    contain: 'layout style paint',
+  };
+
+  const begin = (mode: 'drag' | 'resize', event: React.PointerEvent) => {
+    if (current.fullscreen) return;
+    event.preventDefault();
+    event.stopPropagation();
+    draftRef.current = { x: currentRef.current.x, y: currentRef.current.y, scale: currentRef.current.scale };
+    pointerRef.current = event.nativeEvent;
+    modeRef.current = mode;
+    if (mode === 'drag') {
+      const overlayRect = overlayRef.current?.getBoundingClientRect();
+      if (overlayRect) {
+        grabRef.current = {
+          x: event.clientX - (overlayRect.left + overlayRect.width / 2),
+          y: event.clientY - (overlayRect.top + overlayRect.height / 2),
+        };
+      } else grabRef.current = { x: 0, y: 0 };
+    }
+  };
+
+  const align = (position: 'center' | 'centerX' | 'centerY' | 'left' | 'right' | 'top' | 'bottom') => {
+    const stageRect = stageRef.current?.getBoundingClientRect();
+    const overlayRect = overlayRef.current?.getBoundingClientRect();
+    const halfW = stageRect && overlayRect ? Math.min(0.49, overlayRect.width / Math.max(1, stageRect.width) / 2) : Math.min(0.49, current.scale / 2);
+    const halfH = stageRect && overlayRect ? Math.min(0.49, overlayRect.height / Math.max(1, stageRect.height) / 2) : Math.min(0.49, current.scale / 2);
+    let x = current.x;
+    let y = current.y;
+    if (position === 'center') { x = 0.5; y = 0.5; }
+    if (position === 'centerX') x = 0.5;
+    if (position === 'centerY') y = 0.5;
+    if (position === 'left') x = halfW;
+    if (position === 'right') x = 1 - halfW;
+    if (position === 'top') y = halfH;
+    if (position === 'bottom') y = 1 - halfH;
+    onMove(clamp01(x), clamp01(y));
+  };
+
+  const keyMove = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (current.fullscreen) return;
+    if ((event.metaKey || event.ctrlKey) && event.key === '0') {
+      event.preventDefault();
+      align('center');
+      return;
+    }
+    if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) return;
+    event.preventDefault();
+    const step = event.shiftKey ? 0.02 : 0.003;
+    let x = current.x;
+    let y = current.y;
+    if (event.key === 'ArrowLeft') x -= step;
+    if (event.key === 'ArrowRight') x += step;
+    if (event.key === 'ArrowUp') y -= step;
+    if (event.key === 'ArrowDown') y += step;
+    onMove(clamp01(x), clamp01(y));
+  };
+
+  const metric = (label: string, value: number, onValue: (value: number) => void) => <label className="smartMetricInput"><span>{label}</span><input type="number" min="0" max="100" step="0.1" value={(value * 100).toFixed(1)} onChange={(event) => onValue(clamp01(Number(event.target.value) / 100))} /><em>%</em></label>;
+
+  return <div className="previewStage livePreviewStage smartAlignStage" ref={stageRef} tabIndex={0} onKeyDown={keyMove}>
+    <div className="previewLabel">{title}</div>
+    <LiveCompositePreview assets={assets} effect={current} busy={busy} overlayRef={overlayRef} overlayStyle={overlayStyle} onDragStart={(event) => begin('drag', event)} onResizeStart={(event) => begin('resize', event)} onPickColor={onPickColor} />
+    <div className={`smartGuideLayer ${guidesEnabled ? 'visible' : ''}`} aria-hidden="true">
+      <i className="smartGuideStatic vertical" /><i className="smartGuideStatic horizontal" />
+      {safeEnabled && <i className="smartSafeArea" />}
+      <span className="smartEdgeLabel left">0</span><span className="smartEdgeLabel centerX">СЕРЕДИНА</span><span className="smartEdgeLabel right">100</span>
+      <span className="smartEdgeLabel top">0</span><span className="smartEdgeLabel centerY">СЕРЕДИНА</span><span className="smartEdgeLabel bottom">100</span>
+      <div ref={guideVRef} className="smartDynamicGuide vertical" /><div ref={guideHRef} className="smartDynamicGuide horizontal" /><div ref={snapBadgeRef} className="smartSnapBadge" />
+    </div>
+    {!current.fullscreen && <>
+      <div className="smartAlignToolbar">
+        <button onClick={() => align('center')}>◎ АВТОЦЕНТР</button><button onClick={() => align('centerX')}>↔ X</button><button onClick={() => align('centerY')}>↕ Y</button>
+        <button onClick={() => align('left')}>←</button><button onClick={() => align('right')}>→</button><button onClick={() => align('top')}>↑</button><button onClick={() => align('bottom')}>↓</button>
+        <button className={snapEnabled ? 'active' : ''} onClick={() => setSnapEnabled((value) => !value)}>МАГНИТ</button>
+        <button className={guidesEnabled ? 'active' : ''} onClick={() => setGuidesEnabled((value) => !value)}>ЛИНИИ</button>
+        <button className={safeEnabled ? 'active' : ''} onClick={() => setSafeEnabled((value) => !value)}>SAFE</button>
+      </div>
+      <div className="smartMetrics">
+        {metric('X', current.x, (value) => onMove(value, current.y))}
+        {metric('Y', current.y, (value) => onMove(current.x, value))}
+        <label className="smartMetricInput"><span>SIZE</span><input type="number" min="5" max="150" step="1" value={(current.scale * 100).toFixed(0)} onChange={(event) => onScale(Math.max(0.05, Math.min(1.5, Number(event.target.value) / 100)))} /><em>%</em></label>
+      </div>
+    </>}
+    <div className="smartAlignHint">Shift + drag — без магнита • стрелки — точная подгонка • ⌘0 — центр</div>
+  </div>;
+}
+
+function SmallRange({ label, value, min, max, step, onChange }: { label: string; value: number; min: number; max: number; step: number; onChange: (value: number) => void }) {
+  return <div className="smallRange"><div><span>{label}</span><b>{value.toFixed(3).replace(/0+$/, '').replace(/\.$/, '')}</b></div><Range value={value} min={min} max={max} step={step} onChange={onChange} /></div>;
+}
+
+function fmtEditorTime(sec: number) {
+  const value = Math.max(0, Math.round(sec));
+  const hours = Math.floor(value / 3600);
+  const minutes = Math.floor((value % 3600) / 60);
+  const seconds = value % 60;
+  return hours > 0 ? `${hours}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}` : `${minutes}:${String(seconds).padStart(2, '0')}`;
+}
+
+function Timeline({ start, end, total, onChange }: { start: number; end: number | null; total: number; onChange: (start: number, end: number | null) => void }) {
+  const safeTotal = Math.max(1, total);
+  const safeEnd = Math.max(start + 1, Math.min(safeTotal, end ?? safeTotal));
+  const mid = start + (safeEnd - start) / 2;
+  const duration = Math.max(0, safeEnd - start);
+  const pct = (value: number) => `${Math.max(0, Math.min(100, value / safeTotal * 100))}%`;
+  const widthPct = Math.max(0, Math.min(100, (safeEnd - start) / safeTotal * 100));
+  return <div className="timeline smartTiming">
+    <div className="timelineHead"><b>ВРЕМЯ ЭФФЕКТА</b><span>{fmtEditorTime(start)} → {end == null ? 'до конца' : fmtEditorTime(safeEnd)}</span></div>
+    <div className="smartTimingSummary">
+      <span><small>НАЧАЛО</small><b>{fmtEditorTime(start)}</b></span><span><small>СЕРЕДИНА</small><b>{fmtEditorTime(mid)}</b></span><span><small>КОНЕЦ</small><b>{end == null ? 'КОНЕЦ ВИДЕО' : fmtEditorTime(safeEnd)}</b></span><span><small>ДЛИТЕЛЬНОСТЬ</small><b>{fmtEditorTime(duration)}</b></span>
+    </div>
+    <div className="smartTimingMap"><i className="smartTimingActive" style={{ left: pct(start), width: `${widthPct}%` }} /><b className="start" style={{ left: pct(start) }} /><b className="mid" style={{ left: pct(mid) }} /><b className="end" style={{ left: pct(safeEnd) }} /></div>
+    <div className="dualRange"><Range value={start} min={0} max={safeTotal} step={1} onChange={(value) => onChange(Math.min(value, safeEnd - 1), end)} minLabel="0:00" maxLabel="конец видео" /><Range value={safeEnd} min={0} max={safeTotal} step={1} onChange={(value) => onChange(start, value >= safeTotal ? null : Math.max(value, start + 1))} minLabel="начало" maxLabel="до конца" /></div>
+  </div>;
+}
+
+function SubscribeTimeline({ current }: { current: SubscribePreset }) {
+  const total = useApp((s) => s.settings.durationHours * 3600);
+  const marks = useMemo(() => {
+    const values = [current.firstAtSec, current.secondAtSec].filter((value, index, all) => value >= 0 && value < total && all.indexOf(value) === index);
+    if (current.repeatEverySec > 0) {
+      for (let time = Math.max(current.firstAtSec, current.secondAtSec) + current.repeatEverySec; time < total && values.length < 10000; time += current.repeatEverySec) values.push(time);
+    }
+    return values.sort((a, b) => a - b);
+  }, [current.firstAtSec, current.secondAtSec, current.repeatEverySec, total]);
+  const last = marks.at(-1) ?? current.secondAtSec;
+  return <div className="timeline subscribeTimeline smartTiming">
+    <div className="timelineHead"><b>РАСПИСАНИЕ SUBSCRIBE</b><span>{marks.length} показов</span></div>
+    <div className="smartTimingSummary compact"><span><small>ПЕРВОЕ</small><b>{fmtEditorTime(current.firstAtSec)}</b></span><span><small>ВТОРОЕ</small><b>{fmtEditorTime(current.secondAtSec)}</b></span><span><small>ПОСЛЕДНЕЕ</small><b>{fmtEditorTime(last)}</b></span><span><small>ИНТЕРВАЛ</small><b>{fmtEditorTime(current.repeatEverySec)}</b></span></div>
+    <div className="timeTrack">{marks.map((mark, index) => <i key={`${mark}-${index}`} style={{ left: `${mark / Math.max(1, total) * 100}%` }} title={fmtEditorTime(mark)} />)}</div>
+  </div>;
+}

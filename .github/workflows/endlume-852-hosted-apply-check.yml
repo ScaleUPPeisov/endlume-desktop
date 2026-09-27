@@ -1,0 +1,82 @@
+name: ENDLUME 8.52 Hosted Apply Check
+
+on:
+  push:
+    branches: [candidate/endlume-852-build]
+    paths:
+      - '.github/workflows/endlume-852-hosted-apply-check.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: endlume-852-hosted-apply-check
+  cancel-in-progress: true
+
+jobs:
+  apply-check:
+    name: macOS hosted • apply 8.52 + compile gates
+    runs-on: macos-14
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: candidate/endlume-852-build
+          clean: true
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Apply exact 8.52 patch
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile scripts/apply-production-speed-size-8-52.py
+          python3 scripts/apply-production-speed-size-8-52.py .
+          grep -F 'RENDER_CACHE_GENERATION:&str="8.52-crf18-size360-v1"' src-tauri/src/render.rs
+          grep -F 'VISUAL_PLAN_CACHE_GENERATION:&str="8.52-parallel-composite-v1"' src-tauri/src/render.rs
+          grep -F 'smart_composite_encoder_args(job,encoder,master_duration)' src-tauri/src/render.rs
+          grep -F 'smart_composite_encoder_args(job,encoder,len)' src-tauri/src/render.rs
+          grep -F '8.52 PARALLEL_START' src-tauri/src/render.rs
+          grep -F '"-crf","18","-maxrate","360k","-bufsize","4M"' src-tauri/src/render.rs
+          grep -F 'version = "1.0.0-alpha.8.52"' src-tauri/Cargo.toml
+          grep -F '"version": "1.0.0-alpha.8.52"' package.json
+
+      - name: Frontend type/build gate
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          npm ci
+          npm run check
+          npm run build
+
+      - name: Rust compile gate
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cargo check --manifest-path src-tauri/Cargo.toml
+          cargo test --manifest-path src-tauri/Cargo.toml --lib
+
+      - name: Commit exact patched source
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git config user.name 'ENDLUME Release Bot'
+          git config user.email 'endlume-release-bot@users.noreply.github.com'
+          git add src-tauri/src/render.rs src-tauri/Cargo.toml src-tauri/Cargo.lock package.json src-tauri/tauri.conf.json src/tauri.ts src/pages/SettingsPage.tsx src/pages/App.tsx
+          if git diff --cached --quiet; then
+            echo 'No source diff to commit.'
+          else
+            git commit -m 'fix(endlume): apply verified 8.52 render speed-size source'
+            git push origin HEAD:candidate/endlume-852-build
+          fi
+
+      - name: Final source assertions
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(node -p "require('./package.json').version")" = '1.0.0-alpha.8.52'
+          grep -Fq 'fn hybrid_video_kbps(_s:&RenderSettings)->u64{360}' src-tauri/src/render.rs
+          grep -Fq 'attempt==1&&encoder_works(app,"libx265")' src-tauri/src/render.rs
+          grep -Fq 'tokio::join!' src-tauri/src/render.rs
+          echo 'PASS: ENDLUME 8.52 hosted compile/source gate'

@@ -1,0 +1,131 @@
+name: ENDLUME 8.61 Windows RC Hardware Acceptance
+
+on:
+  push:
+    branches: [windows/endlume-861-managed-access]
+    paths:
+      - '.github/workflows/endlume-861-windows-rc-hardware-e2e.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  RC_TAG: endlume-v1.0.0-alpha.8.61-windows-rc
+  RC_EXE: ENDLUME-YT-Studio-PEISOV-Setup-1.0.0-alpha.8.61-x64.exe
+  RC_SHA256: 3029774d277833194588488c82211b07bb5e52c402442581c139d151da98f1a2
+  PRODUCT_NAME: ENDLUME YT Studio PEISOV
+  EXPECTED_VERSION: 1.0.0-alpha.8.61
+
+concurrency:
+  group: endlume-861-windows-rc-hardware-e2e
+  cancel-in-progress: true
+
+jobs:
+  hardware-acceptance:
+    name: Windows x64 • Published RC • Hardware Acceptance
+    runs-on: [self-hosted, endlume, windows, x64]
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout acceptance scripts only
+        uses: actions/checkout@v4
+        with:
+          ref: windows/endlume-861-managed-access
+          fetch-depth: 1
+          clean: true
+
+      - name: Verify native Windows hardware
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RUNNER_OS -ne 'Windows') { throw "Expected Windows runner, got $env:RUNNER_OS" }
+          Write-Host "RUNNER_NAME=$env:RUNNER_NAME"
+          Write-Host "RUNNER_ARCH=$env:RUNNER_ARCH"
+          Get-CimInstance Win32_OperatingSystem | Select-Object Caption, Version, OSArchitecture | Format-List
+          Get-CimInstance Win32_Processor | Select-Object Name, Manufacturer, NumberOfCores, NumberOfLogicalProcessors | Format-List
+          Get-CimInstance Win32_VideoController | Select-Object Name, DriverVersion, AdapterRAM | Format-Table -AutoSize
+
+      - name: Download exact published RC from GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path rc | Out-Null
+
+          $release = gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/$env:RC_TAG" | ConvertFrom-Json
+          $asset = $release.assets | Where-Object { $_.name -eq $env:RC_EXE } | Select-Object -First 1
+          if (-not $asset) { throw "Published RC asset missing: $env:RC_EXE" }
+          if ([int64]$asset.size -ne 98228835) { throw "Published RC size drift: $($asset.size)" }
+          if ([string]$asset.digest -ne "sha256:$env:RC_SHA256") { throw "Published RC API digest drift: $($asset.digest)" }
+
+          $out = Join-Path $PWD "rc\$env:RC_EXE"
+          gh api -H "Accept: application/octet-stream" "repos/$env:GITHUB_REPOSITORY/releases/assets/$($asset.id)" --output $out
+          if (!(Test-Path -LiteralPath $out)) { throw "RC download missing: $out" }
+
+          $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $out).Hash.ToLowerInvariant()
+          $size = (Get-Item -LiteralPath $out).Length
+          if ($actual -ne $env:RC_SHA256) { throw "RC SHA mismatch: $actual" }
+          if ($size -ne 98228835) { throw "RC downloaded size mismatch: $size" }
+
+          Write-Host "PUBLISHED_RC_SHA256=$actual"
+          Write-Host "PUBLISHED_RC_BYTES=$size"
+          Write-Host "PUBLISHED_RC_BINARY_VERIFIED=1"
+
+      - name: Clean install launch uninstall reinstall smoke on published RC
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $installer = Join-Path $PWD "rc\$env:RC_EXE"
+          ./scripts/test-windows-installed-smoke.ps1 -Installer $installer -ProductName $env:PRODUCT_NAME -ExpectedVersion $env:EXPECTED_VERSION
+
+      - name: Reinstall RC for hardware probes
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $installer = Join-Path $PWD "rc\$env:RC_EXE"
+          $p = Start-Process -FilePath $installer -ArgumentList '/S' -Wait -PassThru -WindowStyle Hidden
+          if ($p.ExitCode -ne 0) { throw "Installer failed for hardware probe: $($p.ExitCode)" }
+          Start-Sleep -Seconds 2
+
+      - name: Probe installed FFmpeg hardware encoders
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $roots = @(
+            "$env:LOCALAPPDATA\Programs",
+            "$env:ProgramFiles",
+            "$env:ProgramFiles(x86)"
+          )
+          $ffmpeg = $null
+          foreach ($root in $roots) {
+            if (-not $root -or !(Test-Path $root)) { continue }
+            $ffmpeg = Get-ChildItem -LiteralPath $root -Recurse -File -Filter 'ffmpeg*.exe' -ErrorAction SilentlyContinue |
+              Where-Object { $_.FullName -match 'ENDLUME' } |
+              Select-Object -First 1
+            if ($ffmpeg) { break }
+          }
+          if (-not $ffmpeg) { throw 'Installed ENDLUME ffmpeg sidecar not found for hardware encoder probe' }
+
+          Write-Host "INSTALLED_FFMPEG=$($ffmpeg.FullName)"
+          $enc = & $ffmpeg.FullName -hide_banner -encoders 2>&1 | Out-String
+          foreach ($name in @('hevc_nvenc','hevc_qsv','hevc_amf','libx265')) {
+            $present = $enc -match [regex]::Escape($name)
+            Write-Host ("ENCODER_{0}_AVAILABLE={1}" -f $name.ToUpperInvariant(), $present)
+          }
+
+          $gpus = @(Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name)
+          Write-Host ("GPU_INVENTORY=" + ($gpus -join ' | '))
+          Write-Host 'HARDWARE_INSTALL_SMOKE_PASS=1'
+
+      - name: Final checkpoint
+        shell: pwsh
+        run: |
+          Write-Host 'CHECKPOINT=hardware install smoke PASS'
+          Write-Host 'BUILD_VERIFIED=YES'
+          Write-Host 'NSIS_VERIFIED=YES'
+          Write-Host 'HARDWARE_E2E_PHASE1=YES'
+          Write-Host 'REAL_RENDER_VERIFIED=NO'
+          Write-Host 'LICENSE_REVOKE_VERIFIED=NO'
+          Write-Host 'UPDATER_VERIFIED=NO'

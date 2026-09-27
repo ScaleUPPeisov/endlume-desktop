@@ -1,0 +1,120 @@
+name: ENDLUME 8.57 GOP Speed Benchmark
+on:
+  push:
+    branches: [candidate/endlume-857-master-frame-hotfix]
+permissions:
+  contents: read
+concurrency:
+  group: endlume-857-gop-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  benchmark:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Restore embedded FFmpeg sidecars
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          FOUNDATION="$HOME/.endlume-local-builder/endlume-desktop-8.40-bootstrap"
+          test -d "$FOUNDATION/src-tauri/binaries"
+          mkdir -p src-tauri/binaries
+          rsync -a "$FOUNDATION/src-tauri/binaries/" src-tauri/binaries/
+          chmod +x src-tauri/binaries/ffmpeg* src-tauri/binaries/ffprobe* || true
+      - name: Benchmark real master GOPs or isolate VideoToolbox when fixture is offline
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          METRICS="$GITHUB_WORKSPACE/857-gop-benchmark.json"
+          printf '{"status":"started","results":[],"selected_gop":1800}\n' > "$METRICS"
+          FFM="$(find src-tauri/binaries -maxdepth 1 -type f -name 'ffmpeg*' -perm -111 -print -quit)"
+          FFP="$(find src-tauri/binaries -maxdepth 1 -type f -name 'ffprobe*' -perm -111 -print -quit)"
+          test -x "$FFM"; test -x "$FFP"
+          TMP="$(mktemp -d /tmp/e857gop.XXXX)"; trap 'rm -rf "$TMP"' EXIT
+          SOURCE_KIND=real
+          if python3 scripts/find-endlume-real-fixture.py "$TMP/env"; then
+            source "$TMP/env"
+            test "$AUDIO_COUNT" = 15
+            test -f "$SIDE"; test -f "$IMG"; test -f "$FX1"; test -f "$FX2"
+          else
+            SOURCE_KIND=synthetic-videotoolbox-diagnostic
+            echo 'REAL_FIXTURE_OFFLINE: running physical encoder/GOP isolation only; this does NOT satisfy the real-project release gate'
+            "$FFM" -hide_banner -loglevel error -f lavfi -i "color=c=0x202020:s=1920x1080:r=1:d=1" -frames:v 1 -y "$TMP/bg.png"
+            "$FFM" -hide_banner -loglevel error -f lavfi -i "color=c=0x0aa843:s=640x360:r=30:d=3,drawbox=x=80:y=80:w=180:h=120:color=red:t=fill" -an -c:v qtrle -pix_fmt rgb24 -y "$TMP/srcfx1.mov"
+            "$FFM" -hide_banner -loglevel error -f lavfi -i "color=c=0x2bdc0a:s=640x360:r=30:d=3,drawbox=x=260:y=120:w=200:h=100:color=blue:t=fill" -an -c:v qtrle -pix_fmt rgb24 -y "$TMP/srcfx2.mov"
+            IMG="$TMP/bg.png"; FX1="$TMP/srcfx1.mov"; FX2="$TMP/srcfx2.mov"
+          fi
+          "$FFM" -hide_banner -loglevel error -i "$FX1" -vf "fps=30,format=rgba,colorkey=0x0aa843:0.6:0.184,scale=252:-2:flags=lanczos,format=argb" -an -c:v qtrle -pix_fmt argb -y "$TMP/fx1.mov"
+          "$FFM" -hide_banner -loglevel error -i "$FX2" -vf "fps=30,format=rgba,colorkey=0x2bdc0a:0.6:0.188,scale=2128:-2:flags=lanczos,format=argb" -an -c:v qtrle -pix_fmt argb -y "$TMP/fx2.mov"
+          GRAPH="[0:v]scale=1920:1080:force_original_aspect_ratio=increase:flags=lanczos+accurate_rnd,crop=1920:1080:(iw-ow)/2:(ih-oh)/2,fps=30,setsar=1[b0];[1:v]fps=30,setpts=PTS-STARTPTS,format=argb[fx0];[b0][fx0]overlay=x='max(0,min(W-w,W*0.5-w/2))':y='max(0,min(H-h,H*0.8834535728307813-h/2))':shortest=0:repeatlast=1:eof_action=repeat:format=auto[b1];[2:v]fps=30,setpts=PTS-STARTPTS,format=argb[fx1];[b1][fx1]overlay=x='max(0,min(W-w,W*0.49-w/2))':y='max(0,min(H-h,H*0.49-h/2))':shortest=0:repeatlast=1:eof_action=repeat:format=auto[b2];[b2]fps=60,format=yuv420p[outv]"
+          : > "$TMP/results.tsv"
+          for GOP in 3381 1800 1200; do
+            OUT="$TMP/master-g${GOP}.mp4"
+            T0=$(python3 -c 'import time;print(time.time())')
+            "$FFM" -hide_banner -loglevel error -filter_complex_threads 8 -loop 1 -framerate 30 -i "$IMG" -stream_loop -1 -i "$TMP/fx1.mov" -stream_loop -1 -i "$TMP/fx2.mov" -filter_complex "$GRAPH" -map '[outv]' -frames:v 3381 -an -c:v hevc_videotoolbox -realtime 1 -prio_speed 0 -power_efficient 0 -q:v 100 -b:v 500k -maxrate 12M -bufsize 64M -g "$GOP" -tag:v hvc1 -pix_fmt yuv420p -fps_mode cfr -r 60 -video_track_timescale 60000 -y "$OUT"
+            T1=$(python3 -c 'import time;print(time.time())')
+            FRAMES="$($FFP -v error -select_streams v:0 -count_frames -show_entries stream=nb_read_frames -of csv=p=0 "$OUT" 2>"$TMP/decode-$GOP.log" || true)"
+            PACKETS="$($FFP -v error -select_streams v:0 -count_packets -show_entries stream=nb_read_packets -of csv=p=0 "$OUT" || true)"
+            DUR="$($FFP -v error -show_entries format=duration -of csv=p=0 "$OUT")"
+            SIZE="$(stat -f%z "$OUT")"
+            "$FFP" -v error -select_streams v:0 -show_entries stream=codec_name,pix_fmt,width,height,avg_frame_rate -of json "$OUT" > "$TMP/stream-$GOP.json"
+            SEC="$(python3 - "$T0" "$T1" <<'PY'
+          import sys
+          print(round(float(sys.argv[2])-float(sys.argv[1]),3))
+          PY
+          )"
+            STREAM="$(python3 - "$TMP/stream-$GOP.json" <<'PY'
+          import json,sys
+          s=json.load(open(sys.argv[1]))['streams'][0]
+          print(','.join([str(s.get('width','')),str(s.get('height','')),str(s.get('avg_frame_rate','')),str(s.get('codec_name','')),str(s.get('pix_fmt',''))]))
+          PY
+          )"
+            DECODE_ERRORS="$(wc -l < "$TMP/decode-$GOP.log" | tr -d ' ')"
+            printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$GOP" "$SEC" "$FRAMES" "$PACKETS" "$STREAM" "$DUR" "$SIZE" "$DECODE_ERRORS" >> "$TMP/results.tsv"
+            echo "GOP=$GOP SEC=$SEC FRAMES=$FRAMES PACKETS=$PACKETS STREAM=$STREAM DUR=$DUR SIZE=$SIZE DECODE_ERROR_LINES=$DECODE_ERRORS"
+          done
+          python3 - "$TMP/results.tsv" "$METRICS" "$SOURCE_KIND" <<'PY'
+          import json,sys
+          rows=[]
+          for line in open(sys.argv[1]):
+              g,sec,frames,packets,stream,dur,size,decode_errors=line.rstrip('\n').split('\t')
+              width,height,rate,codec,pix_fmt=stream.split(',')
+              rows.append({'gop':int(g),'seconds':float(sec),'frames':int(frames or 0),'packets':int(packets or 0),'width':int(width or 0),'height':int(height or 0),'rate':rate,'codec':codec,'pix_fmt':pix_fmt,'duration':float(dur),'bytes':int(size),'decode_error_lines':int(decode_errors)})
+          valid=[r for r in rows if r['frames']==3381 and r['packets']==3381 and r['width']==1920 and r['height']==1080 and r['rate']=='60/1' and r['codec']=='hevc' and r['pix_fmt']=='yuv420p' and 56.34<=r['duration']<=56.37]
+          source=sys.argv[3]
+          selected=next((r for r in valid if r['gop']==1800),None)
+          best=min(valid,key=lambda r:r['seconds']) if valid else None
+          data={'status':'measured','diagnostic_status':'pass' if selected else 'fail','source_kind':source,'release_gate':source=='real','selected_gop':1800,'selected_valid':selected,'best_valid':best,'results':rows}
+          json.dump(data,open(sys.argv[2],'w'),indent=2)
+          print('SOURCE_KIND',source)
+          print('GOP_RESULTS',rows)
+          print('SELECTED_GOP_1800',selected)
+          print('BEST_VALID',best)
+          assert selected is not None,rows
+          assert selected['seconds']<=24.0,selected
+          assert selected['frames']==3381 and selected['packets']==3381,selected
+          PY
+          if [[ "$SOURCE_KIND" == real ]]; then
+            echo 'PASS: GOP 1800 is valid on the exact real fixture; this benchmark is release-gate eligible.'
+          else
+            echo 'PASS: physical VideoToolbox GOP diagnostic; release gate remains unsatisfied without the exact real fixture.'
+          fi
+      - name: Show GOP benchmark metrics
+        if: always()
+        shell: bash
+        run: |
+          test -f 857-gop-benchmark.json && cat 857-gop-benchmark.json || true
+      - name: Upload GOP benchmark metrics
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: endlume-857-gop-benchmark
+          path: 857-gop-benchmark.json
+          if-no-files-found: warn

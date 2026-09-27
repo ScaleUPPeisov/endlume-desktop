@@ -1,9 +1,13 @@
 [package]
 name = "endlume"
-version = "1.0.0-alpha.8.5"
-description = "ENDLUME Studio"
-authors = ["ENDLUME Studio"]
+version = "1.0.0-alpha.8.65"
+description = "ENDLUME YT Studio PEISOV"
+authors = ["ENDLUME YT Studio PEISOV"]
 edition = "2021"
+
+[features]
+default = []
+e2e-render = []
 
 [lib]
 name = "endlume_lib"
@@ -30,6 +34,8 @@ chrono = { version = "0.4", features = ["serde"] }
 parking_lot = "0.12"
 anyhow = "1"
 thiserror = "2"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+keyring = { version = "3.6.3", features = ["apple-native", "windows-native"] }
 
 sysinfo = "0.33"
-tokio = { version = "1", features = ["time"] }
+tokio = { version = "1", features = ["time", "fs", "io-util"] }

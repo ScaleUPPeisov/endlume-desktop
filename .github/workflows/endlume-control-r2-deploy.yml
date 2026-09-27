@@ -1,0 +1,94 @@
+name: ENDLUME Control R2 Worker Deploy
+
+on:
+  push:
+    branches:
+      - feature/endlume-863-macos-factory
+    paths:
+      - 'infra/cloudflare-update/**'
+      - '.github/workflows/endlume-control-r2-deploy.yml'
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, endlume, macos, arm64]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Load local Cloudflare credentials
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          KEYDIR="$HOME/.endlume-updater"
+          test -s "$KEYDIR/cloudflare-api-token.txt"
+          test -s "$KEYDIR/cloudflare-account-id.txt"
+          TOKEN="$(tr -d '\r\n' < "$KEYDIR/cloudflare-api-token.txt")"
+          ACCOUNT="$(tr -d '\r\n' < "$KEYDIR/cloudflare-account-id.txt")"
+          echo "::add-mask::$TOKEN"
+          echo "::add-mask::$ACCOUNT"
+          {
+            echo "CLOUDFLARE_API_TOKEN=$TOKEN"
+            echo "CLOUDFLARE_ACCOUNT_ID=$ACCOUNT"
+          } >> "$GITHUB_ENV"
+      - name: Validate Worker JavaScript
+        run: node --check infra/cloudflare-update/src/index.js
+      - name: Ensure workers.dev subdomain
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          API="https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/subdomain"
+          GET="$RUNNER_TEMP/cf-workers-subdomain.json"
+          curl -fsS -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "$API" -o "$GET" || true
+          CURRENT="$(python3 - "$GET" <<'PY'
+          import json,sys
+          try:
+              j=json.load(open(sys.argv[1]))
+              print((j.get("result") or {}).get("subdomain") or "")
+          except Exception:
+              print("")
+          PY
+          )"
+          if [ -n "$CURRENT" ]; then
+            echo "workers.dev already configured: $CURRENT"
+            exit 0
+          fi
+          BASE="endlume-peisov-${CLOUDFLARE_ACCOUNT_ID:0:8}"
+          OK=0
+          for SUFFIX in "" "-app" "-studio" "-control"; do
+            NAME="$BASE$SUFFIX"
+            OUT="$RUNNER_TEMP/cf-workers-subdomain-put.json"
+            CODE="$(curl -sS -o "$OUT" -w "%{http_code}" -X PUT               -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN"               -H "Content-Type: application/json"               --data "{\"subdomain\":\"$NAME\"}" "$API")"
+            if [ "$CODE" = "200" ] && python3 - "$OUT" <<'PY'
+          import json,sys
+          j=json.load(open(sys.argv[1]))
+          raise SystemExit(0 if j.get("success") else 1)
+          PY
+            then
+              echo "workers.dev configured"
+              OK=1
+              break
+            fi
+          done
+          test "$OK" = "1"
+      - name: Deploy Worker
+        id: deploy
+        shell: bash
+        working-directory: infra/cloudflare-update
+        run: |
+          set -Eeuo pipefail
+          npx --yes wrangler@4 deploy 2>&1 | tee "$RUNNER_TEMP/endlume-worker-deploy.log"
+          URL="$(grep -Eo 'https://[A-Za-z0-9._-]+\.workers\.dev' "$RUNNER_TEMP/endlume-worker-deploy.log" | tail -1)"
+          test -n "$URL"
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+      - name: Verify health
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          for i in $(seq 1 30); do
+            if curl -fsS "${{ steps.deploy.outputs.url }}/health" | grep -q '"renderArtifacts":"multipart-r2"'; then
+              echo "Worker health GREEN"
+              exit 0
+            fi
+            sleep 2
+          done
+          exit 1

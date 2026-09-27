@@ -1,0 +1,160 @@
+name: ENDLUME 8.60 Render Speed Stability
+
+on:
+  push:
+    branches:
+      - candidate/endlume-860-render-speed-stability
+  workflow_dispatch:
+
+concurrency:
+  group: endlume-860-speed-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  physical:
+    runs-on: [self-hosted, macOS, ARM64]
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Restore FFmpeg and apply production migrations
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          FOUNDATION="$HOME/.endlume-local-builder/endlume-desktop-8.40-bootstrap"
+          test -d "$FOUNDATION/src-tauri/binaries"
+          mkdir -p src-tauri/binaries
+          rsync -a "$FOUNDATION/src-tauri/binaries/" src-tauri/binaries/
+          chmod +x src-tauri/binaries/ffmpeg* src-tauri/binaries/ffprobe*
+          python3 scripts/apply-render-isolation-8-56.py
+          python3 scripts/apply-master-frame-hotfix-8-57.py
+          python3 scripts/apply-queue-finalization-hotfix-8-58.py
+          python3 scripts/apply-render-speed-stability-8-60.py
+          python3 scripts/test-render-speed-stability-8-60.py .
+          grep -Fq 'const STRICT_857_MAX_GOP_FRAMES:u32=1800;' src-tauri/src/render.rs
+          grep -Fq 'strict-860-base.png' src-tauri/src/render.rs
+          grep -Fq 'periodic-860-base.png' src-tauri/src/render.rs
+          grep -Fq '"-filter_complex_threads","8"' src-tauri/src/render.rs
+
+      - name: Compile and regress
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          npm ci
+          npm run check
+          npm run build
+          cargo check --manifest-path src-tauri/Cargo.toml
+          cargo test --manifest-path src-tauri/Cargo.toml -- --nocapture
+          cargo test --manifest-path src-tauri/Cargo.toml vyron_ -- --nocapture
+
+      - name: Stage exact real fixture
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          TMP="$(mktemp -d /tmp/e860fix.XXXXXX)"
+          python3 scripts/find-endlume-real-fixture.py "$TMP/env"
+          cat "$TMP/env" >> "$GITHUB_ENV"
+          source "$TMP/env"
+          test "$AUDIO_COUNT" = 15
+          test "$EFFECT_COUNT" -ge 2
+          echo "FIXTURE=$SIDE"
+
+      - name: Wait until ENDLUME FFmpeg is idle
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          for i in $(seq 1 120); do
+            if ! pgrep -af '[f]fmpeg' >/tmp/e860-live.txt 2>/dev/null; then
+              echo "FFMPEG_IDLE after $i checks"
+              exit 0
+            fi
+            sleep 5
+          done
+          cat /tmp/e860-live.txt || true
+          exit 3
+
+      - name: Five sequential real strict masters
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          FFM="$(find src-tauri/binaries -maxdepth 1 -type f -name 'ffmpeg*' -perm -111 -print -quit)"
+          FFP="$(find src-tauri/binaries -maxdepth 1 -type f -name 'ffprobe*' -perm -111 -print -quit)"
+          python3 - "$SIDE" "$FFM" "$FFP" "$GITHUB_WORKSPACE/e860-five.json" <<'PY'
+          import json,subprocess,sys,tempfile,time,statistics
+          from pathlib import Path
+          side,ffm,ffp,out_json=sys.argv[1:5]
+          d=json.load(open(side,errors='replace'))
+          img=Path(d['project']['media'][0]); fx=[e for e in d.get('effects',[]) if isinstance(e,dict) and e.get('enabled') and str(e.get('source') or '').strip()]
+          assert img.is_file() and len(fx)>=2
+          EQ='825dd7a4-f0cf-4032-a3c9-64290cb5756d'
+          def sh(a): return subprocess.check_output(list(map(str,a)),text=True).strip()
+          def run(a): subprocess.run(list(map(str,a)),check=True)
+          def even(v):
+            n=max(2,int(round(v))); return n if n%2==0 else n+1
+          def clamp(v,a,b): return max(a,min(b,float(v)))
+          def col(e): return '0x'+str(e.get('keyColor') or '00ff00').lstrip('#')
+          with tempfile.TemporaryDirectory(prefix='e860-five-') as td:
+            td=Path(td)
+            base=td/'base.png'
+            run([ffm,'-hide_banner','-loglevel','error','-i',img,'-vf','scale=1920:1080:force_original_aspect_ratio=increase:flags=lanczos+accurate_rnd,crop=1920:1080:(iw-ow)/2:(ih-oh)/2,fps=30,setsar=1','-frames:v','1','-compression_level','1','-y',base])
+            cached=[]; dur=[]
+            for i,e in enumerate(fx[:2],1):
+              sim=.18 if e.get('id')==EQ else clamp(e.get('similarity',.1),.001,.60)
+              blend=.03 if e.get('id')==EQ else clamp(e.get('blend',.05),.001,.35)
+              target=even(1920*clamp(e.get('scale',1),.05,1.5))
+              vf=f"fps=30,format=rgba,colorkey={col(e)}:{sim}:{blend},scale={target}:-2:flags=lanczos,format=argb"
+              p=td/f'fx{i}.mov'; run([ffm,'-hide_banner','-loglevel','error','-i',e['source'],'-vf',vf,'-an','-c:v','qtrle','-pix_fmt','argb','-y',p]); cached.append((p,e))
+              try: dur.append(float(sh([ffp,'-v','error','-show_entries','format=duration','-of','csv=p=0',e['source']])))
+              except Exception: dur.append(12.0)
+            md=max([12.0]+[max(2.0,min(60.0,x)) for x in dur]); frames=round(md*60)
+            graph='[0:v]fps=30,setsar=1[b0]'; last='b0'
+            for i,(p,e) in enumerate(cached,1):
+              x=f"max(0,min(W-w,W*{clamp(e.get('x',.5),0,1)}-w/2))"; y=f"max(0,min(H-h,H*{clamp(e.get('y',.5),0,1)}-h/2))"
+              graph+=f";[{i}:v]fps=30,setpts=PTS-STARTPTS,format=argb[fx{i}];[{last}][fx{i}]overlay=x='{x}':y='{y}':shortest=0:repeatlast=1:eof_action=repeat:format=auto[b{i}]"; last=f'b{i}'
+            graph+=f';[{last}]fps=60,format=yuv420p[outv]'
+            times=[]
+            for n in range(1,6):
+              p=td/f'master-{n}.mp4'; a=[ffm,'-hide_banner','-loglevel','error','-filter_complex_threads','8','-loop','1','-framerate','30','-i',base]
+              for cp,_ in cached:a += ['-stream_loop','-1','-i',cp]
+              a += ['-filter_complex',graph,'-map','[outv]','-frames:v',str(frames),'-an','-c:v','hevc_videotoolbox','-realtime','1','-prio_speed','0','-power_efficient','0','-q:v','100','-b:v','500k','-maxrate','12M','-bufsize','64M','-g','1800','-tag:v','hvc1','-pix_fmt','yuv420p','-fps_mode','cfr','-r','60','-video_track_timescale','60000','-y',p]
+              t=time.time();run(a);dt=time.time()-t
+              fr=int(sh([ffp,'-v','error','-select_streams','v:0','-count_frames','-show_entries','stream=nb_read_frames','-of','csv=p=0',p])); pk=int(sh([ffp,'-v','error','-select_streams','v:0','-count_packets','-show_entries','stream=nb_read_packets','-of','csv=p=0',p]))
+              st=json.loads(sh([ffp,'-v','error','-select_streams','v:0','-show_entries','stream=codec_name,pix_fmt,width,height,avg_frame_rate','-of','json',p]))['streams'][0]
+              m={'iteration':n,'seconds':round(dt,3),'frames':fr,'packets':pk,'stream':st};print('MASTER',m,flush=True)
+              assert fr==frames and pk==frames,m
+              assert st.get('codec_name')=='hevc' and st.get('pix_fmt')=='yuv420p' and st.get('width')==1920 and st.get('height')==1080 and st.get('avg_frame_rate')=='60/1',m
+              assert dt<=30.0,m
+              times.append(dt);p.unlink(missing_ok=True);time.sleep(1)
+            doc={'status':'passed','times':[round(x,3) for x in times],'median':round(statistics.median(times),3),'slope':round(times[-1]-times[0],3),'max':round(max(times),3)}
+            Path(out_json).write_text(json.dumps(doc,ensure_ascii=False,indent=2));print(json.dumps(doc,ensure_ascii=False,indent=2))
+          PY
+          cat e860-five.json
+
+      - name: Full physical two-hour E2E Subscribe OFF
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          FFM="$(find src-tauri/binaries -maxdepth 1 -type f -name 'ffmpeg*' -perm -111 -print -quit)"
+          FFP="$(find src-tauri/binaries -maxdepth 1 -type f -name 'ffprobe*' -perm -111 -print -quit)"
+          python3 scripts/run-endlume-857-real-e2e.py "$SIDE" "$FFM" "$FFP" "$GITHUB_WORKSPACE/e860-off.json"
+          cat e860-off.json
+          python3 - <<'PY'
+          import json
+          x=json.load(open('e860-off.json'))
+          assert x.get('status')=='passed' and x.get('release_gate') is True,x
+          assert x.get('master_frames')==3381 and x.get('master_packets')==3381,x
+          assert x.get('resolution')=='1920x1080' and x.get('fps')=='60/1',x
+          assert x.get('audio_codec')=='mp3' and x.get('whole_track') is True and x.get('mp3_packet_copy') is True,x
+          assert x.get('seek_begin') and x.get('seek_middle') and x.get('seek_tail'),x
+          assert 500_000_000 <= x.get('final_bytes',0) <= 700_000_000,x
+          PY
+
+      - name: Verdict
+        shell: bash
+        run: |
+          echo 'ENDLUME_860_SPEED_STABILITY_GREEN'

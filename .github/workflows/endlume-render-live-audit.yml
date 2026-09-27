@@ -1,0 +1,38 @@
+name: ENDLUME Render Live Audit
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [release]
+    paths:
+      - '.github/workflows/endlume-render-live-audit.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  live-audit:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 10
+    steps:
+      - name: Non-destructive ENDLUME process and queue snapshot
+        shell: bash
+        run: |
+          set -u
+          echo "=== ENDLUME LIVE RENDER AUDIT ==="
+          date
+          echo "Runner: ${RUNNER_NAME:-unknown}"
+          echo "--- process snapshot #1 ---"
+          ps -axo pid=,ppid=,etime=,%cpu=,%mem=,command= | grep -E 'ENDLUME Studio|[f]fmpeg|[f]fprobe' || true
+          echo "--- persisted ENDLUME state ---"
+          find "$HOME/Library/Application Support" -maxdepth 5 \( -name queue.json -o -name recovery.json -o -name session.json \) -print 2>/dev/null | grep -Ei 'endlume|studio\.endlume' | sort -u | while IFS= read -r f; do
+            echo "FILE: $f"
+            python3 -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p)); a=d.get("active"); pr=(a or {}).get("project",{}) if isinstance(a,dict) else {}; st=(a or {}).get("settings",{}) if isinstance(a,dict) else {}; print(" interrupted=",d.get("interrupted")," updated=",d.get("updatedAt") or d.get("detectedAt")," pending=",len(d.get("pending") or [])," active_id=",pr.get("id")," active_name=",pr.get("name")," media=",len(pr.get("media") or [])," audio=",len(pr.get("audio") or [])," fps=",st.get("fps")," size=",str(st.get("width"))+"x"+str(st.get("height"))," session_open=",d.get("open"))' "$f" || true
+          done
+          echo "--- ENDLUME app-data directory ---"
+          find "$HOME/Library/Application Support" -maxdepth 3 -type d -iname '*endlume*' -print 2>/dev/null || true
+          echo "Waiting 8 seconds without touching the render..."
+          sleep 8
+          echo "--- process snapshot #2 ---"
+          ps -axo pid=,ppid=,etime=,%cpu=,%mem=,command= | grep -E 'ENDLUME Studio|[f]fmpeg|[f]fprobe' || true
+          echo "=== AUDIT COMPLETE: no process or file was modified ==="

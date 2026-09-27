@@ -1,0 +1,67 @@
+name: ENDLUME 8.55 Strict Render Contract Gate
+on:
+  push:
+    branches: [candidate/endlume-855-strict-render-contract]
+permissions:
+  contents: read
+jobs:
+  gate:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: candidate/endlume-855-strict-render-contract
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Restore embedded FFmpeg sidecars
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          FOUNDATION="$HOME/.endlume-local-builder/endlume-desktop-8.40-bootstrap"
+          test -d "$FOUNDATION/src-tauri/binaries"
+          mkdir -p src-tauri/binaries
+          rsync -a "$FOUNDATION/src-tauri/binaries/" src-tauri/binaries/
+      - name: Apply 8.55 strict render migration
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/apply-strict-render-contract-8-55.py
+      - name: Contract source gates
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          grep -Fq 'resolved_job.settings.duration_mode="whole-track".into();' src-tauri/src/render.rs
+          grep -Fq 'resolved_job.settings.crossfade_sec=0.0;' src-tauri/src/render.rs
+          grep -Fq 'STRICT_855_MIN_BYTES:u64=400_000_000' src-tauri/src/render.rs
+          grep -Fq 'STRICT_855_MAX_BYTES:u64=700_000_000' src-tauri/src/render.rs
+          grep -Fq 'STRICT_855_MASTER_SECONDS:f64=30.0' src-tauri/src/render.rs
+          grep -Fq 'render_zero_sub_zero_copy_855' src-tauri/src/render.rs
+          grep -Fq 'slow 2-3GB fallback' src-tauri/src/render.rs || grep -Fq 'медленный 2-3GB fallback запрещён' src-tauri/src/render.rs
+          python3 - <<'PY'
+          import pathlib,re,json
+          s=pathlib.Path('src-tauri/src/render.rs').read_text()
+          m=re.search(r'fn smart_final_duration\([^\{]+\)\->f64\{([^}]|}(?!\n))*',s)
+          assert 'if t-target<=240.0' not in s, 'whole-track 240s cut cap returned'
+          assert 'build_original_audio_cycle' in s and 'Strict Fidelity: исходную музыку нельзя сохранить bitstream-copy' in s
+          assert json.load(open('package.json'))['version']=='1.0.0-alpha.8.55'
+          assert json.load(open('src-tauri/tauri.conf.json'))['version']=='1.0.0-alpha.8.55'
+          PY
+          # VYRON handoff is frozen: migration is render/version-only.
+          git diff --exit-code HEAD -- src-tauri/src/vyron_bridge.rs src/components/VyronBatchBridge.tsx src/tauri.ts src/pages/App.tsx
+      - name: Frontend and native compile
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          npm ci
+          npm run check
+          npm run build
+          cargo check --manifest-path src-tauri/Cargo.toml
+      - name: Preserve proven MP4/VYRON behavior
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cargo test --manifest-path src-tauri/Cargo.toml mp4_manifest::tests -- --nocapture
+          cargo test --manifest-path src-tauri/Cargo.toml vyron_ -- --nocapture
+          echo 'PASS: strict render contract source compiles; VYRON unchanged'

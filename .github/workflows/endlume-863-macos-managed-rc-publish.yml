@@ -1,0 +1,133 @@
+name: ENDLUME 8.63 macOS Managed RC Publish
+
+on:
+  push:
+    branches:
+      - feature/endlume-863-macos-factory
+    paths:
+      - '.github/workflows/endlume-863-macos-managed-rc-publish.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: endlume-863-macos-managed-rc-publish
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    name: macOS ARM64 • Managed Access • RC Publish
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 120
+    env:
+      VERSION: 1.0.0-alpha.8.63
+      TAG: endlume-v1.0.0-alpha.8.63-macos-managed-rc
+      ZIP_NAME: ENDLUME-YT-Studio-PEISOV-1.0.0-alpha.8.63-macOS-ARM64.zip
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Verify exact tested source contract
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(uname -s)" = "Darwin"
+          test "$(uname -m)" = "arm64"
+          python3 - <<'PY'
+          import json,re
+          from pathlib import Path
+          expected='1.0.0-alpha.8.63'
+          assert json.loads(Path('package.json').read_text())['version']==expected
+          assert json.loads(Path('package-lock.json').read_text())['version']==expected
+          t=json.loads(Path('src-tauri/tauri.conf.json').read_text())
+          assert t['version']==expected
+          assert t['productName']=='ENDLUME YT Studio PEISOV'
+          c=Path('src-tauri/src/license.rs').read_text()
+          assert 'endlume-client-api' in c
+          assert 'HEARTBEAT_SECS:u64=25' in c
+          assert 'set_license_queue_depth' in c
+          print('SOURCE_CONTRACT_GREEN')
+          PY
+
+      - name: Stage bundled Apple Silicon FFmpeg
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          FOUNDATION="$HOME/.endlume-local-builder/endlume-desktop-8.40-bootstrap"
+          test -d "$FOUNDATION/src-tauri/binaries"
+          mkdir -p src-tauri/binaries
+          rsync -a "$FOUNDATION/src-tauri/binaries/" src-tauri/binaries/
+          chmod +x src-tauri/binaries/ffmpeg* src-tauri/binaries/ffprobe*
+          test -x src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          test -x src-tauri/binaries/ffprobe-aarch64-apple-darwin
+
+      - name: Build production app
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          npm ci
+          npm run check
+          npm run build
+          cargo check --manifest-path src-tauri/Cargo.toml
+          cargo test --manifest-path src-tauri/Cargo.toml -- --nocapture
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('src-tauri/tauri.conf.json')
+          cfg=json.loads(p.read_text())
+          cfg['bundle']['createUpdaterArtifacts']=False
+          p.write_text(json.dumps(cfg,ensure_ascii=False,indent=2)+'\n')
+          PY
+          npm run tauri build -- --bundles app
+
+      - name: Verify application and package ZIP
+        id: package
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          APP="$(find src-tauri/target/release/bundle/macos -maxdepth 1 -type d -name '*.app' -print -quit)"
+          test -n "$APP" -a -d "$APP"
+          BID="$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$APP/Contents/Info.plist")"
+          VER="$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist")"
+          EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
+          test "$BID" = 'studio.endlume.desktop'
+          test "$VER" = "$VERSION"
+          /usr/bin/lipo -archs "$APP/Contents/MacOS/$EXE" | grep -qw arm64
+          FFMPEG="$(find "$APP/Contents/MacOS" -maxdepth 1 -type f -name 'ffmpeg*' -print -quit)"
+          FFPROBE="$(find "$APP/Contents/MacOS" -maxdepth 1 -type f -name 'ffprobe*' -print -quit)"
+          test -x "$FFMPEG"
+          test -x "$FFPROBE"
+          /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP"
+          rm -f "$ZIP_NAME" "$ZIP_NAME.sha256"
+          /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$APP" "$ZIP_NAME"
+          test -s "$ZIP_NAME"
+          shasum -a 256 "$ZIP_NAME" | tee "$ZIP_NAME.sha256"
+          echo "zip=$ZIP_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Publish or replace managed RC
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$ZIP_NAME" "$ZIP_NAME.sha256" --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$TAG" "$ZIP_NAME" "$ZIP_NAME.sha256"               --repo "$GITHUB_REPOSITORY"               --title "ENDLUME YT Studio PEISOV 1.0.0-alpha.8.63 macOS Managed RC"               --notes "Managed-access RC for owner/device/heartbeat/render telemetry testing. Stable updater is not changed."
+          fi
+
+      - name: Verify published asset
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | grep -Fxq "$ZIP_NAME"
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | grep -Fxq "$ZIP_NAME.sha256"
+          echo "ENDLUME_863_MACOS_MANAGED_RC_PUBLISHED"

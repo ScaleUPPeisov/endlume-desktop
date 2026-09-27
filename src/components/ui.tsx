@@ -1,9 +1,10 @@
 import React from 'react';
+import { IS_WINDOWS, PRODUCT_NAME } from '../platform-brand';
 
 export function Logo({compact=false}:{compact?:boolean}){
-  return <div className={`brandMark ${compact?'compact':''}`} aria-label="ENDLUME Studio">
+  return <div className={`brandMark ${compact?'compact':''}`} aria-label={PRODUCT_NAME}>
     <span className="infinity"><i/><i/></span>
-    <span className="brandText"><b>ENDLUME</b>{!compact&&<small>STUDIO</small>}</span>
+    <span className="brandText"><b>ENDLUME</b>{!compact&&<small>{IS_WINDOWS?'YT STUDIO PEISOV':'STUDIO'}</small>}</span>
   </div>
 }
 

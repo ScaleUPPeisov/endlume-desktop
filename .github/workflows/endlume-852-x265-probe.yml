@@ -1,0 +1,34 @@
+name: ENDLUME 8.52 x265 Ultrafast Probe
+
+on:
+  push:
+    branches: [candidate/endlume-852-production-speed-size]
+    paths:
+      - '.github/workflows/endlume-852-x265-probe.yml'
+      - 'scripts/probe-x265-ultrafast-8-52.sh'
+
+permissions:
+  contents: read
+
+jobs:
+  x265-probe:
+    name: macOS ARM64 • x265 ultrafast capped fidelity
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: candidate/endlume-852-production-speed-size
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Physical q100 vs x265 sweep
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          WORK="$HOME/.endlume-local-builder/endlume-desktop-8.40-bootstrap"
+          FFMPEG="$(find "$WORK/src-tauri/binaries" -maxdepth 1 -type f -name 'ffmpeg*' -perm -111 -print -quit)"
+          FFPROBE="$(find "$WORK/src-tauri/binaries" -maxdepth 1 -type f -name 'ffprobe*' -perm -111 -print -quit)"
+          test -x "$FFMPEG"; test -x "$FFPROBE"
+          chmod +x scripts/probe-x265-ultrafast-8-52.sh
+          scripts/probe-x265-ultrafast-8-52.sh "$FFMPEG" "$FFPROBE"

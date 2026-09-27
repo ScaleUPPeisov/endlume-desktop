@@ -1,0 +1,40 @@
+name: ENDLUME 8.52 Native Prealpha Probe
+on:
+  push:
+    branches: [candidate/endlume-852-build]
+    paths: ['.github/workflows/endlume-852-native-prealpha-probe.yml']
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: candidate/endlume-852-build
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Native-rate scaled alpha cache benchmark
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          WORK="$HOME/.endlume-local-builder/endlume-desktop-8.40-bootstrap"
+          FFMPEG="$(find "$WORK/src-tauri/binaries" -maxdepth 1 -type f -name 'ffmpeg*' -perm -111 -print -quit)"
+          IMG='/Volumes/TOSHIBA EXT/ВАЙРОН/ProductionManager/Batches/2e0e14ba-d97a-48d5-ab32-2fb2b27754bf/Neon Drive FM_BATCH_2026-09-05_001/001/image.png'
+          FX1="$HOME/Library/Application Support/studio.endlume.desktop/library-assets/effects/3c501bb14fd159efad59285bb11bd197.mp4"
+          FX2="$HOME/Library/Application Support/studio.endlume.desktop/library-assets/effects/e8054c2afef438886500ce4e6e27fda0.mp4"
+          REF="$HOME/Library/Caches/studio.endlume.desktop/render-v1-fidelity-849/variant-7c3f453554e0150b370b9975738e9985.mp4"
+          TMP="$(mktemp -d /tmp/endlume-native-alpha.XXXXXX)"; trap 'rm -rf "$TMP"' EXIT
+          T0="$(python3 -c 'import time;print(time.time())')"
+          "$FFMPEG" -hide_banner -loglevel error -i "$FX1" -vf "format=rgba,colorkey=0x0aa843:0.6:0.184,scale=252:-2:flags=lanczos,format=argb" -an -c:v qtrle -pix_fmt argb -y "$TMP/fx1.mov"
+          "$FFMPEG" -hide_banner -loglevel error -i "$FX2" -vf "format=rgba,colorkey=0x2bdc0a:0.6:0.188,scale=2128:-2:flags=lanczos,format=argb" -an -c:v qtrle -pix_fmt argb -y "$TMP/fx2.mov"
+          T1="$(python3 -c 'import time;print(time.time())')"
+          ls -lh "$TMP/fx1.mov" "$TMP/fx2.mov"
+          GRAPH="[0:v]scale=1920:1080:force_original_aspect_ratio=increase:flags=lanczos+accurate_rnd,crop=1920:1080:(iw-ow)/2:(ih-oh)/2,fps=60,setsar=1[b0];[1:v]setpts=PTS-STARTPTS[fx0];[b0][fx0]overlay=x='max(0,min(W-w,W*0.5-w/2))':y='max(0,min(H-h,H*0.8834535728307813-h/2))':shortest=1:eof_action=repeat:format=auto[b1];[2:v]setpts=PTS-STARTPTS[fx1];[b1][fx1]overlay=x='max(0,min(W-w,W*0.49-w/2))':y='max(0,min(H-h,H*0.49-h/2))':shortest=1:eof_action=repeat:format=auto[b2];[b2]format=yuv420p[outv]"
+          T2="$(python3 -c 'import time;print(time.time())')"
+          "$FFMPEG" -hide_banner -loglevel error -loop 1 -framerate 60 -i "$IMG" -stream_loop -1 -i "$TMP/fx1.mov" -stream_loop -1 -i "$TMP/fx2.mov" -filter_complex "$GRAPH" -map '[outv]' -t 12 -an -c:v hevc_videotoolbox -realtime 1 -prio_speed 0 -power_efficient 0 -q:v 100 -b:v 500k -maxrate 12M -bufsize 64M -g 720 -tag:v hvc1 -pix_fmt yuv420p -y "$TMP/out.mp4"
+          T3="$(python3 -c 'import time;print(time.time())')"
+          SS="$($FFMPEG -hide_banner -loglevel info -i "$REF" -i "$TMP/out.mp4" -filter_complex "[0:v]trim=duration=12,setpts=PTS-STARTPTS,format=yuv420p[a];[1:v]setpts=PTS-STARTPTS,format=yuv420p[b];[a][b]ssim" -t 12 -f null - 2>&1 | grep -oE 'All:[0-9.]+' | tail -1 | cut -d: -f2)"
+          python3 -c "print('PREP_SECONDS=' + format(float('$T1')-float('$T0'),'.3f'));print('COMPOSE_SECONDS=' + format(float('$T3')-float('$T2'),'.3f'));print('SSIM=' + format(float('$SS'),'.6f'))"

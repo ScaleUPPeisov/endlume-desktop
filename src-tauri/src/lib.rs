@@ -59,21 +59,33 @@ fn maybe_start_render_e2e(app:tauri::AppHandle){
           match render::render_job(&app,&job,Arc::new(std::sync::atomic::AtomicBool::new(false))).await{
             Ok(summary)=>{
               let terminal=queue::done_payload_from_summary(&job,&id,&summary);
-              results.push(serde_json::json!({
-                "id":id,
-                "status":"passed",
-                "wallSeconds":started.elapsed().as_secs_f64(),
-                "terminal":terminal,
-                "outputPath":summary.output_path,
-                "outputBytes":summary.output_bytes,
-                "encoder":summary.encoder,
-                "finalDuration":summary.final_video_duration_seconds,
-                "fastPath":summary.fast_path,
-                "fastPathReason":summary.fast_path_reason,
-                "audioMode":summary.audio_mode,
-                "videoCodec":summary.video_codec,
-                "audioCodec":summary.audio_codec
-              }));
+              match queue::write_success_metadata(&app,&job,&summary).await{
+                Ok((timecodes_path,track_list_path,render_log_path))=>{
+                  results.push(serde_json::json!({
+                    "id":id,
+                    "status":"passed",
+                    "wallSeconds":started.elapsed().as_secs_f64(),
+                    "terminal":terminal,
+                    "outputPath":summary.output_path,
+                    "outputBytes":summary.output_bytes,
+                    "encoder":summary.encoder,
+                    "finalDuration":summary.final_video_duration_seconds,
+                    "fastPath":summary.fast_path,
+                    "fastPathReason":summary.fast_path_reason,
+                    "audioMode":summary.audio_mode,
+                    "videoCodec":summary.video_codec,
+                    "audioCodec":summary.audio_codec,
+                    "timecodesPath":timecodes_path,
+                    "trackListPath":track_list_path,
+                    "renderLogPath":render_log_path
+                  }));
+                }
+                Err(error)=>{
+                  ok=false;
+                  results.push(serde_json::json!({"id":id,"status":"failed","wallSeconds":started.elapsed().as_secs_f64(),"error":format!("companion metadata: {error}")}));
+                  break;
+                }
+              }
             }
             Err(error)=>{
               ok=false;

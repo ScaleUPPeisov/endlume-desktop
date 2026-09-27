@@ -226,7 +226,7 @@ fn start_worker_if_needed(app:AppHandle,runtime:Arc<QueueRuntime>){
           Ok(summary)=>{
             license::telemetry_render_completed(&job,&summary,job_timer.elapsed().as_secs_f64());
             let metadata=write_success_metadata(&app,&job,&summary).await;
-            if let Err(error)=metadata.as_ref(){let _=app.emit("render-warning",json!({"id":id,"message":format!("Видео готово, но не удалось создать timecodes/список песен/log: {error}")}));}
+            if let Err(error)=metadata.as_ref(){let _=app.emit("render-warning",json!({"id":id.clone(),"message":format!("Видео готово, но не удалось создать timecodes/список песен/log: {error}")}));}
             let mut payload=done_payload_from_summary(&job,&id,&summary);
             if let Ok((timecodes,track_list,render_log))=metadata{if let Some(o)=payload.as_object_mut(){o.insert("timecodesPath".into(),json!(timecodes));o.insert("trackListPath".into(),json!(track_list));o.insert("renderLogPath".into(),json!(render_log));}}
             runtime.remember_terminal(payload.clone());

@@ -28,9 +28,31 @@ def seek(path,pos,kind):
 def duration(path):
     return float(out([FFPROBE,"-v","error","-show_entries","format=duration","-of","default=nw=1:nk=1",path]))
 
-def packet_hash(path,seconds=5.0):
-    p=run([FFMPEG,"-hide_banner","-loglevel","error","-i",path,"-map","0:a:0","-t",str(seconds),"-c:a","copy","-f","data","-"],stdout=subprocess.PIPE,stderr=subprocess.PIPE)
-    return hashlib.sha256(p.stdout).hexdigest()
+def packet_hashes(path,seconds=5.0,limit=160):
+    raw=out([FFPROBE,"-v","error","-select_streams","a:0","-read_intervals",f"%+{seconds}",
+             "-show_packets","-show_entries","packet=data_hash","-show_data_hash","sha256","-of","json",path])
+    packets=json.loads(raw).get("packets") or []
+    return [p.get("data_hash") for p in packets if p.get("data_hash")][:limit]
+
+def assert_packet_copy(source,output):
+    src=packet_hashes(source,5.0)
+    dst=packet_hashes(output,5.0)
+    assert len(src)>=8 and len(dst)>=8,(len(src),len(dst))
+    # Raw MP3 may expose container/header frames differently from MP4. For a true
+    # -c:a copy, the MP3 frame payload hashes must still appear as an ordered
+    # contiguous run in the final container.
+    need=src[:min(24,len(src))]
+    for start in range(0,max(1,len(dst)-len(need)+1)):
+        if dst[start:start+len(need)]==need:
+            return
+    # Some demuxers skip the first Xing/LAME frame; accept the same stream beginning
+    # from one of the first four source packets, but never an arbitrary similarity.
+    for skip in range(1,min(5,len(src)-8)):
+        need=src[skip:skip+min(24,len(src)-skip)]
+        for start in range(0,max(1,len(dst)-len(need)+1)):
+            if dst[start:start+len(need)]==need:
+                return
+    raise AssertionError("Original MP3 packet frames are not preserved by stream-copy")
 
 data=json.loads(SIDE.read_text(errors="replace"))
 project=data["project"]
@@ -110,7 +132,7 @@ with tempfile.TemporaryDirectory(prefix="endlume865-render-job-e2e-") as td:
     assert len(rows)==len(jobs),(len(rows),len(jobs))
 
     verified=[]
-    first_input_hash=packet_hash(first_two[0],5.0)
+    first_input=first_two[0]
     for idx,(row,job) in enumerate(zip(rows,jobs)):
         assert row.get("status")=="passed",row
         output_path=Path(row["outputPath"])
@@ -146,7 +168,7 @@ with tempfile.TemporaryDirectory(prefix="endlume865-render-job-e2e-") as td:
 
         # First MP3 packet payload must survive the final container stream-copy path.
         if idx in (0,1,4,5):
-            assert packet_hash(output_path,5.0)==first_input_hash,"Original MP3 packet payload changed"
+            assert_packet_copy(first_input,output_path)
 
         wall=float(row.get("wallSeconds") or 0)
         verified.append({

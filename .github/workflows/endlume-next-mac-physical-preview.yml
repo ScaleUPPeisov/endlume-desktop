@@ -1,0 +1,170 @@
+name: ENDLUME Next macOS M1 Physical Preview
+
+on:
+  push:
+    branches: [feature/endlume-next-mac-first]
+    paths:
+      - '.github/workflows/endlume-next-mac-physical-preview.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-next-mac-physical-preview
+  cancel-in-progress: true
+
+jobs:
+  physical:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/endlume-next-mac-first
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Stage bundled sidecars
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
+          mkdir -p src-tauri/binaries
+          cp "$(command -v ffmpeg)" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp "$(command -v ffprobe)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          chmod +x src-tauri/binaries/*
+
+      - name: Build local audit-only app
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('src-tauri/tauri.conf.json')
+          d=json.loads(p.read_text())
+          d['bundle']['createUpdaterArtifacts']=False
+          p.write_text(json.dumps(d,ensure_ascii=False,indent=2)+'\n')
+          PY
+          npm ci
+          npm run tauri build -- --bundles app --features e2e-render
+          APP="$(find src-tauri/target/release/bundle/macos -maxdepth 1 -type d -name '*.app' -print -quit)"
+          test -n "$APP"
+          EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
+          BIN="$APP/Contents/MacOS/$EXE"
+          test -x "$BIN"
+          /usr/bin/lipo -archs "$BIN" | grep -qw arm64
+          echo "AUDIT_BIN=$BIN" >> "$GITHUB_ENV"
+          echo ENDLUME_NEXT_M1_AUDIT_BUILD_GREEN
+
+      - name: Create synthetic Unicode fixture
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+          ROOT="$RUNNER_TEMP/ENDLUME Next [M1]/Музыка для YouTube"
+          OUT="$ROOT/Готовые видео [тест]"
+          mkdir -p "$ROOT" "$OUT"
+          ffmpeg -hide_banner -loglevel error -f lavfi -i "color=c=0x172033:s=1920x1080:r=1" -frames:v 1 -y "$ROOT/Картинка 01 [Final].png"
+          ffmpeg -hide_banner -loglevel error -f lavfi -i "sine=frequency=440:sample_rate=44100" -t 7 -ac 2 -c:a libmp3lame -b:a 192k -y "$ROOT/Песня 01 [Final].mp3"
+          ffmpeg -hide_banner -loglevel error -f lavfi -i "sine=frequency=660:sample_rate=44100" -t 9 -ac 2 -c:a libmp3lame -b:a 192k -y "$ROOT/Песня 02 [Final].mp3"
+          python3 - "$ROOT" "$OUT" <<'PY'
+          import json,pathlib,sys
+          root=pathlib.Path(sys.argv[1]);out=pathlib.Path(sys.argv[2])
+          job={
+            "project":{
+              "id":"next-m1-companion-physical",
+              "name":"Канал M1 [Тест]",
+              "path":str(root),
+              "media":[str(root/"Картинка 01 [Final].png")],
+              "audio":[str(root/"Песня 01 [Final].mp3"),str(root/"Песня 02 [Final].mp3")],
+              "valid":True,"error":None
+            },
+            "settings":{
+              "width":1920,"height":1080,"fps":60,"codec":"h265","bitrateMbps":4.0,
+              "durationHours":0.03,"durationMode":"exact","loopMode":"image","crossfadeSec":0.0,
+              "normalizeLufs":False,"outputDir":str(out),"preset":"fast","encoderPreference":"auto"
+            },
+            "effects":[],"subscribes":[],"ambient":None
+          }
+          (root/"job.json").write_text(json.dumps({"jobs":[job]},ensure_ascii=False),encoding="utf-8")
+          print(root/"job.json")
+          PY
+          echo "FIX_ROOT=$ROOT" >> "$GITHUB_ENV"
+          echo "FIX_OUT=$OUT" >> "$GITHUB_ENV"
+
+      - name: Physical ENDLUME render and companion files
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          RESULT="$RUNNER_TEMP/endlume-next-m1-result.json"
+          ENDLUME_E2E_RENDER_JOB="$FIX_ROOT/job.json" ENDLUME_E2E_RESULT="$RESULT" "$AUDIT_BIN"
+          python3 - "$RESULT" <<'PY'
+          import json,pathlib,sys
+          x=json.load(open(sys.argv[1],encoding='utf-8'))
+          assert x['status']=='passed',x
+          assert len(x['results'])==1,x
+          r=x['results'][0]
+          assert r['status']=='passed',r
+          output=pathlib.Path(r['outputPath'])
+          assert output.is_file() and output.stat().st_size==int(r['outputBytes']),r
+          tc=pathlib.Path(r['timecodesPath'])
+          tracks=pathlib.Path(r['trackListPath'])
+          log=pathlib.Path(r['renderLogPath'])
+          for p in (tc,tracks,log):
+            assert p.is_file() and p.stat().st_size>0,p
+          assert tc.parent.name=='timecodes'
+          assert tracks.parent.name=='timecodes'
+          t=tc.read_text(encoding='utf-8')
+          l=tracks.read_text(encoding='utf-8')
+          g=log.read_text(encoding='utf-8')
+          assert '00:00:00' in t and 'Песня 01 [Final].mp3' in t and 'Песня 02 [Final].mp3' in t
+          assert '01. Песня 01 [Final].mp3' in l and '02. Песня 02 [Final].mp3' in l
+          assert str(output) in g and 'ENDLUME successful render' in g
+          print('OUTPUT='+str(output))
+          print('OUTPUT_BYTES='+str(output.stat().st_size))
+          print('TIMECODES='+str(tc))
+          print('TRACK_LIST='+str(tracks))
+          print('RENDER_LOG='+str(log))
+          print('WALL_SECONDS='+str(r['wallSeconds']))
+          print('ENDLUME_NEXT_M1_COMPANION_FILES_PHYSICAL_GREEN')
+          PY
+
+      - name: FFprobe physical output
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          RESULT="$RUNNER_TEMP/endlume-next-m1-result.json"
+          OUT="$(python3 - "$RESULT" <<'PY'
+          import json,sys
+          print(json.load(open(sys.argv[1]))['results'][0]['outputPath'])
+          PY
+          )"
+          ffprobe -v error -show_entries stream=codec_type,codec_name,width,height,r_frame_rate,avg_frame_rate -show_entries format=duration,size -of json "$OUT" > "$RUNNER_TEMP/endlume-next-m1-ffprobe.json"
+          cat "$RUNNER_TEMP/endlume-next-m1-ffprobe.json"
+          python3 - "$RUNNER_TEMP/endlume-next-m1-ffprobe.json" <<'PY'
+          import json,sys
+          p=json.load(open(sys.argv[1]))
+          v=next(s for s in p['streams'] if s['codec_type']=='video')
+          a=next(s for s in p['streams'] if s['codec_type']=='audio')
+          assert v['codec_name']=='hevc',v
+          assert int(v['width'])==1920 and int(v['height'])==1080,v
+          assert v['avg_frame_rate']=='60/1',v
+          assert a['codec_name']=='mp3',a
+          assert float(p['format']['duration'])>100,p
+          print('ENDLUME_NEXT_M1_FFPROBE_GREEN')
+          PY
+
+      - name: Process cleanup
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sleep 2
+          if pgrep -af '[f]fmpeg|[f]fprobe'; then
+            echo "orphan media process"
+            exit 19
+          fi
+          echo ENDLUME_NEXT_MAC_M1_PHYSICAL_PREVIEW_GREEN

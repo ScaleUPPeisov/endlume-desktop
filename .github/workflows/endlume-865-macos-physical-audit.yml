@@ -200,7 +200,7 @@ jobs:
               'effects':[],'subscribes':[],'ambient':None}
           pathlib.Path('audit-mac/warm-jobs.json').write_text(json.dumps({'jobs':[j(1),j(2),j(3)]},ensure_ascii=False))
           PY
-          ENDLUME_E2E_RENDER_JOB="$GITHUB_WORKSPACE/audit-mac/warm-jobs.json" ENDLUME_E2E_RESULT="$GITHUB_WORKSPACE/audit-mac/warm.json" "$PUBLIC_MAC_BIN"
+          ENDLUME_E2E_RENDER_JOB="$GITHUB_WORKSPACE/audit-mac/warm-jobs.json" ENDLUME_E2E_RESULT="$GITHUB_WORKSPACE/audit-mac/warm.json" "$AUDIT_E2E_BIN"
           python3 - <<'PY'
           import json,statistics
           x=json.load(open('audit-mac/warm.json'));assert x['status']=='passed'

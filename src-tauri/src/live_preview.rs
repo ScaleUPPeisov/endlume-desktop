@@ -112,10 +112,12 @@ async fn make_base(app:&AppHandle,src:&Path,seek:f64,out:&Path)->Result<String,S
 async fn make_overlay(app:&AppHandle,src:&Path,seek:f64,out:&Path)->Result<(),String>{
   if validate_video_proxy(app,out).await.is_ok(){return Ok(())}
   let _=fs::remove_file(out);
-  let common=vec!["-hide_banner","-loglevel","error","-stream_loop","-1","-ss",&seek.max(0.0).to_string(),"-i",src.to_string_lossy().as_ref(),"-t","6","-an","-vf"];
-  let mut prefix=common.iter().map(|x|String::from(*x)).collect::<Vec<_>>();
+  let seek_text=seek.max(0.0).to_string();
+  let src_text=src.to_string_lossy().into_owned();
+  let common=vec!["-hide_banner".into(),"-loglevel".into(),"error".into(),"-stream_loop".into(),"-1".into(),"-ss".into(),seek_text,"-i".into(),src_text,"-t".into(),"6".into(),"-an".into(),"-vf".into()];
+  let mut prefix=common.clone();
   prefix.push("scale=640:-2:flags=fast_bilinear,minterpolate=fps=60:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1".into());
-  let mut safe=common.into_iter().map(String::from).collect::<Vec<_>>();
+  let mut safe=common;
   safe.push("scale=640:-2:flags=lanczos,fps=60".into());
   encode_proxy(app,prefix,Some(safe),out).await
 }

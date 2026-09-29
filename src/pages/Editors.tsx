@@ -196,7 +196,7 @@ function EffectsEditor() {
           <label className="checkLine"><input type="checkbox" checked={current.fullscreen} onChange={(event) => patch({ fullscreen: event.target.checked })} /> На весь экран</label>
           <p className="editorHint">Preview и Render используют одинаковые X / Y / SIZE. Пропорции исходного эффекта сохраняются.</p>
           <button className="savePreset" onClick={async () => { await saveLibrary([...effects], true); setSaved(true); window.setTimeout(() => setSaved(false), 1200); }}><Icon name="save" /> {saved ? 'СОХРАНЕНО ✓' : 'СОХРАНИТЬ PRESET'}</button>
-          <button className="savePreset" onClick={() => void saveLibrary(effects.map((e) => e.id === current.id ? { ...e, enabled: !e.enabled } : e), true)}>{current.enabled ? 'ВЫКЛЮЧИТЬ ЭФФЕКТ' : 'ВКЛЮЧИТЬ ЭФФЕКТ'}</button>
+          <button className="savePreset" onClick={() => void saveLibrary(effects.map((e) => e.id === current.id ? { ...e, enabled: !e.enabled, usageMode: !e.enabled && e.usageMode === 'off' ? 'always' : e.usageMode } : e), true)}>{current.enabled ? 'ВЫКЛЮЧИТЬ ЭФФЕКТ' : 'ВКЛЮЧИТЬ ЭФФЕКТ'}</button>
           <button className="deletePreset" onClick={remove}><Icon name="trash" /> УДАЛИТЬ</button>
         </>}
       </aside>
@@ -289,7 +289,7 @@ function SubscribeEditor() {
           <span><b>{item.name}</b><small>{usageLabel(item)}{effectiveUsageMode(item) === 'interval' ? ` • каждые ${Math.round(subscribeInterval(item) / 60)} мин` : ''}</small></span>
           <i className={item.enabled ? 'enabled' : 'disabled'} title={item.enabled ? 'Выключить' : 'Включить'} onClick={(event) => {
             event.stopPropagation();
-            void saveLibrary(subscribes.map((entry) => entry.id === item.id ? { ...entry, enabled: !entry.enabled } : entry), true);
+            void saveLibrary(subscribes.map((entry) => entry.id === item.id ? { ...entry, enabled: !entry.enabled, usageMode: !entry.enabled && entry.usageMode === 'off' ? 'always' : entry.usageMode } : entry), true);
           }} />
         </button>)}
       </aside>
@@ -323,7 +323,7 @@ function SubscribeEditor() {
           </>}
           <p className="editorHint">Subscribe использует тот же aspect-safe compositor, что и Effects.</p>
           <button className="savePreset" onClick={async () => { await saveLibrary([...subscribes], true); setSaved(true); window.setTimeout(() => setSaved(false), 1200); }}><Icon name="save" /> {saved ? 'СОХРАНЕНО ✓' : 'СОХРАНИТЬ PRESET'}</button>
-          <button className="savePreset" onClick={() => void saveLibrary(subscribes.map((item) => item.id === current.id ? { ...item, enabled: !item.enabled } : item), true)}>{current.enabled ? 'ВЫКЛЮЧИТЬ SUBSCRIBE' : 'ВКЛЮЧИТЬ SUBSCRIBE'}</button>
+          <button className="savePreset" onClick={() => void saveLibrary(subscribes.map((item) => item.id === current.id ? { ...item, enabled: !item.enabled, usageMode: !item.enabled && item.usageMode === 'off' ? 'interval' : item.usageMode } : item), true)}>{current.enabled ? 'ВЫКЛЮЧИТЬ SUBSCRIBE' : 'ВКЛЮЧИТЬ SUBSCRIBE'}</button>
           <button className="deletePreset" onClick={remove}><Icon name="trash" /> УДАЛИТЬ</button>
         </>}
       </aside>

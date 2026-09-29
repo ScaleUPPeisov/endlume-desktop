@@ -253,6 +253,35 @@ async fn probe_audio_decodes(app:&AppHandle,path:&Path)->bool{
   output(app,"ffmpeg",args).await.is_ok()
 }
 
+fn parse_max_volume_db_1000(stderr:&[u8])->Option<f64>{
+  let text=String::from_utf8_lossy(stderr);
+  for line in text.lines().rev(){
+    let Some((_,tail))=line.split_once("max_volume:") else{continue};
+    let raw=tail.trim().split_whitespace().next()?;
+    if raw=="-inf"{return Some(f64::NEG_INFINITY)}
+    if let Ok(v)=raw.parse::<f64>(){return Some(v)}
+  }
+  None
+}
+async fn probe_audio_peak_db_1000(app:&AppHandle,path:&Path,pos:f64)->Result<f64,String>{
+  let ss=format!("{:.3}",pos.max(0.0));
+  let args=vec!["-hide_banner","-nostats","-v","info","-ss",ss.as_str(),"-i",path.to_string_lossy().as_ref(),"-map","0:a:0","-t","4.0","-af","volumedetect","-f","null","-"].into_iter().map(String::from).collect();
+  let (_,stderr)=output(app,"ffmpeg",args).await.map_err(|e|format!("10.0 audio audibility probe @ {ss}s: {e}"))?;
+  parse_max_volume_db_1000(&stderr).ok_or_else(||format!("10.0 audio audibility probe @ {ss}s: max_volume not found"))
+}
+async fn verify_audio_audible_1000(app:&AppHandle,path:&Path,expected:f64)->Result<f64,String>{
+  let mut positions=vec![0.5,(expected*0.25).max(0.5),(expected*0.50).max(0.5),(expected-8.0).max(0.5)];
+  positions.sort_by(|a,b|a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+  positions.dedup_by(|a,b|(*a-*b).abs()<1.0);
+  let mut best=f64::NEG_INFINITY;let mut samples=Vec::new();
+  for pos in positions{
+    let peak=probe_audio_peak_db_1000(app,path,pos).await?;
+    best=best.max(peak);samples.push(format!("{pos:.1}s={peak:.1}dB"));
+  }
+  if !best.is_finite()||best<=-55.0{return Err(format!("ENDLUME 10.0 AUDIO BLOCKER: финальный файл технически содержит аудио, но музыка не слышна / почти тишина. Peaks: {}",samples.join(", ")))}
+  Ok(best)
+}
+
 fn audio_probe_key(path:&str)->String{
   let meta=std::fs::metadata(path).ok();
   let size=meta.as_ref().map(|m|m.len()).unwrap_or(0);
@@ -975,6 +1004,8 @@ async fn verify_result(app:&AppHandle,out:&Path,expected:f64,s:&RenderSettings)-
   if (d-expected).abs()>4.0{return Err(format!("Финальный файл имеет неверную длительность: {:0.1} сек вместо {:0.1}",d,expected))}
   if !probe_has_audio(app,out).await{return Err("В финальном файле отсутствует аудиодорожка".into())}
   if !probe_audio_decodes(app,out).await{return Err("Аудиодорожка есть, но не воспроизводится/не декодируется".into())}
+  let peak_db=verify_audio_audible_1000(app,out,expected).await?;
+  diag_line(json!({"kind":"audio-audibility","path":out,"maxPeakDb":peak_db,"gateDb":-55.0}));
   let args=vec!["-v","error","-select_streams","v:0","-show_entries","stream=width,height,avg_frame_rate","-of","json",out.to_string_lossy().as_ref()].into_iter().map(String::from).collect();
   let (stdout,_)=output(app,"ffprobe",args).await?;
   let v:serde_json::Value=serde_json::from_slice(&stdout).map_err(|e|e.to_string())?;

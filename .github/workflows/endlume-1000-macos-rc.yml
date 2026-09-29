@@ -1,0 +1,119 @@
+name: ENDLUME 10.0.0 macOS RC Artifact
+
+on:
+  push:
+    branches: [release-prep/endlume-10.0.0]
+    paths:
+      - '.github/workflows/endlume-1000-macos-rc.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-1000-macos-rc
+  cancel-in-progress: true
+
+jobs:
+  macos-rc:
+    name: macOS ARM64 • signed RC artifact • no publish
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify release-prep identity
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git merge-base --is-ancestor b91b5f9fb27e2c284a3400a41e2382ed2cdf57fa HEAD
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          cfg=json.loads(Path('src-tauri/tauri.conf.json').read_text())
+          assert cfg['version']=='10.0.0'
+          assert cfg['productName']=='ENDLUME YT Studio PEISOV'
+          assert cfg['identifier']=='studio.endlume.desktop'
+          assert cfg['plugins']['updater']['endpoints']==['https://github.com/ScaleUPPeisov/scaleup-site/releases/download/endlume-stable/latest.json']
+          print('ENDLUME_1000_RC_IDENTITY_GREEN')
+          PY
+
+      - name: Stage native Apple Silicon FFmpeg
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          FOUNDATION="$HOME/.endlume-local-builder/endlume-desktop-8.40-bootstrap"
+          mkdir -p src-tauri/binaries
+          rsync -a "$FOUNDATION/src-tauri/binaries/" src-tauri/binaries/
+          chmod +x src-tauri/binaries/ffmpeg* src-tauri/binaries/ffprobe*
+          test -x src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          test -x src-tauri/binaries/ffprobe-aarch64-apple-darwin
+
+      - name: Prepare non-publishing production config
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('src-tauri/tauri.conf.json')
+          c=json.loads(p.read_text())
+          c['bundle']['createUpdaterArtifacts']=False
+          p.write_text(json.dumps(c,ensure_ascii=False,indent=2)+'\n')
+          PY
+
+      - name: Build clean macOS ARM64 candidate
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export CARGO_TARGET_DIR="$HOME/.endlume-build-cache/target-1000"
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
+          npm ci
+          npm run tauri build -- --bundles app
+          APP="$(find "$CARGO_TARGET_DIR/release/bundle/macos" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          test -n "$APP" -a -d "$APP"
+          VER="$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist")"
+          BID="$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$APP/Contents/Info.plist")"
+          EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
+          test "$VER" = '10.0.0'
+          test "$BID" = 'studio.endlume.desktop'
+          /usr/bin/lipo -archs "$APP/Contents/MacOS/$EXE" | grep -qw arm64
+          if strings "$APP/Contents/MacOS/$EXE" | grep -q 'ENDLUME_E2E_RENDER_JOB'; then
+            echo 'E2E marker leaked into production binary'
+            exit 43
+          fi
+          /usr/bin/codesign --force --deep --sign - "$APP"
+          /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP"
+          echo "RC_APP=$APP" >> "$GITHUB_ENV"
+          echo ENDLUME_1000_RC_APP_GREEN
+
+      - name: Package and updater-sign RC
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          OUT="$GITHUB_WORKSPACE/release-1000-rc"
+          mkdir -p "$OUT"
+          PKG="$OUT/ENDLUME-YT-Studio-PEISOV-10.0.0-macOS-ARM64-RC.app.tar.gz"
+          /usr/bin/tar -czf "$PKG" -C "$(dirname "$RC_APP")" "$(basename "$RC_APP")"
+          export TAURI_SIGNING_PRIVATE_KEY_PATH="$HOME/.endlume-updater/endlume.key"
+          export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
+          unset TAURI_SIGNING_PRIVATE_KEY || true
+          npx --yes @tauri-apps/cli@2.10.1 signer sign "$PKG"
+          test -s "$PKG" -a -s "$PKG.sig"
+          shasum -a 256 "$PKG" > "$PKG.sha256"
+          printf 'version=10.0.0\ncommit=%s\npublished=false\nstable_manifest_unchanged=true\n' "$GITHUB_SHA" > "$OUT/RC-INFO.txt"
+          echo "RC_BYTES=$(stat -f%z "$PKG")"
+          echo "RC_SHA256=$(awk '{print $1}' "$PKG.sha256")"
+          echo ENDLUME_1000_RC_SIGNED_GREEN
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ENDLUME-10.0.0-macOS-ARM64-RC
+          path: release-1000-rc/**
+          if-no-files-found: error
+          retention-days: 14

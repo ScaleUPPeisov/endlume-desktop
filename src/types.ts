@@ -4,6 +4,8 @@ export type DurationMode = 'exact'|'whole-track';
 export type LoopMode = 'image'|'crossfade'|'pingpong'|'original';
 export type EffectMode = 'chromakey'|'luma'|'screen';
 export type EncoderPreference = 'auto'|'quality'|'speed';
+export type EffectUsageMode = 'off'|'always'|'interval';
+export type SubscribeFirstAppearance = 'after-interval'|'immediate'|'custom';
 
 export interface ProjectScanItem {
   id: string;
@@ -62,12 +64,18 @@ export interface EffectPreset {
   endSec: number | null;
   cacheKey?: string;
   cacheReady?: boolean;
+  usageMode?: EffectUsageMode;
+  intervalSec?: number;
+  usageDurationSec?: number;
 }
 
 export interface SubscribePreset extends EffectPreset {
   firstAtSec: number;
   secondAtSec: number;
   repeatEverySec: number;
+  firstAppearance?: SubscribeFirstAppearance;
+  customFirstAtSec?: number;
+  showDurationSec?: number;
 }
 
 export interface RenderSettings {

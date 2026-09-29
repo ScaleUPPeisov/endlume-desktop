@@ -1,0 +1,30 @@
+name: ENDLUME 8.67 Exact Fixture Dump
+on:
+  push:
+    branches: [hotfix/endlume-8.67-render-perf-staging]
+    paths: ['.github/workflows/endlume-867-fixture-dump.yml']
+permissions: {contents: read}
+jobs:
+  dump:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 10
+    steps:
+      - name: Print exact 005 settings and overlay metadata
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('/Volumes/TOSHIBA EXT/ВАЙРОН/Render/First Pour Jazz/logs/005 — Ready Videos — project.json')
+          d=json.loads(p.read_text(errors='replace'))
+          print('SETTINGS='+json.dumps(d.get('settings') or {},ensure_ascii=False,sort_keys=True))
+          print('AMBIENT='+json.dumps(d.get('ambient'),ensure_ascii=False))
+          for i,e in enumerate(d.get('effects') or []):
+              if isinstance(e,dict) and e.get('enabled'):
+                  keep={k:e.get(k) for k in ['id','name','source','mode','fullscreen','scale','x','y','similarity','blend','saturation','startSec','endSec','keyColor','lumaThreshold','lumaTolerance']}
+                  print(f'EFFECT_{i+1}='+json.dumps(keep,ensure_ascii=False,sort_keys=True))
+          for i,s in enumerate(d.get('subscribes') or []):
+              if not isinstance(s,dict): continue
+              print(f'SUB_{i+1}='+json.dumps(s,ensure_ascii=False,sort_keys=True))
+          PY

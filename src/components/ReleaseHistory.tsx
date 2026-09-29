@@ -7,6 +7,7 @@ const releases:Release[]=[
     'Effects и Subscribe: ВЫКЛ / ВСЕГДА / ПО ИНТЕРВАЛУ.',
     'Subscribe: интервал, длительность показа, первое появление и live calculation.',
     'Persistent visual/Subscribe masters и zero-copy 10.0 performance path.',
+    'P0 Audio: финальный gate теперь отклоняет silent/near-silent MP4 и не показывает ложное «Готово».',
     'Сохранены 1080p60 HEVC, Original MP3 packet-copy, проекты, лицензия и updater identity.'
   ]},
   {version:'1.0.0-alpha.8.67',date:'29.09.2026',current:false,title:'Render Performance • 30s Gate • Whole MP3 Fidelity',items:[

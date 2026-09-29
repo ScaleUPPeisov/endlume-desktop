@@ -1,0 +1,157 @@
+name: ENDLUME 8.66 Live Preview Hotfix Gate
+
+on:
+  push:
+    branches:
+      - hotfix/endlume-8.66-live-preview-staging
+      - hotfix/endlume-8.66-live-preview
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-866-live-preview-hotfix-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  BASELINE_SHA: ce985c835afbec61e08f2427b41ed3a1d2e1949a
+
+jobs:
+  macos-live-preview-gate:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Scope freeze
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git diff --exit-code "$BASELINE_SHA" --             src-tauri/src/render.rs             src-tauri/src/preview.rs             src/components/LiveCompositePreview.tsx             src/pages/Editors.tsx             src/tauri.ts             src-tauri/src/assets.rs
+          changed="$(git diff --name-only "$BASELINE_SHA"...HEAD)"
+          printf '%s\n' "$changed"
+          while IFS= read -r p; do
+            [ -z "$p" ] && continue
+            case "$p" in
+              src-tauri/src/live_preview.rs|scripts/test-live-preview-hotfix-866.py|.github/workflows/endlume-866-live-preview-hotfix-gate.yml|package.json|package-lock.json|src-tauri/Cargo.toml|src-tauri/Cargo.lock|src-tauri/tauri.conf.json|src/pages/SettingsPage.tsx|src/components/ReleaseHistory.tsx) ;;
+              *) echo "UNEXPECTED HOTFIX FILE: $p"; exit 41 ;;
+            esac
+          done <<< "$changed"
+          git diff --exit-code "$BASELINE_SHA" -- updates/latest.json src-tauri/src/updater_windows.rs
+          echo ENDLUME_866_SCOPE_FREEZE_GREEN
+
+      - name: Stage Apple Silicon FFmpeg sidecars
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
+          mkdir -p src-tauri/binaries
+          cp "$(command -v ffmpeg)" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp "$(command -v ffprobe)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          chmod +x src-tauri/binaries/ffmpeg-aarch64-apple-darwin src-tauri/binaries/ffprobe-aarch64-apple-darwin
+
+      - name: Source + Rust + frontend regression
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
+          npm ci
+          npm run check
+          npm run build
+          python3 scripts/test-live-preview-hotfix-866.py
+          cargo test --manifest-path src-tauri/Cargo.toml live_preview::tests -- --nocapture
+          cargo test --manifest-path src-tauri/Cargo.toml -- --nocapture
+          if [ "$(node -p "require('./package.json').version")" = "1.0.0-alpha.8.65" ]; then
+            python3 scripts/test-endlume-865-contract.py
+          fi
+          python3 - <<'PY'
+          import json,re
+          from pathlib import Path
+          version='1.0.0-alpha.8.66'
+          pkg=json.loads(Path('package.json').read_text())
+          lock=json.loads(Path('package-lock.json').read_text())
+          tauri=json.loads(Path('src-tauri/tauri.conf.json').read_text())
+          cargo=Path('src-tauri/Cargo.toml').read_text()
+          cargo_lock=Path('src-tauri/Cargo.lock').read_text()
+          assert pkg['version']==version
+          assert lock['version']==version and lock['packages']['']['version']==version
+          assert tauri['version']==version
+          assert f'version = "{version}"' in cargo
+          endlume_pos=cargo_lock.index('name = "endlume"')
+          assert f'version = "{version}"' in cargo_lock[endlume_pos:endlume_pos+160]
+          assert tauri['identifier']=='studio.endlume.desktop'
+          assert tauri['plugins']['updater']['endpoints']==['https://github.com/ScaleUPPeisov/scaleup-site/releases/download/endlume-stable/latest.json']
+          print('ENDLUME_866_VERSION_IDENTITY_GREEN')
+          PY
+          echo ENDLUME_866_COMPILE_REGRESSION_GREEN
+
+      - name: Physical Effects + Subscribe proxy smoke
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+          python3 scripts/test-live-preview-hotfix-866.py --physical "$(command -v ffmpeg)" "$(command -v ffprobe)"
+
+      - name: Resolve real production fixture
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          TMP="$(mktemp -d /tmp/e866fixture.XXXXXX)"
+          python3 scripts/find-endlume-real-fixture.py "$TMP/env"
+          cat "$TMP/env" >> "$GITHUB_ENV"
+          source "$TMP/env"
+          test "$AUDIO_COUNT" = 15
+          test -f "$SIDE"
+          echo ENDLUME_866_REAL_FIXTURE_GREEN
+
+      - name: Baseline 8.65 production benchmark
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
+          BASE_DIR="$RUNNER_TEMP/endlume-865-baseline-$GITHUB_RUN_ID"
+          rm -rf "$BASE_DIR"
+          git worktree prune
+          git worktree add --detach "$BASE_DIR" "$BASELINE_SHA"
+          mkdir -p "$BASE_DIR/src-tauri/binaries"
+          cp src-tauri/binaries/ffmpeg-aarch64-apple-darwin "$BASE_DIR/src-tauri/binaries/"
+          cp src-tauri/binaries/ffprobe-aarch64-apple-darwin "$BASE_DIR/src-tauri/binaries/"
+          (
+            cd "$BASE_DIR"
+            GITHUB_WORKSPACE="$BASE_DIR" ENDLUME_865_MAX_SECONDS=20               python3 scripts/run-endlume-865-one-image-physical.py "$SIDE" "$(command -v ffmpeg)" "$(command -v ffprobe)" "$GITHUB_WORKSPACE/866-production-baseline.json"
+          )
+
+      - name: Hotfix production benchmark
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
+          GITHUB_WORKSPACE="$GITHUB_WORKSPACE" ENDLUME_865_MAX_SECONDS=20             python3 scripts/run-endlume-865-one-image-physical.py "$SIDE" "$(command -v ffmpeg)" "$(command -v ffprobe)" "$GITHUB_WORKSPACE/866-production-hotfix.json"
+
+      - name: Compare production before vs after
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import json
+          b=json.load(open('866-production-baseline.json'))
+          h=json.load(open('866-production-hotfix.json'))
+          assert b['status']=='passed' and h['status']=='passed'
+          br=b['runs'];hr=h['runs'];assert len(br)==len(hr)==2
+          for x,y in zip(br,hr):
+              for k in ['codec','fps','audio']:
+                  assert x[k]==y[k],(k,x[k],y[k])
+              assert abs(float(x['duration'])-float(y['duration']))<=0.05,(x['duration'],y['duration'])
+              assert abs(int(x['output_bytes'])-int(y['output_bytes']))/max(1,int(x['output_bytes']))<=0.02,(x['output_bytes'],y['output_bytes'])
+              assert float(y['wall_seconds'])<=float(x['wall_seconds'])*1.25+0.75,(x['wall_seconds'],y['wall_seconds'])
+              for k in ['visual_master_seconds','audio_mux_seconds','manifest_seconds']:
+                  assert float(y[k])<=float(x[k])*1.35+0.35,(k,x[k],y[k])
+          print('ENDLUME_866_PRODUCTION_BEFORE_AFTER_GREEN')
+          print(json.dumps({'baseline':br,'hotfix':hr},ensure_ascii=False))
+          PY

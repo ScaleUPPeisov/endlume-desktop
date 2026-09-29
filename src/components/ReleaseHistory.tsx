@@ -3,7 +3,14 @@ import React from 'react';
 type Release={version:string;date:string;current?:boolean;title:string;items:string[]};
 
 const releases:Release[]=[
-  {version:'1.0.0-alpha.8.65',date:'26.09.2026',current:true,title:'Real Result State • FAST_ONE_IMAGE • Homer Startup',items:[
+  {version:'1.0.0-alpha.8.66',date:'29.09.2026',current:true,title:'Live Preview Recovery • Effects / Subscribe',items:[
+    'Live Preview proxy теперь проверяется фактически: размер файла, FFprobe video stream / geometry / duration и декодирование стартового кадра.',
+    'Если VideoToolbox завершился с exit code 0, но proxy пустой или повреждён, ENDLUME автоматически удаляет его и пробует libx264.',
+    'Для проблемных Effects/Subscribe добавлен последний preview-only fallback: libx264 + обычный fps=60 без minterpolate; production render не переключается на этот путь.',
+    'Битый live-preview-v6 cache больше не считается валидным и пересоздаётся; корректный cache повторно не кодируется.',
+    'Production render, HEVC 1080p60, Original MP3 packet-copy, Effects/Subscribe compositing, расписание и updater feed сохранены без изменений.'
+  ]},
+  {version:'1.0.0-alpha.8.65',date:'26.09.2026',current:false,title:'Real Result State • FAST_ONE_IMAGE • Homer Startup',items:[
     'Успешный render теперь сохраняет точные resultPath и resultBytes прямо из RenderOutcome; поздний terminal snapshot больше не может затереть валидные данные null-значениями.',
     'Кнопки «Открыть видео» и «Открыть папку вывода» снова получают настоящий путь результата, а размер файла отображается из фактически созданного output.',
     'Обычный проект с одной картинкой без активных Effects/Subscribe переведён на короткий physical still + zero-copy sample-table вместо кодирования 12–60 секунд одинакового strict master.',

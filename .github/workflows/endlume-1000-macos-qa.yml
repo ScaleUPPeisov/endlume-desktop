@@ -207,6 +207,7 @@ jobs:
           echo ENDLUME_1000_MAC_CANDIDATE_SIGNED_GREEN
 
       - name: Upload macOS candidate artifact
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: ENDLUME-10.0.0-macOS-ARM64-candidate

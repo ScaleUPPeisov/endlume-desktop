@@ -164,3 +164,52 @@ jobs:
             exit 43
           fi
           echo ENDLUME_1000_MAC_BUILD_GREEN
+
+      - name: Prepare signed macOS updater candidate without publishing
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export CARGO_TARGET_DIR="$HOME/.endlume-build-cache/target-1000"
+          APP="$(find "$CARGO_TARGET_DIR/release/bundle/macos" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          test -n "$APP" -a -d "$APP"
+          CAND="$GITHUB_WORKSPACE/e1000-candidate"
+          rm -rf "$CAND"; mkdir -p "$CAND"
+          ASSET="ENDLUME-YT-Studio-PEISOV-10.0.0-macOS-ARM64.app.tar.gz"
+          /usr/bin/codesign --force --deep --sign - "$APP"
+          /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP"
+          /usr/bin/tar -czf "$CAND/$ASSET" -C "$(dirname "$APP")" "$(basename "$APP")"
+          export TAURI_SIGNING_PRIVATE_KEY_PATH="$HOME/.endlume-updater/endlume.key"
+          export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
+          unset TAURI_SIGNING_PRIVATE_KEY || true
+          test -s "$TAURI_SIGNING_PRIVATE_KEY_PATH"
+          npx --yes @tauri-apps/cli@2.10.1 signer sign "$CAND/$ASSET"
+          test -s "$CAND/$ASSET.sig"
+          SHA="$(shasum -a 256 "$CAND/$ASSET" | awk '{print $1}')"
+          SIG="$(tr -d '\r\n' < "$CAND/$ASSET.sig")"
+          python3 - "$CAND/latest-macos-candidate.json" "$ASSET" "$SHA" "$SIG" <<'PY'
+          import datetime,json,sys
+          out,asset,sha,sig=sys.argv[1:]
+          data={
+            "version":"10.0.0",
+            "notes":"ENDLUME 10.0.0 macOS candidate. Stable publication is blocked until the physical TOSHIBA EXT gate is green and Windows compatibility is preserved.",
+            "pub_date":datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00","Z"),
+            "platforms":{
+              "darwin-aarch64":{
+                "url":f"CANDIDATE_ONLY/{asset}",
+                "signature":sig,
+                "sha256":sha
+              }
+            }
+          }
+          json.dump(data,open(out,"w"),ensure_ascii=False,indent=2)
+          PY
+          echo "$SHA  $ASSET" > "$CAND/SHA256SUMS.txt"
+          echo ENDLUME_1000_MAC_CANDIDATE_SIGNED_GREEN
+
+      - name: Upload macOS candidate artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ENDLUME-10.0.0-macOS-ARM64-candidate
+          path: e1000-candidate/
+          if-no-files-found: error
+          retention-days: 7

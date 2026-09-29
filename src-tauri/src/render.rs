@@ -751,27 +751,83 @@ fn apply_effects_filter(mut graph:String,mut base:String,effects:&[EffectPreset]
   (graph,base)
 }
 
+fn effect_usage_mode(e:&EffectPreset)->&str{
+  if !e.enabled{return "off"}
+  e.usage_mode.as_deref().unwrap_or("legacy")
+}
+fn effect_active_at(e:&EffectPreset,t:f64,final_duration:f64)->bool{
+  match effect_usage_mode(e){
+    "off"=>false,
+    "always"=>true,
+    "interval"=>{
+      let interval=e.interval_sec.unwrap_or(240.0).clamp(60.0,1800.0);
+      let duration=e.usage_duration_sec.unwrap_or(30.0).clamp(5.0,60.0).min(interval);
+      if t+0.0001<interval{return false}
+      ((t-interval)%interval)>=0.0&&((t-interval)%interval)<duration
+    },
+    _=>e.start_sec<=t&&e.end_sec.unwrap_or(final_duration)>t
+  }
+}
+fn effect_is_timed(e:&EffectPreset,final_duration:f64)->bool{
+  match effect_usage_mode(e){
+    "interval"=>true,
+    "off"|"always"=>false,
+    _=>e.start_sec>0.01||e.end_sec.map(|x|x<final_duration-0.01).unwrap_or(false)
+  }
+}
+fn push_effect_boundaries(e:&EffectPreset,final_duration:f64,boundaries:&mut Vec<f64>){
+  match effect_usage_mode(e){
+    "interval"=>{
+      let interval=e.interval_sec.unwrap_or(240.0).clamp(60.0,1800.0);
+      let duration=e.usage_duration_sec.unwrap_or(30.0).clamp(5.0,60.0).min(interval);
+      let mut start=interval;
+      let mut guard=0usize;
+      while start<final_duration&&guard<10000{
+        boundaries.push(start);boundaries.push((start+duration).min(final_duration));start+=interval;guard+=1;
+      }
+    },
+    "legacy"=>{
+      if e.start_sec>0.0&&e.start_sec<final_duration{boundaries.push(e.start_sec)}
+      if let Some(x)=e.end_sec{if x>0.0&&x<final_duration{boundaries.push(x)}}
+    },
+    _=>{}
+  }
+}
+fn subscribe_usage_mode(s:&SubscribePreset)->&str{
+  if !s.effect.enabled{return "off"}
+  s.effect.usage_mode.as_deref().unwrap_or("legacy")
+}
+fn subscribe_interval_sec(s:&SubscribePreset)->f64{s.effect.interval_sec.unwrap_or(s.repeat_every_sec).clamp(60.0,1800.0)}
+fn subscribe_first_sec(s:&SubscribePreset)->f64{
+  let interval=subscribe_interval_sec(s);
+  match s.first_appearance.as_deref().unwrap_or("after-interval"){
+    "immediate"=>0.0,
+    "custom"=>s.custom_first_at_sec.unwrap_or(interval).max(0.0),
+    _=>interval
+  }
+}
+
 async fn prepare_overlays(app:&AppHandle,job:&QueueJob,started:i64,timer:&Instant,encoder:&str,attempt:u32)->Result<(Vec<EffectPreset>,Vec<SubscribePreset>),String>{
   if smart_repeat_project(job){
     emit_progress(app,job,started,timer,26.0,"Strict 8.56: проверяю быстрый lossless Effects cache",encoder,attempt,None);let mark=Instant::now();let mut fx=Vec::new();
-    for e in job.effects.iter().filter(|e|e.enabled){match cache::prepare_strict_856(app,e,30,1920,1080).await{Ok(p)=>fx.push(p),Err(err)=>return Err(format!("Strict 8.56 Effects cache: {err}"))}}
+    for e in job.effects.iter().filter(|e|effect_usage_mode(e)!="off"){match cache::prepare_strict_856(app,e,30,1920,1080).await{Ok(p)=>fx.push(p),Err(err)=>return Err(format!("Strict 8.56 Effects cache: {err}"))}}
     let effects_sec=mark.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"effects-cache",effects_sec);emit_timing(app,&job.project.id,"effects",effects_sec);emit_timing(app,&job.project.id,"subscribe",0.0);emit_progress(app,job,started,timer,31.0,"Strict 8.56: lossless Effects cache готов",encoder,attempt,None);return Ok((fx,job.subscribes.clone()))
   }
   emit_progress(app,job,started,timer,26.0,"Проверяю кэш Effects и Subscribe",encoder,attempt,None);let mark=Instant::now();let effects_mark=Instant::now();let mut fx=Vec::new();let mut subs=Vec::new();
   for e in &job.effects{
-    if !e.enabled{continue}
+    if effect_usage_mode(e)=="off"{continue}
     match cache::prepare(app,e,job.settings.fps).await{Ok(p)=>fx.push(p),Err(err)=>emit_warning(app,&job.project.id,&format!("Effect '{}' пропущен: {}",e.name,err))}
   }
   emit_timing(app,&job.project.id,"effects",effects_mark.elapsed().as_secs_f64());let subscribe_mark=Instant::now();
   for s in &job.subscribes{
-    if !s.effect.enabled{continue}
+    if subscribe_usage_mode(s)=="off"{continue}
     match cache::prepare(app,&s.effect,job.settings.fps).await{Ok(effect)=>{let mut p=s.clone();p.effect=effect;subs.push(p)},Err(err)=>emit_warning(app,&job.project.id,&format!("Subscribe '{}' пропущен: {}",s.effect.name,err))}
   }
   emit_timing(app,&job.project.id,"subscribe",subscribe_mark.elapsed().as_secs_f64());emit_timing(app,&job.project.id,"effects-cache",mark.elapsed().as_secs_f64());emit_progress(app,job,started,timer,31.0,"Кэш Effects и Subscribe готов",encoder,attempt,None);Ok((fx,subs))
 }
 
 fn active_effects_at(effects:&[EffectPreset],t:f64,final_duration:f64)->Vec<EffectPreset>{
-  effects.iter().filter(|e|e.enabled&&e.start_sec<=t&&e.end_sec.unwrap_or(final_duration)>t).cloned().collect()
+  effects.iter().filter(|e|effect_active_at(e,t,final_duration)).cloned().collect()
 }
 fn state_key(effects:&[EffectPreset])->String{let mut ids=effects.iter().map(|e|e.id.clone()).collect::<Vec<_>>();ids.sort();ids.join("|")}
 
@@ -837,16 +893,30 @@ async fn build_long_audio(app:&AppHandle,job:&QueueJob,started:i64,timer:&Instan
 
 async fn subscribe_events(app:&AppHandle,subs:&[SubscribePreset],final_duration:f64)->Vec<SubEvent>{
   let mut events=Vec::new();
-  for s in subs.iter().filter(|s|s.effect.enabled&&!s.effect.source.trim().is_empty()){
-    let d=probe_duration(app,&s.effect.source).await.unwrap_or(5.0).max(0.1);let mut starts=Vec::new();
-    for x in [s.first_at_sec,s.second_at_sec]{if x>=0.0&&x<final_duration&&!starts.iter().any(|v:&f64|(*v-x).abs()<0.01){starts.push(x)}}
-    if s.repeat_every_sec>0.1{let mut x=s.second_at_sec.max(s.first_at_sec)+s.repeat_every_sec;while x<final_duration{starts.push(x);x+=s.repeat_every_sec;if starts.len()>10000{break}}}
-    for start in starts{events.push(SubEvent{start,end:(start+d).min(final_duration),sub:s.clone(),event_start:start});}
+  for s in subs.iter().filter(|s|subscribe_usage_mode(s)!="off"&&!s.effect.source.trim().is_empty()){
+    match subscribe_usage_mode(s){
+      "always"=>events.push(SubEvent{start:0.0,end:final_duration,sub:s.clone(),event_start:0.0}),
+      "interval"=>{
+        let interval=subscribe_interval_sec(s);
+        let d=s.show_duration_sec.unwrap_or(8.0).clamp(2.0,20.0).min(interval);
+        let mut start=subscribe_first_sec(s);let mut guard=0usize;
+        while start<final_duration&&guard<10000{
+          events.push(SubEvent{start,end:(start+d).min(final_duration),sub:s.clone(),event_start:start});
+          start+=interval;guard+=1;
+        }
+      },
+      _=>{
+        let d=probe_duration(app,&s.effect.source).await.unwrap_or(5.0).max(0.1);let mut starts=Vec::new();
+        for x in [s.first_at_sec,s.second_at_sec]{if x>=0.0&&x<final_duration&&!starts.iter().any(|v:&f64|(*v-x).abs()<0.01){starts.push(x)}}
+        if s.repeat_every_sec>0.1{let mut x=s.second_at_sec.max(s.first_at_sec)+s.repeat_every_sec;while x<final_duration{starts.push(x);x+=s.repeat_every_sec;if starts.len()>10000{break}}}
+        for start in starts{events.push(SubEvent{start,end:(start+d).min(final_duration),sub:s.clone(),event_start:start});}
+      }
+    }
   }
   events.sort_by(|a,b|a.start.partial_cmp(&b.start).unwrap_or(std::cmp::Ordering::Equal));events
 }
 
-fn timed_effects(effects:&[EffectPreset],final_duration:f64)->bool{effects.iter().any(|e|e.enabled&&(e.start_sec>0.01||e.end_sec.map(|x|x<final_duration-0.01).unwrap_or(false)))}
+fn timed_effects(effects:&[EffectPreset],final_duration:f64)->bool{effects.iter().any(|e|effect_is_timed(e,final_duration))}
 
 async fn copy_segment(app:&AppHandle,job:&QueueJob,variant:&Path,variant_duration:f64,start:f64,len:f64,out:&Path,encoder:&str,attempt:u32,cancel:&AtomicBool,base:f64,span:f64,started:i64,timer:&Instant)->Result<(),String>{
   let phase=(start%variant_duration.max(0.1)).max(0.0);let args=vec!["-hide_banner","-loglevel","error","-stream_loop","-1","-ss",&phase.to_string(),"-i",variant.to_string_lossy().as_ref(),"-t",&len.to_string(),"-an","-c:v","copy","-avoid_negative_ts","make_zero","-progress","pipe:1","-y",out.to_string_lossy().as_ref()].into_iter().map(String::from).collect();run_ffmpeg(app,job,started,timer,args,"Собираю визуальные сегменты",base,span,len,encoder,attempt,cancel).await
@@ -864,7 +934,7 @@ async fn assemble_visual(app:&AppHandle,job:&QueueJob,source_master:&Path,master
   let mut variants:HashMap<String,(PathBuf,f64)>=HashMap::new();
   let initial=active_effects_at(effects,0.001,final_duration);let key=state_key(&initial);let p=build_variant(app,job,source_master,master_duration,&initial,work,encoder,attempt,cancel,0,started,timer).await?;variants.insert(key.clone(),(p,master_duration));
   if events.is_empty()&&!has_timed{emit_timing(app,&job.project.id,"visual-plan",mark.elapsed().as_secs_f64());return Ok(VisualSource::Loop(variants.get(&key).unwrap().0.clone()))}
-  let mut boundaries=vec![0.0,final_duration];for e in effects.iter().filter(|e|e.enabled){if e.start_sec>0.0&&e.start_sec<final_duration{boundaries.push(e.start_sec)}if let Some(x)=e.end_sec{if x>0.0&&x<final_duration{boundaries.push(x)}}}for e in &events{boundaries.push(e.start);boundaries.push(e.end)}
+  let mut boundaries=vec![0.0,final_duration];for e in effects.iter().filter(|e|effect_usage_mode(e)!="off"){push_effect_boundaries(e,final_duration,&mut boundaries)}for e in &events{boundaries.push(e.start);boundaries.push(e.end)}
   boundaries.sort_by(|a,b|a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));boundaries.dedup_by(|a,b|(*a-*b).abs()<0.001);
   let intervals=boundaries.windows(2).filter(|w|w[1]-w[0]>0.005).map(|w|(w[0],w[1])).collect::<Vec<_>>();let mut segments=Vec::new();let mut sub_cache:HashMap<String,PathBuf>=HashMap::new();
   for (i,(a,b)) in intervals.iter().copied().enumerate(){if cancel.load(Ordering::SeqCst){return Err(CANCELLED.into())}let mid=(a+b)/2.0;let active_fx=active_effects_at(effects,mid,final_duration);let k=state_key(&active_fx);
@@ -950,9 +1020,9 @@ struct Periodic852Plan{first_frames:usize,anchor_frames:usize,repeat_frames:usiz
 
 fn periodic_852_plan(job:&QueueJob,effects:&[EffectPreset],subs:&[SubscribePreset],final_duration:f64)->Option<Periodic852Plan>{
   if !smart_repeat_project(job)||timed_effects(effects,final_duration){return None}
-  let active=subs.iter().filter(|x|x.effect.enabled&&!x.effect.source.trim().is_empty()).collect::<Vec<_>>();
+  let active=subs.iter().filter(|x|subscribe_usage_mode(x)!="off"&&!x.effect.source.trim().is_empty()).collect::<Vec<_>>();
   if active.len()!=1{return None}
-  let sub=active[0];if sub.effect.mode=="screen"||sub.effect.mode=="screen-cache"||sub.repeat_every_sec<60.0{return None}
+  let sub=active[0];if sub.effect.usage_mode.is_some()||sub.effect.mode=="screen"||sub.effect.mode=="screen-cache"||sub.repeat_every_sec<60.0{return None}
   let fps=job.settings.fps.max(1) as f64;let first=sub.first_at_sec.min(sub.second_at_sec).max(0.0);let anchor=sub.first_at_sec.max(sub.second_at_sec).max(0.0);
   let first_frames=(first*fps).round() as usize;let anchor_frames=(anchor*fps).round() as usize;let repeat_frames=(sub.repeat_every_sec*fps).round() as usize;
   if repeat_frames==0||anchor_frames==0{return None}

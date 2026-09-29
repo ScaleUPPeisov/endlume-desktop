@@ -1,0 +1,208 @@
+name: ENDLUME 8.67 Exact 005 Release Gate
+on:
+  push:
+    branches: [hotfix/endlume-8.67-render-perf-staging]
+    paths: ['.github/workflows/endlume-867-exact-005-release-gate.yml']
+  workflow_dispatch:
+permissions: {contents: read}
+concurrency:
+  group: endlume-867-exact-005-release-gate
+  cancel-in-progress: true
+jobs:
+  gate:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Build instrumented hotfix app
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
+          mkdir -p src-tauri/binaries
+          cp "$(command -v ffmpeg)" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp "$(command -v ffprobe)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          chmod +x src-tauri/binaries/*
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('src-tauri/tauri.conf.json')
+          d=json.loads(p.read_text()); d['bundle']['createUpdaterArtifacts']=False
+          p.write_text(json.dumps(d,ensure_ascii=False,indent=2)+'\n')
+          PY
+          npm ci
+          npm run check
+          export CARGO_TARGET_DIR="$HOME/.endlume-build-cache/endlume-867-profiler"
+          npm run tauri build -- --bundles app --features e2e-render
+          APP="$(find "$CARGO_TARGET_DIR/release/bundle/macos" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          test -d "$APP"
+          EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
+          echo "E2E_BIN=$APP/Contents/MacOS/$EXE" >> "$GITHUB_ENV"
+
+      - name: Run exact First Pour Jazz 005 to TOSHIBA EXT
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+          SRC="/Volumes/TOSHIBA EXT/ВАЙРОН/Render/First Pour Jazz/logs/005 — Ready Videos — project.json"
+          OLD="/Volumes/TOSHIBA EXT/ВАЙРОН/Render/First Pour Jazz/005 — Ready Videos.mp4"
+          test -s "$SRC"
+          test -s "$OLD"
+          OUTROOT="/Volumes/TOSHIBA EXT/.ENDLUME-867-EXACT-GATE"
+          rm -rf "$OUTROOT"
+          mkdir -p "$OUTROOT/out" "$RUNNER_TEMP/e867-gate"
+          export SRC OLD OUTROOT
+          python3 - <<'PY'
+          import json,os
+          from pathlib import Path
+          d=json.loads(Path(os.environ['SRC']).read_text(errors='replace'))
+          assert len(d['project']['audio'])==10
+          assert len(d['project']['media'])==1
+          assert len([e for e in d.get('effects',[]) if e.get('enabled')])==2
+          assert len([s for s in d.get('subscribes',[]) if s.get('enabled')])==1
+          d['project']['id']=str(d['project']['id'])+'-e867-final-gate'
+          d['project']['name']='005 E867 FINAL GATE'
+          d['settings']['outputDir']=os.environ['OUTROOT']+'/out'
+          Path(os.environ['RUNNER_TEMP']+'/e867-gate/job.json').write_text(json.dumps(d,ensure_ascii=False,indent=2))
+          PY
+          export ENDLUME_E2E_RENDER_JOB="$RUNNER_TEMP/e867-gate/job.json"
+          export ENDLUME_E2E_RESULT="$RUNNER_TEMP/e867-gate/result.json"
+          /usr/bin/time -p "$E2E_BIN" >"$RUNNER_TEMP/e867-gate/stdout.log" 2>"$RUNNER_TEMP/e867-gate/stderr.log"
+          grep 'ENDLUME_DIAG' "$RUNNER_TEMP/e867-gate/stderr.log" || true
+          cat "$RUNNER_TEMP/e867-gate/result.json"
+
+      - name: Gate render time size codec audio and hardware
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+          export SRC="/Volumes/TOSHIBA EXT/ВАЙРОН/Render/First Pour Jazz/logs/005 — Ready Videos — project.json"
+          export OLD="/Volumes/TOSHIBA EXT/ВАЙРОН/Render/First Pour Jazz/005 — Ready Videos.mp4"
+          python3 - <<'PY'
+          import json,os,subprocess,re,math
+          from pathlib import Path
+          result=json.loads(Path(os.environ['RUNNER_TEMP']+'/e867-gate/result.json').read_text())
+          assert result['status']=='passed',result
+          row=result['results'][0]
+          wall=float(row['wallSeconds'])
+          out=Path(row['outputPath']); assert out.is_file()
+          mib=out.stat().st_size/1048576
+          assert wall<=30.0,(wall,'render >30 sec')
+          assert 475.0<=mib<=525.0,(mib,'size outside 500 MB ±5% UI target')
+          assert row.get('encoder')=='hevc_videotoolbox',row
+          assert row.get('audioMode')=='ORIGINAL_MP3_PACKET_COPY',row
+          def run(a):
+              return subprocess.run([str(x) for x in a],check=True,capture_output=True,text=True).stdout.strip()
+          p=json.loads(run(['ffprobe','-v','error','-show_entries','stream=codec_type,codec_name,width,height,pix_fmt,avg_frame_rate,sample_rate,channels,bit_rate:format=duration,size,bit_rate','-of','json',out]))
+          v=next(x for x in p['streams'] if x['codec_type']=='video')
+          a=next(x for x in p['streams'] if x['codec_type']=='audio')
+          assert v['codec_name']=='hevc' and v['width']==1920 and v['height']==1080 and v['avg_frame_rate']=='60/1',v
+          assert v.get('pix_fmt')=='yuv420p',v
+          assert a['codec_name']=='mp3' and a.get('sample_rate')=='48000' and a.get('channels')==2,a
+          print('GATE_WALL_SECONDS=',wall)
+          print('GATE_SIZE_MIB=',round(mib,3))
+          print('GATE_OUTPUT_BYTES=',out.stat().st_size)
+          print('GATE_VIDEO_BITRATE=',v.get('bit_rate'))
+          print('GATE_FORMAT_DURATION=',p['format']['duration'])
+          print('GATE_ENCODER=',row.get('encoder'))
+          print('GATE_AUDIO_MODE=',row.get('audioMode'))
+          Path(os.environ['RUNNER_TEMP']+'/e867-gate/outpath').write_text(str(out))
+          PY
+
+      - name: Prove all 10 MP3 tracks are whole and no early EOF
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+          export SRC="/Volumes/TOSHIBA EXT/ВАЙРОН/Render/First Pour Jazz/logs/005 — Ready Videos — project.json"
+          OUT="$(cat "$RUNNER_TEMP/e867-gate/outpath")"
+          export OUT
+          python3 - <<'PY'
+          import json,os,subprocess
+          from pathlib import Path
+          d=json.loads(Path(os.environ['SRC']).read_text(errors='replace'))
+          tracks=[Path(x) for x in d['project']['audio']]
+          def run(a):
+              return subprocess.run([str(x) for x in a],check=True,capture_output=True,text=True).stdout.strip()
+          durations=[]; sig=None
+          for i,p in enumerate(tracks,1):
+              q=json.loads(run(['ffprobe','-v','error','-select_streams','a:0','-show_entries','stream=codec_name,sample_rate,channels:format=duration','-of','json',p]))
+              s=q['streams'][0]; cur=(s['codec_name'],s['sample_rate'],s['channels'])
+              assert cur==('mp3','48000',2),(i,cur)
+              if sig is None:sig=cur
+              assert cur==sig
+              durations.append(float(q['format']['duration']))
+          target=7200.0;t=0.0;i=0;boundaries=[]
+          while t<target:
+              t+=durations[i%len(durations)]
+              boundaries.append(t);i+=1
+          expected=t
+          outdur=float(run(['ffprobe','-v','error','-show_entries','format=duration','-of','default=nw=1:nk=1',os.environ['OUT']]))
+          assert abs(outdur-expected)<=1.0,(outdur,expected)
+          # Decode immediately before/after every first-cycle track boundary.
+          for n,b in enumerate(boundaries[:10],1):
+              for pos in (max(0,b-0.12),min(outdur-0.12,b+0.02)):
+                  subprocess.run(['ffmpeg','-hide_banner','-loglevel','error','-ss',f'{pos:.6f}','-i',os.environ['OUT'],'-map','0:a:0','-t','0.10','-f','null','-'],check=True)
+              print('TRACK_BOUNDARY_OK',n,round(b,6))
+          subprocess.run(['ffmpeg','-hide_banner','-loglevel','error','-ss',f'{max(0,outdur-0.30):.6f}','-i',os.environ['OUT'],'-map','0:a:0','-t','0.25','-f','null','-'],check=True)
+          print('SOURCE_TRACK_DURATIONS=',json.dumps(durations))
+          print('WHOLE_TRACK_EXPECTED_DURATION=',expected)
+          print('FINAL_AUDIO_DURATION=',outdur)
+          print('ALL_10_SONGS_COMPLETE_GREEN')
+          PY
+
+      - name: Visual regression Effects and Subscribe
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+          OLD="/Volumes/TOSHIBA EXT/ВАЙРОН/Render/First Pour Jazz/005 — Ready Videos.mp4"
+          OUT="$(cat "$RUNNER_TEMP/e867-gate/outpath")"
+          export OLD OUT
+          python3 - <<'PY'
+          import os,subprocess,re
+          points=[5.0,12.0,22.0,185.0,202.0]
+          vals=[]
+          for t in points:
+              p=subprocess.run(['ffmpeg','-hide_banner','-ss',str(t),'-i',os.environ['OLD'],'-ss',str(t),'-i',os.environ['OUT'],'-t','0.5','-filter_complex','[0:v]format=yuv420p[a];[1:v]format=yuv420p[b];[a][b]ssim','-f','null','-'],capture_output=True,text=True)
+              if p.returncode!=0: raise SystemExit(p.stderr)
+              m=re.findall(r'All:([0-9.]+)',p.stderr)
+              assert m,(t,p.stderr[-1000:])
+              v=float(m[-1]); vals.append(v)
+              assert v>=0.985,(t,v)
+              print('VISUAL_SSIM',t,v)
+          print('VISUAL_SSIM_MIN=',min(vals))
+          print('EFFECTS_SUBSCRIBE_VISUAL_GREEN')
+          PY
+
+      - name: Decode final video start middle tail and inspect diagnostics
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+          OUT="$(cat "$RUNNER_TEMP/e867-gate/outpath")"
+          DUR="$(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 "$OUT")"
+          python3 - "$OUT" "$DUR" <<'PY'
+          import subprocess,sys
+          p=sys.argv[1];d=float(sys.argv[2])
+          for x in [0.0,d/2,max(0,d-1.0)]:
+              subprocess.run(['ffmpeg','-hide_banner','-loglevel','error','-ss',f'{x:.3f}','-i',p,'-map','0:v:0','-frames:v','2','-f','null','-'],check=True)
+          print('FINAL_VIDEO_DECODE_GREEN')
+          PY
+          grep '"encoder":"hevc_videotoolbox"' "$RUNNER_TEMP/e867-gate/stderr.log" >/dev/null
+          if grep -E '"encoder":"libx265"|encoderClass":"software"' "$RUNNER_TEMP/e867-gate/stderr.log"; then
+            echo SOFTWARE_FALLBACK_DETECTED
+            exit 88
+          fi
+          echo HARDWARE_HEVC_ONLY_GREEN
+
+      - name: Cleanup diagnostic output
+        if: always()
+        shell: bash
+        run: rm -rf "/Volumes/TOSHIBA EXT/.ENDLUME-867-EXACT-GATE" || true

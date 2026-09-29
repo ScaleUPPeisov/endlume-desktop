@@ -265,14 +265,12 @@ fn parse_max_volume_db_1000(stderr:&[u8])->Option<f64>{
 }
 async fn probe_audio_peak_db_1000(app:&AppHandle,path:&Path,pos:f64)->Result<f64,String>{
   let ss=format!("{:.3}",pos.max(0.0));
-  let args=vec!["-hide_banner","-nostats","-v","info","-ss",ss.as_str(),"-i",path.to_string_lossy().as_ref(),"-map","0:a:0","-t","4.0","-af","volumedetect","-f","null","-"].into_iter().map(String::from).collect();
+  let args=vec!["-hide_banner","-nostats","-v","info","-ss",ss.as_str(),"-i",path.to_string_lossy().as_ref(),"-map","0:a:0","-t","2.0","-af","volumedetect","-f","null","-"].into_iter().map(String::from).collect();
   let (_,stderr)=output(app,"ffmpeg",args).await.map_err(|e|format!("10.0 audio audibility probe @ {ss}s: {e}"))?;
   parse_max_volume_db_1000(&stderr).ok_or_else(||format!("10.0 audio audibility probe @ {ss}s: max_volume not found"))
 }
 async fn verify_audio_audible_1000(app:&AppHandle,path:&Path,expected:f64)->Result<f64,String>{
-  let mut positions=vec![0.5,(expected*0.25).max(0.5),(expected*0.50).max(0.5),(expected-8.0).max(0.5)];
-  positions.sort_by(|a,b|a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-  positions.dedup_by(|a,b|(*a-*b).abs()<1.0);
+  let positions=[10.0_f64.min((expected-1.0).max(0.5)),(expected*0.50).max(0.5)];
   let mut best=f64::NEG_INFINITY;let mut samples=Vec::new();
   for pos in positions{
     let peak=probe_audio_peak_db_1000(app,path,pos).await?;

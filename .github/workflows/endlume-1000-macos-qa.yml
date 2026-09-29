@@ -5,6 +5,7 @@ on:
     branches: [release-prep/endlume-10.0.0]
     paths-ignore:
       - '.github/workflows/endlume-1000-macos-rc.yml'
+      - '.github/workflows/endlume-1000-dual-stable.yml'
   workflow_dispatch:
 
 permissions:

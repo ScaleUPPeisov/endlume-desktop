@@ -111,8 +111,32 @@ jobs:
           npm run check
           npm run build
           python3 scripts/test-live-preview-hotfix-866.py
-          python3 scripts/test-managed-license-render-gate.py
-          python3 scripts/test-runtime-safety-8-62.py
+          python3 - <<'PY'
+          from pathlib import Path
+          r=Path('src-tauri/src/render.rs').read_text()
+          q=Path('src-tauri/src/queue.rs').read_text()
+          required_render=[
+            'const LICENSE_BLOCKED:&str="__ENDLUME_LICENSE_BLOCKED__";',
+            'fn ensure_license_allowed()->Result<(),String>',
+            'pub async fn render_job(app:&AppHandle,job:&QueueJob,cancel:Arc<AtomicBool>)->Result<RenderOutcome,String>{',
+            'ensure_license_allowed()?;crate::mp4_manifest::expand_video_prefix_cycle',
+            'verify_strict_857_result(app,&out,final_duration,original_audio,&durations).await?;',
+            'if let Err(e)=ensure_license_allowed(){let _=std::fs::remove_dir_all(&work);let _=std::fs::remove_file(&out);return Err(e)}',
+            'crate::license::telemetry_render_progress(job,progress.clamp(0.0,99.9),eta,stage,encoder);',
+          ]
+          for n in required_render:
+              assert n in r,n
+          assert r.count('ensure_license_allowed()?')>=9
+          for bad in ['STRICT_856_PAD_TARGET_BYTES','strict_856_pad_size','f.write_all(b"free")','set_len(current+add)']:
+              assert bad not in r,bad
+          for n in [
+            'let mut occupied=q.iter().map(|j|j.project.id.clone()).collect::<HashSet<_>>();',
+            'if let Some(job)=active.as_ref(){occupied.insert(job.project.id.clone());}',
+            'if !occupied.insert(project.id.clone()){continue}',
+          ]:
+              assert n in q,n
+          print('ENDLUME_867_LICENSE_QUEUE_RUNTIME_SAFETY_GREEN')
+          PY
           rm -rf .queue-test-dist
           ./node_modules/.bin/tsc src/queue-state.ts --target ES2022 --module ES2022 --moduleResolution Bundler --skipLibCheck --outDir .queue-test-dist --noEmit false
           node scripts/test-queue-finalization-8-58.mjs "$GITHUB_WORKSPACE/.queue-test-dist/queue-state.js"

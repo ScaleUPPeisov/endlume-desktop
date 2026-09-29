@@ -1,0 +1,225 @@
+name: ENDLUME 8.67 Render Performance Baseline
+
+on:
+  push:
+    branches: [hotfix/endlume-8.67-render-perf-staging]
+    paths:
+      - '.github/workflows/endlume-867-render-perf-baseline.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-867-render-perf-baseline
+  cancel-in-progress: true
+
+jobs:
+  baseline:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Freeze product source at released 8.66
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git diff --name-only fe7aee536a9af2aaa85671458868e3b220c8954c...HEAD
+          bad="$(git diff --name-only fe7aee536a9af2aaa85671458868e3b220c8954c...HEAD | grep -v '^\.github/workflows/endlume-867-render-perf-baseline.yml$' || true)"
+          test -z "$bad"
+          test "$(node -p "require('./package.json').version")" = "1.0.0-alpha.8.66"
+          echo ENDLUME_867_BASELINE_SOURCE_FROZEN_GREEN
+
+      - name: Discover exact First Pour Jazz 005 / 10-track side file
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import json, os, subprocess
+          from pathlib import Path
+          roots=[
+              Path('/Volumes/TOSHIBA EXT/ВАЙРОН/Render/First Pour Jazz'),
+              Path('/Volumes/TOSHIBA EXT'),
+              Path.home()/'Library'/'Application Support',
+          ]
+          cand=[]
+          exact_output=None
+          p=Path('/Volumes/TOSHIBA EXT/ВАЙРОН/Render/First Pour Jazz/005 — Ready Videos.mp4')
+          if p.is_file(): exact_output=p
+          for root in roots:
+              if not root.exists(): continue
+              cmd=['/usr/bin/find',str(root),'-type','f','-name','*project.json','-print']
+              try:
+                  r=subprocess.run(cmd,capture_output=True,text=True,timeout=45,check=False)
+              except subprocess.TimeoutExpired:
+                  continue
+              for line in r.stdout.splitlines():
+                  side=Path(line)
+                  try: data=json.loads(side.read_text(errors='replace'))
+                  except Exception: continue
+                  project=data.get('project') if isinstance(data,dict) else None
+                  if not isinstance(project,dict): continue
+                  audio=project.get('audio') or []
+                  name=str(project.get('name') or '')
+                  score=0
+                  if len(audio)==10: score+=100
+                  if 'First Pour Jazz' in str(side): score+=80
+                  if name=='005' or name.startswith('005'): score+=60
+                  if '/logs/' in str(side): score+=20
+                  if score>=100:
+                      cand.append((score,side.stat().st_mtime,side,data))
+          if not cand:
+              raise SystemExit('NO_MATCHING_10_TRACK_FIRST_POUR_JAZZ_SIDE_FILE')
+          cand.sort(key=lambda x:(x[0],x[1]),reverse=True)
+          score,mtime,side,data=cand[0]
+          project=data['project']
+          print('BASELINE_SIDE',side)
+          print('BASELINE_PROJECT_NAME',project.get('name'))
+          print('BASELINE_PROJECT_ID',project.get('id'))
+          print('BASELINE_AUDIO_COUNT',len(project.get('audio') or []))
+          print('BASELINE_MEDIA_COUNT',len(project.get('media') or []))
+          print('BASELINE_EFFECTS',len([x for x in data.get('effects',[]) if isinstance(x,dict) and x.get('enabled')]))
+          print('BASELINE_SUBSCRIBES',len([x for x in data.get('subscribes',[]) if isinstance(x,dict) and ((x.get('effect') or {}).get('enabled') if isinstance(x.get('effect'),dict) else x.get('enabled'))]))
+          env=Path(os.environ['GITHUB_ENV'])
+          with env.open('a') as f:
+              f.write('SIDE='+str(side)+'\n')
+              if exact_output: f.write('EXISTING_OUTPUT='+str(exact_output)+'\n')
+          Path('baseline-side.json').write_text(json.dumps(data,ensure_ascii=False,indent=2))
+          PY
+
+      - name: Probe existing user result and all 10 source tracks
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+          python3 - <<'PY'
+          import json, os, subprocess
+          from pathlib import Path
+          data=json.loads(Path('baseline-side.json').read_text())
+          audio=[Path(x) for x in data['project']['audio']]
+          def out(args):
+              return subprocess.run([str(x) for x in args],check=True,capture_output=True,text=True).stdout.strip()
+          rows=[]
+          total=0.0
+          for i,p in enumerate(audio,1):
+              assert p.is_file(),p
+              raw=json.loads(out(['ffprobe','-v','error','-select_streams','a:0','-show_entries','stream=codec_name,sample_rate,channels:format=duration','-of','json',p]))
+              d=float(raw['format']['duration']); total+=d
+              st=raw['streams'][0]
+              rows.append({'i':i,'name':p.name,'duration':d,'codec':st.get('codec_name'),'sample_rate':st.get('sample_rate'),'channels':st.get('channels'),'bytes':p.stat().st_size})
+          print('SOURCE_AUDIO_TRACKS='+json.dumps(rows,ensure_ascii=False))
+          print('SOURCE_AUDIO_TOTAL_SECONDS=%.6f'%total)
+          existing=os.environ.get('EXISTING_OUTPUT')
+          if existing and Path(existing).is_file():
+              p=Path(existing)
+              raw=json.loads(out(['ffprobe','-v','error','-show_entries','stream=codec_type,codec_name,width,height,pix_fmt,avg_frame_rate,bit_rate,sample_rate,channels:format=duration,bit_rate,size','-of','json',p]))
+              print('EXISTING_OUTPUT_BYTES='+str(p.stat().st_size))
+              print('EXISTING_OUTPUT_PROBE='+json.dumps(raw,ensure_ascii=False))
+          PY
+
+      - name: Stage native FFmpeg and build exact 8.66 E2E app
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
+          mkdir -p src-tauri/binaries
+          cp "$(command -v ffmpeg)" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp "$(command -v ffprobe)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          chmod +x src-tauri/binaries/ffmpeg-aarch64-apple-darwin src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('src-tauri/tauri.conf.json'); d=json.loads(p.read_text()); d['bundle']['createUpdaterArtifacts']=False
+          p.write_text(json.dumps(d,ensure_ascii=False,indent=2)+'\n')
+          PY
+          npm ci
+          CARGO_TARGET_DIR="$HOME/.endlume-build-cache/endlume-867-baseline" npm run tauri build -- --bundles app --features e2e-render
+          APP="$(find "$HOME/.endlume-build-cache/endlume-867-baseline/release/bundle/macos" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          test -d "$APP"
+          EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
+          echo "E2E_BIN=$APP/Contents/MacOS/$EXE" >> "$GITHUB_ENV"
+          echo ENDLUME_867_BASELINE_BUILD_GREEN
+
+      - name: Run exact current project to local SSD
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+          rm -rf "$RUNNER_TEMP/endlume-867-local"
+          mkdir -p "$RUNNER_TEMP/endlume-867-local/out"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          data=json.loads(Path('baseline-side.json').read_text())
+          data['project']['id']=str(data['project'].get('id') or '005')+'-e867-local'
+          data['project']['name']='005 E867 LOCAL BASELINE'
+          data['settings']['outputDir']=str(Path(os.environ['RUNNER_TEMP'])/'endlume-867-local'/'out')
+          Path(os.environ['RUNNER_TEMP']+'/endlume-867-local/job.json').write_text(json.dumps(data,ensure_ascii=False,indent=2))
+          PY
+          export ENDLUME_E2E_RENDER_JOB="$RUNNER_TEMP/endlume-867-local/job.json"
+          export ENDLUME_E2E_RESULT="$RUNNER_TEMP/endlume-867-local/result.json"
+          /usr/bin/time -p "$E2E_BIN" >"$RUNNER_TEMP/endlume-867-local/stdout.log" 2>"$RUNNER_TEMP/endlume-867-local/stderr.log"
+          cat "$RUNNER_TEMP/endlume-867-local/result.json"
+          python3 - <<'PY'
+          import json, os, subprocess
+          from pathlib import Path
+          r=json.loads(Path(os.environ['RUNNER_TEMP']+'/endlume-867-local/result.json').read_text())
+          row=r['results'][0]; p=Path(row['outputPath']); assert p.is_file()
+          probe=subprocess.run(['ffprobe','-v','error','-show_entries','stream=codec_type,codec_name,width,height,pix_fmt,avg_frame_rate,bit_rate,sample_rate,channels:format=duration,bit_rate,size','-of','json',str(p)],check=True,capture_output=True,text=True).stdout.strip()
+          print('LOCAL_BASELINE_WALL_SECONDS='+str(row['wallSeconds']))
+          print('LOCAL_BASELINE_BYTES='+str(p.stat().st_size))
+          print('LOCAL_BASELINE_ENCODER='+str(row.get('encoder')))
+          print('LOCAL_BASELINE_PROBE='+probe)
+          PY
+
+      - name: Run exact current project to TOSHIBA EXT
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+          EXT="/Volumes/TOSHIBA EXT/.ENDLUME-867-DIAG"
+          rm -rf "$EXT"
+          mkdir -p "$EXT/out" "$RUNNER_TEMP/endlume-867-external"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          data=json.loads(Path('baseline-side.json').read_text())
+          data['project']['id']=str(data['project'].get('id') or '005')+'-e867-external'
+          data['project']['name']='005 E867 EXTERNAL BASELINE'
+          data['settings']['outputDir']='/Volumes/TOSHIBA EXT/.ENDLUME-867-DIAG/out'
+          Path(os.environ['RUNNER_TEMP']+'/endlume-867-external/job.json').write_text(json.dumps(data,ensure_ascii=False,indent=2))
+          PY
+          export ENDLUME_E2E_RENDER_JOB="$RUNNER_TEMP/endlume-867-external/job.json"
+          export ENDLUME_E2E_RESULT="$RUNNER_TEMP/endlume-867-external/result.json"
+          /usr/bin/time -p "$E2E_BIN" >"$RUNNER_TEMP/endlume-867-external/stdout.log" 2>"$RUNNER_TEMP/endlume-867-external/stderr.log"
+          cat "$RUNNER_TEMP/endlume-867-external/result.json"
+          python3 - <<'PY'
+          import json, os, subprocess
+          from pathlib import Path
+          r=json.loads(Path(os.environ['RUNNER_TEMP']+'/endlume-867-external/result.json').read_text())
+          row=r['results'][0]; p=Path(row['outputPath']); assert p.is_file()
+          probe=subprocess.run(['ffprobe','-v','error','-show_entries','stream=codec_type,codec_name,width,height,pix_fmt,avg_frame_rate,bit_rate,sample_rate,channels:format=duration,bit_rate,size','-of','json',str(p)],check=True,capture_output=True,text=True).stdout.strip()
+          print('EXTERNAL_BASELINE_WALL_SECONDS='+str(row['wallSeconds']))
+          print('EXTERNAL_BASELINE_BYTES='+str(p.stat().st_size))
+          print('EXTERNAL_BASELINE_ENCODER='+str(row.get('encoder')))
+          print('EXTERNAL_BASELINE_PROBE='+probe)
+          PY
+
+      - name: Benchmark 500 MB final-copy path on same external volume
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/run-endlume-861-external-copy.py "/Volumes/TOSHIBA EXT" "$RUNNER_TEMP/endlume-867-copy.json"
+          cat "$RUNNER_TEMP/endlume-867-copy.json"
+
+      - name: Cleanup diagnostic external output only
+        if: always()
+        shell: bash
+        run: |
+          rm -rf "/Volumes/TOSHIBA EXT/.ENDLUME-867-DIAG" || true

@@ -43,7 +43,7 @@ jobs:
           assert cfg['plugins']['updater']['endpoints']==['https://github.com/ScaleUPPeisov/scaleup-site/releases/download/endlume-stable/latest.json']
           assert re.search(r'^version\s*=\s*"10\.0\.0"$',Path('src-tauri/Cargo.toml').read_text(),re.M)
           r=Path('src-tauri/src/render.rs').read_text()
-          for token in ['visual-master-v10','subscribe-master-v10','visualCache":"HIT','subscribeCache":"HIT','usage_mode','show_duration_sec']:
+          for token in ['visual-master-v10','subscribe-master-v10','visualCache":"HIT','subscribeCache":"HIT','usage_mode','show_duration_sec','AUDIO BLOCKER','audio-audibility']:
               assert token in r,token
           print('ENDLUME_1000_IDENTITY_GREEN')
           PY
@@ -84,27 +84,42 @@ jobs:
           python3 scripts/find-endlume-real-subscribe.py "$GITHUB_WORKSPACE/e1000-subscribe.json"
           test -s "$GITHUB_WORKSPACE/e1000-subscribe.json"
 
-      - name: Real fidelity regressions
+      - name: Build audit-only 10.0 render_job app
         shell: bash
         run: |
           set -Eeuo pipefail
+          npm run tauri build -- --bundles app --features e2e-render
+          APP="$(find src-tauri/target/release/bundle/macos -maxdepth 1 -type d -name '*.app' -print -quit)"
+          test -n "$APP" -a -d "$APP"
+          EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
+          echo "E1000_E2E_BIN=$APP/Contents/MacOS/$EXE" >> "$GITHUB_ENV"
+          echo ENDLUME_1000_E2E_BUILD_GREEN
+
+      - name: Cold + warm real render_job on TOSHIBA EXT
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -d "/Volumes/TOSHIBA EXT"
+          OUT="/Volumes/TOSHIBA EXT/ENDLUME-1000-QA"
+          rm -rf "$OUT"
+          mkdir -p "$OUT"
+          find "$HOME/Library/Caches" -type d \( -name 'visual-master-v10' -o -name 'subscribe-master-v10' \) -prune -exec rm -rf {} + 2>/dev/null || true
           FFM="$(find src-tauri/binaries -maxdepth 1 -type f -name 'ffmpeg-aarch64-apple-darwin' -print -quit)"
           FFP="$(find src-tauri/binaries -maxdepth 1 -type f -name 'ffprobe-aarch64-apple-darwin' -print -quit)"
-          python3 scripts/run-endlume-860-five-masters.py "$SIDE" "$FFM" "$FFP" "$GITHUB_WORKSPACE/e1000-five.json"
-          python3 scripts/run-endlume-857-real-e2e.py "$SIDE" "$FFM" "$FFP" "$GITHUB_WORKSPACE/e1000-off.json"
-          python3 scripts/run-endlume-860-real-subscribe.py "$SIDE" "$GITHUB_WORKSPACE/e1000-subscribe.json" "$FFM" "$FFP" "$GITHUB_WORKSPACE/e1000-on.json"
+          mkdir -p "$GITHUB_WORKSPACE/e1000-qa"
+          ENDLUME_1000_OUTPUT_DIR="$OUT" python3 scripts/run-endlume-1000-render-job-e2e.py "$SIDE" "$GITHUB_WORKSPACE/e1000-subscribe.json" "$E1000_E2E_BIN" "$FFM" "$FFP" "$GITHUB_WORKSPACE/e1000-qa/metrics.json"
+          cat "$GITHUB_WORKSPACE/e1000-qa/metrics.json"
           python3 - <<'PY'
           import json
-          five=json.load(open('e1000-five.json')); off=json.load(open('e1000-off.json')); on=json.load(open('e1000-on.json'))
-          assert five.get('status')=='passed' and max(five.get('times') or [999])<=30.0,five
-          assert off.get('status')=='passed' and off.get('release_gate') is True,off
-          assert on.get('status')=='passed' and on.get('subscribe_on_gate') is True,on
-          assert off.get('resolution')=='1920x1080' and off.get('fps')=='60/1',off
-          assert off.get('audio_codec')=='mp3' and off.get('mp3_packet_copy') is True,off
-          assert 500_000_000<=off.get('final_bytes',0)<=700_000_000,off
-          assert 500_000_000<=on.get('final_bytes',0)<=700_000_000,on
-          print('ENDLUME_1000_REAL_FIXTURE_GREEN')
+          x=json.load(open('e1000-qa/metrics.json'))
+          assert x['status']=='passed' and x['release_gate'] is True,x
+          assert x['cold_seconds']<=35,x
+          assert max(x['warm_seconds'])<=15,x
+          assert all(max(r['peaks_db'])>-55 for r in x['results']),x
+          assert all(500_000_000<=r['bytes']<=700_000_000 for r in x['results']),x
+          print('ENDLUME_1000_TOSHIBA_WARM_AUDIO_GREEN',x['cold_seconds'],x['warm_seconds'])
           PY
+          rm -rf "$OUT"
 
       - name: Build macOS application candidate
         shell: bash
@@ -117,4 +132,8 @@ jobs:
           test "$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist")" = '10.0.0'
           EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
           /usr/bin/lipo -archs "$APP/Contents/MacOS/$EXE" | grep -qw arm64
+          if strings "$APP/Contents/MacOS/$EXE" | grep -q 'ENDLUME_E2E_RENDER_JOB'; then
+            echo 'E2E marker leaked into production binary'
+            exit 43
+          fi
           echo ENDLUME_1000_MAC_BUILD_GREEN

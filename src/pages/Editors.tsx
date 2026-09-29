@@ -1,11 +1,16 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useApp } from '../store';
 import { api } from '../tauri';
-import type { EffectPreset, SubscribePreset } from '../types';
+import type { EffectPreset, EffectUsageMode, SubscribeFirstAppearance, SubscribePreset } from '../types';
 import { Icon, Range } from '../components/ui';
 import { LiveCompositePreview, type LivePreviewAssets } from '../components/LiveCompositePreview';
 
 const clamp01 = (value: number) => Math.max(0, Math.min(1, value));
+const effectiveUsageMode = (item: EffectPreset): EffectUsageMode => item.usageMode ?? (item.enabled ? 'always' : 'off');
+const usageLabel = (item: EffectPreset) => { const mode=effectiveUsageMode(item); return mode==='off'?'ВЫКЛ':mode==='always'?'ВСЕГДА':'ПО ИНТЕРВАЛУ'; };
+const subscribeFirst = (item: SubscribePreset): SubscribeFirstAppearance => item.firstAppearance ?? 'after-interval';
+const subscribeInterval = (item: SubscribePreset) => Math.max(60, item.intervalSec ?? item.repeatEverySec ?? 240);
+const subscribeDuration = (item: SubscribePreset) => Math.max(2, Math.min(20, item.showDurationSec ?? 8));
 
 const emptyEffect = (source = ''): EffectPreset => ({
   id: crypto.randomUUID(),
@@ -27,6 +32,9 @@ const emptyEffect = (source = ''): EffectPreset => ({
   previewFrameTime: 0,
   startSec: 0,
   endSec: null,
+  usageMode: 'always',
+  intervalSec: 240,
+  usageDurationSec: 30,
 });
 
 const emptySubscribe = (source = ''): SubscribePreset => ({
@@ -35,9 +43,14 @@ const emptySubscribe = (source = ''): SubscribePreset => ({
   x: 0.5,
   y: 0.5,
   scale: 0.32,
-  firstAtSec: 10,
-  secondAtSec: 20,
-  repeatEverySec: 300,
+  firstAtSec: 240,
+  secondAtSec: 480,
+  repeatEverySec: 240,
+  usageMode: 'interval',
+  intervalSec: 240,
+  firstAppearance: 'after-interval',
+  customFirstAtSec: 240,
+  showDurationSec: 8,
 });
 
 export function EditorRouter() {
@@ -155,13 +168,18 @@ function EffectsEditor() {
           />
           <div className="previewTime"><span>Стартовый кадр proxy</span><Range value={current.previewFrameTime} min={0} max={60} step={0.1} onChange={(value) => patch({ previewFrameTime: value })} minLabel="0:00" maxLabel="1:00" /><b>{current.previewFrameTime.toFixed(1)} сек</b></div>
           <button className="refreshPreview" disabled={previewBusy} onClick={() => void loadLive()}><Icon name="refresh" /> {previewBusy ? 'ГОТОВЛЮ PROXY…' : 'ОБНОВИТЬ LIVE PREVIEW'}</button>
-          <Timeline start={current.startSec} end={current.endSec} total={useApp.getState().settings.durationHours * 3600} onChange={(start, end) => patch({ startSec: start, endSec: end })} />
+          {current.usageMode === undefined && <Timeline start={current.startSec} end={current.endSec} total={useApp.getState().settings.durationHours * 3600} onChange={(start, end) => patch({ startSec: start, endSec: end })} />}
         </> : <div className="emptyEditor"><Icon name="effects" /><h3>Добавьте эффект</h3><p>Видео сохраняется во внутренней библиотеке ENDLUME.</p></div>}
       </main>
 
       <aside className="editorControls">
         {current && <>
           <label>Название<input value={current.name} onChange={(event) => patch({ name: event.target.value })} /></label>
+          <UsageModeControl value={effectiveUsageMode(current)} onChange={(usageMode) => patch({ usageMode, enabled: usageMode !== 'off', startSec: usageMode === 'always' ? 0 : current.startSec, endSec: usageMode === 'always' ? null : current.endSec })} />
+          {effectiveUsageMode(current) === 'interval' && <div className="usageSliders">
+            <SmallRange label="Показывать каждые, мин" value={(current.intervalSec ?? 240) / 60} min={1} max={30} step={1} onChange={(value) => patch({ intervalSec: value * 60 })} />
+            <SmallRange label="Длительность эффекта, сек" value={current.usageDurationSec ?? 30} min={5} max={60} step={1} onChange={(value) => patch({ usageDurationSec: value })} />
+          </div>}
           <label>Режим<select value={current.mode} onChange={(event) => patch({ mode: event.target.value as EffectPreset['mode'] })}><option value="chromakey">Chromakey</option><option value="luma">Luma Alpha</option><option value="screen">Screen Blend</option></select></label>
           {current.mode === 'chromakey' && <>
             <label>Цвет chromakey<input type="color" value={current.keyColor} onChange={(event) => patch({ keyColor: event.target.value })} /></label>
@@ -268,7 +286,7 @@ function SubscribeEditor() {
         <button className="addAsset" onClick={add}>+ ДОБАВИТЬ</button>
         {subscribes.map((item) => <button key={item.id} className={`assetItem ${selected === item.id ? 'active' : ''}`} onClick={() => setSelected(item.id)}>
           <span className="assetThumb pink"><Icon name="subscribe" /></span>
-          <span><b>{item.name}</b><small>{item.enabled ? 'Включён' : 'Выключен'} • каждые {Math.round(item.repeatEverySec / 60)} мин</small></span>
+          <span><b>{item.name}</b><small>{usageLabel(item)}{effectiveUsageMode(item) === 'interval' ? ` • каждые ${Math.round(subscribeInterval(item) / 60)} мин` : ''}</small></span>
           <i className={item.enabled ? 'enabled' : 'disabled'} title={item.enabled ? 'Выключить' : 'Включить'} onClick={(event) => {
             event.stopPropagation();
             void saveLibrary(subscribes.map((entry) => entry.id === item.id ? { ...entry, enabled: !entry.enabled } : entry), true);
@@ -294,11 +312,15 @@ function SubscribeEditor() {
           <SmallRange label="Similarity" value={current.similarity} min={0.001} max={0.6} step={0.001} onChange={(value) => patch({ similarity: value })} />
           <SmallRange label="Blend / мягкость края" value={current.blend} min={0.001} max={0.35} step={0.001} onChange={(value) => patch({ blend: value })} />
             <SmallRange label="Despill / убрать зелёный ореол" value={current.despill} min={0} max={1} step={0.01} onChange={(value) => patch({ despill: value })} />
-          <div className="schedule">
-            <label>Первое появление<input type="number" min={0} value={current.firstAtSec} onChange={(event) => patch({ firstAtSec: Math.max(0, Number(event.target.value) || 0) })} /><small>сек</small></label>
-            <label>Второе появление<input type="number" min={0} value={current.secondAtSec} onChange={(event) => patch({ secondAtSec: Math.max(0, Number(event.target.value) || 0) })} /><small>сек</small></label>
-            <label>Затем каждые<input type="number" min={1} value={Math.max(1, Math.round(current.repeatEverySec / 60))} onChange={(event) => patch({ repeatEverySec: Math.max(60, (Number(event.target.value) || 1) * 60) })} /><small>мин</small></label>
-          </div>
+          <UsageModeControl value={effectiveUsageMode(current)} onChange={(usageMode) => patch({ usageMode, enabled: usageMode !== 'off' })} />
+          {effectiveUsageMode(current) === 'interval' && <>
+            <div className="usageSliders">
+              <SmallRange label="Показывать каждые, мин" value={subscribeInterval(current) / 60} min={1} max={30} step={1} onChange={(value) => patch({ intervalSec: value * 60, repeatEverySec: value * 60 })} />
+              <SmallRange label="Длительность показа, сек" value={subscribeDuration(current)} min={2} max={20} step={1} onChange={(value) => patch({ showDurationSec: value })} />
+            </div>
+            <FirstAppearanceControl value={subscribeFirst(current)} onChange={(firstAppearance) => patch({ firstAppearance })} />
+            {subscribeFirst(current) === 'custom' && <label>Своё время<input type="time" step={1} value={secondsToTimeInput(current.customFirstAtSec ?? subscribeInterval(current))} onChange={(event) => patch({ customFirstAtSec: timeInputToSeconds(event.target.value) })} /><small>чч:мм:сс</small></label>}
+          </>}
           <p className="editorHint">Subscribe использует тот же aspect-safe compositor, что и Effects.</p>
           <button className="savePreset" onClick={async () => { await saveLibrary([...subscribes], true); setSaved(true); window.setTimeout(() => setSaved(false), 1200); }}><Icon name="save" /> {saved ? 'СОХРАНЕНО ✓' : 'СОХРАНИТЬ PRESET'}</button>
           <button className="savePreset" onClick={() => void saveLibrary(subscribes.map((item) => item.id === current.id ? { ...item, enabled: !item.enabled } : item), true)}>{current.enabled ? 'ВЫКЛЮЧИТЬ SUBSCRIBE' : 'ВКЛЮЧИТЬ SUBSCRIBE'}</button>
@@ -551,6 +573,15 @@ function PreviewStage({ title, assets, busy, current, onMove, onScale, onPickCol
   </div>;
 }
 
+function UsageModeControl({ value, onChange }: { value: EffectUsageMode; onChange: (value: EffectUsageMode) => void }) {
+  return <div className="usageModeBlock"><span>ИСПОЛЬЗОВАНИЕ</span><div className="usageSegments">{(['off','always','interval'] as EffectUsageMode[]).map((mode) => <button type="button" key={mode} className={value === mode ? 'selected' : ''} onClick={() => onChange(mode)}>{mode === 'off' ? 'ВЫКЛ' : mode === 'always' ? 'ВСЕГДА' : 'ПО ИНТЕРВАЛУ'}</button>)}</div></div>;
+}
+function FirstAppearanceControl({ value, onChange }: { value: SubscribeFirstAppearance; onChange: (value: SubscribeFirstAppearance) => void }) {
+  return <div className="usageModeBlock"><span>ПЕРВОЕ ПОЯВЛЕНИЕ</span><div className="usageSegments firstAppearance">{(['after-interval','immediate','custom'] as SubscribeFirstAppearance[]).map((mode) => <button type="button" key={mode} className={value === mode ? 'selected' : ''} onClick={() => onChange(mode)}>{mode === 'after-interval' ? 'ЧЕРЕЗ ИНТЕРВАЛ' : mode === 'immediate' ? 'СРАЗУ' : 'СВОЁ ВРЕМЯ'}</button>)}</div></div>;
+}
+function secondsToTimeInput(sec:number){const value=Math.max(0,Math.round(sec));const h=Math.floor(value/3600);const m=Math.floor((value%3600)/60);const ss=value%60;return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(ss).padStart(2,'0')}`;}
+function timeInputToSeconds(value:string){const parts=value.split(':').map(Number);if(parts.some(Number.isNaN))return 0;return Math.max(0,(parts.length===3?parts[0]*3600+parts[1]*60+parts[2]:parts[0]*3600+parts[1]*60));}
+
 function SmallRange({ label, value, min, max, step, onChange }: { label: string; value: number; min: number; max: number; step: number; onChange: (value: number) => void }) {
   return <div className="smallRange"><div><span>{label}</span><b>{value.toFixed(3).replace(/0+$/, '').replace(/\.$/, '')}</b></div><Range value={value} min={min} max={max} step={step} onChange={onChange} /></div>;
 }
@@ -582,17 +613,27 @@ function Timeline({ start, end, total, onChange }: { start: number; end: number 
 
 function SubscribeTimeline({ current }: { current: SubscribePreset }) {
   const total = useApp((s) => s.settings.durationHours * 3600);
+  const mode = effectiveUsageMode(current);
+  const interval = subscribeInterval(current);
+  const duration = subscribeDuration(current);
   const marks = useMemo(() => {
-    const values = [current.firstAtSec, current.secondAtSec].filter((value, index, all) => value >= 0 && value < total && all.indexOf(value) === index);
-    if (current.repeatEverySec > 0) {
-      for (let time = Math.max(current.firstAtSec, current.secondAtSec) + current.repeatEverySec; time < total && values.length < 10000; time += current.repeatEverySec) values.push(time);
+    if (mode === 'off') return [] as number[];
+    if (mode === 'always') return [0];
+    if (current.usageMode === undefined) {
+      const values = [current.firstAtSec, current.secondAtSec].filter((value, index, all) => value >= 0 && value < total && all.indexOf(value) === index);
+      if (current.repeatEverySec > 0) for (let time = Math.max(current.firstAtSec, current.secondAtSec) + current.repeatEverySec; time < total && values.length < 10000; time += current.repeatEverySec) values.push(time);
+      return values.sort((a, b) => a - b);
     }
-    return values.sort((a, b) => a - b);
-  }, [current.firstAtSec, current.secondAtSec, current.repeatEverySec, total]);
-  const last = marks.at(-1) ?? current.secondAtSec;
+    const first = subscribeFirst(current) === 'immediate' ? 0 : subscribeFirst(current) === 'custom' ? Math.max(0, current.customFirstAtSec ?? interval) : interval;
+    const values:number[] = [];
+    for (let time = first; time < total && values.length < 10000; time += interval) values.push(time);
+    return values;
+  }, [mode, interval, duration, current.usageMode, current.firstAtSec, current.secondAtSec, current.repeatEverySec, current.firstAppearance, current.customFirstAtSec, total]);
+  const totalVisible = mode === 'always' ? total : marks.reduce((sum, mark) => sum + Math.min(duration, Math.max(0, total - mark)), 0);
+  const last = marks.at(-1) ?? 0;
   return <div className="timeline subscribeTimeline smartTiming">
-    <div className="timelineHead"><b>РАСПИСАНИЕ SUBSCRIBE</b><span>{marks.length} показов</span></div>
-    <div className="smartTimingSummary compact"><span><small>ПЕРВОЕ</small><b>{fmtEditorTime(current.firstAtSec)}</b></span><span><small>ВТОРОЕ</small><b>{fmtEditorTime(current.secondAtSec)}</b></span><span><small>ПОСЛЕДНЕЕ</small><b>{fmtEditorTime(last)}</b></span><span><small>ИНТЕРВАЛ</small><b>{fmtEditorTime(current.repeatEverySec)}</b></span></div>
-    <div className="timeTrack">{marks.map((mark, index) => <i key={`${mark}-${index}`} style={{ left: `${mark / Math.max(1, total) * 100}%` }} title={fmtEditorTime(mark)} />)}</div>
+    <div className="timelineHead"><b>РАСПИСАНИЕ SUBSCRIBE</b><span>{mode === 'always' ? 'весь ролик' : `${marks.length} появлений • ${Math.round(totalVisible)} сек суммарно`}</span></div>
+    <div className="smartTimingSummary compact"><span><small>РЕЖИМ</small><b>{usageLabel(current)}</b></span><span><small>ПЕРВОЕ</small><b>{marks.length ? fmtEditorTime(marks[0]) : '—'}</b></span><span><small>ПОСЛЕДНЕЕ</small><b>{marks.length ? fmtEditorTime(last) : '—'}</b></span><span><small>ИНТЕРВАЛ</small><b>{mode === 'interval' ? fmtEditorTime(interval) : '—'}</b></span></div>
+    {marks.length > 0 && mode === 'interval' && <div className="timeTrack">{marks.map((mark, index) => <i key={`${mark}-${index}`} style={{ left: `${mark / Math.max(1, total) * 100}%` }} title={fmtEditorTime(mark)} />)}</div>}
   </div>;
 }

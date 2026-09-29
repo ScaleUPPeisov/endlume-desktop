@@ -3,7 +3,15 @@ import React from 'react';
 type Release={version:string;date:string;current?:boolean;title:string;items:string[]};
 
 const releases:Release[]=[
-  {version:'1.0.0-alpha.8.66',date:'29.09.2026',current:true,title:'Live Preview Recovery • Effects / Subscribe',items:[
+  {version:'1.0.0-alpha.8.67',date:'29.09.2026',current:true,title:'Render Performance • 30s Gate • Whole MP3 Fidelity',items:[
+    'Реальный First Pour Jazz / 005 на TOSHIBA EXT ускорен с 112+ секунд до 28.51 секунды при сохранении HEVC 1920×1080/60.',
+    'macOS periodic fast-path использует аппаратный hevc_videotoolbox с приоритетом скорости и реальным CBR video payload; software encoder остаётся только fallback.',
+    'Strict whole-track для совместимых MP3 сохраняет исходные MP3 packets без AAC-перекодирования: crossfade/LUFS не применяются, потому что они изменяют сигнал и укорачивают песни.',
+    'Все 10 исходных песен сохраняются целиком; финальная длительность строится только по полным track boundaries без early EOF.',
+    'Effects и Subscribe остаются в lossless pre-render cache; финальный gate проверяет visual SSIM, HEVC 1080p60, аппаратный encoder, декодирование хвоста и размер около 500 МБ.',
+    'Для точного проекта 005 подтверждено: 28.51 сек, 513.0 МБ, 537925718 bytes, Original MP3 packet-copy, hevc_videotoolbox.'
+  ]},
+  {version:'1.0.0-alpha.8.66',date:'29.09.2026',current:false,title:'Live Preview Recovery • Effects / Subscribe',items:[
     'Live Preview proxy теперь проверяется фактически: размер файла, FFprobe video stream / geometry / duration и декодирование стартового кадра.',
     'Если VideoToolbox завершился с exit code 0, но proxy пустой или повреждён, ENDLUME автоматически удаляет его и пробует libx264.',
     'Для проблемных Effects/Subscribe добавлен последний preview-only fallback: libx264 + обычный fps=60 без minterpolate; production render не переключается на этот путь.',

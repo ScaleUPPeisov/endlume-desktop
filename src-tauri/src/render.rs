@@ -1148,11 +1148,12 @@ async fn build_cached_visual_master_1000(app:&AppHandle,job:&QueueJob,effects:&[
     if probe_video_packets_857(app,&out).await.ok()==Some(master_frames){
       let sec=lookup.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"cache-lookup",sec);emit_timing(app,&job.project.id,"base-visual-cache",sec);
       let _=app.emit("engine-profile",json!({"id":job.project.id,"visualCache":"HIT","visualCacheKey":key}));
+      diag_line(json!({"kind":"cache","projectId":job.project.id,"visualCache":"HIT","visualCacheKey":key}));
       return Ok(out)
     }
     let _=std::fs::remove_file(&out);
   }
-  emit_timing(app,&job.project.id,"cache-lookup",lookup.elapsed().as_secs_f64());let _=app.emit("engine-profile",json!({"id":job.project.id,"visualCache":"MISS","visualCacheKey":key}));
+  emit_timing(app,&job.project.id,"cache-lookup",lookup.elapsed().as_secs_f64());let _=app.emit("engine-profile",json!({"id":job.project.id,"visualCache":"MISS","visualCacheKey":key}));diag_line(json!({"kind":"cache","projectId":job.project.id,"visualCache":"MISS","visualCacheKey":key}));
   let fps=job.settings.fps.max(1);let work_fps=if fps>=50{30}else{fps};let duration=master_frames as f64/fps as f64;let mut ws=job.settings.clone();ws.fps=work_fps;
   let base_still=work.join(format!("base-v10-{key}.png"));let prep_mark=Instant::now();
   let vf=base_filter(&ws,"0:v");let vf=vf.trim_start_matches("[0:v]").to_string();
@@ -1185,8 +1186,8 @@ async fn copy_head_frames_852(app:&AppHandle,job:&QueueJob,src:&Path,frames:usiz
 
 async fn render_periodic_sub_852(app:&AppHandle,job:&QueueJob,master:&Path,sub:&SubscribePreset,start_frame:usize,frames:usize,_work:&Path,label:&str,encoder:&str,attempt:u32,cancel:&AtomicBool,started:i64,timer:&Instant)->Result<PathBuf,String>{
   let fps=job.settings.fps.max(1);let work_fps=if fps>=50{30}else{fps};let phase=start_frame as f64/fps as f64;let key=subscribe_master_key_1000(master,sub,start_frame,frames,encoder)?;let root=cache_root_1000(app,"subscribe-master-v10")?;let out=root.join(format!("{key}.mp4"));
-  let lookup=Instant::now();if out.is_file()&&probe_video_packets_857(app,&out).await.ok()==Some(frames){let sec=lookup.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"subscribe-cache",sec);let _=app.emit("engine-profile",json!({"id":job.project.id,"subscribeCache":"HIT","subscribeCacheKey":key}));return Ok(out)}
-  let _=std::fs::remove_file(&out);let _=app.emit("engine-profile",json!({"id":job.project.id,"subscribeCache":"MISS","subscribeCacheKey":key}));let tmp=root.join(format!(".{key}-{}.tmp.mp4",uuid::Uuid::new_v4()));let mut ws=job.settings.clone();ws.fps=work_fps;
+  let lookup=Instant::now();if out.is_file()&&probe_video_packets_857(app,&out).await.ok()==Some(frames){let sec=lookup.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"subscribe-cache",sec);let _=app.emit("engine-profile",json!({"id":job.project.id,"subscribeCache":"HIT","subscribeCacheKey":key}));diag_line(json!({"kind":"cache","projectId":job.project.id,"subscribeCache":"HIT","subscribeCacheKey":key}));return Ok(out)}
+  let _=std::fs::remove_file(&out);let _=app.emit("engine-profile",json!({"id":job.project.id,"subscribeCache":"MISS","subscribeCacheKey":key}));diag_line(json!({"kind":"cache","projectId":job.project.id,"subscribeCache":"MISS","subscribeCacheKey":key}));let tmp=root.join(format!(".{key}-{}.tmp.mp4",uuid::Uuid::new_v4()));let mut ws=job.settings.clone();ws.fps=work_fps;
   let mut args:Vec<String>=vec!["-hide_banner","-loglevel","error","-stream_loop","-1","-ss",&phase.to_string(),"-i",master.to_string_lossy().as_ref(),"-i",sub.effect.source.as_str()].into_iter().map(String::from).collect();
   let one=vec![sub.effect.clone()];let (graph,last)=apply_effects_filter(format!("[0:v]fps={work_fps},setpts=PTS-STARTPTS[b0]"),"b0".into(),&one,&ws,1);let graph=graph.replace(":shortest=1:eof_action=repeat",":shortest=0:eof_action=pass");let graph=format!("{graph};[{last}]fps={fps},format=yuv420p[outv]");
   let duration=frames as f64/fps as f64;args.extend(vec!["-filter_complex",&graph,"-map","[outv]","-frames:v",&frames.to_string(),"-an"].into_iter().map(String::from));args.extend(periodic_fidelity_args(&job.settings,encoder,duration));args.extend(vec!["-fps_mode","cfr","-r",&fps.to_string(),"-video_track_timescale","60000","-progress","pipe:1","-y",tmp.to_string_lossy().as_ref()].into_iter().map(String::from));

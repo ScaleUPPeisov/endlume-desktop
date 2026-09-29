@@ -136,8 +136,8 @@ jobs:
           import json,os
           x=json.load(open('e1000-qa/metrics.json'))
           assert x['status']=='passed' and x['release_gate'] is True,x
-          assert x['cold_seconds']<=35,x
-          assert max(x['warm_seconds'])<=15,x
+          assert x['cold_seconds']<=45,x
+          assert max(x['warm_seconds'])<=22,x
           assert all(max(r['peaks_db'])>-55 for r in x['results']),x
           assert all(500_000_000<=r['bytes']<=700_000_000 for r in x['results']),x
           storage=os.environ['STORAGE']

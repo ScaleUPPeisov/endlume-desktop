@@ -3,7 +3,13 @@ import React from 'react';
 type Release={version:string;date:string;current?:boolean;title:string;items:string[]};
 
 const releases:Release[]=[
-  {version:'1.0.0-alpha.8.67',date:'29.09.2026',current:true,title:'Render Performance • 30s Gate • Whole MP3 Fidelity',items:[
+  {version:'10.0.0',date:'29.09.2026',current:true,title:'Grand Performance • Persistent Masters • Scheduling',items:[
+    'Effects и Subscribe: ВЫКЛ / ВСЕГДА / ПО ИНТЕРВАЛУ.',
+    'Subscribe: интервал, длительность показа, первое появление и live calculation.',
+    'Persistent visual/Subscribe masters и zero-copy 10.0 performance path.',
+    'Сохранены 1080p60 HEVC, Original MP3 packet-copy, проекты, лицензия и updater identity.'
+  ]},
+  {version:'1.0.0-alpha.8.67',date:'29.09.2026',current:false,title:'Render Performance • 30s Gate • Whole MP3 Fidelity',items:[
     'Реальный First Pour Jazz / 005 на TOSHIBA EXT ускорен с 112+ секунд до 28.51 секунды при сохранении HEVC 1920×1080/60.',
     'macOS periodic fast-path использует аппаратный hevc_videotoolbox с приоритетом скорости и реальным CBR video payload; software encoder остаётся только fallback.',
     'Strict whole-track для совместимых MP3 сохраняет исходные MP3 packets без AAC-перекодирования: crossfade/LUFS не применяются, потому что они изменяют сигнал и укорачивают песни.',

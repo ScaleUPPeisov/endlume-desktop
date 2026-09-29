@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: endlume-1000-macos-rc
@@ -111,9 +111,22 @@ jobs:
           echo "RC_SHA256=$(awk '{print $1}' "$PKG.sha256")"
           echo ENDLUME_1000_RC_SIGNED_GREEN
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: ENDLUME-10.0.0-macOS-ARM64-RC
-          path: release-1000-rc/**
-          if-no-files-found: error
-          retention-days: 14
+      - name: Store RC in private draft release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          TAG='endlume-10.0.0-macos-rc-private'
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" release-1000-rc/* --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$TAG" release-1000-rc/* \
+              --draft \
+              --target "$GITHUB_SHA" \
+              --title 'ENDLUME 10.0.0 macOS ARM64 RC — PRIVATE' \
+              --notes 'Private release candidate only. Not stable. latest.json unchanged. Public release remains blocked until the physical TOSHIBA EXT gate and Windows compatibility gate are completed.' \
+              --repo "$GITHUB_REPOSITORY"
+          fi
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json tagName,isDraft,name,url
+          echo ENDLUME_1000_RC_DRAFT_STORED_GREEN

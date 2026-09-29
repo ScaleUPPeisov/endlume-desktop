@@ -114,7 +114,6 @@ for row in rows:
     assert row.get("status")=="passed",row
     p=Path(row["outputPath"]);assert p.is_file(),p
     size=p.stat().st_size
-    assert 500_000_000<=size<=700_000_000,(size,p)
     probe=ffprobe_json(p);fd=float(probe["format"]["duration"])
     video=next(x for x in probe["streams"] if x.get("codec_type")=="video")
     aud=next(x for x in probe["streams"] if x.get("codec_type")=="audio")
@@ -125,10 +124,13 @@ for row in rows:
     assert row.get("audioMode")=="ORIGINAL_MP3_PACKET_COPY",row
     assert_packet_copy(source,p)
     peaks=[max_volume(p,10.0),max_volume(p,max(10.0,fd*.5))]
+    wall=round(float(row.get("wallSeconds") or 0),3)
+    print("E1000_RENDER_ROW",json.dumps({"id":row["id"],"wall_seconds":wall,"bytes":size,"duration":round(fd,3),"peaks_db":peaks},ensure_ascii=False),flush=True)
     assert max(peaks)>-55.0,("SILENT_FINAL_AUDIO",peaks,p)
     for pos in (0.0,fd*.5,max(0.0,fd-2.0)):
         seek(p,pos,"video");seek(p,pos,"audio")
-    verified.append({"id":row["id"],"wall_seconds":round(float(row.get("wallSeconds") or 0),3),"bytes":size,"duration":round(fd,3),"peaks_db":peaks,"path":str(p)})
+    assert 500_000_000<=size<=700_000_000,("FINAL_SIZE_OUT_OF_RANGE",size,p)
+    verified.append({"id":row["id"],"wall_seconds":wall,"bytes":size,"duration":round(fd,3),"peaks_db":peaks,"path":str(p)})
 
 cold=verified[0]["wall_seconds"];warm=[x["wall_seconds"] for x in verified[1:]]
 assert cold<=35.0,(cold,"cold > 35s")

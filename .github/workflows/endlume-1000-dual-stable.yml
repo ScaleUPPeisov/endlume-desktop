@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: endlume-1000-dual-stable
+  group: endlume-1000-macos-qa
   cancel-in-progress: true
 
 env:
@@ -49,7 +49,7 @@ jobs:
           while IFS= read -r p; do
             [ -z "$p" ] && continue
             case "$p" in
-              .github/workflows/endlume-1000-dual-stable.yml) ;;
+              .github/workflows/endlume-1000-dual-stable.yml|.github/workflows/endlume-1000-macos-qa.yml) ;;
               *) echo "RELEASE COMMIT MODIFIED PRODUCT SOURCE: $p"; exit 41 ;;
             esac
           done <<< "$changed"

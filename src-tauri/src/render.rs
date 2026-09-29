@@ -145,6 +145,26 @@ fn hybrid_fidelity_args(s:&RenderSettings,encoder:&str,duration:f64)->Vec<String
   }
 }
 
+fn cached_master_fidelity_args_1000(s:&RenderSettings,encoder:&str,duration:f64)->Vec<String>{
+  // 10.0: the persistent physical master is intentionally high-bitrate.
+  // sample-table expansion reuses these packets for hours, so spending bytes here
+  // improves visual fidelity and keeps the final upload in the required 500–700 MB range
+  // without re-encoding the logical 2h timeline or touching Original MP3 packets.
+  let frames=(s.fps.max(1) as f64*duration.max(2.0)).round().max(1.0) as u32;
+  let g=frames.min(STRICT_857_MAX_GOP_FRAMES).to_string();
+  match encoder{
+    "hevc_videotoolbox"=>vec!["-c:v","hevc_videotoolbox","-realtime","1","-prio_speed","1","-power_efficient","0","-constant_bit_rate","1","-b:v","100M","-g",&g,"-tag:v","hvc1","-pix_fmt","yuv420p"].into_iter().map(String::from).collect(),
+    "hevc_nvenc"=>vec!["-c:v","hevc_nvenc","-preset","p4","-rc","cbr","-b:v","100M","-maxrate","100M","-bufsize","200M","-g",&g,"-tag:v","hvc1","-pix_fmt","yuv420p"].into_iter().map(String::from).collect(),
+    "hevc_qsv"=>vec!["-c:v","hevc_qsv","-b:v","100M","-maxrate","100M","-bufsize","200M","-g",&g,"-tag:v","hvc1","-pix_fmt","nv12"].into_iter().map(String::from).collect(),
+    "hevc_amf"=>vec!["-c:v","hevc_amf","-quality","speed","-rc","cbr","-b:v","100M","-maxrate","100M","-bufsize","200M","-g",&g,"-tag:v","hvc1","-pix_fmt","yuv420p"].into_iter().map(String::from).collect(),
+    "libx265"=>{
+      let x265=format!("keyint={}:min-keyint={}:scenecut=0:open-gop=0:vbv-maxrate=100000:vbv-bufsize=200000:vbv-init=1.0",frames,frames);
+      vec!["-c:v","libx265","-preset","ultrafast","-b:v","100M","-maxrate","100M","-bufsize","200M","-x265-params",&x265,"-tag:v","hvc1","-pix_fmt","yuv420p"].into_iter().map(String::from).collect()
+    },
+    _=>periodic_fidelity_args(s,encoder,duration),
+  }
+}
+
 fn periodic_fidelity_args(s:&RenderSettings,encoder:&str,duration:f64)->Vec<String>{
   // 8.67 hotfix: the real 005 profile proves VideoToolbox CBR is both much faster
   // and higher-fidelity than the old low-rate q100 path. Keep a long GOP so the
@@ -1099,7 +1119,7 @@ fn file_stamp_1000(path:&Path)->String{
   format!("{}|{}|{}",path.to_string_lossy(),size,mtime)
 }
 fn visual_master_key_1000(job:&QueueJob,effects:&[EffectPreset],master_frames:usize,encoder:&str,profile:&str)->Result<String,String>{
-  let mut h=Sha256::new();h.update(b"ENDLUME-10-BASE-VISUAL-v1");
+  let mut h=Sha256::new();h.update(b"ENDLUME-10-BASE-VISUAL-v2-100M");
   h.update(profile.as_bytes());h.update(encoder.as_bytes());h.update(master_frames.to_le_bytes());
   h.update(job.settings.width.to_le_bytes());h.update(job.settings.height.to_le_bytes());h.update(job.settings.fps.to_le_bytes());
   h.update(b"yuv420p|hevc|visual-cache-v10");
@@ -1142,7 +1162,7 @@ async fn build_cached_visual_master_1000(app:&AppHandle,job:&QueueJob,effects:&[
   for e in effects.iter().filter(|x|effect_usage_mode(x)!="off"&&!x.source.trim().is_empty()){args.extend(vec!["-stream_loop","-1","-i",e.source.as_str()].into_iter().map(String::from));}
   let base=format!("[0:v]fps={work_fps},setsar=1[b0]");let (graph,last)=apply_effects_filter(base,"b0".into(),effects,&ws,1);let graph=format!("{graph};[{last}]fps={fps},format=yuv420p[outv]");
   args.extend(vec!["-filter_complex",&graph,"-map","[outv]","-frames:v",&master_frames.to_string(),"-an"].into_iter().map(String::from));
-  if periodic{args.extend(periodic_fidelity_args(&job.settings,encoder,duration));}else{args.extend(hybrid_fidelity_args(&job.settings,encoder,duration));}
+  let _=periodic;args.extend(cached_master_fidelity_args_1000(&job.settings,encoder,duration));
   args.extend(vec!["-fps_mode","cfr","-r",&fps.to_string(),"-video_track_timescale","60000","-progress","pipe:1","-y",tmp.to_string_lossy().as_ref()].into_iter().map(String::from));
   let mark=Instant::now();run_ffmpeg(app,job,started,timer,args,"10.0: BASE_VISUAL_MASTER",55.0,18.0,duration,encoder,attempt,cancel).await?;
   let packets=probe_video_packets_857(app,&tmp).await?;if packets!=master_frames{let _=std::fs::remove_file(&tmp);return Err(format!("10.0 BASE_VISUAL_MASTER packets={packets}/{master_frames}"))}

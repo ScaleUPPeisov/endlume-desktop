@@ -145,14 +145,16 @@ fn hybrid_fidelity_args(s:&RenderSettings,encoder:&str,duration:f64)->Vec<String
 }
 
 fn periodic_fidelity_args(s:&RenderSettings,encoder:&str,duration:f64)->Vec<String>{
-  // 8.67: retain q100; prio_speed changes hardware scheduling, not source pixels.
-  // Short GOP grows real HEVC payload toward the requested size without padding.
-  let g="80";
+  // 8.67 hotfix: the real 005 profile proves VideoToolbox CBR is both much faster
+  // and higher-fidelity than the old low-rate q100 path. Keep a long GOP so the
+  // encoder spends bits on picture detail instead of unnecessary keyframes.
+  let frames=(s.fps.max(1) as f64*duration.max(2.0)).round().max(1.0) as u32;
+  let g=frames.min(STRICT_857_MAX_GOP_FRAMES).to_string();
   match encoder{
-    "hevc_videotoolbox"=>vec!["-c:v","hevc_videotoolbox","-realtime","1","-prio_speed","1","-power_efficient","0","-q:v","100","-b:v","500k","-maxrate","20M","-bufsize","80M","-g",g,"-tag:v","hvc1","-pix_fmt","yuv420p"].into_iter().map(String::from).collect(),
-    "hevc_nvenc"=>vec!["-c:v","hevc_nvenc","-preset","p4","-rc","vbr","-cq","18","-b:v","0","-maxrate","20M","-bufsize","80M","-g",g,"-tag:v","hvc1","-pix_fmt","yuv420p"].into_iter().map(String::from).collect(),
-    "hevc_qsv"=>vec!["-c:v","hevc_qsv","-global_quality","18","-maxrate","20M","-bufsize","80M","-g",g,"-tag:v","hvc1","-pix_fmt","nv12"].into_iter().map(String::from).collect(),
-    "hevc_amf"=>vec!["-c:v","hevc_amf","-quality","balanced","-rc","vbr_peak","-qp_i","18","-maxrate","20M","-g",g,"-tag:v","hvc1","-pix_fmt","yuv420p"].into_iter().map(String::from).collect(),
+    "hevc_videotoolbox"=>vec!["-c:v","hevc_videotoolbox","-realtime","1","-prio_speed","1","-power_efficient","0","-constant_bit_rate","1","-b:v","13M","-g",&g,"-tag:v","hvc1","-pix_fmt","yuv420p"].into_iter().map(String::from).collect(),
+    "hevc_nvenc"=>vec!["-c:v","hevc_nvenc","-preset","p4","-rc","cbr","-b:v","13M","-maxrate","13M","-bufsize","26M","-g",&g,"-tag:v","hvc1","-pix_fmt","yuv420p"].into_iter().map(String::from).collect(),
+    "hevc_qsv"=>vec!["-c:v","hevc_qsv","-b:v","13M","-maxrate","13M","-bufsize","26M","-g",&g,"-tag:v","hvc1","-pix_fmt","nv12"].into_iter().map(String::from).collect(),
+    "hevc_amf"=>vec!["-c:v","hevc_amf","-quality","speed","-rc","cbr","-b:v","13M","-maxrate","13M","-bufsize","26M","-g",&g,"-tag:v","hvc1","-pix_fmt","yuv420p"].into_iter().map(String::from).collect(),
     _=>hybrid_fidelity_args(s,encoder,duration),
   }
 }
@@ -965,8 +967,9 @@ fn periodic_852_plan(job:&QueueJob,effects:&[EffectPreset],subs:&[SubscribePrese
 }
 
 async fn probe_video_frames_852(app:&AppHandle,path:&Path)->Result<usize,String>{
-  let args=vec!["-v","error","-count_frames","-select_streams","v:0","-show_entries","stream=nb_read_frames","-of","default=nw=1:nk=1",path.to_string_lossy().as_ref()].into_iter().map(String::from).collect();
-  let (o,_)=output(app,"ffprobe",args).await?;String::from_utf8_lossy(&o).trim().parse::<usize>().map_err(|_|format!("Не удалось посчитать кадры: {}",path.display()))
+  // Fast integrity check: one encoded video packet corresponds to one output frame in
+  // ENDLUME's CFR HEVC masters. Full decode is kept in final validation, not repeated here.
+  probe_video_packets_857(app,path).await
 }
 
 async fn probe_video_packets_857(app:&AppHandle,path:&Path)->Result<usize,String>{

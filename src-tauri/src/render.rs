@@ -422,8 +422,9 @@ fn render_work_dir(app:&AppHandle,id:&str,attempt:u32)->Result<PathBuf,String>{
 }
 
 fn destination_partial_path(out:&Path)->Result<PathBuf,String>{
-  let ext=out.extension().and_then(|x|x.to_str()).unwrap_or("mp4");
-  Ok(out.with_extension(format!("{ext}.partial")))
+  let parent=out.parent().ok_or_else(||"10.0 partial path: output parent missing".to_string())?;
+  let stem=out.file_stem().and_then(|x|x.to_str()).unwrap_or("render");
+  Ok(parent.join(format!(".{stem}.endlume.partial.mp4")))
 }
 fn commit_destination_partial(part:&Path,out:&Path)->Result<(f64,f64),String>{
   let sync_mark=Instant::now();let file=std::fs::OpenOptions::new().read(true).write(true).open(part).map_err(|e|format!("10.0 partial open: {e}"))?;file.sync_all().map_err(|e|format!("10.0 partial fsync: {e}"))?;drop(file);let fsync=sync_mark.elapsed().as_secs_f64();

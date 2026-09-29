@@ -1,0 +1,37 @@
+name: ENDLUME 8.67 Overlay Cycle Probe
+on:
+  push:
+    branches: [hotfix/endlume-8.67-render-perf-staging]
+    paths: ['.github/workflows/endlume-867-overlay-cycle-probe.yml']
+permissions: {contents: read}
+jobs:
+  probe:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 10
+    steps:
+      - name: Probe exact Effects and Subscribe frame cycles
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+          python3 - <<'PY'
+          import json,subprocess
+          from pathlib import Path
+          p=Path('/Volumes/TOSHIBA EXT/ВАЙРОН/Render/First Pour Jazz/logs/005 — Ready Videos — project.json')
+          d=json.loads(p.read_text(errors='replace'))
+          def probe(path):
+              raw=subprocess.run(['ffprobe','-v','error','-count_frames','-select_streams','v:0','-show_entries','stream=codec_name,width,height,pix_fmt,avg_frame_rate,nb_read_frames:format=duration,size','-of','json',path],check=True,capture_output=True,text=True).stdout
+              return json.loads(raw)
+          for i,e in enumerate(d.get('effects') or []):
+              if isinstance(e,dict) and e.get('enabled'):
+                  print(f'FXSRC_{i+1}='+json.dumps(probe(e['source']),ensure_ascii=False))
+          for i,s in enumerate(d.get('subscribes') or []):
+              if isinstance(s,dict) and s.get('enabled'):
+                  print(f'SUBSRC_{i+1}='+json.dumps(probe(s['source']),ensure_ascii=False))
+          # Probe strict prepared caches by locating most recently used/cache files.
+          root=Path.home()/'Library'/'Caches'/'studio.endlume.desktop'/'strict-effects-856'
+          if root.is_dir():
+              for q in sorted(root.glob('*.mov'),key=lambda x:x.stat().st_mtime,reverse=True)[:10]:
+                  try: print('STRICTCACHE='+json.dumps({'path':str(q),'probe':probe(str(q))},ensure_ascii=False))
+                  except Exception as ex: print('STRICTCACHE_ERR',q,ex)
+          PY

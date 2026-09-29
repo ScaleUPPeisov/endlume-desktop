@@ -144,6 +144,19 @@ fn hybrid_fidelity_args(s:&RenderSettings,encoder:&str,duration:f64)->Vec<String
   }
 }
 
+fn periodic_fidelity_args(s:&RenderSettings,encoder:&str,duration:f64)->Vec<String>{
+  // 8.67: retain q100; prio_speed changes hardware scheduling, not source pixels.
+  // Short GOP grows real HEVC payload toward the requested size without padding.
+  let g="80";
+  match encoder{
+    "hevc_videotoolbox"=>vec!["-c:v","hevc_videotoolbox","-realtime","1","-prio_speed","1","-power_efficient","0","-q:v","100","-b:v","500k","-maxrate","20M","-bufsize","80M","-g",g,"-tag:v","hvc1","-pix_fmt","yuv420p"].into_iter().map(String::from).collect(),
+    "hevc_nvenc"=>vec!["-c:v","hevc_nvenc","-preset","p4","-rc","vbr","-cq","18","-b:v","0","-maxrate","20M","-bufsize","80M","-g",g,"-tag:v","hvc1","-pix_fmt","yuv420p"].into_iter().map(String::from).collect(),
+    "hevc_qsv"=>vec!["-c:v","hevc_qsv","-global_quality","18","-maxrate","20M","-bufsize","80M","-g",g,"-tag:v","hvc1","-pix_fmt","nv12"].into_iter().map(String::from).collect(),
+    "hevc_amf"=>vec!["-c:v","hevc_amf","-quality","balanced","-rc","vbr_peak","-qp_i","18","-maxrate","20M","-g",g,"-tag:v","hvc1","-pix_fmt","yuv420p"].into_iter().map(String::from).collect(),
+    _=>hybrid_fidelity_args(s,encoder,duration),
+  }
+}
+
 fn encoder_cache_path(app:&AppHandle)->Option<PathBuf>{
   app.path().app_cache_dir().ok().map(|p|p.join("encoder-selection-8.64.json"))
 }
@@ -420,10 +433,18 @@ fn refresh_project_paths(job:&mut QueueJob){
 }
 
 async fn output(app:&AppHandle,name:&str,args:Vec<String>)->Result<(Vec<u8>,Vec<u8>),String>{
-  if name=="ffmpeg"{FFMPEG_LAUNCHES.fetch_add(1,Ordering::Relaxed);}else if name=="ffprobe"{FFPROBE_LAUNCHES.fetch_add(1,Ordering::Relaxed);}
-  let out=app.shell().sidecar(name).map_err(|e|e.to_string())?.args(args).output().await.map_err(|e|e.to_string())?;
-  if !out.status.success(){return Err(String::from_utf8_lossy(&out.stderr).trim().to_string())}
-  Ok((out.stdout,out.stderr))
+  let launch=if name=="ffmpeg"{FFMPEG_LAUNCHES.fetch_add(1,Ordering::Relaxed)+1}else if name=="ffprobe"{FFPROBE_LAUNCHES.fetch_add(1,Ordering::Relaxed)+1}else{0};
+  let argv=args.clone();let mark=Instant::now();
+  let result=app.shell().sidecar(name).map_err(|e|e.to_string())?.args(args).output().await.map_err(|e|e.to_string());
+  let seconds=mark.elapsed().as_secs_f64();
+  match result{
+    Ok(out)=>{
+      diag_line(json!({"kind":"tool-call","tool":name,"launch":launch,"seconds":seconds,"success":out.status.success(),"args":argv}));
+      if !out.status.success(){return Err(String::from_utf8_lossy(&out.stderr).trim().to_string())}
+      Ok((out.stdout,out.stderr))
+    },
+    Err(e)=>{diag_line(json!({"kind":"tool-call","tool":name,"launch":launch,"seconds":seconds,"success":false,"args":argv,"error":e}));Err(e)}
+  }
 }
 
 async fn probe_duration(app:&AppHandle,path:&str)->Result<f64,String>{
@@ -965,29 +986,29 @@ async fn build_periodic_master_852(app:&AppHandle,job:&QueueJob,effects:&[Effect
   let mut args:Vec<String>=vec!["-hide_banner","-loglevel","error","-loop","1","-framerate",&work_fps.to_string(),"-i",base_still.to_string_lossy().as_ref()].into_iter().map(String::from).collect();
   for e in effects.iter().filter(|x|x.enabled&&!x.source.trim().is_empty()){args.extend(vec!["-stream_loop","-1","-i",e.source.as_str()].into_iter().map(String::from));}
   let base=format!("[0:v]fps={work_fps},setsar=1[b0]");let (graph,last)=apply_effects_filter(base,"b0".into(),effects,&ws,1);let graph=format!("{graph};[{last}]fps={fps},format=yuv420p[outv]");
-  args.extend(vec!["-filter_complex",&graph,"-map","[outv]","-frames:v",&plan.master_frames.to_string(),"-an"].into_iter().map(String::from));args.extend(hybrid_fidelity_args(&job.settings,encoder,duration));args.extend(vec!["-fps_mode","cfr","-r",&fps.to_string(),"-video_track_timescale","60000","-progress","pipe:1","-y",out.to_string_lossy().as_ref()].into_iter().map(String::from));
+  args.extend(vec!["-filter_complex",&graph,"-map","[outv]","-frames:v",&plan.master_frames.to_string(),"-an"].into_iter().map(String::from));args.extend(periodic_fidelity_args(&job.settings,encoder,duration));args.extend(vec!["-fps_mode","cfr","-r",&fps.to_string(),"-video_track_timescale","60000","-progress","pipe:1","-y",out.to_string_lossy().as_ref()].into_iter().map(String::from));
   run_ffmpeg(app,job,started,timer,args,"8.52: собираю 30-секундный fidelity master",58.0,10.0,duration,encoder,attempt,cancel).await?;
-  let frames=probe_video_frames_852(app,&out).await?;let packets=probe_video_packets_857(app,&out).await?;if frames!=plan.master_frames||packets!=plan.master_frames{return Err(format!("Strict 8.57 periodic master integrity: frames={frames}/{}, packets={packets}/{}",plan.master_frames,plan.master_frames))}Ok(out)
+  let packets=probe_video_packets_857(app,&out).await?;if packets!=plan.master_frames{return Err(format!("Strict 8.67 periodic master packet integrity: packets={packets}/{}",plan.master_frames))}Ok(out)
 }
 
 async fn copy_head_frames_852(app:&AppHandle,job:&QueueJob,src:&Path,frames:usize,out:&Path,encoder:&str,attempt:u32,cancel:&AtomicBool,started:i64,timer:&Instant)->Result<(),String>{
   if frames==0{return Err("8.52: zero-frame head requested".into())}
   let args=vec!["-hide_banner","-loglevel","error","-i",src.to_string_lossy().as_ref(),"-map","0:v:0","-frames:v",&frames.to_string(),"-an","-c:v","copy","-avoid_negative_ts","make_zero","-progress","pipe:1","-y",out.to_string_lossy().as_ref()].into_iter().map(String::from).collect();
-  run_ffmpeg(app,job,started,timer,args,"8.52: готовлю zero-copy video slice",68.0,1.0,frames as f64/job.settings.fps.max(1) as f64,encoder,attempt,cancel).await?;let got=probe_video_frames_852(app,out).await?;let packets=probe_video_packets_857(app,out).await?;if got!=frames||packets!=frames{return Err(format!("Strict 8.57 slice integrity: frames={got}/{frames}, packets={packets}/{frames}"))}Ok(())
+  run_ffmpeg(app,job,started,timer,args,"8.52: готовлю zero-copy video slice",68.0,1.0,frames as f64/job.settings.fps.max(1) as f64,encoder,attempt,cancel).await?;let packets=probe_video_packets_857(app,out).await?;if packets!=frames{return Err(format!("Strict 8.67 slice packet integrity: packets={packets}/{frames}"))}Ok(())
 }
 
 async fn render_periodic_sub_852(app:&AppHandle,job:&QueueJob,master:&Path,sub:&SubscribePreset,start_frame:usize,frames:usize,work:&Path,label:&str,encoder:&str,attempt:u32,cancel:&AtomicBool,started:i64,timer:&Instant)->Result<PathBuf,String>{
   let fps=job.settings.fps.max(1);let work_fps=if fps>=50{30}else{fps};let phase=start_frame as f64/fps as f64;let out=work.join(format!("periodic-852-sub-{label}.mp4"));let mut ws=job.settings.clone();ws.fps=work_fps;
   let mut args:Vec<String>=vec!["-hide_banner","-loglevel","error","-stream_loop","-1","-ss",&phase.to_string(),"-i",master.to_string_lossy().as_ref(),"-i",sub.effect.source.as_str()].into_iter().map(String::from).collect();
   let one=vec![sub.effect.clone()];let (graph,last)=apply_effects_filter(format!("[0:v]fps={work_fps},setpts=PTS-STARTPTS[b0]"),"b0".into(),&one,&ws,1);let graph=graph.replace(":shortest=1:eof_action=repeat",":shortest=0:eof_action=pass");let graph=format!("{graph};[{last}]fps={fps},format=yuv420p[outv]");
-  let duration=frames as f64/fps as f64;args.extend(vec!["-filter_complex",&graph,"-map","[outv]","-frames:v",&frames.to_string(),"-an"].into_iter().map(String::from));args.extend(hybrid_fidelity_args(&job.settings,encoder,duration));args.extend(vec!["-fps_mode","cfr","-r",&fps.to_string(),"-video_track_timescale","60000","-progress","pipe:1","-y",out.to_string_lossy().as_ref()].into_iter().map(String::from));
-  run_ffmpeg(app,job,started,timer,args,"8.57: добавляю Subscribe один раз на цикл",69.0,4.0,duration,encoder,attempt,cancel).await?;let got=probe_video_frames_852(app,&out).await?;let packets=probe_video_packets_857(app,&out).await?;if got!=frames||packets!=frames{return Err(format!("Strict 8.57 Subscribe integrity: frames={got}/{frames}, packets={packets}/{frames}"))}Ok(out)
+  let duration=frames as f64/fps as f64;args.extend(vec!["-filter_complex",&graph,"-map","[outv]","-frames:v",&frames.to_string(),"-an"].into_iter().map(String::from));args.extend(periodic_fidelity_args(&job.settings,encoder,duration));args.extend(vec!["-fps_mode","cfr","-r",&fps.to_string(),"-video_track_timescale","60000","-progress","pipe:1","-y",out.to_string_lossy().as_ref()].into_iter().map(String::from));
+  run_ffmpeg(app,job,started,timer,args,"8.57: добавляю Subscribe один раз на цикл",69.0,4.0,duration,encoder,attempt,cancel).await?;let packets=probe_video_packets_857(app,&out).await?;if packets!=frames{return Err(format!("Strict 8.67 Subscribe packet integrity: packets={packets}/{frames}"))}Ok(out)
 }
 
 async fn concat_video_parts_852(app:&AppHandle,job:&QueueJob,parts:&[PathBuf],out:&Path,expected_frames:usize,work:&Path,encoder:&str,attempt:u32,cancel:&AtomicBool,started:i64,timer:&Instant)->Result<(),String>{
   let list=work.join("periodic-852-video-list.txt");let body=parts.iter().map(|x|format!("file '{}'
 ",ffconcat_escape(x))).collect::<String>();std::fs::write(&list,body).map_err(|e|e.to_string())?;
-  let args=vec!["-hide_banner","-loglevel","error","-f","concat","-safe","0","-i",list.to_string_lossy().as_ref(),"-map","0:v:0","-an","-c:v","copy","-avoid_negative_ts","make_zero","-progress","pipe:1","-y",out.to_string_lossy().as_ref()].into_iter().map(String::from).collect();run_ffmpeg(app,job,started,timer,args,"8.57: собираю один физический video-cycle",74.0,3.0,expected_frames as f64/job.settings.fps.max(1) as f64,encoder,attempt,cancel).await?;let got=probe_video_frames_852(app,out).await?;let packets=probe_video_packets_857(app,out).await?;if got!=expected_frames||packets!=expected_frames{return Err(format!("Strict 8.57 seed integrity: frames={got}/{expected_frames}, packets={packets}/{expected_frames}"))}Ok(())
+  let args=vec!["-hide_banner","-loglevel","error","-f","concat","-safe","0","-i",list.to_string_lossy().as_ref(),"-map","0:v:0","-an","-c:v","copy","-avoid_negative_ts","make_zero","-progress","pipe:1","-y",out.to_string_lossy().as_ref()].into_iter().map(String::from).collect();run_ffmpeg(app,job,started,timer,args,"8.57: собираю один физический video-cycle",74.0,3.0,expected_frames as f64/job.settings.fps.max(1) as f64,encoder,attempt,cancel).await?;let packets=probe_video_packets_857(app,out).await?;if packets!=expected_frames{return Err(format!("Strict 8.67 seed packet integrity: packets={packets}/{expected_frames}"))}Ok(())
 }
 
 
@@ -1096,7 +1117,7 @@ pub async fn render_job(app:&AppHandle,job:&QueueJob,cancel:Arc<AtomicBool>)->Re
     resolved_job.settings.codec="h265".into();
     resolved_job.settings.duration_mode="whole-track".into();
   }
-  let job=&resolved_job;let processed_audio=audio_processing_requested(job);let scan_mark=Instant::now();
+  let job=&resolved_job;let requested_audio_processing=audio_processing_requested(job);let scan_mark=Instant::now();
   for p in &job.project.media{if !Path::new(p).is_file(){return Err(format!("Не найден файл изображения/видео: {}",Path::new(p).file_name().and_then(|x|x.to_str()).unwrap_or(p)));}}
   for p in &job.project.audio{if !Path::new(p).is_file(){return Err(format!("Не найден аудиофайл: {}",Path::new(p).file_name().and_then(|x|x.to_str()).unwrap_or(p)));}}
   if job.project.media.is_empty(){return Err("В проекте нет изображения или видео".into())}
@@ -1110,41 +1131,50 @@ pub async fn render_job(app:&AppHandle,job:&QueueJob,cancel:Arc<AtomicBool>)->Re
   for attempt in 1..=max_attempts{
     if cancel.load(Ordering::SeqCst){return Err(CANCELLED.into())}
     let smart_repeat=smart_repeat_project(job);let _=std::fs::remove_file(&out);let encoder_mark=Instant::now();let encoder=if smart_repeat{let e=choose_hybrid_encoder(app,attempt).await;if !strict_856_encoder_allowed(&e){return Err(format!("Strict 8.63: HEVC encoder {e} недоступен для fast pipeline"))}e}else if attempt==1{choose_encoder(app,&job.settings).await}else{software_encoder(&job.settings)};let encoder_seconds=encoder_mark.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"encoder-benchmark",encoder_seconds);emit_timing(app,&job.project.id,"encoder-detection",encoder_seconds);
-    let _=app.emit("engine-profile",json!({"id":job.project.id,"smartSize":smart_repeat,"smartRepeat":smart_repeat,"originalFidelity":smart_repeat&&!processed_audio,"fastPath":smart_repeat,"fastPathReason":decision.reason,"audioMode":if processed_audio{"PROCESSED_AUDIO"}else{"ORIGINAL_MP3_PACKET_COPY"},"targetVideoKbps":None::<u64>}));
+    let _=app.emit("engine-profile",json!({"id":job.project.id,"smartSize":smart_repeat,"smartRepeat":smart_repeat,"originalFidelity":smart_repeat,"fastPath":smart_repeat,"fastPathReason":decision.reason,"audioProcessingRequested":requested_audio_processing,"targetVideoKbps":None::<u64>}));
     emit_progress(app,job,started,&timer,1.0,"Анализ файлов",&encoder,attempt,None);let work=render_work_dir(app,&job.project.id,attempt)?;
-    let result:Result<(Vec<f64>,f64),String>=async{
+    let result:Result<(Vec<f64>,f64,bool),String>=async{
       emit_progress(app,job,started,&timer,4.0,"Проверяю самый быстрый движок",&encoder,attempt,None);
       let (source_master,master_duration)=build_source_master(app,job,started,&timer,&work,&encoder,attempt,&cancel).await?;
       let (fx,subs)=prepare_overlays(app,job,started,&timer,&encoder,attempt).await?;
       let visual_master_duration=if smart_repeat{smart_repeat_visual_seconds(app,master_duration,&fx).await}else{master_duration};
       let target=job.settings.duration_hours*3600.0;
-      let (audio,durations,final_duration)=if smart_repeat{
-        let processed=processed_audio;
-        if processed{
-          let audio_cycle_mark=Instant::now();let (cycle,durations,_cycle_duration)=build_lossless_processed_audio_cycle(app,job,started,&timer,&work,&encoder,attempt,&cancel).await?;let audio_cycle_sec=audio_cycle_mark.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"processed-audio-cycle",audio_cycle_sec);
-          let final_duration=smart_final_duration(target,&durations,job.settings.crossfade_sec,&job.settings.duration_mode);
-          let _=app.emit("engine-profile",json!({"id":job.project.id,"audioOriginal":false,"audioLossless":false,"audioHighQuality320":true,"crossfadeApplied":job.settings.crossfade_sec>0.01}));
-          if job.settings.crossfade_sec>0.01{emit_warning(app,&job.project.id,"Кроссфейд применён. Переходы сведены в непрерывную HQ 320 кбит/с дорожку без пауз.");}
-          let audio_materialize_mark=Instant::now();let continuous=materialize_continuous_audio(app,job,started,&timer,&work,&cycle,final_duration,&encoder,attempt,&cancel).await?;emit_timing(app,&job.project.id,"processed-audio-materialize",audio_materialize_mark.elapsed().as_secs_f64());
-          (AudioSource::Long(continuous),durations,final_duration)
-        }else{
+      let (audio,durations,final_duration,original_audio)=if smart_repeat{
+        let prefer_original=job.settings.duration_mode=="whole-track"&&job.ambient.as_ref().map(|x|x.trim().is_empty()).unwrap_or(true);
+        if prefer_original{
           match build_original_audio_cycle(app,job,started,&timer,&work,&encoder,attempt,&cancel).await{
             Ok((cycle,durations,_cycle_duration))=>{
               let final_duration=smart_final_duration(target,&durations,0.0,&job.settings.duration_mode);
               let direct_list=cycle.extension().and_then(|x|x.to_str()).map(|x|x.eq_ignore_ascii_case("txt")).unwrap_or(false);
-              let _=app.emit("engine-profile",json!({"id":job.project.id,"audioOriginal":true,"audioLossless":false,"crossfadeApplied":false,"audioDirectConcatList":direct_list}));
-              (if direct_list{AudioSource::ConcatList(cycle)}else{AudioSource::Loop(cycle)},durations,final_duration)
+              if requested_audio_processing{emit_warning(app,&job.project.id,"Strict Whole-Track Fidelity: совместимые MP3 сохраняются packet-copy целиком; crossfade/loudnorm пропущены, чтобы не перекодировать и не укорачивать песни.");}
+              let _=app.emit("engine-profile",json!({"id":job.project.id,"audioOriginal":true,"audioLossless":true,"crossfadeApplied":false,"normalizeApplied":false,"audioDirectConcatList":direct_list}));
+              (if direct_list{AudioSource::ConcatList(cycle)}else{AudioSource::Loop(cycle)},durations,final_duration,true)
             },
             Err(reason)=>{
-              return Err(format!("Strict Fidelity: исходную музыку нельзя сохранить bitstream-copy ({reason}). Для режима <=1 ГБ без потери музыки используй MP3 с одинаковыми sample rate/channel layout."));
+              if !requested_audio_processing{return Err(format!("Strict Fidelity: исходную музыку нельзя сохранить bitstream-copy ({reason}). Используй MP3 с одинаковыми sample rate/channel layout."))}
+              let audio_cycle_mark=Instant::now();let (cycle,durations,_cycle_duration)=build_lossless_processed_audio_cycle(app,job,started,&timer,&work,&encoder,attempt,&cancel).await?;emit_timing(app,&job.project.id,"processed-audio-cycle",audio_cycle_mark.elapsed().as_secs_f64());
+              let final_duration=smart_final_duration(target,&durations,job.settings.crossfade_sec,&job.settings.duration_mode);
+              let audio_materialize_mark=Instant::now();let continuous=materialize_continuous_audio(app,job,started,&timer,&work,&cycle,final_duration,&encoder,attempt,&cancel).await?;emit_timing(app,&job.project.id,"processed-audio-materialize",audio_materialize_mark.elapsed().as_secs_f64());
+              emit_warning(app,&job.project.id,&format!("Original MP3 packet-copy недоступен ({reason}); использую HQ processed fallback."));
+              (AudioSource::Long(continuous),durations,final_duration,false)
             }
           }
+        }else if requested_audio_processing{
+          let audio_cycle_mark=Instant::now();let (cycle,durations,_cycle_duration)=build_lossless_processed_audio_cycle(app,job,started,&timer,&work,&encoder,attempt,&cancel).await?;emit_timing(app,&job.project.id,"processed-audio-cycle",audio_cycle_mark.elapsed().as_secs_f64());
+          let final_duration=smart_final_duration(target,&durations,job.settings.crossfade_sec,&job.settings.duration_mode);
+          let audio_materialize_mark=Instant::now();let continuous=materialize_continuous_audio(app,job,started,&timer,&work,&cycle,final_duration,&encoder,attempt,&cancel).await?;emit_timing(app,&job.project.id,"processed-audio-materialize",audio_materialize_mark.elapsed().as_secs_f64());
+          (AudioSource::Long(continuous),durations,final_duration,false)
+        }else{
+          let (cycle,durations,_cycle_duration)=build_original_audio_cycle(app,job,started,&timer,&work,&encoder,attempt,&cancel).await?;
+          let final_duration=smart_final_duration(target,&durations,0.0,&job.settings.duration_mode);
+          let direct_list=cycle.extension().and_then(|x|x.to_str()).map(|x|x.eq_ignore_ascii_case("txt")).unwrap_or(false);
+          (if direct_list{AudioSource::ConcatList(cycle)}else{AudioSource::Loop(cycle)},durations,final_duration,true)
         }
       }else{
         let (cycle,durations,cycle_duration)=build_audio_cycle(app,job,started,&timer,&work,&encoder,attempt,&cancel).await?;
         let final_duration=smart_final_duration(target,&durations,job.settings.crossfade_sec,&job.settings.duration_mode);
         let audio=build_long_audio(app,job,started,&timer,&work,&cycle,cycle_duration,final_duration,&encoder,attempt,&cancel).await?;
-        (audio,durations,final_duration)
+        (audio,durations,final_duration,false)
       };
       let zero_copy=if smart_repeat{
         if render_multi_still_zero_copy_863(app,job,&audio,final_duration,&work,&out,&encoder,attempt,&cancel,started,&timer).await?{true}
@@ -1160,12 +1190,12 @@ pub async fn render_job(app:&AppHandle,job:&QueueJob,cancel:Arc<AtomicBool>)->Re
         args.extend(vec!["-t",&final_duration.to_string(),"-map","0:v:0","-map","1:a:0","-c:v","copy","-c:a","copy","-movflags","+faststart","-progress","pipe:1","-y",out.to_string_lossy().as_ref()].into_iter().map(String::from));
         run_ffmpeg(app,job,started,&timer,args,"Собираю итоговое видео",90.0,6.0,final_duration,&encoder,attempt,&cancel).await?;emit_timing(app,&job.project.id,"final-mux",mux_mark.elapsed().as_secs_f64());
       }
-      ensure_license_allowed()?;emit_progress(app,job,started,&timer,97.0,"Финальная проверка FFprobe",&encoder,attempt,None);let verify_mark=Instant::now();verify_result(app,&out,final_duration,&job.settings).await?;if smart_repeat{verify_strict_857_result(app,&out,final_duration,!processed_audio,&durations).await?;}let validation_seconds=verify_mark.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"ffprobe-validation",validation_seconds);emit_timing(app,&job.project.id,"validation",validation_seconds);ensure_license_allowed()?;
+      ensure_license_allowed()?;emit_progress(app,job,started,&timer,97.0,"Финальная проверка FFprobe",&encoder,attempt,None);let verify_mark=Instant::now();verify_result(app,&out,final_duration,&job.settings).await?;if smart_repeat{verify_strict_857_result(app,&out,final_duration,original_audio,&durations).await?;}let validation_seconds=verify_mark.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"ffprobe-validation",validation_seconds);emit_timing(app,&job.project.id,"validation",validation_seconds);ensure_license_allowed()?;
       let result_stem=out.file_stem().and_then(|x|x.to_str()).unwrap_or(&job.project.name);let side_mark=Instant::now();if let Err(err)=write_side_files(job,&out_dir,&durations,final_duration,result_stem){emit_warning(app,&job.project.id,&format!("Видео готово, но служебные файлы не записаны: {err}"));}emit_timing(app,&job.project.id,"side-files",side_mark.elapsed().as_secs_f64());ensure_license_allowed()?;
-      Ok((durations,final_duration))
+      Ok((durations,final_duration,original_audio))
     }.await;
     match result{
-      Ok((_durations,fd))=>{
+      Ok((_durations,fd,original_audio))=>{
         if let Err(e)=ensure_license_allowed(){let _=std::fs::remove_dir_all(&work);let _=std::fs::remove_file(&out);return Err(e)}
         let bytes=std::fs::metadata(&out).ok().map(|m|m.len());let bitrate=probe_video_bitrate(app,&out).await;
         let codec_args=vec!["-v","error","-show_entries","stream=codec_type,codec_name","-of","json",out.to_string_lossy().as_ref()].into_iter().map(String::from).collect();
@@ -1178,7 +1208,7 @@ pub async fn render_job(app:&AppHandle,job:&QueueJob,cancel:Arc<AtomicBool>)->Re
         let ffmpeg_launches=FFMPEG_LAUNCHES.load(Ordering::Relaxed).saturating_sub(ffmpeg_start);let ffprobe_launches=FFPROBE_LAUNCHES.load(Ordering::Relaxed).saturating_sub(ffprobe_start);let _=app.emit("engine-profile",json!({"id":job.project.id,"ffmpegLaunches":ffmpeg_launches,"ffprobeLaunches":ffprobe_launches,"logicalFrames":(fd*job.settings.fps as f64).round().max(1.0) as u64,"finalBytes":bytes,"finalDuration":fd,"numberOfImages":job.project.media.len(),"numberOfTracks":job.project.audio.len()}));
         let result_path=out.to_string_lossy().into_owned();
         let _=app.emit("render-done",Progress{id:job.project.id.clone(),status:"done".into(),progress:100.0,stage:"Готово".into(),started_at:Some(started),elapsed_sec:elapsed,eta_sec:Some(0.0),result_path:Some(result_path.clone()),result_bytes:bytes,actual_video_bitrate:bitrate,cpu_pct:None,ram_bytes:None,ram_total_bytes:None,ram_available_bytes:None,gpu_pct:None,encoder:Some(encoder.clone()),attempt:Some(attempt)});
-        let outcome=RenderOutcome{output_path:result_path,output_bytes:bytes,encoder:encoder.clone(),final_video_duration_seconds:fd,fast_path:smart_repeat,fast_path_reason:decision.reason.to_string(),audio_mode:if processed_audio{"PROCESSED_AUDIO".into()}else{"ORIGINAL_MP3_PACKET_COPY".into()},video_codec,audio_codec};
+        let outcome=RenderOutcome{output_path:result_path,output_bytes:bytes,encoder:encoder.clone(),final_video_duration_seconds:fd,fast_path:smart_repeat,fast_path_reason:decision.reason.to_string(),audio_mode:if original_audio{"ORIGINAL_MP3_PACKET_COPY".into()}else{"PROCESSED_AUDIO".into()},video_codec,audio_codec};
         let _=std::fs::remove_dir_all(&work);return Ok(outcome)
       },
       Err(e)=>{last_error=e;if smart_repeat&&attempt==1{invalidate_hybrid_encoder_cache(app);}emit_warning(app,&job.project.id,&format!("Попытка {attempt} не прошла: {last_error}"));let _=std::fs::remove_dir_all(&work);let _=std::fs::remove_file(&out);if last_error==CANCELLED{return Err(last_error)}if attempt<max_attempts{emit_progress(app,job,started,&timer,2.0,"Повторяю безопасную попытку",&encoder,attempt+1,None);}}

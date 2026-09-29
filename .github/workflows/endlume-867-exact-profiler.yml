@@ -1,0 +1,59 @@
+name: ENDLUME 8.67 Exact Render Profiler
+on:
+  push:
+    branches: [hotfix/endlume-8.67-render-perf-staging]
+    paths:
+      - 'src-tauri/src/render.rs'
+      - '.github/workflows/endlume-867-exact-profiler.yml'
+permissions: {contents: read}
+concurrency:
+  group: endlume-867-exact-profiler
+  cancel-in-progress: true
+jobs:
+  profile:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with: {clean: true, fetch-depth: 1, persist-credentials: false}
+      - name: Stage FFmpeg and build diagnostic 8.66 app
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
+          mkdir -p src-tauri/binaries
+          cp "$(command -v ffmpeg)" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp "$(command -v ffprobe)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          chmod +x src-tauri/binaries/*
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('src-tauri/tauri.conf.json');d=json.loads(p.read_text());d['bundle']['createUpdaterArtifacts']=False;p.write_text(json.dumps(d,indent=2)+'\n')
+          PY
+          npm ci
+          CARGO_TARGET_DIR="$HOME/.endlume-build-cache/endlume-867-profiler" npm run tauri build -- --bundles app --features e2e-render
+          APP="$(find "$HOME/.endlume-build-cache/endlume-867-profiler/release/bundle/macos" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
+          echo "E2E_BIN=$APP/Contents/MacOS/$EXE" >> "$GITHUB_ENV"
+      - name: Run exact 005 locally with process diagnostics
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          rm -rf "$RUNNER_TEMP/e867-profile"; mkdir -p "$RUNNER_TEMP/e867-profile/out"
+          python3 - <<'PY'
+          import json,os
+          from pathlib import Path
+          src=Path('/Volumes/TOSHIBA EXT/ВАЙРОН/Render/First Pour Jazz/logs/005 — Ready Videos — project.json')
+          d=json.loads(src.read_text(errors='replace'))
+          d['project']['id']=str(d['project']['id'])+'-e867-profile'
+          d['project']['name']='005 E867 PROFILE'
+          d['settings']['outputDir']=str(Path(os.environ['RUNNER_TEMP'])/'e867-profile'/'out')
+          Path(os.environ['RUNNER_TEMP']+'/e867-profile/job.json').write_text(json.dumps(d,ensure_ascii=False,indent=2))
+          PY
+          export ENDLUME_E2E_RENDER_JOB="$RUNNER_TEMP/e867-profile/job.json"
+          export ENDLUME_E2E_RESULT="$RUNNER_TEMP/e867-profile/result.json"
+          "$E2E_BIN" >"$RUNNER_TEMP/e867-profile/stdout.log" 2>"$RUNNER_TEMP/e867-profile/stderr.log"
+          echo '---DIAGNOSTICS---'
+          grep 'ENDLUME_DIAG' "$RUNNER_TEMP/e867-profile/stderr.log" || true
+          echo '---RESULT---'
+          cat "$RUNNER_TEMP/e867-profile/result.json"

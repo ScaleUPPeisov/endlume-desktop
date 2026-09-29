@@ -55,6 +55,9 @@ pub struct EffectPreset{
   pub end_sec:Option<f64>,
   pub cache_key:Option<String>,
   pub cache_ready:Option<bool>,
+  #[serde(default)] pub usage_mode:Option<String>,
+  #[serde(default)] pub interval_sec:Option<f64>,
+  #[serde(default)] pub usage_duration_sec:Option<f64>,
 }
 
 #[derive(Debug,Clone,Serialize,Deserialize)]
@@ -63,7 +66,10 @@ pub struct SubscribePreset{
   #[serde(flatten)] pub effect:EffectPreset,
   pub first_at_sec:f64,
   pub second_at_sec:f64,
-  pub repeat_every_sec:f64
+  pub repeat_every_sec:f64,
+  #[serde(default)] pub first_appearance:Option<String>,
+  #[serde(default)] pub custom_first_at_sec:Option<f64>,
+  #[serde(default)] pub show_duration_sec:Option<f64>
 }
 
 #[derive(Debug,Clone,Serialize,Deserialize)]

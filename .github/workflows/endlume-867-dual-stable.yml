@@ -142,7 +142,7 @@ jobs:
           node scripts/test-queue-finalization-8-58.mjs "$GITHUB_WORKSPACE/.queue-test-dist/queue-state.js"
           cargo test --manifest-path src-tauri/Cargo.toml -- --nocapture
           python3 scripts/test-live-preview-hotfix-866.py --physical "$(command -v ffmpeg)" "$(command -v ffprobe)"
-          grep -q '"constant_bit_rate","1","-b:v","15M"' src-tauri/src/render.rs
+          grep -q '"-constant_bit_rate","1","-b:v","15M"' src-tauri/src/render.rs
           grep -q 'Strict Whole-Track Fidelity' src-tauri/src/render.rs
           grep -q 'hevc_nvenc' src-tauri/src/render.rs
           grep -q 'hevc_qsv' src-tauri/src/render.rs

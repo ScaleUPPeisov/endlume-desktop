@@ -1,0 +1,88 @@
+name: ENDLUME 10.0.0 Hosted Signing Key Probe
+
+on:
+  push:
+    branches: [release-probe/endlume-10.0.0]
+    paths:
+      - '.github/workflows/endlume-1000-hosted-key-probe.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      RAW_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Canonicalize ENDLUME updater key secret
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "${RAW_KEY:-}"
+          python3 - <<'PY'
+          import base64,os
+          raw=os.environ['RAW_KEY'].strip().replace('\\r\\n','\n').replace('\\n','\n')
+          candidates=[raw]
+          for _ in range(5):
+              cur=candidates[-1].strip()
+              try: dec=base64.b64decode(cur,validate=True).decode('utf-8').strip()
+              except Exception: break
+              if dec in candidates: break
+              candidates.append(dec)
+          plain=next((x for x in candidates if x.startswith('untrusted comment:')),None)
+          assert plain,'ENDLUME_SIGNING_SECRET_FORMAT_UNRECOGNIZED'
+          canonical=base64.b64encode((plain.rstrip()+'\n').encode()).decode()
+          with open(os.environ['GITHUB_ENV'],'a') as fp: fp.write('TAURI_SIGNING_PRIVATE_KEY='+canonical+'\n')
+          print('::add-mask::'+canonical)
+          print('ENDLUME_SECRET_PRESENT=YES')
+          PY
+      - name: Sign test payload
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          printf 'ENDLUME-10.0.0-key-probe\n' > probe.bin
+          npx --yes @tauri-apps/cli@2.10.1 signer sign probe.bin
+          test -s probe.bin.sig
+      - name: Verify signature against ENDLUME public key
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ROOT="$RUNNER_TEMP/endlume-signature-verify"
+          mkdir -p "$ROOT/src"
+          cat > "$ROOT/Cargo.toml" <<'EOF'
+          [package]
+          name = "endlume-signature-verify"
+          version = "0.0.0"
+          edition = "2021"
+          [dependencies]
+          base64 = "0.22"
+          minisign-verify = "=0.2.5"
+          serde_json = "1"
+          EOF
+          cat > "$ROOT/src/main.rs" <<'EOF'
+          use base64::{engine::general_purpose::STANDARD, Engine as _};
+          use minisign_verify::{PublicKey, Signature};
+          use serde_json::Value;
+          use std::{env,fs};
+          fn decode(s:&str)->String{String::from_utf8(STANDARD.decode(s.trim()).unwrap()).unwrap()}
+          fn main(){
+            let a:Vec<String>=env::args().collect();
+            let artifact=fs::read(&a[1]).unwrap();
+            let sig=decode(&fs::read_to_string(&a[2]).unwrap());
+            let cfg:Value=serde_json::from_str(&fs::read_to_string(&a[3]).unwrap()).unwrap();
+            let encoded=cfg["plugins"]["updater"]["pubkey"].as_str().unwrap();
+            let pk=PublicKey::decode(&decode(encoded)).unwrap();
+            let sg=Signature::decode(&sig).unwrap();
+            pk.verify(&artifact,&sg,true).unwrap();
+            println!("ENDLUME_HOSTED_SIGNING_KEY_MATCH=PASS");
+          }
+          EOF
+          cargo run --quiet --release --manifest-path "$ROOT/Cargo.toml" -- probe.bin probe.bin.sig src-tauri/tauri.conf.json

@@ -1,0 +1,33 @@
+name: ENDLUME 8.67 CBR 13M Probe
+on:
+  push:
+    branches: [hotfix/endlume-8.67-render-perf-staging]
+    paths: ['.github/workflows/endlume-867-cbr13-probe.yml']
+permissions: {contents: read}
+jobs:
+  probe:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 10
+    steps:
+      - shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+          python3 - <<'PY'
+          import json,subprocess,time,tempfile,re
+          from pathlib import Path
+          d=json.loads(Path('/Volumes/TOSHIBA EXT/ВАЙРОН/Render/First Pour Jazz/logs/005 — Ready Videos — project.json').read_text(errors='replace'))
+          img=Path(d['project']['media'][0])
+          fx=[Path.home()/'Library/Caches/studio.endlume.desktop/strict-effects-856/dd8446163b22cd85f0f04c3e.mov',Path.home()/'Library/Caches/studio.endlume.desktop/strict-effects-856/40fadf87ddc1297403bf34e8.mov']
+          def run(a,c=False): return subprocess.run([str(x) for x in a],check=True,capture_output=c,text=c)
+          with tempfile.TemporaryDirectory(prefix='e867-cbr-') as td:
+            td=Path(td);base=td/'base.png'
+            run(['ffmpeg','-hide_banner','-loglevel','error','-i',img,'-vf','scale=1920:1080:force_original_aspect_ratio=increase:flags=lanczos+accurate_rnd,crop=1920:1080:(iw-ow)/2:(ih-oh)/2,fps=30,setsar=1','-frames:v','1','-y',base])
+            graph="[0:v]fps=30,setsar=1[b0];[1:v]fps=30,setpts=PTS-STARTPTS,format=argb[fx0];[b0][fx0]overlay=x='max(0,min(W-w,W*0.5-w/2))':y='max(0,min(H-h,H*0.8834122934888241-h/2))':shortest=0:repeatlast=1:eof_action=repeat:format=auto[b1];[2:v]fps=30,setpts=PTS-STARTPTS,format=argb[fx1];[b1][fx1]overlay=x='max(0,min(W-w,W*0.49-w/2))':y='max(0,min(H-h,H*0.49-h/2))':shortest=0:repeatlast=1:eof_action=repeat:format=auto[b2];[b2]fps=60,format=yuv420p[outv]"
+            for rate in ['11M','13M','15M']:
+              out=td/f'{rate}.mp4'
+              a=['ffmpeg','-hide_banner','-loglevel','error','-filter_complex_threads','8','-loop','1','-framerate','30','-i',base,'-stream_loop','-1','-i',fx[0],'-stream_loop','-1','-i',fx[1],'-filter_complex',graph,'-map','[outv]','-frames:v','600','-an','-c:v','hevc_videotoolbox','-realtime','1','-prio_speed','1','-power_efficient','0','-constant_bit_rate','1','-b:v',rate,'-g','600','-tag:v','hvc1','-pix_fmt','yuv420p','-fps_mode','cfr','-r','60','-video_track_timescale','60000','-y',out]
+              t=time.perf_counter();run(a);sec=time.perf_counter()-t
+              p=json.loads(run(['ffprobe','-v','error','-select_streams','v:0','-show_entries','stream=bit_rate:format=size,duration,bit_rate','-of','json',out],True).stdout)
+              print('CBR_PROFILE',rate,round(sec,3),json.dumps(p,ensure_ascii=False),flush=True)
+          PY

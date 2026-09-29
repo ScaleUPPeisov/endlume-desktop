@@ -1316,7 +1316,10 @@ pub async fn render_job(app:&AppHandle,job:&QueueJob,cancel:Arc<AtomicBool>)->Re
     emit_progress(app,job,started,&timer,1.0,"Анализ файлов",&encoder,attempt,None);let work=render_work_dir(app,&job.project.id,attempt)?;
     let result:Result<(Vec<f64>,f64,bool),String>=async{
       emit_progress(app,job,started,&timer,4.0,"Проверяю самый быстрый движок",&encoder,attempt,None);
-      let (source_master,master_duration)=build_source_master(app,job,started,&timer,&work,&encoder,attempt,&cancel).await?;
+      let fast_static_no_source=smart_repeat&&job.project.media.len()==1&&is_image(&job.project.media[0]);
+      let (source_master,master_duration)=if fast_static_no_source{
+        emit_timing(app,&job.project.id,"source-master-skipped",0.0);(PathBuf::new(),1.0)
+      }else{build_source_master(app,job,started,&timer,&work,&encoder,attempt,&cancel).await?};
       let (fx,subs)=prepare_overlays(app,job,started,&timer,&encoder,attempt).await?;
       let visual_master_duration=if smart_repeat{smart_repeat_visual_seconds(app,master_duration,&fx).await}else{master_duration};
       let target=job.settings.duration_hours*3600.0;

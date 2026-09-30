@@ -167,6 +167,13 @@ jobs:
           test -f "$SIDE"
           python3 scripts/find-endlume-real-subscribe.py "$GITHUB_WORKSPACE/e1000-release-subscribe.json"
           test -s "$GITHUB_WORKSPACE/e1000-release-subscribe.json"
+          if [ ! -d "/Volumes/TOSHIBA EXT" ]; then
+            /usr/sbin/diskutil list || true
+            DISK_ID="$(/usr/sbin/diskutil list 2>/dev/null | awk '/TOSHIBA EXT/{print $NF; exit}')"
+            if [[ "$DISK_ID" =~ ^disk[0-9]+s[0-9]+$ ]]; then
+              /usr/sbin/diskutil mount "$DISK_ID" || true
+            fi
+          fi
           test -d "/Volumes/TOSHIBA EXT"
           echo ENDLUME_1000_TOSHIBA_FIXTURE_GREEN
 

@@ -128,6 +128,7 @@ pub fn run(){
     ])
     .setup(|app|{
       persistence::mark_session_open(&app.handle().clone())?;
+      render::cleanup_orphan_render_artifacts(&app.handle().clone());
       #[cfg(feature="e2e-render")]
       if std::env::var_os("ENDLUME_E2E_RENDER_JOB").is_some(){
         maybe_start_render_e2e(app.handle().clone());

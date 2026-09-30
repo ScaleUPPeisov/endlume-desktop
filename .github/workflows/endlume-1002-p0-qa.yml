@@ -95,7 +95,8 @@ jobs:
           p=Path('src-tauri/tauri.conf.json')
           d=json.loads(p.read_text())
           d['bundle']['createUpdaterArtifacts']=False
-          d['app']['windows']=[]
+          for w in d.get('app',{}).get('windows',[]):
+              w['visible']=False
           p.write_text(json.dumps(d,ensure_ascii=False,indent=2)+'\n')
           PY
           npm run tauri build -- --bundles app --features e2e-render

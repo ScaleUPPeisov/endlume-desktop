@@ -197,20 +197,23 @@ fn pingpong_fidelity_args_1002(s:&RenderSettings,encoder:&str,duration:f64)->Vec
 }
 
 fn cached_master_fidelity_args_1000(s:&RenderSettings,encoder:&str,duration:f64)->Vec<String>{
-  // 10.0: the persistent physical master is intentionally high-bitrate.
-  // sample-table expansion reuses these packets for hours, so spending bytes here
-  // improves visual fidelity and keeps the final upload in the required 500–700 MB range
-  // without re-encoding the logical 2h timeline or touching Original MP3 packets.
-  let frames=(s.fps.max(1) as f64*duration.max(2.0)).round().max(1.0) as u32;
+  // 10.0.3: keep roughly 250 MB of real HEVC payload in the short physical master
+  // instead of forcing a fixed 100 Mbps for every master duration. Shorter masters
+  // therefore contain fewer frames (faster encode) while receiving MORE bits/frame,
+  // so visual fidelity is not traded for speed.
+  let duration=duration.max(2.0);
+  let frames=(s.fps.max(1) as f64*duration).round().max(1.0) as u32;
   let g=frames.min(STRICT_857_MAX_GOP_FRAMES).to_string();
+  let mbps=(2000.0/duration).clamp(80.0,220.0).round() as u32;
+  let rate=format!("{mbps}M");let buf=format!("{}M",mbps.saturating_mul(2));let kbps=mbps.saturating_mul(1000);
   match encoder{
-    "hevc_videotoolbox"=>vec!["-c:v","hevc_videotoolbox","-realtime","1","-prio_speed","1","-power_efficient","0","-constant_bit_rate","1","-b:v","100M","-g",&g,"-tag:v","hvc1","-pix_fmt","yuv420p"].into_iter().map(String::from).collect(),
-    "hevc_nvenc"=>vec!["-c:v","hevc_nvenc","-preset","p4","-rc","cbr","-b:v","100M","-maxrate","100M","-bufsize","200M","-g",&g,"-tag:v","hvc1","-pix_fmt","yuv420p"].into_iter().map(String::from).collect(),
-    "hevc_qsv"=>vec!["-c:v","hevc_qsv","-b:v","100M","-maxrate","100M","-bufsize","200M","-g",&g,"-tag:v","hvc1","-pix_fmt","nv12"].into_iter().map(String::from).collect(),
-    "hevc_amf"=>vec!["-c:v","hevc_amf","-quality","speed","-rc","cbr","-b:v","100M","-maxrate","100M","-bufsize","200M","-g",&g,"-tag:v","hvc1","-pix_fmt","yuv420p"].into_iter().map(String::from).collect(),
+    "hevc_videotoolbox"=>vec!["-c:v","hevc_videotoolbox","-realtime","1","-prio_speed","1","-power_efficient","0","-constant_bit_rate","1","-b:v",&rate,"-g",&g,"-tag:v","hvc1","-pix_fmt","yuv420p"].into_iter().map(String::from).collect(),
+    "hevc_nvenc"=>vec!["-c:v","hevc_nvenc","-preset","p4","-rc","cbr","-b:v",&rate,"-maxrate",&rate,"-bufsize",&buf,"-g",&g,"-tag:v","hvc1","-pix_fmt","yuv420p"].into_iter().map(String::from).collect(),
+    "hevc_qsv"=>vec!["-c:v","hevc_qsv","-b:v",&rate,"-maxrate",&rate,"-bufsize",&buf,"-g",&g,"-tag:v","hvc1","-pix_fmt","nv12"].into_iter().map(String::from).collect(),
+    "hevc_amf"=>vec!["-c:v","hevc_amf","-quality","speed","-rc","cbr","-b:v",&rate,"-maxrate",&rate,"-bufsize",&buf,"-g",&g,"-tag:v","hvc1","-pix_fmt","yuv420p"].into_iter().map(String::from).collect(),
     "libx265"=>{
-      let x265=format!("keyint={}:min-keyint={}:scenecut=0:open-gop=0:vbv-maxrate=100000:vbv-bufsize=200000:vbv-init=1.0",frames,frames);
-      vec!["-c:v","libx265","-preset","ultrafast","-b:v","100M","-maxrate","100M","-bufsize","200M","-x265-params",&x265,"-tag:v","hvc1","-pix_fmt","yuv420p"].into_iter().map(String::from).collect()
+      let x265=format!("keyint={}:min-keyint={}:scenecut=0:open-gop=0:vbv-maxrate={}:vbv-bufsize={}:vbv-init=1.0",frames,frames,kbps,kbps.saturating_mul(2));
+      vec!["-c:v","libx265","-preset","ultrafast","-b:v",&rate,"-maxrate",&rate,"-bufsize",&buf,"-x265-params",&x265,"-tag:v","hvc1","-pix_fmt","yuv420p"].into_iter().map(String::from).collect()
     },
     _=>periodic_fidelity_args(s,encoder,duration),
   }
@@ -1387,7 +1390,7 @@ fn file_stamp_1000(path:&Path)->String{
   format!("{}|{}|{}",path.to_string_lossy(),size,mtime)
 }
 fn visual_master_key_1000(job:&QueueJob,effects:&[EffectPreset],master_frames:usize,encoder:&str,profile:&str)->Result<String,String>{
-  let mut h=Sha256::new();h.update(b"ENDLUME-10-BASE-VISUAL-v2-100M");
+  let mut h=Sha256::new();h.update(b"ENDLUME-10.0.3-BASE-VISUAL-v3-DYNAMIC-HQ");
   h.update(profile.as_bytes());h.update(encoder.as_bytes());h.update(master_frames.to_le_bytes());
   h.update(job.settings.width.to_le_bytes());h.update(job.settings.height.to_le_bytes());h.update(job.settings.fps.to_le_bytes());
   h.update(b"yuv420p|hevc|visual-cache-v10");
@@ -1610,7 +1613,7 @@ async fn render_multi_still_zero_copy_863(app:&AppHandle,job:&QueueJob,audio:&Au
 #[derive(Clone)]
 struct Interval1000Plan{first_frames:usize,repeat_frames:usize,duration_frames:usize,master_frames:usize,phase_frames:usize,sub:SubscribePreset}
 
-fn interval_1000_plan(job:&QueueJob,effects:&[EffectPreset],subs:&[SubscribePreset],final_duration:f64)->Option<Interval1000Plan>{
+fn interval_1000_plan(job:&QueueJob,effects:&[EffectPreset],subs:&[SubscribePreset],final_duration:f64,min_visual_seconds:f64)->Option<Interval1000Plan>{
   if !smart_repeat_project(job)||timed_effects(effects,final_duration){return None}
   let active=subs.iter().filter(|s|subscribe_usage_mode(s)!="off"&&!s.effect.source.trim().is_empty()).collect::<Vec<_>>();
   if active.len()!=1{return None}
@@ -1619,18 +1622,13 @@ fn interval_1000_plan(job:&QueueJob,effects:&[EffectPreset],subs:&[SubscribePres
   let duration_frames=(sub.show_duration_sec.unwrap_or(8.0).clamp(2.0,20.0)*fps).round().max(1.0) as usize;
   let first_frames=(subscribe_first_sec(sub)*fps).round().max(0.0) as usize;
   if repeat_frames<(60.0*fps) as usize||duration_frames>=repeat_frames{return None}
-  // 10.0.3: keep the proven 100M physical-master quality, but choose the
-  // shortest safe divisor that keeps the final payload near ~500 MB. This cuts
-  // physical encode time and bytes without lowering HEVC quality.
-  let audio_bytes=(final_duration.max(0.0)*320_000.0/8.0)*1.03;
-  let subscribe_seconds=duration_frames as f64/fps;
-  let subscribe_bytes=(subscribe_seconds*15_000_000.0/8.0)*1.10;
-  let reserve_bytes=24_000_000.0;
-  let target_bytes=500_000_000.0;
-  let available_video=(target_bytes-audio_bytes-subscribe_bytes-reserve_bytes).clamp(120_000_000.0,380_000_000.0);
-  let desired_seconds=(available_video*8.0/100_000_000.0).clamp(20.0,32.0);
+  // 10.0.3 Turbo: preserve at least one full natural Effect cycle, then choose
+  // the shortest Subscribe-compatible divisor near 10 seconds. The HQ encoder
+  // raises bitrate for shorter masters, preserving/increasing bits per frame.
+  let min_seconds=min_visual_seconds.max(8.0).min(40.0);
+  let desired_seconds=min_seconds.max(10.0).min(40.0);
   let desired=(desired_seconds*fps).round() as usize;
-  let lo=(20.0*fps).round() as usize;let hi=(40.0*fps).round() as usize;let mut best=None;let mut dist=usize::MAX;
+  let lo=(min_seconds*fps).ceil() as usize;let hi=(40.0*fps).round() as usize;let mut best=None;let mut dist=usize::MAX;
   for d in lo.max(1)..=hi.max(lo.max(1)){
     if repeat_frames%d!=0{continue}
     let phase=first_frames%d;
@@ -1642,8 +1640,8 @@ fn interval_1000_plan(job:&QueueJob,effects:&[EffectPreset],subs:&[SubscribePres
   Some(Interval1000Plan{first_frames,repeat_frames,duration_frames,master_frames,phase_frames,sub:sub.clone()})
 }
 
-async fn render_interval_zero_copy_1000(app:&AppHandle,job:&QueueJob,effects:&[EffectPreset],subs:&[SubscribePreset],audio:&AudioSource,final_duration:f64,work:&Path,out:&Path,encoder:&str,attempt:u32,cancel:&AtomicBool,started:i64,timer:&Instant)->Result<bool,String>{
-  let Some(plan)=interval_1000_plan(job,effects,subs,final_duration) else{return Ok(false)};
+async fn render_interval_zero_copy_1000(app:&AppHandle,job:&QueueJob,effects:&[EffectPreset],subs:&[SubscribePreset],audio:&AudioSource,final_duration:f64,min_visual_seconds:f64,work:&Path,out:&Path,encoder:&str,attempt:u32,cancel:&AtomicBool,started:i64,timer:&Instant)->Result<bool,String>{
+  let Some(plan)=interval_1000_plan(job,effects,subs,final_duration,min_visual_seconds) else{return Ok(false)};
   if !strict_856_encoder_allowed(encoder){return Err(format!("10.0.1 interval zero-copy: HEVC encoder {encoder} unavailable"))}
   let fps=job.settings.fps.max(1) as usize;let master_mark=Instant::now();
   let final_audio_encoder=choose_audio_encoder(app).await;
@@ -1686,7 +1684,7 @@ async fn render_zero_sub_zero_copy_856(app:&AppHandle,job:&QueueJob,effects:&[Ef
   if active_subs.iter().any(|x|subscribe_usage_mode(x)!="always"){return Ok(false)}
   if !strict_856_encoder_allowed(encoder){return Err(format!("Strict 8.62: HEVC encoder {encoder} не разрешён strict pipeline"))}
   let mut combined=effects.to_vec();for sub in active_subs{combined.push(sub.effect.clone())}
-  let fps=60u32;let duration=master_duration.clamp(12.0,60.0);let master_frames=(duration*fps as f64).round() as usize;
+  let fps=60u32;let duration=master_duration.clamp(8.0,60.0);let master_frames=(duration*fps as f64).round() as usize;
   let final_audio_encoder=choose_audio_encoder(app).await;
   let vm=Instant::now();
   let visual_future=build_cached_visual_master_1000(app,job,&combined,master_frames,work,encoder,false,attempt,cancel,started,timer);
@@ -1948,7 +1946,7 @@ pub async fn render_job(app:&AppHandle,job:&QueueJob,cancel:Arc<AtomicBool>)->Re
       let zero_copy=if smart_repeat{
         if render_pingpong_zero_copy_1002(app,job,&source_master,&fx,&subs,&audio,final_duration,&work,&out,&encoder,attempt,&cancel,started,&timer).await?{true}
         else if render_multi_still_zero_copy_863(app,job,&audio,final_duration,&work,&out,&encoder,attempt,&cancel,started,&timer).await?{true}
-        else if render_interval_zero_copy_1000(app,job,&fx,&subs,&audio,final_duration,&work,&out,&encoder,attempt,&cancel,started,&timer).await?{true}
+        else if render_interval_zero_copy_1000(app,job,&fx,&subs,&audio,final_duration,visual_master_duration,&work,&out,&encoder,attempt,&cancel,started,&timer).await?{true}
         else if render_zero_sub_zero_copy_856(app,job,&fx,&subs,&audio,visual_master_duration,final_duration,&work,&out,&encoder,attempt,&cancel,started,&timer).await?{true}
         else{render_periodic_zero_copy_852(app,job,&fx,&subs,&audio,final_duration,&work,&out,&encoder,attempt,&cancel,started,&timer).await?}
       }else{false};

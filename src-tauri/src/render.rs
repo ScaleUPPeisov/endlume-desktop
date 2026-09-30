@@ -782,10 +782,13 @@ async fn build_cached_aac_playlist_1003(app:&AppHandle,job:&QueueJob,encoder:&st
       Ok((idx,out,false))
     });
   }
-  let rows=futures::future::join_all(tasks).await;
-  if cancel.load(Ordering::SeqCst){return Err(CANCELLED.into())}
-  let mut ordered=Vec::<(usize,PathBuf,bool)>::with_capacity(rows.len());
-  for row in rows{ordered.push(row?)}
+  let mut set=tokio::task::JoinSet::new();
+  for task in tasks{set.spawn(task);}
+  let mut ordered=Vec::<(usize,PathBuf,bool)>::new();
+  while let Some(row)=set.join_next().await{
+    if cancel.load(Ordering::SeqCst){set.abort_all();return Err(CANCELLED.into())}
+    ordered.push(row.map_err(|e|format!("10.0.3 AAC worker join: {e}"))??);
+  }
   ordered.sort_by_key(|x|x.0);
   let hits=ordered.iter().filter(|x|x.2).count();
   let misses=ordered.len().saturating_sub(hits);

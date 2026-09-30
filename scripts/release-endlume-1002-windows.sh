@@ -98,11 +98,14 @@ print('ENDLUME_1002_WINDOWS_RUNTIME_CONFIG_GREEN')
 PY
 
 unset TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PATH TAURI_SIGNING_PRIVATE_KEY_PASSWORD || true
-npm run tauri build -- --runner cargo-xwin --target "$WINDOWS_TARGET" --bundles nsis --config src-tauri/tauri.windows.conf.json
-
 NSIS="$CARGO_TARGET_DIR/$WINDOWS_TARGET/release/bundle/nsis"
-CAND="$(find "$NSIS" -maxdepth 1 -type f -name '*.exe' -print -quit)"
-test -n "$CAND" -a -s "$CAND"
+CAND="$NSIS/ENDLUME YT Studio PEISOV_10.0.2_x64-setup.exe"
+if [ -s "$CAND" ]; then
+  echo "ENDLUME_1002_WINDOWS_REUSE_NSIS=$CAND"
+else
+  npm run tauri build -- --runner cargo-xwin --target "$WINDOWS_TARGET" --bundles nsis --config src-tauri/tauri.windows.conf.json
+fi
+test -s "$CAND"
 cp "$CAND" "$STAGE/$WINDOWS_GENERIC_ASSET"
 cp "$CAND" "$STAGE/$WINDOWS_VERSIONED_ASSET"
 python3 - "$STAGE/$WINDOWS_GENERIC_ASSET" <<'PY'
@@ -113,6 +116,9 @@ assert p.stat().st_size>1_000_000,p.stat().st_size
 assert p.read_bytes()[:2]==b'MZ'
 print('ENDLUME_1002_WINDOWS_PE_GREEN',p.stat().st_size)
 PY
+export TAURI_SIGNING_PRIVATE_KEY_PATH="$HOME/.endlume-updater/endlume.key"
+export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
+unset TAURI_SIGNING_PRIVATE_KEY || true
 npx --yes @tauri-apps/cli@2.10.1 signer sign "$STAGE/$WINDOWS_GENERIC_ASSET"
 cp "$STAGE/$WINDOWS_GENERIC_ASSET.sig" "$STAGE/$WINDOWS_VERSIONED_ASSET.sig"
 test -s "$STAGE/$WINDOWS_GENERIC_ASSET.sig"

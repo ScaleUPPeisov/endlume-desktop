@@ -1330,6 +1330,9 @@ async fn verify_strict_857_result(app:&AppHandle,out:&Path,expected:f64,original
     let ss=format!("{pos:.3}");let args=vec!["-v","error","-ss",ss.as_str(),"-i",out.to_string_lossy().as_ref(),"-map","0:v:0","-frames:v","2","-f","null","-"].into_iter().map(String::from).collect();
     output(app,"ffmpeg",args).await.map_err(|e|format!("Strict 8.57 video seek/decode @ {ss}s: {e}"))?;
   }
+  // verify_result directly before this gate already checks final AAC structure and
+  // audible START/MIDDLE/END on the post-rename output. Do not repeat 4-6 audio seeks.
+  if sample_table_fast{return Ok(())}
   let mut audio_positions=vec![0.0,(expected*0.5).max(0.0),(expected-10.0).max(0.0),(expected-2.0).max(0.0)];
   if original_audio&&track_durations.len()>1{
     let boundary=track_durations[0].max(0.2);

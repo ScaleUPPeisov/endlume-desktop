@@ -1,4 +1,4 @@
-name: ENDLUME 10.0.3 Effect Period Probe
+name: ENDLUME 10.0.3 Effect Compositor Probe
 
 on:
   push:
@@ -67,3 +67,36 @@ jobs:
               rows.append({"file":p.name,"bytes":p.stat().st_size,"duration":d,"frames":len(xs),"exact_period_frames":per,"exact_period_seconds":per/30.0,"repeats":len(xs)/per if per else 0})
           print("ENDLUME_1003_EFFECT_PERIODS "+json.dumps(rows,ensure_ascii=False))
           PY
+
+      - name: Probe M1 compositor throughput
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          FFM="$HOME/.endlume-local-builder/endlume-desktop-8.40-bootstrap/src-tauri/binaries/ffmpeg-aarch64-apple-darwin"
+          "$FFM" -hide_banner -filters 2>/dev/null | grep -E 'coreimage|overlay|blend|metal|opencl|vulkan' | head -80 || true
+          TMP="$(mktemp -d /tmp/e1003comp.XXXXXX)"
+          python3 scripts/find-endlume-real-fixture.py "$TMP/env"
+          source "$TMP/env"
+          IMAGE="$(python3 - "$SIDE" <<'PY'
+          import json,sys
+          d=json.load(open(sys.argv[1]))
+          print(d['project']['media'][0])
+          PY
+          )"
+          ROOT="$HOME/Library/Caches/studio.endlume.desktop/strict-effects-856"
+          FX1="$ROOT/86559c257cd64368b7f6e6d4.mov"
+          FX2="$ROOT/8426020abd611459c4ffdf10.mov"
+          test -f "$IMAGE";test -f "$FX1";test -f "$FX2"
+          "$FFM" -hide_banner -loglevel error -i "$IMAGE" -vf "scale=1920:1080:force_original_aspect_ratio=increase:flags=lanczos+accurate_rnd,crop=1920:1080:(iw-ow)/2:(ih-oh)/2,setsar=1" -frames:v 1 -compression_level 1 -y "$TMP/base.png"
+          GRAPH="[0:v]fps=30,setsar=1[b0];[1:v]setpts=PTS-STARTPTS[fx0];[b0][fx0]overlay=x='max(0,min(W-w,W*0.5-w/2))':y='max(0,min(H-h,H*0.8834535728307813-h/2))':shortest=0:repeatlast=1:eof_action=repeat:format=auto[b1];[2:v]setpts=PTS-STARTPTS[fx1];[b1][fx1]overlay=x='max(0,min(W-w,W*0.49-w/2))':y='max(0,min(H-h,H*0.49-h/2))':shortest=0:repeatlast=1:eof_action=repeat:format=auto[outv]"
+          for T in 1 2 4 8; do
+            START="$(python3 -c 'import time;print(time.perf_counter())')"
+            "$FFM" -hide_banner -loglevel error -filter_complex_threads "$T" -loop 1 -framerate 30 -i "$TMP/base.png" -stream_loop -1 -i "$FX1" -stream_loop -1 -i "$FX2" -filter_complex "$GRAPH" -map "[outv]" -frames:v 300 -f null -
+            END="$(python3 -c 'import time;print(time.perf_counter())')"
+            python3 - "$T" "$START" "$END" <<'PY'
+          import sys
+          t,a,b=sys.argv[1],float(sys.argv[2]),float(sys.argv[3])
+          sec=b-a
+          print(f"ENDLUME_1003_COMPOSITOR threads={t} seconds={sec:.3f} fps={300/sec:.2f}")
+          PY
+          done

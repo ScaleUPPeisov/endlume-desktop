@@ -792,12 +792,8 @@ async fn build_cached_aac_playlist_1003(app:&AppHandle,job:&QueueJob,encoder:&st
     let enc=encoder.to_string();
     let key=audio_track_aac_key_1003(&source,&enc);
     let out=root.join(format!("{key}.m4a"));
-    // Warm cache hits stay exactly zero-process and do not touch the source disk.
-    if committed_aac_cache_file_1003(&out){
-      tasks.push(async move{Ok::<(usize,PathBuf,bool),String>((idx,out,true))});
-      continue
-    }
-    let external=source.starts_with("/Volumes/");
+    let cached=committed_aac_cache_file_1003(&out);
+    let external=!cached&&source.starts_with("/Volumes/");
     let input=if external{
       std::fs::create_dir_all(&stage_root).map_err(|e|format!("10.0.3 AAC local stage mkdir: {e}"))?;
       let ext=source.extension().and_then(|x|x.to_str()).unwrap_or("audio");
@@ -807,6 +803,8 @@ async fn build_cached_aac_playlist_1003(app:&AppHandle,job:&QueueJob,encoder:&st
       local
     }else{source.clone()};
     tasks.push(async move{
+      // Warm cache hit: no FFmpeg and no source-disk read.
+      if cached{return Ok::<(usize,PathBuf,bool),String>((idx,out,true))}
       let _=std::fs::remove_file(&out);
       let tmp=root.join(format!(".{key}-{}.tmp.m4a",uuid::Uuid::new_v4()));
       let mut args:Vec<String>=vec!["-hide_banner","-loglevel","error","-i",input.to_string_lossy().as_ref(),"-map","0:a:0","-vn","-map_metadata","-1"].into_iter().map(String::from).collect();

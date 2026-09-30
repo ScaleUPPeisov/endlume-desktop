@@ -57,11 +57,20 @@ fn strict_fingerprint_856(e:&EffectPreset,fps:u32,width:u32,height:u32)->String{
   let meta=fs::metadata(&e.source).ok();let modified=meta.as_ref().and_then(|m|m.modified().ok()).and_then(|t|t.duration_since(UNIX_EPOCH).ok()).map(|d|d.as_secs()).unwrap_or(0);let size=meta.as_ref().map(|m|m.len()).unwrap_or(0);
   let (similarity,blend)=chromakey_params_859(e);let mut h=Sha256::new();h.update(format!("strict-860|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",e.source,size,modified,fps,width,height,e.mode,e.key_color,similarity,blend,e.luma_threshold,e.luma_tolerance,e.scale,e.fullscreen,e.saturation));hex::encode(h.finalize())[..24].to_string()
 }
+fn clear_stale_strict_lock_1002(lock:&Path){
+  let stale=fs::metadata(lock).ok()
+    .and_then(|m|m.modified().ok())
+    .and_then(|t|t.elapsed().ok())
+    .map(|age|age.as_secs()>=120)
+    .unwrap_or(false);
+  if stale{let _=fs::remove_file(lock);}
+}
 
 pub async fn prepare_strict_856(app:&AppHandle,e:&EffectPreset,fps:u32,width:u32,height:u32)->Result<EffectPreset,String>{
   if !e.enabled||e.source.trim().is_empty(){return Ok(e.clone())}
   if !Path::new(&e.source).is_file(){return Err(format!("Не найден файл эффекта: {}",e.source))}
   let key=strict_fingerprint_856(e,fps,width,height);let path=strict_cache_dir_856(app)?.join(format!("{key}.mov"));let lock=path.with_extension("lock");
+  clear_stale_strict_lock_1002(&lock);
   if !path.exists(){
     match std::fs::OpenOptions::new().write(true).create_new(true).open(&lock){
       Ok(_guard)=>{

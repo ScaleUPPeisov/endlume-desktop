@@ -517,6 +517,32 @@ fn another_endlume_process_alive_1002()->bool{
   })
 }
 
+pub fn cleanup_orphan_render_artifacts(app:&AppHandle){
+  if let Ok(base)=app.path().app_cache_dir(){
+    let root=base.join("render-work");
+    let bytes=p0c_recursive_bytes(&root);
+    let _=std::fs::remove_dir_all(&root);
+    let _=std::fs::create_dir_all(&root);
+    if bytes>0{diag_line(json!({"kind":"startup-orphan-cleanup","renderWorkBytesRemoved":bytes,"path":root}));}
+  }
+  if let Ok(video_dir)=app.path().video_dir(){
+    let root=video_dir.join("ENDLUME Studio");
+    let mut removed=0u64;
+    if root.is_dir(){
+      for e in walkdir::WalkDir::new(&root).max_depth(5).into_iter().filter_map(Result::ok){
+        let p=e.path();
+        if !p.is_file(){continue}
+        let n=p.file_name().and_then(|x|x.to_str()).unwrap_or("").to_lowercase();
+        if n.contains(".endlume.partial.mp4")||n.ends_with(".endlume-part"){
+          removed=removed.saturating_add(std::fs::metadata(p).map(|m|m.len()).unwrap_or(0));
+          let _=std::fs::remove_file(p);
+        }
+      }
+    }
+    if removed>0{diag_line(json!({"kind":"startup-partial-cleanup","partialBytesRemoved":removed,"root":root}));}
+  }
+}
+
 fn render_work_dir(app:&AppHandle,id:&str,attempt:u32)->Result<PathBuf,String>{
   let base=app.path().app_cache_dir().unwrap_or_else(|_|std::env::temp_dir().join("studio.endlume.desktop"));
   let root=base.join("render-work");

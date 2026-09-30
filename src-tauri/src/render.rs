@@ -1586,7 +1586,7 @@ async fn build_cached_pingpong_aac_1002(app:&AppHandle,job:&QueueJob,audio:&Audi
   let audio_encoder=choose_audio_encoder(app).await;
   args.extend(vec!["-t",&final_duration.to_string(),"-map","0:a:0"].into_iter().map(String::from));
   args.extend(audio_encoder_args(&audio_encoder));
-  args.extend(vec!["-tag:a","mp4a","-disposition:a:0","default","-metadata:s:a:0","language=und","-movflags","+faststart","-progress","pipe:1","-y",tmp.to_string_lossy().as_ref()].into_iter().map(String::from));
+  args.extend(vec!["-tag:a","mp4a","-disposition:a:0","default","-metadata:s:a:0","language=und","-progress","pipe:1","-y",tmp.to_string_lossy().as_ref()].into_iter().map(String::from));
   let mark=Instant::now();
   run_ffmpeg(app,job,started,timer,args,"10.0.2: Apple AAC persistent cache",34.0,18.0,final_duration,encoder,attempt,cancel).await?;
   verify_final_audio_structure_1002(app,&tmp).await?;

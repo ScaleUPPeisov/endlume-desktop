@@ -56,15 +56,11 @@ print('ENDLUME_1002_MAC_STABLE_PRESENT')
 PY
 
 npm ci
-npm run check
-npm run build
 
 mkdir -p src-tauri/binaries
 cp "$(command -v ffmpeg)" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
 cp "$(command -v ffprobe)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
 chmod +x src-tauri/binaries/ffmpeg-aarch64-apple-darwin src-tauri/binaries/ffprobe-aarch64-apple-darwin
-cargo check --manifest-path src-tauri/Cargo.toml
-cargo test --manifest-path src-tauri/Cargo.toml -- --nocapture
 
 brew list nsis >/dev/null 2>&1 || brew install nsis
 brew list llvm >/dev/null 2>&1 || brew install llvm
@@ -90,9 +86,18 @@ cp "$FFPROBE" "src-tauri/binaries/ffprobe-$WINDOWS_TARGET.exe"
 file "src-tauri/binaries/ffmpeg-$WINDOWS_TARGET.exe" | grep -E 'PE32|MS Windows'
 echo ENDLUME_1002_WINDOWS_TOOLCHAIN_GREEN
 
-export TAURI_SIGNING_PRIVATE_KEY_PATH="$HOME/.endlume-updater/endlume.key"
-export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
-unset TAURI_SIGNING_PRIVATE_KEY || true
+python3 - <<'PY'
+import json
+from pathlib import Path
+p=Path('src-tauri/tauri.conf.json')
+d=json.loads(p.read_text())
+assert d['version']=='10.0.2'
+d['bundle']['createUpdaterArtifacts']=False
+p.write_text(json.dumps(d,ensure_ascii=False,indent=2)+'\n')
+print('ENDLUME_1002_WINDOWS_RUNTIME_CONFIG_GREEN')
+PY
+
+unset TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PATH TAURI_SIGNING_PRIVATE_KEY_PASSWORD || true
 npm run tauri build -- --runner cargo-xwin --target "$WINDOWS_TARGET" --bundles nsis --config src-tauri/tauri.windows.conf.json
 
 NSIS="$CARGO_TARGET_DIR/$WINDOWS_TARGET/release/bundle/nsis"

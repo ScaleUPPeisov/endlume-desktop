@@ -509,20 +509,27 @@ fn render_work_owner_alive_1002(dir:&Path)->bool{
   sys.refresh_processes(ProcessesToUpdate::Some(&[p]),true);
   sys.process(p).is_some()
 }
+fn another_endlume_process_alive_1002()->bool{
+  let current=Pid::from_u32(std::process::id());
+  let sys=System::new_all();
+  sys.processes().iter().any(|(pid,p)|{
+    **pid!=current&&p.name().to_string_lossy().to_ascii_lowercase().contains("endlume")
+  })
+}
 
 fn render_work_dir(app:&AppHandle,id:&str,attempt:u32)->Result<PathBuf,String>{
   let base=app.path().app_cache_dir().unwrap_or_else(|_|std::env::temp_dir().join("studio.endlume.desktop"));
   let root=base.join("render-work");
   std::fs::create_dir_all(&root).map_err(|e|format!("Не удалось создать локальную рабочую папку ENDLUME: {e}"))?;
+  let legacy_cleanup_allowed=!another_endlume_process_alive_1002();
   if let Ok(entries)=std::fs::read_dir(&root){
     for e in entries.flatten(){
       let p=e.path();if !p.is_dir(){continue}
       let marker=p.join(".endlume-owner-pid");
-      let legacy_age=e.metadata().ok().and_then(|m|m.modified().ok()).and_then(|t|t.elapsed().ok());
-      let orphan=if marker.is_file(){!render_work_owner_alive_1002(&p)}else{legacy_age.map(|x|x>=Duration::from_secs(6*3600)).unwrap_or(false)};
+      let orphan=if marker.is_file(){!render_work_owner_alive_1002(&p)}else{legacy_cleanup_allowed};
       if orphan{
         let bytes=p0c_recursive_bytes(&p);
-        if std::fs::remove_dir_all(&p).is_ok(){diag_line(json!({"kind":"crash-recovery-cleanup","path":p,"reclaimedBytes":bytes}));}
+        if std::fs::remove_dir_all(&p).is_ok(){diag_line(json!({"kind":"crash-recovery-cleanup","path":p,"reclaimedBytes":bytes,"legacy":!marker.is_file()}));}
       }
     }
   }

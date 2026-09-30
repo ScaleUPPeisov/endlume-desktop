@@ -132,6 +132,10 @@ pub fn run(){
       Ok(())
     })
     .on_window_event(|window,event|{
+      #[cfg(feature="e2e-render")]
+      if std::env::var_os("ENDLUME_E2E_RENDER_JOB").is_some(){
+        if let tauri::WindowEvent::CloseRequested{api,..}=event{api.prevent_close();return}
+      }
       if let tauri::WindowEvent::Destroyed=event{let _=persistence::mark_session_closed(window.app_handle());}
     })
     .run(tauri::generate_context!())

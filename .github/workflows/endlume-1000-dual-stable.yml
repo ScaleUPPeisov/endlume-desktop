@@ -1,8 +1,8 @@
-name: ENDLUME 10.0.0 Dual Stable
+name: ENDLUME 10.0.1 Dual Stable
 
 on:
   push:
-    branches: [release-prep/endlume-10.0.0]
+    branches: [release-prep/endlume-10.0.1]
     paths:
       - '.github/workflows/endlume-1000-dual-stable.yml'
   workflow_dispatch:
@@ -15,18 +15,18 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  VERSION: 10.0.0
-  HOTFIX_SHA: c86bf10f4e24dec10c47bbc972cf38a7e7f4e07c
+  VERSION: 10.0.1
+  HOTFIX_SHA: ef4ab0b8f4fbfcde1b3358b20d61226e18759822
   TESTED_RENDER_BLOB: 55e6d4cb24b1ab945df6bcf668aeec6dde557f7d
   WINDOWS_TARGET: x86_64-pc-windows-msvc
-  WINDOWS_ASSET: ENDLUME-YT-Studio-PEISOV-Setup-10.0.0-x64.exe
-  MAC_ASSET: ENDLUME-YT-Studio-PEISOV-10.0.0-macOS-ARM64.app.tar.gz
+  WINDOWS_ASSET: ENDLUME-YT-Studio-PEISOV-Setup-10.0.1-x64.exe
+  MAC_ASSET: ENDLUME-YT-Studio-PEISOV-10.0.1-macOS-ARM64.app.tar.gz
   STABLE_REPO: ScaleUPPeisov/scaleup-site
   STABLE_TAG: endlume-stable
 
 jobs:
   release:
-    name: Gate • TOSHIBA • build/sign macOS + Windows • publish 10.0.0
+    name: Gate • TOSHIBA • build/sign macOS + Windows • publish 10.0.1
     runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
     timeout-minutes: 180
     env:
@@ -179,7 +179,7 @@ jobs:
           from pathlib import Path
           p=Path('src-tauri/tauri.conf.json')
           c=json.loads(p.read_text())
-          assert c['version']=='10.0.0'
+          assert c['version']=='10.0.1'
           c['bundle']['createUpdaterArtifacts']=False
           p.write_text(json.dumps(c,ensure_ascii=False,indent=2)+'\n')
           PY
@@ -226,7 +226,7 @@ jobs:
           from pathlib import Path
           p=Path('src-tauri/tauri.conf.json')
           c=json.loads(p.read_text())
-          assert c['version']=='10.0.0'
+          assert c['version']=='10.0.1'
           c['bundle']['createUpdaterArtifacts']=False
           p.write_text(json.dumps(c,ensure_ascii=False,indent=2)+'\n')
           PY
@@ -335,7 +335,7 @@ jobs:
           base=f'https://github.com/{repo}/releases/download/{tag}'
           d={
             'version':os.environ['VERSION'],
-            'notes':'ENDLUME 10.0.0: persistent visual/Subscribe masters, interval scheduling, zero-copy sample-table pipeline and silent-audio P0 protection. Physical TOSHIBA EXT gate preserves HEVC 1080p60, 500–700 MB output and Original MP3 packet-copy.',
+            'notes':'ENDLUME 10.0.1 P0 Audio Hotfix: song audibility fix is now delivered as a new updater version. Silent/near-silent final MP4 is blocked; Original MP3 packet-copy, full songs, HEVC 1080p60, Effects/Subscribe and 500–700 MB target are preserved.',
             'pub_date':datetime.datetime.now(datetime.timezone.utc).isoformat().replace('+00:00','Z'),
             'platforms':{
               'windows-x86_64':{'url':f'{base}/{wa}','signature':wsig,'sha256':wsha},

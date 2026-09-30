@@ -31,6 +31,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+          rm -rf /tmp/endlume1002.* /tmp/pingpong1002.* 2>/dev/null || true
           TARGET="$HOME/Movies/ENDLUME Studio/Новая папка — Ready Videos_5.mp4"
           echo "TARGET=$TARGET"
           test -f "$TARGET"
@@ -174,11 +175,11 @@ jobs:
 
           TMP="$(mktemp -d /tmp/endlume1002.XXXXXX)"
           echo '=== CONTROL_REMUX ==='
-          ffmpeg -hide_banner -loglevel error -i "$TARGET" -map 0:v:0 -map 0:a:0 -c copy -disposition:a:0 default -movflags +faststart -y "$TMP/remux.mp4"
+          ffmpeg -hide_banner -loglevel error -i "$TARGET" -t 5 -map 0:v:0 -map 0:a:0 -c copy -disposition:a:0 default -movflags +faststart -y "$TMP/remux.mp4"
           /usr/bin/swift /tmp/endlume-audio-native.swift "$TMP/remux.mp4"
           echo '=== CONTROL_AUDIO_REENCODE ==='
           if ffmpeg -hide_banner -encoders 2>/dev/null | grep -q 'aac_at'; then AENC=aac_at; else AENC=aac; fi
-          ffmpeg -hide_banner -loglevel error -i "$TARGET" -map 0:v:0 -map 0:a:0 -c:v copy -c:a "$AENC" -b:a 320k -ar 48000 -ac 2 -tag:a mp4a -disposition:a:0 default -movflags +faststart -y "$TMP/aac.mp4"
+          ffmpeg -hide_banner -loglevel error -i "$TARGET" -t 5 -map 0:v:0 -map 0:a:0 -c:v copy -c:a "$AENC" -b:a 320k -ar 48000 -ac 2 -tag:a mp4a -disposition:a:0 default -movflags +faststart -y "$TMP/aac.mp4"
           /usr/bin/swift /tmp/endlume-audio-native.swift "$TMP/aac.mp4"
           rm -rf "$TMP"
 

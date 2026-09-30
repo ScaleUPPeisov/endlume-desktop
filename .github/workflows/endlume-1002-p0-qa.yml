@@ -8,6 +8,7 @@ on:
       - 'src-tauri/src/render.rs'
       - 'src-tauri/src/mp4_manifest.rs'
       - 'src-tauri/src/cache.rs'
+      - 'src-tauri/src/lib.rs'
       - 'scripts/run-endlume-1002-pingpong-e2e.py'
       - 'scripts/run-endlume-1000-render-job-e2e.py'
       - 'package.json'

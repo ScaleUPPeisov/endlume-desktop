@@ -1,0 +1,230 @@
+name: ENDLUME 10.0.2 Windows Stable Release
+
+on:
+  push:
+    branches: [hotfix/endlume-10.0.2-p0]
+    paths:
+      - '.github/workflows/endlume-1002-windows-stable.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-1002-windows-stable
+  cancel-in-progress: true
+
+env:
+  VERSION: 10.0.2
+  WINDOWS_TARGET: x86_64-pc-windows-msvc
+  WINDOWS_GENERIC_ASSET: ENDLUME-windows-x86_64-setup.exe
+  WINDOWS_VERSIONED_ASSET: ENDLUME-YT-Studio-PEISOV-Setup-10.0.2-x64.exe
+  STABLE_REPO: ScaleUPPeisov/scaleup-site
+  STABLE_TAG: endlume-stable
+
+jobs:
+  release:
+    name: Windows x64 • Cross-build • Sign • Publish Stable
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 150
+    env:
+      RELEASE_TOKEN: ${{ secrets.ENDLUME_RELEASE_TOKEN }}
+
+    steps:
+      - name: Checkout exact release commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify ENDLUME 10.0.2 release identity
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          test "$(uname -s)" = "Darwin"
+          test "$(uname -m)" = "arm64"
+          test -n "${RELEASE_TOKEN:-}"
+          test -s "$HOME/.endlume-updater/endlume.key"
+          python3 - <<'PY'
+          import json,pathlib,re
+          v='10.0.2'
+          assert json.load(open('package.json'))['version']==v
+          assert json.load(open('package-lock.json'))['version']==v
+          assert json.load(open('src-tauri/tauri.conf.json'))['version']==v
+          assert json.load(open('release/endlume-10.0.2.json'))['version']==v
+          c=pathlib.Path('src-tauri/Cargo.toml').read_text()
+          assert re.search(r'^version = "10\\.0\\.2"$',c,re.M)
+          w=json.load(open('src-tauri/tauri.windows.conf.json'))
+          assert w['identifier']=='studio.endlume.desktop'
+          assert w['bundle']['targets']==['nsis']
+          assert w['bundle']['windows']['nsis']['installMode']=='currentUser'
+          print('ENDLUME_1002_WINDOWS_IDENTITY_GREEN')
+          PY
+          GH_TOKEN="$RELEASE_TOKEN" gh api "repos/$STABLE_REPO" --jq .full_name >/dev/null
+
+      - name: Require published macOS 10.0.2 stable first
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export GH_TOKEN="$RELEASE_TOKEN"
+          mkdir -p "$RUNNER_TEMP/endlume-1002-win"
+          gh api "repos/$STABLE_REPO/releases/tags/$STABLE_TAG" > "$RUNNER_TEMP/endlume-1002-win/release.json"
+          LATEST_ID="$(python3 - "$RUNNER_TEMP/endlume-1002-win/release.json" <<'PY'
+          import json,sys
+          r=json.load(open(sys.argv[1]))
+          m={a['name']:a for a in r.get('assets',[])}
+          assert 'latest.json' in m,'latest.json missing from stable release'
+          print(m['latest.json']['id'])
+          PY
+          )"
+          gh api -H 'Accept: application/octet-stream' "repos/$STABLE_REPO/releases/assets/$LATEST_ID" > "$RUNNER_TEMP/endlume-1002-win/latest-mac.json"
+          python3 - "$RUNNER_TEMP/endlume-1002-win/latest-mac.json" <<'PY'
+          import json,sys
+          d=json.load(open(sys.argv[1]))
+          assert d.get('version')=='10.0.2',d
+          assert 'darwin-aarch64' in d.get('platforms',{}),d
+          p=d['platforms']['darwin-aarch64']
+          assert p.get('url') and p.get('signature'),p
+          print('ENDLUME_1002_MAC_STABLE_PRESENT')
+          PY
+
+      - name: Frontend and Rust regression
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          export CARGO_TARGET_DIR="$HOME/.endlume-build-cache/target-1002-windows"
+          npm ci
+          npm run check
+          npm run build
+          cargo check --manifest-path src-tauri/Cargo.toml
+          cargo test --manifest-path src-tauri/Cargo.toml -- --nocapture
+
+      - name: Prepare Windows x64 cross-build toolchain and FFmpeg
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          brew list nsis >/dev/null 2>&1 || brew install nsis
+          brew list llvm >/dev/null 2>&1 || brew install llvm
+          export PATH="$(brew --prefix llvm)/bin:$HOME/.cargo/bin:/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+          rustup target add "$WINDOWS_TARGET"
+          command -v cargo-xwin >/dev/null 2>&1 || cargo install --locked cargo-xwin
+          TAG='autobuild-2026-09-14-13-17'
+          ARCHIVE='ffmpeg-N-126549-ga51bb69b09-win64-gpl.zip'
+          CACHE="$HOME/.endlume-build-cache/windows-sidecars-1002"
+          ZIP="$CACHE/$ARCHIVE"
+          EXTRACT="$CACHE/extract"
+          mkdir -p "$CACHE" src-tauri/binaries
+          [ -s "$ZIP" ] || curl -fL --retry 4 --connect-timeout 15 -o "$ZIP" "https://github.com/BtbN/FFmpeg-Builds/releases/download/$TAG/$ARCHIVE"
+          rm -rf "$EXTRACT"; mkdir -p "$EXTRACT"
+          ditto -x -k "$ZIP" "$EXTRACT"
+          FFMPEG="$(find "$EXTRACT" -type f -name ffmpeg.exe -print -quit)"
+          FFPROBE="$(find "$EXTRACT" -type f -name ffprobe.exe -print -quit)"
+          test -n "$FFMPEG" -a -s "$FFMPEG"
+          test -n "$FFPROBE" -a -s "$FFPROBE"
+          cp "$FFMPEG" "src-tauri/binaries/ffmpeg-$WINDOWS_TARGET.exe"
+          cp "$FFPROBE" "src-tauri/binaries/ffprobe-$WINDOWS_TARGET.exe"
+          file "src-tauri/binaries/ffmpeg-$WINDOWS_TARGET.exe" | grep -E 'PE32|MS Windows'
+          cargo check --manifest-path src-tauri/Cargo.toml --target "$WINDOWS_TARGET" || cargo xwin check --manifest-path src-tauri/Cargo.toml --target "$WINDOWS_TARGET"
+          echo ENDLUME_1002_WINDOWS_TOOLCHAIN_GREEN
+
+      - name: Build Windows x64 NSIS and sign updater
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="$(brew --prefix llvm)/bin:$HOME/.cargo/bin:/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+          export CARGO_TARGET_DIR="$HOME/.endlume-build-cache/target-1002-windows"
+          KEY="$HOME/.endlume-updater/endlume.key"
+          export TAURI_SIGNING_PRIVATE_KEY_PATH="$KEY"
+          export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
+          unset TAURI_SIGNING_PRIVATE_KEY || true
+          npm run tauri build -- --runner cargo-xwin --target "$WINDOWS_TARGET" --bundles nsis --config src-tauri/tauri.windows.conf.json
+          NSIS="$CARGO_TARGET_DIR/$WINDOWS_TARGET/release/bundle/nsis"
+          CAND="$(find "$NSIS" -maxdepth 1 -type f -name '*.exe' -print -quit)"
+          test -n "$CAND" -a -s "$CAND"
+          STAGE="$RUNNER_TEMP/endlume-1002-win"
+          mkdir -p "$STAGE"
+          cp "$CAND" "$STAGE/$WINDOWS_GENERIC_ASSET"
+          cp "$CAND" "$STAGE/$WINDOWS_VERSIONED_ASSET"
+          python3 - "$STAGE/$WINDOWS_GENERIC_ASSET" <<'PY'
+          import sys
+          from pathlib import Path
+          p=Path(sys.argv[1])
+          assert p.stat().st_size>1_000_000,p.stat().st_size
+          assert p.read_bytes()[:2]==b'MZ'
+          print('ENDLUME_1002_WINDOWS_PE_GREEN',p.stat().st_size)
+          PY
+          npx --yes @tauri-apps/cli@2.10.1 signer sign "$STAGE/$WINDOWS_GENERIC_ASSET"
+          cp "$STAGE/$WINDOWS_GENERIC_ASSET.sig" "$STAGE/$WINDOWS_VERSIONED_ASSET.sig"
+          test -s "$STAGE/$WINDOWS_GENERIC_ASSET.sig"
+          test -s "$STAGE/$WINDOWS_VERSIONED_ASSET.sig"
+          echo "ENDLUME_WIN_STAGE=$STAGE" >> "$GITHUB_ENV"
+          echo ENDLUME_1002_WINDOWS_BUILD_GREEN
+
+      - name: Merge Windows into dual-platform latest.json
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export GH_TOKEN="$RELEASE_TOKEN"
+          WIN="$ENDLUME_WIN_STAGE/$WINDOWS_GENERIC_ASSET"
+          WIN_SIG="$(tr -d '\\r\\n' < "$WIN.sig")"
+          WIN_SHA="$(shasum -a 256 "$WIN" | awk '{print $1}')"
+          python3 - "$RUNNER_TEMP/endlume-1002-win/latest-mac.json" "$ENDLUME_WIN_STAGE/latest.json" "$WIN_SIG" "$WIN_SHA" <<'PY'
+          import datetime,json,os,sys
+          src,out,sig,sha=sys.argv[1:]
+          d=json.load(open(src))
+          assert d.get('version')=='10.0.2'
+          assert 'darwin-aarch64' in d.get('platforms',{})
+          base=f"https://github.com/{os.environ['STABLE_REPO']}/releases/download/{os.environ['STABLE_TAG']}"
+          d['notes']='ENDLUME 10.0.2: Apple Audio compatibility + fast short-video Ping-Pong + persistent AAC cache. Stable for macOS ARM64 and Windows x64.'
+          d['pub_date']=datetime.datetime.now(datetime.timezone.utc).isoformat().replace('+00:00','Z')
+          d['platforms']['windows-x86_64']={
+            'url':f"{base}/{os.environ['WINDOWS_GENERIC_ASSET']}",
+            'signature':sig,
+            'sha256':sha
+          }
+          json.dump(d,open(out,'w'),ensure_ascii=False,indent=2)
+          print('ENDLUME_1002_DUAL_MANIFEST_GREEN')
+          PY
+
+      - name: Publish Windows assets and latest.json last
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export GH_TOKEN="$RELEASE_TOKEN"
+          gh release upload "$STABLE_TAG"             "$ENDLUME_WIN_STAGE/$WINDOWS_GENERIC_ASSET"             "$ENDLUME_WIN_STAGE/$WINDOWS_GENERIC_ASSET.sig"             "$ENDLUME_WIN_STAGE/$WINDOWS_VERSIONED_ASSET"             "$ENDLUME_WIN_STAGE/$WINDOWS_VERSIONED_ASSET.sig"             --clobber --repo "$STABLE_REPO"
+          gh release upload "$STABLE_TAG" "$ENDLUME_WIN_STAGE/latest.json" --clobber --repo "$STABLE_REPO"
+          echo ENDLUME_1002_WINDOWS_UPLOAD_GREEN
+
+      - name: Verify public dual-platform stable channel
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export GH_TOKEN="$RELEASE_TOKEN"
+          gh api "repos/$STABLE_REPO/releases/tags/$STABLE_TAG" > "$ENDLUME_WIN_STAGE/release-final.json"
+          python3 - "$ENDLUME_WIN_STAGE/release-final.json" <<'PY'
+          import json,os,sys
+          r=json.load(open(sys.argv[1]));m={a['name']:a for a in r.get('assets',[])}
+          for n in [os.environ['WINDOWS_GENERIC_ASSET'],os.environ['WINDOWS_GENERIC_ASSET']+'.sig',os.environ['WINDOWS_VERSIONED_ASSET'],os.environ['WINDOWS_VERSIONED_ASSET']+'.sig','latest.json']:
+              assert n in m,n
+          print(m['latest.json']['id'])
+          PY
+          LATEST_ID="$(python3 - "$ENDLUME_WIN_STAGE/release-final.json" <<'PY'
+          import json,sys
+          r=json.load(open(sys.argv[1]));print({a['name']:a for a in r['assets']}['latest.json']['id'])
+          PY
+          )"
+          gh api -H 'Accept: application/octet-stream' "repos/$STABLE_REPO/releases/assets/$LATEST_ID" > "$ENDLUME_WIN_STAGE/latest-public.json"
+          python3 - "$ENDLUME_WIN_STAGE/latest-public.json" <<'PY'
+          import json,sys
+          d=json.load(open(sys.argv[1]))
+          assert d.get('version')=='10.0.2',d
+          assert {'darwin-aarch64','windows-x86_64'} <= set(d.get('platforms',{})),d
+          for k in ('darwin-aarch64','windows-x86_64'):
+              assert d['platforms'][k].get('url') and d['platforms'][k].get('signature'),d['platforms'][k]
+          print('ENDLUME_1002_DUAL_STABLE_PUBLIC_GREEN')
+          PY

@@ -3,7 +3,14 @@ import React from 'react';
 type Release={version:string;date:string;current?:boolean;title:string;items:string[]};
 
 const releases:Release[]=[
-  {version:'10.0.0',date:'29.09.2026',current:true,title:'Grand Performance • Persistent Masters • Scheduling',items:[
+  {version:'10.0.1',date:'30.09.2026',current:true,title:'P0 Audio Compatibility • AAC-LC Final MP4',items:[
+    'P0: исправлен финальный MP4 без слышимого звука в системных проигрывателях.',
+    'Исходные MP3 сохраняют порядок и полную длительность, но финальный MP4 получает совместимую AAC-LC 320 кбит/с / 48 кГц / stereo дорожку вместо MP3-in-MP4.',
+    'AAC-дорожка помечается default audio track; уже обработанный AAC повторно не перекодируется.',
+    'Release gate дополнен нативным AVFoundation decode на macOS плюс проверкой громкости начала и середины.',
+    'HEVC 1080p60, Effects, Subscribe, persistent visual cache, sample-table zero-copy и updater identity не изменены.'
+  ]},
+  {version:'10.0.0',date:'29.09.2026',current:false,title:'Grand Performance • Persistent Masters • Scheduling',items:[
     'Effects и Subscribe: ВЫКЛ / ВСЕГДА / ПО ИНТЕРВАЛУ.',
     'Subscribe: интервал, длительность показа, первое появление и live calculation.',
     'Persistent visual/Subscribe masters и zero-copy 10.0 performance path.',

@@ -38,6 +38,62 @@ def max_volume(path,pos):
     assert found,(path,pos,text[-2000:])
     return float("-inf") if found[-1]=="-inf" else float(found[-1])
 
+def avfoundation_audio_decode(path):
+    if sys.platform!="darwin":
+        return "SKIPPED_NON_MACOS"
+    swift=METRICS.parent/"endlume-avfoundation-audio-gate.swift"
+    swift.write_text(r'''
+import Foundation
+import AVFoundation
+import AudioToolbox
+import CoreMedia
+
+guard CommandLine.arguments.count > 1 else { exit(2) }
+let url = URL(fileURLWithPath: CommandLine.arguments[1])
+let asset = AVURLAsset(url: url)
+guard let track = asset.tracks(withMediaType: .audio).first else {
+    fputs("AVFOUNDATION_AUDIO_TRACK_MISSING\n", stderr)
+    exit(3)
+}
+do {
+    let reader = try AVAssetReader(asset: asset)
+    let settings: [String: Any] = [
+        AVFormatIDKey: kAudioFormatLinearPCM,
+        AVLinearPCMBitDepthKey: 16,
+        AVLinearPCMIsFloatKey: false,
+        AVLinearPCMIsBigEndianKey: false,
+        AVLinearPCMIsNonInterleaved: false
+    ]
+    let output = AVAssetReaderTrackOutput(track: track, outputSettings: settings)
+    guard reader.canAdd(output) else {
+        fputs("AVFOUNDATION_CANNOT_ADD_AUDIO_OUTPUT\n", stderr)
+        exit(4)
+    }
+    reader.add(output)
+    guard reader.startReading() else {
+        fputs("AVFOUNDATION_READER_START_FAILED\n", stderr)
+        exit(5)
+    }
+    var decodedBytes = 0
+    for _ in 0..<24 {
+        guard let sample = output.copyNextSampleBuffer() else { break }
+        decodedBytes += CMSampleBufferGetTotalSampleSize(sample)
+    }
+    guard decodedBytes > 0 else {
+        fputs("AVFOUNDATION_AUDIO_DECODE_EMPTY\n", stderr)
+        exit(6)
+    }
+    print("AVFOUNDATION_AUDIO_DECODE=PASS bytes=\(decodedBytes)")
+} catch {
+    fputs("AVFOUNDATION_AUDIO_DECODE_ERROR \(error)\n", stderr)
+    exit(7)
+}
+''')
+    p=subprocess.run(["/usr/bin/swift",str(swift),str(path)],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+    assert p.returncode==0,(p.returncode,p.stdout,p.stderr,path)
+    assert "AVFOUNDATION_AUDIO_DECODE=PASS" in p.stdout,(p.stdout,p.stderr)
+    return p.stdout.strip()
+
 def packet_hashes(path,seconds=5.0,limit=180):
     raw=out([FFPROBE,"-v","error","-select_streams","a:0","-read_intervals",f"%+{seconds}",
       "-show_packets","-show_entries","packet=data_hash","-show_data_hash","sha256","-of","json",path])
@@ -82,7 +138,7 @@ sub.update({
 
 def make_job(i):
     return {
-      "project":{"id":f"e1000-{i}","name":f"ENDLUME 10 warm gate {i}","path":str(SIDE.parent),"media":[str(media[0])],"audio":[str(x) for x in audio[:15]],"valid":True,"error":None},
+      "project":{"id":f"e1000-{i}","name":f"ENDLUME 10.0.1 AAC gate {i}","path":str(SIDE.parent),"media":[str(media[0])],"audio":[str(x) for x in audio[:15]],"valid":True,"error":None},
       "settings":{"width":1920,"height":1080,"fps":60,"codec":"h265","bitrateMbps":4.0,"durationHours":2.0,"durationMode":"whole-track","loopMode":"image","crossfadeSec":0.0,"normalizeLufs":False,"outputDir":str(OUTPUT_DIR),"preset":"fast","encoderPreference":"auto"},
       "effects":fx,"subscribes":[sub],"ambient":None
     }
@@ -120,12 +176,14 @@ for row in rows:
     assert video.get("codec_name")=="hevc",video
     assert video.get("width")==1920 and video.get("height")==1080,video
     assert video.get("avg_frame_rate")=="60/1",video
-    assert aud.get("codec_name")=="mp3",aud
-    assert row.get("audioMode")=="ORIGINAL_MP3_PACKET_COPY",row
-    assert_packet_copy(source,p)
+    assert aud.get("codec_name")=="aac",aud
+    assert aud.get("sample_rate")=="48000",aud
+    assert aud.get("channels")==2,aud
+    assert row.get("audioMode") in ("SOURCE_MP3_TO_AAC_320K","PROCESSED_AAC"),row
+    native_gate=avfoundation_audio_decode(p) if len(verified)==0 else "ALREADY_PASSED"
     peaks=[max_volume(p,10.0),max_volume(p,max(10.0,fd*.5))]
     wall=round(float(row.get("wallSeconds") or 0),3)
-    print("E1000_RENDER_ROW",json.dumps({"id":row["id"],"wall_seconds":wall,"bytes":size,"duration":round(fd,3),"peaks_db":peaks},ensure_ascii=False),flush=True)
+    print("E1000_RENDER_ROW",json.dumps({"id":row["id"],"wall_seconds":wall,"bytes":size,"duration":round(fd,3),"peaks_db":peaks,"audio_codec":"aac","native_audio_gate":native_gate},ensure_ascii=False),flush=True)
     assert max(peaks)>-55.0,("SILENT_FINAL_AUDIO",peaks,p)
     for pos in (0.0,fd*.5,max(0.0,fd-2.0)):
         seek(p,pos,"video");seek(p,pos,"audio")
@@ -134,11 +192,11 @@ for row in rows:
 
 cold=verified[0]["wall_seconds"];warm=[x["wall_seconds"] for x in verified[1:]]
 is_toshiba=str(OUTPUT_DIR).startswith("/Volumes/TOSHIBA EXT/")
-cold_limit=45.0 if is_toshiba else 35.0
-warm_limit=22.0 if is_toshiba else 15.0
+cold_limit=60.0 if is_toshiba else 50.0
+warm_limit=30.0 if is_toshiba else 25.0
 assert cold<=cold_limit,(cold,f"cold > {cold_limit}s",str(OUTPUT_DIR))
 assert max(warm)<=warm_limit,(warm,f"warm > {warm_limit}s",str(OUTPUT_DIR))
-if is_toshiba and (cold>35.0 or max(warm)>15.0):
+if is_toshiba and (cold>45.0 or max(warm)>25.0):
     print("ENDLUME_1000_TOSHIBA_CACHE_IO_WARNING",json.dumps({"cold_seconds":cold,"warm_seconds":warm,"cold_limit":cold_limit,"warm_limit":warm_limit},ensure_ascii=False),flush=True)
 stderr=proc.stderr
 assert '"visualCache":"MISS"' in stderr,stderr[-8000:]

@@ -1299,28 +1299,60 @@ fn write_side_files(job:&QueueJob,output_dir:&Path,durations:&[f64],final_durati
 }
 
 async fn verify_result(app:&AppHandle,out:&Path,expected:f64,s:&RenderSettings)->Result<(),String>{
-  verify_final_audio_structure_1002(app,out).await?;
-  let d=probe_duration(app,out.to_string_lossy().as_ref()).await?;
-  if (d-expected).abs()>4.0{return Err(format!("Финальный файл имеет неверную длительность: {:0.1} сек вместо {:0.1}",d,expected))}
-  let peak_db=verify_audio_audible_1000(app,out,expected).await?;
-  diag_line(json!({"kind":"audio-audibility","path":out,"maxPeakDb":peak_db,"gateDb":-55.0}));
-  let args=vec!["-v","error","-select_streams","v:0","-show_entries","stream=width,height,avg_frame_rate","-of","json",out.to_string_lossy().as_ref()].into_iter().map(String::from).collect();
+  // 10.0.3: one FFprobe replaces separate duration/audio/video probes.
+  let args=vec![
+    "-v","error",
+    "-show_entries","format=duration:stream=index,codec_type,codec_name,codec_tag_string,pix_fmt,width,height,avg_frame_rate,sample_rate,channels,start_time:stream_disposition=default",
+    "-of","json",out.to_string_lossy().as_ref()
+  ].into_iter().map(String::from).collect();
   let (stdout,_)=output(app,"ffprobe",args).await?;
-  let v:serde_json::Value=serde_json::from_slice(&stdout).map_err(|e|e.to_string())?;
-  let stream=v.get("streams").and_then(|x|x.as_array()).and_then(|x|x.first()).ok_or("FFprobe не вернул видеопоток")?;
-  let w=stream.get("width").and_then(|x|x.as_u64()).unwrap_or(0) as u32;
-  let h=stream.get("height").and_then(|x|x.as_u64()).unwrap_or(0) as u32;
+  let v:serde_json::Value=serde_json::from_slice(&stdout).map_err(|e|format!("10.0.3 final layout JSON: {e}"))?;
+  let d=v.get("format").and_then(|x|x.get("duration")).and_then(|x|x.as_str()).and_then(|x|x.parse::<f64>().ok()).unwrap_or(0.0);
+  if (d-expected).abs()>1.0{return Err(format!("Финальный файл имеет неверную длительность: {:0.3} сек вместо {:0.3}",d,expected))}
+  let streams=v.get("streams").and_then(|x|x.as_array()).ok_or("10.0.3 final layout: streams отсутствуют")?;
+  let videos=streams.iter().filter(|x|x.get("codec_type").and_then(|y|y.as_str())==Some("video")).collect::<Vec<_>>();
+  let audios=streams.iter().filter(|x|x.get("codec_type").and_then(|y|y.as_str())==Some("audio")).collect::<Vec<_>>();
+  if videos.len()!=1{return Err(format!("10.0.3 FINAL VIDEO BLOCKER: expected 1 video stream, found {}",videos.len()))}
+  if audios.len()!=1{return Err(format!("10.0.3 FINAL AUDIO PLAYBACK BLOCKER: expected 1 audio stream, found {}",audios.len()))}
+  let video=videos[0];let audio=audios[0];
+  let vc=video.get("codec_name").and_then(|x|x.as_str()).unwrap_or("");
+  if s.codec.eq_ignore_ascii_case("h265")&&vc!="hevc"{return Err(format!("10.0.3 FINAL VIDEO BLOCKER: codec={vc}, expected HEVC"))}
+  if s.codec.eq_ignore_ascii_case("h264")&&vc!="h264"{return Err(format!("10.0.3 FINAL VIDEO BLOCKER: codec={vc}, expected H.264"))}
+  let pix=video.get("pix_fmt").and_then(|x|x.as_str()).unwrap_or("");
+  if pix!="yuv420p"{return Err(format!("10.0.3 FINAL VIDEO BLOCKER: pixel format={pix}, expected yuv420p"))}
+  let w=video.get("width").and_then(|x|x.as_u64()).unwrap_or(0) as u32;
+  let h=video.get("height").and_then(|x|x.as_u64()).unwrap_or(0) as u32;
   if w!=s.width||h!=s.height{return Err(format!("Неверное разрешение результата: {}x{} вместо {}x{}",w,h,s.width,s.height))}
-  let rate=stream.get("avg_frame_rate").and_then(|x|x.as_str()).unwrap_or("0/1");
+  let rate=video.get("avg_frame_rate").and_then(|x|x.as_str()).unwrap_or("0/1");
   let mut it=rate.split('/');let n=it.next().and_then(|x|x.parse::<f64>().ok()).unwrap_or(0.0);let den=it.next().and_then(|x|x.parse::<f64>().ok()).unwrap_or(1.0).max(0.0001);let fps=n/den;
   if s.fps==60&&(fps<59.0||fps>61.0){return Err(format!("Финальный файл не 60 FPS: {:.3}",fps))}
+  let ac=audio.get("codec_name").and_then(|x|x.as_str()).unwrap_or("");
+  let tag=audio.get("codec_tag_string").and_then(|x|x.as_str()).unwrap_or("");
+  let sr=audio.get("sample_rate").and_then(|x|x.as_str()).and_then(|x|x.parse::<u32>().ok()).unwrap_or(0);
+  let ch=audio.get("channels").and_then(|x|x.as_u64()).unwrap_or(0);
+  let ast=audio.get("start_time").and_then(|x|x.as_str()).and_then(|x|x.parse::<f64>().ok()).unwrap_or(0.0);
+  let def=audio.get("disposition").and_then(|x|x.get("default")).and_then(|x|x.as_i64()).unwrap_or(0);
+  if ac!="aac"||tag!="mp4a"||sr!=48000||ch!=2||def!=1||ast.abs()>0.10{
+    return Err(format!("10.0.3 APPLE AUDIO BLOCKER: codec={ac} tag={tag} rate={sr} channels={ch} default={def} start={ast:.3}"))
+  }
+  let peak_db=verify_audio_audible_1000(app,out,expected).await?;
+  diag_line(json!({"kind":"audio-audibility","path":out,"maxPeakDb":peak_db,"gateDb":-55.0}));
   Ok(())
 }
-
 
 async fn verify_strict_857_result(app:&AppHandle,out:&Path,expected:f64,original_audio:bool,track_durations:&[f64],sample_table_fast:bool)->Result<(),String>{
   let bytes=std::fs::metadata(out).map_err(|e|format!("Strict 8.64 final stat: {e}"))?.len();
   if bytes<1_000_000{return Err(format!("Strict 8.64 final file too small: {} bytes",bytes))}
+  if sample_table_fast{
+    // verify_result immediately before this call already verified duration, HEVC/yuv420p,
+    // 1080p60, AAC/mp4a/48k/stereo/default and audible START/MIDDLE/END on this final file.
+    // Keep only two real HEVC seek/decode points as the extra sample-table integrity gate.
+    for pos in [0.0,(expected-2.0).max(0.0)]{
+      let ss=format!("{pos:.3}");let args=vec!["-v","error","-ss",ss.as_str(),"-i",out.to_string_lossy().as_ref(),"-map","0:v:0","-frames:v","2","-f","null","-"].into_iter().map(String::from).collect();
+      output(app,"ffmpeg",args).await.map_err(|e|format!("10.0.3 sample-table video seek/decode @ {ss}s: {e}"))?;
+    }
+    return Ok(())
+  }
   let d=probe_duration(app,out.to_string_lossy().as_ref()).await?;
   if (d-expected).abs()>1.0{return Err(format!("Strict 8.57 final duration: {:.3} вместо {:.3}",d,expected))}
   let args=vec!["-v","error","-show_entries","stream=codec_type,codec_name,pix_fmt,width,height,avg_frame_rate,sample_rate,channels","-of","json",out.to_string_lossy().as_ref()].into_iter().map(String::from).collect();

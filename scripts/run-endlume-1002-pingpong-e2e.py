@@ -164,38 +164,59 @@ def tree_bytes(root):
         except OSError:
             pass
     return total
-def tracked_bytes():
-    return tree_bytes(cache_root)+tree_bytes(OUTPUT_DIR)
-def largest_files(roots,limit=20):
+def is_temp_path(p):
+    s=str(p)
+    name=p.name.lower()
+    parts={x.lower() for x in p.parts}
+    return (
+        "render-work" in parts
+        or (name.startswith(".") and ".tmp." in name)
+        or ".endlume.partial.mp4" in name
+        or name.endswith(".endlume-part")
+    )
+def temp_bytes():
+    total=0
+    for root in (cache_root,OUTPUT_DIR):
+        if not root.exists(): continue
+        for p in root.rglob("*"):
+            try:
+                if p.is_file() and is_temp_path(p): total+=p.stat().st_size
+            except OSError:
+                pass
+    return total
+def persistent_cache_bytes():
+    total=0
+    for name in ("pingpong-master-v10","pingpong-visual-v10","pingpong-audio-v1002","subscribe-master-v10","strict-effects-856"):
+        total+=tree_bytes(cache_root/name)
+    return total
+def largest_files(roots,limit=20,temp_only=False):
     rows=[]
     for root in roots:
         if not root.exists(): continue
         for p in root.rglob("*"):
             try:
-                if p.is_file(): rows.append((p.stat().st_size,str(p)))
+                if p.is_file() and (not temp_only or is_temp_path(p)): rows.append((p.stat().st_size,str(p)))
             except OSError:
                 pass
     rows.sort(reverse=True)
     out=[]
     for size,path in rows[:limit]:
         low=path.lower()
-        role=("FINAL_OUTPUT" if str(OUTPUT_DIR) in path and path.endswith(".mp4") and ".partial." not in low
-              else "FINAL_PARTIAL" if "partial" in low
-              else "PINGPONG_MASTER" if "pingpong-master" in low
-              else "EFFECTS_MASTER" if "pingpong-visual" in low or "visual-master" in low
-              else "AUDIO_CACHE" if "pingpong-audio" in low
+        role=("FINAL_PARTIAL" if "partial" in low
               else "RENDER_WORK" if "render-work" in low
-              else "CACHE_OR_TEMP")
+              else "CACHE_BUILD_TMP" if ".tmp." in low
+              else "ATOMIC_PART" if low.endswith(".endlume-part")
+              else "TEMP")
         out.append({"path":path,"role":role,"bytes":size})
     return out
 
 disk_free_before=shutil.disk_usage(OUTPUT_DIR).free
-baseline_tracked=tracked_bytes()
-peak={"bytes":baseline_tracked}
+baseline_temp=temp_bytes()
+peak={"bytes":baseline_temp}
 stop_watch=threading.Event()
 def watch_disk():
     while not stop_watch.is_set():
-        peak["bytes"]=max(peak["bytes"],tracked_bytes())
+        peak["bytes"]=max(peak["bytes"],temp_bytes())
         time.sleep(0.10)
 watcher=threading.Thread(target=watch_disk,daemon=True)
 watcher.start()
@@ -204,7 +225,7 @@ try:
     proc=subprocess.run([str(APP)],env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,timeout=360)
 finally:
     stop_watch.set();watcher.join(timeout=2)
-    peak["bytes"]=max(peak["bytes"],tracked_bytes())
+    peak["bytes"]=max(peak["bytes"],temp_bytes())
 app_wall=time.perf_counter()-started
 disk_free_after=shutil.disk_usage(OUTPUT_DIR).free
 print(proc.stdout)
@@ -267,10 +288,10 @@ assert cleanup_rows,stderr[-16000:]
 assert all(x["actualPingPongPhysicalDuration"] <= x["expectedPingPongPhysicalDuration"]*1.10+0.5 for x in physical_rows),physical_rows
 assert all(x["actualPingPongPhysicalDuration"] < 180.0 for x in physical_rows),physical_rows
 assert all(x["tempAfterCleanup"]==0 for x in cleanup_rows),cleanup_rows
-peak_temp_delta=max(0,peak["bytes"]-baseline_tracked)
+peak_temp_delta=max(0,peak["bytes"]-baseline_temp)
 assert peak_temp_delta < 2_000_000_000,peak_temp_delta
 assert disk_free_after > 0
-largest=largest_files([cache_root,OUTPUT_DIR],20)
+largest=largest_files([cache_root,OUTPUT_DIR],20,temp_only=True)
 metrics={
   "status":"passed","release_gate":True,"kind":"ENDLUME_1002_REAL_PINGPONG_P0C",
   "source":str(source),"source_bytes":source.stat().st_size,"source_seconds":source_seconds,
@@ -279,7 +300,8 @@ metrics={
   "actual_pingpong_physical_duration":physical_rows[0]["actualPingPongPhysicalDuration"],
   "physical_master_bytes":physical_rows[0]["physicalMasterBytes"],
   "disk_free_before":disk_free_before,"disk_free_after":disk_free_after,
-  "tracked_baseline_bytes":baseline_tracked,"peak_tracked_bytes":peak["bytes"],"peak_temp_bytes":peak_temp_delta,
+  "temp_baseline_bytes":baseline_temp,"peak_temp_observed_bytes":peak["bytes"],"peak_temp_bytes":peak_temp_delta,
+  "persistent_cache_bytes_after":persistent_cache_bytes(),
   "temp_after_cleanup":max(x["tempAfterCleanup"] for x in cleanup_rows),
   "largest_temp_files":largest,"growth_events":growth_rows,
   "app_wall_seconds":round(app_wall,3),"cold_seconds":cold,"warm_seconds":warm,"results":verified

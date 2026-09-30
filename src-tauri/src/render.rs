@@ -730,6 +730,101 @@ fn final_mp4_audio_args(audio:&AudioSource,encoder:&str)->Vec<String>{
   args
 }
 
+fn fast_aac_cache_needed_1003(audio:&AudioSource)->bool{
+  match audio{
+    AudioSource::ConcatList(_)=>true,
+    AudioSource::Loop(p)|AudioSource::Long(p)=>!p.extension().and_then(|x|x.to_str()).map(|x|matches!(x.to_ascii_lowercase().as_str(),"m4a"|"mp4"|"aac")).unwrap_or(false),
+  }
+}
+
+fn audio_track_aac_key_1003(path:&Path,encoder:&str)->String{
+  let mut h=Sha256::new();
+  h.update(b"ENDLUME-10.0.3-AAC-TRACK-v1|320k|48000|stereo");
+  h.update(encoder.as_bytes());
+  h.update(file_stamp_1000(path).as_bytes());
+  hex::encode(h.finalize())
+}
+
+fn audio_playlist_aac_key_1003(job:&QueueJob,encoder:&str)->String{
+  let mut h=Sha256::new();
+  h.update(b"ENDLUME-10.0.3-AAC-PLAYLIST-v1|320k|48000|stereo");
+  h.update(encoder.as_bytes());
+  for p in &job.project.audio{h.update(file_stamp_1000(Path::new(p)).as_bytes());}
+  hex::encode(h.finalize())
+}
+
+async fn build_cached_aac_playlist_1003(app:&AppHandle,job:&QueueJob,encoder:&str,cancel:&AtomicBool)->Result<PathBuf,String>{
+  if job.project.audio.is_empty(){return Err("10.0.3 AAC cache: no audio tracks".into())}
+  let total_mark=Instant::now();
+  let track_root=cache_root_1000(app,"audio-track-aac-v1003")?;
+  let playlist_root=cache_root_1000(app,"audio-playlist-aac-v1003")?;
+  let mut tasks=Vec::with_capacity(job.project.audio.len());
+  for (idx,src) in job.project.audio.iter().enumerate(){
+    let app=app.clone();
+    let source=PathBuf::from(src);
+    let root=track_root.clone();
+    let enc=encoder.to_string();
+    tasks.push(async move{
+      let key=audio_track_aac_key_1003(&source,&enc);
+      let out=root.join(format!("{key}.m4a"));
+      if out.is_file()&&verify_final_audio_structure_1002(&app,&out).await.is_ok()&&probe_audio_decodes(&app,&out).await{
+        return Ok::<(usize,PathBuf,bool),String>((idx,out,true))
+      }
+      let _=std::fs::remove_file(&out);
+      let tmp=root.join(format!(".{key}-{}.tmp.m4a",uuid::Uuid::new_v4()));
+      let mut args:Vec<String>=vec!["-hide_banner","-loglevel","error","-i",source.to_string_lossy().as_ref(),"-map","0:a:0","-vn","-map_metadata","-1"].into_iter().map(String::from).collect();
+      args.extend(audio_encoder_args(&enc));
+      args.extend(vec!["-tag:a","mp4a","-disposition:a:0","default","-metadata:s:a:0","language=und","-movflags","+faststart","-y",tmp.to_string_lossy().as_ref()].into_iter().map(String::from));
+      output(&app,"ffmpeg",args).await.map_err(|e|format!("10.0.3 AAC track cache {}: {e}",source.display()))?;
+      verify_final_audio_structure_1002(&app,&tmp).await?;
+      if !probe_audio_decodes(&app,&tmp).await{let _=std::fs::remove_file(&tmp);return Err(format!("10.0.3 AAC track cache does not decode: {}",source.display()))}
+      if out.exists(){let _=std::fs::remove_file(&tmp);}else{std::fs::rename(&tmp,&out).map_err(|e|format!("10.0.3 AAC track cache commit: {e}"))?}
+      Ok((idx,out,false))
+    });
+  }
+  let rows=futures::future::join_all(tasks).await;
+  if cancel.load(Ordering::SeqCst){return Err(CANCELLED.into())}
+  let mut ordered=Vec::<(usize,PathBuf,bool)>::with_capacity(rows.len());
+  for row in rows{ordered.push(row?)}
+  ordered.sort_by_key(|x|x.0);
+  let hits=ordered.iter().filter(|x|x.2).count();
+  let misses=ordered.len().saturating_sub(hits);
+  let playlist_key=audio_playlist_aac_key_1003(job,encoder);
+  let playlist=playlist_root.join(format!("{playlist_key}.m4a"));
+  if playlist.is_file()&&verify_final_audio_structure_1002(app,&playlist).await.is_ok()&&probe_audio_decodes(app,&playlist).await{
+    emit_timing(app,&job.project.id,"audio-track-cache",total_mark.elapsed().as_secs_f64());
+    let _=app.emit("engine-profile",json!({"id":job.project.id,"audioTrackCacheHits":hits,"audioTrackCacheMisses":misses,"aacPlaylistCache":"HIT"}));
+    diag_line(json!({"kind":"audio-cache-1003","projectId":job.project.id,"trackHits":hits,"trackMisses":misses,"playlist":"HIT"}));
+    return Ok(playlist)
+  }
+  let _=std::fs::remove_file(&playlist);
+  let list=playlist_root.join(format!(".{playlist_key}-{}.txt",uuid::Uuid::new_v4()));
+  let body=ordered.iter().map(|(_,p,_)|format!("file {}\n",ffconcat_escape(p))).collect::<String>();
+  std::fs::write(&list,body).map_err(|e|format!("10.0.3 AAC playlist list: {e}"))?;
+  let tmp=playlist_root.join(format!(".{playlist_key}-{}.tmp.m4a",uuid::Uuid::new_v4()));
+  let args=vec!["-hide_banner","-loglevel","error","-f","concat","-safe","0","-i",list.to_string_lossy().as_ref(),"-map","0:a:0","-c:a","copy","-tag:a","mp4a","-disposition:a:0","default","-metadata:s:a:0","language=und","-movflags","+faststart","-y",tmp.to_string_lossy().as_ref()].into_iter().map(String::from).collect();
+  let mux_result=output(app,"ffmpeg",args).await;
+  let _=std::fs::remove_file(&list);
+  mux_result.map_err(|e|format!("10.0.3 AAC playlist concat: {e}"))?;
+  verify_final_audio_structure_1002(app,&tmp).await?;
+  if !probe_audio_decodes(app,&tmp).await{let _=std::fs::remove_file(&tmp);return Err("10.0.3 AAC playlist does not decode".into())}
+  if playlist.exists(){let _=std::fs::remove_file(&tmp);}else{std::fs::rename(&tmp,&playlist).map_err(|e|format!("10.0.3 AAC playlist commit: {e}"))?}
+  for (_,p,_) in &ordered{prune_cache_1000(&track_root,p);}
+  prune_cache_1000(&playlist_root,&playlist);
+  emit_timing(app,&job.project.id,"audio-track-cache",total_mark.elapsed().as_secs_f64());
+  let _=app.emit("engine-profile",json!({"id":job.project.id,"audioTrackCacheHits":hits,"audioTrackCacheMisses":misses,"aacPlaylistCache":"MISS"}));
+  diag_line(json!({"kind":"audio-cache-1003","projectId":job.project.id,"trackHits":hits,"trackMisses":misses,"playlist":"MISS","seconds":total_mark.elapsed().as_secs_f64()}));
+  Ok(playlist)
+}
+
+async fn prepare_fast_aac_audio_1003(app:&AppHandle,job:&QueueJob,audio:&AudioSource,encoder:&str,cancel:&AtomicBool)->Option<PathBuf>{
+  if !fast_aac_cache_needed_1003(audio){return None}
+  match build_cached_aac_playlist_1003(app,job,encoder,cancel).await{
+    Ok(p)=>Some(p),
+    Err(e)=>{emit_warning(app,&job.project.id,&format!("10.0.3 fast AAC cache fallback: {e}"));None}
+  }
+}
+
 fn emit_progress(app:&AppHandle,job:&QueueJob,started:i64,timer:&Instant,progress:f64,stage:&str,encoder:&str,attempt:u32,metrics:Option<(f32,u64,u64,u64)>){
   let elapsed=timer.elapsed().as_secs_f64();
   let raw_eta=if progress>1.0{Some(elapsed*(100.0-progress)/progress)}else{None};
@@ -1444,10 +1539,26 @@ fn interval_1000_plan(job:&QueueJob,effects:&[EffectPreset],subs:&[SubscribePres
   let duration_frames=(sub.show_duration_sec.unwrap_or(8.0).clamp(2.0,20.0)*fps).round().max(1.0) as usize;
   let first_frames=(subscribe_first_sec(sub)*fps).round().max(0.0) as usize;
   if repeat_frames<(60.0*fps) as usize||duration_frames>=repeat_frames{return None}
-  let desired=(30.0*fps).round() as usize;let lo=(20.0*fps).round() as usize;let hi=(40.0*fps).round() as usize;let mut best=None;let mut dist=usize::MAX;
-  for d in lo.max(1)..=hi.max(lo.max(1)){if repeat_frames%d==0{let x=d.abs_diff(desired);if x<dist{best=Some(d);dist=x}}}
+  // 10.0.3: keep the proven 100M physical-master quality, but choose the
+  // shortest safe divisor that keeps the final payload near ~500 MB. This cuts
+  // physical encode time and bytes without lowering HEVC quality.
+  let audio_bytes=(final_duration.max(0.0)*320_000.0/8.0)*1.03;
+  let subscribe_seconds=duration_frames as f64/fps;
+  let subscribe_bytes=(subscribe_seconds*15_000_000.0/8.0)*1.10;
+  let reserve_bytes=24_000_000.0;
+  let target_bytes=500_000_000.0;
+  let available_video=(target_bytes-audio_bytes-subscribe_bytes-reserve_bytes).clamp(120_000_000.0,380_000_000.0);
+  let desired_seconds=(available_video*8.0/100_000_000.0).clamp(20.0,32.0);
+  let desired=(desired_seconds*fps).round() as usize;
+  let lo=(20.0*fps).round() as usize;let hi=(40.0*fps).round() as usize;let mut best=None;let mut dist=usize::MAX;
+  for d in lo.max(1)..=hi.max(lo.max(1)){
+    if repeat_frames%d!=0{continue}
+    let phase=first_frames%d;
+    if phase+duration_frames>d{continue}
+    let x=d.abs_diff(desired);
+    if x<dist{best=Some(d);dist=x}
+  }
   let master_frames=best?;let phase_frames=first_frames%master_frames;
-  if phase_frames+duration_frames>master_frames{return None}
   Some(Interval1000Plan{first_frames,repeat_frames,duration_frames,master_frames,phase_frames,sub:sub.clone()})
 }
 
@@ -1455,19 +1566,25 @@ async fn render_interval_zero_copy_1000(app:&AppHandle,job:&QueueJob,effects:&[E
   let Some(plan)=interval_1000_plan(job,effects,subs,final_duration) else{return Ok(false)};
   if !strict_856_encoder_allowed(encoder){return Err(format!("10.0.1 interval zero-copy: HEVC encoder {encoder} unavailable"))}
   let fps=job.settings.fps.max(1) as usize;let master_mark=Instant::now();
-  let master=build_cached_visual_master_1000(app,job,effects,plan.master_frames,work,encoder,true,attempt,cancel,started,timer).await?;
+  let final_audio_encoder=choose_audio_encoder(app).await;
+  let visual_future=build_cached_visual_master_1000(app,job,effects,plan.master_frames,work,encoder,true,attempt,cancel,started,timer);
+  let audio_future=prepare_fast_aac_audio_1003(app,job,audio,&final_audio_encoder,cancel);
+  let (master_result,fast_audio_path)=tokio::join!(visual_future,audio_future);
+  let master=master_result?;
   emit_timing(app,&job.project.id,"base-visual-master",master_mark.elapsed().as_secs_f64());
+  let fast_audio_source=fast_audio_path.map(AudioSource::Loop);
+  let mux_audio=fast_audio_source.as_ref().unwrap_or(audio);
   let sub_mark=Instant::now();let sub_master=render_periodic_sub_852(app,job,&master,&plan.sub,plan.phase_frames,plan.duration_frames,work,"interval-v10",encoder,attempt,cancel,started,timer).await?;
   emit_timing(app,&job.project.id,"subscribe-master",sub_mark.elapsed().as_secs_f64());
   let pool=work.join("interval-1000-video-pool.mp4");let pool_frames=plan.master_frames+plan.duration_frames;
   concat_video_parts_852(app,job,&[master.clone(),sub_master],&pool,pool_frames,work,encoder,attempt,cancel,started,timer).await?;
   let seed=destination_partial_path(out)?;let _=std::fs::remove_file(&seed);let mut args:Vec<String>=vec!["-hide_banner","-loglevel","error","-i",pool.to_string_lossy().as_ref()].into_iter().map(String::from).collect();
-  match audio{AudioSource::Loop(p)=>args.extend(vec!["-stream_loop","-1","-fflags","+genpts","-i",p.to_string_lossy().as_ref()].into_iter().map(String::from)),AudioSource::Long(p)=>args.extend(vec!["-i",p.to_string_lossy().as_ref()].into_iter().map(String::from)),AudioSource::ConcatList(p)=>args.extend(vec!["-stream_loop","-1","-f","concat","-safe","0","-fflags","+genpts","-i",p.to_string_lossy().as_ref()].into_iter().map(String::from))}
-  let final_audio_encoder=choose_audio_encoder(app).await;
+  match mux_audio{AudioSource::Loop(p)=>args.extend(vec!["-stream_loop","-1","-fflags","+genpts","-i",p.to_string_lossy().as_ref()].into_iter().map(String::from)),AudioSource::Long(p)=>args.extend(vec!["-i",p.to_string_lossy().as_ref()].into_iter().map(String::from)),AudioSource::ConcatList(p)=>args.extend(vec!["-stream_loop","-1","-f","concat","-safe","0","-fflags","+genpts","-i",p.to_string_lossy().as_ref()].into_iter().map(String::from))}
   args.extend(vec!["-t",&final_duration.to_string(),"-map","0:v:0","-map","1:a:0","-c:v","copy"].into_iter().map(String::from));
-  args.extend(final_mp4_audio_args(audio,&final_audio_encoder));
-  args.extend(vec!["-progress","pipe:1","-y",seed.to_string_lossy().as_ref()].into_iter().map(String::from));
-  let mux_mark=Instant::now();run_ffmpeg(app,job,started,timer,args,"10.0.2: final mux AAC → destination partial",78.0,8.0,final_duration,encoder,attempt,cancel).await?;let mux_sec=mux_mark.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"final-mux",mux_sec);emit_timing(app,&job.project.id,"destination-write",mux_sec);
+  args.extend(final_mp4_audio_args(mux_audio,&final_audio_encoder));
+  args.extend(vec!["-movflags","+faststart","-progress","pipe:1","-y",seed.to_string_lossy().as_ref()].into_iter().map(String::from));
+  let mux_stage=if fast_audio_source.is_some(){"10.0.3: cached AAC packet-copy → destination"}else{"10.0.2: final mux AAC → destination partial"};
+  let mux_mark=Instant::now();run_ffmpeg(app,job,started,timer,args,mux_stage,78.0,8.0,final_duration,encoder,attempt,cancel).await?;let mux_sec=mux_mark.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"final-mux",mux_sec);emit_timing(app,&job.project.id,"destination-write",mux_sec);
   let total_frames=(final_duration*fps as f64).round().max(1.0) as usize;let mut selected=Vec::with_capacity(total_frames);let mut appearances=0usize;
   for frame in 0..total_frames{
     if frame>=plan.first_frames{
@@ -1490,8 +1607,16 @@ async fn render_zero_sub_zero_copy_856(app:&AppHandle,job:&QueueJob,effects:&[Ef
   if !strict_856_encoder_allowed(encoder){return Err(format!("Strict 8.62: HEVC encoder {encoder} не разрешён strict pipeline"))}
   let mut combined=effects.to_vec();for sub in active_subs{combined.push(sub.effect.clone())}
   let fps=60u32;let duration=master_duration.clamp(12.0,60.0);let master_frames=(duration*fps as f64).round() as usize;
-  let vm=Instant::now();let master=build_cached_visual_master_1000(app,job,&combined,master_frames,work,encoder,false,attempt,cancel,started,timer).await?;let visual_master_seconds=vm.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"strict-visual-master",visual_master_seconds);emit_timing(app,&job.project.id,"visual-master",visual_master_seconds);
-  let seed=destination_partial_path(out)?;let _=std::fs::remove_file(&seed);let mut mux:Vec<String>=vec!["-hide_banner","-loglevel","error","-i",master.to_string_lossy().as_ref()].into_iter().map(String::from).collect();match audio{AudioSource::Loop(p)=>mux.extend(vec!["-stream_loop","-1","-fflags","+genpts","-i",p.to_string_lossy().as_ref()].into_iter().map(String::from)),AudioSource::Long(p)=>mux.extend(vec!["-i",p.to_string_lossy().as_ref()].into_iter().map(String::from)),AudioSource::ConcatList(p)=>mux.extend(vec!["-stream_loop","-1","-f","concat","-safe","0","-fflags","+genpts","-i",p.to_string_lossy().as_ref()].into_iter().map(String::from))};let final_audio_encoder=choose_audio_encoder(app).await;mux.extend(vec!["-t",&final_duration.to_string(),"-map","0:v:0","-map","1:a:0","-c:v","copy"].into_iter().map(String::from));mux.extend(final_mp4_audio_args(audio,&final_audio_encoder));mux.extend(vec!["-progress","pipe:1","-y",seed.to_string_lossy().as_ref()].into_iter().map(String::from));let audio_stage=if matches!(audio,&AudioSource::Loop(_)|&AudioSource::ConcatList(_)){"10.0.2: MP3 → AAC-LC 320k"}else{"10.0.1: AAC passthrough"};let am=Instant::now();run_ffmpeg(app,job,started,timer,mux,audio_stage,74.0,12.0,final_duration,encoder,attempt,cancel).await?;let audio_mux_sec=am.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"strict-audio-mux",audio_mux_sec);emit_timing(app,&job.project.id,"audio-mux",audio_mux_sec);emit_timing(app,&job.project.id,"final-mux",audio_mux_sec);emit_timing(app,&job.project.id,"destination-write",audio_mux_sec);if let Ok(meta)=std::fs::metadata(&seed){let mb_s=(meta.len() as f64/1_048_576.0)/audio_mux_sec.max(0.001);let _=app.emit("engine-profile",json!({"id":job.project.id,"diskWriteMBs":mb_s}));}
+  let final_audio_encoder=choose_audio_encoder(app).await;
+  let vm=Instant::now();
+  let visual_future=build_cached_visual_master_1000(app,job,&combined,master_frames,work,encoder,false,attempt,cancel,started,timer);
+  let audio_future=prepare_fast_aac_audio_1003(app,job,audio,&final_audio_encoder,cancel);
+  let (master_result,fast_audio_path)=tokio::join!(visual_future,audio_future);
+  let master=master_result?;
+  let visual_master_seconds=vm.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"strict-visual-master",visual_master_seconds);emit_timing(app,&job.project.id,"visual-master",visual_master_seconds);
+  let fast_audio_source=fast_audio_path.map(AudioSource::Loop);
+  let mux_audio=fast_audio_source.as_ref().unwrap_or(audio);
+  let seed=destination_partial_path(out)?;let _=std::fs::remove_file(&seed);let mut mux:Vec<String>=vec!["-hide_banner","-loglevel","error","-i",master.to_string_lossy().as_ref()].into_iter().map(String::from).collect();match mux_audio{AudioSource::Loop(p)=>mux.extend(vec!["-stream_loop","-1","-fflags","+genpts","-i",p.to_string_lossy().as_ref()].into_iter().map(String::from)),AudioSource::Long(p)=>mux.extend(vec!["-i",p.to_string_lossy().as_ref()].into_iter().map(String::from)),AudioSource::ConcatList(p)=>mux.extend(vec!["-stream_loop","-1","-f","concat","-safe","0","-fflags","+genpts","-i",p.to_string_lossy().as_ref()].into_iter().map(String::from))};mux.extend(vec!["-t",&final_duration.to_string(),"-map","0:v:0","-map","1:a:0","-c:v","copy"].into_iter().map(String::from));mux.extend(final_mp4_audio_args(mux_audio,&final_audio_encoder));mux.extend(vec!["-movflags","+faststart","-progress","pipe:1","-y",seed.to_string_lossy().as_ref()].into_iter().map(String::from));let audio_stage=if fast_audio_source.is_some(){"10.0.3: cached AAC packet-copy"}else if matches!(audio,&AudioSource::Loop(_)|&AudioSource::ConcatList(_)){"10.0.2: MP3 → AAC-LC 320k"}else{"10.0.1: AAC passthrough"};let am=Instant::now();run_ffmpeg(app,job,started,timer,mux,audio_stage,74.0,12.0,final_duration,encoder,attempt,cancel).await?;let audio_mux_sec=am.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"strict-audio-mux",audio_mux_sec);emit_timing(app,&job.project.id,"audio-mux",audio_mux_sec);emit_timing(app,&job.project.id,"final-mux",audio_mux_sec);emit_timing(app,&job.project.id,"destination-write",audio_mux_sec);if let Ok(meta)=std::fs::metadata(&seed){let mb_s=(meta.len() as f64/1_048_576.0)/audio_mux_sec.max(0.001);let _=app.emit("engine-profile",json!({"id":job.project.id,"diskWriteMBs":mb_s}));}
   let total_frames=(final_duration*fps as f64).round().max(master_frames as f64) as usize;let _=app.emit("engine-profile",json!({"id":job.project.id,"physicalEncodedFrames":master_frames,"logicalFrames":total_frames,"manifestFrames":total_frames}));let mm=Instant::now();ensure_license_allowed()?;crate::mp4_manifest::expand_video_prefix_cycle(&seed,&seed,0,master_frames,total_frames)?;ensure_license_allowed()?;let manifest_seconds=mm.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"zero-copy-manifest",manifest_seconds);emit_timing(app,&job.project.id,"manifest-expand",manifest_seconds);ensure_license_allowed()?;strict_856_validate_natural_size(&seed)?;verify_result(app,&seed,final_duration,&job.settings).await?;let finalize_mark=Instant::now();let (fsync_sec,rename_sec)=commit_destination_partial(&seed,out).map_err(|e|format!("10.0: finalize destination partial: {e}"))?;emit_timing(app,&job.project.id,"fsync",fsync_sec);emit_timing(app,&job.project.id,"atomic-rename",rename_sec);ensure_license_allowed()?;emit_timing(app,&job.project.id,"finalize",finalize_mark.elapsed().as_secs_f64());emit_progress(app,job,started,timer,96.0,"10.0.1 zero-copy готов",encoder,attempt,None);Ok(true)
 }
 

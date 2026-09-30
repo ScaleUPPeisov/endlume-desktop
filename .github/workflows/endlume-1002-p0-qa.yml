@@ -134,7 +134,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           ROOT="$HOME/Library/Caches/studio.endlume.desktop"
-          for name in pingpong-master-v10 pingpong-visual-v10; do
+          for name in pingpong-master-v10 pingpong-visual-v10 pingpong-audio-v1002; do
             rm -rf "$ROOT/$name"
           done
           rm -rf /tmp/endlume1002.* /tmp/pingpong1002.* 2>/dev/null || true

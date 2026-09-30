@@ -1,0 +1,69 @@
+name: ENDLUME 10.0.3 Effect Period Probe
+
+on:
+  push:
+    branches:
+      - hotfix/endlume-10.0.3-performance
+    paths:
+      - ".github/workflows/endlume-1003-effect-period-probe.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-1003-effect-period-probe
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Probe strict effect exact periods
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          FFM="$HOME/.endlume-local-builder/endlume-desktop-8.40-bootstrap/src-tauri/binaries/ffmpeg-aarch64-apple-darwin"
+          FFP="$HOME/.endlume-local-builder/endlume-desktop-8.40-bootstrap/src-tauri/binaries/ffprobe-aarch64-apple-darwin"
+          ROOT="$HOME/Library/Caches/studio.endlume.desktop/strict-effects-856"
+          test -x "$FFM"; test -x "$FFP"; test -d "$ROOT"
+          python3 - "$FFM" "$FFP" "$ROOT" <<'PY'
+          import hashlib,json,subprocess,sys
+          from pathlib import Path
+          ffmpeg,ffprobe,root=sys.argv[1:]
+          files=sorted(Path(root).glob("*.mov"))
+          assert files,root
+          def duration(p):
+              return float(subprocess.check_output([ffprobe,"-v","error","-show_entries","format=duration","-of","default=nw=1:nk=1",str(p)],text=True).strip())
+          def frame_hashes(p):
+              # Lossless strict cache -> hash decoded RGB frames at its native 30fps.
+              proc=subprocess.Popen([ffmpeg,"-hide_banner","-loglevel","error","-i",str(p),"-map","0:v:0","-f","framemd5","-"],stdout=subprocess.PIPE,text=True)
+              hashes=[]
+              for line in proc.stdout:
+                  if line.startswith("#"): continue
+                  parts=[x.strip() for x in line.split(",")]
+                  if len(parts)>=6: hashes.append(parts[-1])
+              rc=proc.wait()
+              if rc: raise RuntimeError((p,rc))
+              return hashes
+          def period(xs):
+              n=len(xs)
+              # Exact period only. No visual approximation.
+              for p in range(1,n+1):
+                  if all(xs[i]==xs[i%p] for i in range(n)):
+                      return p
+              return n
+          rows=[]
+          for p in files:
+              d=duration(p)
+              if d>65: continue
+              xs=frame_hashes(p)
+              per=period(xs)
+              rows.append({"file":p.name,"bytes":p.stat().st_size,"duration":d,"frames":len(xs),"exact_period_frames":per,"exact_period_seconds":per/30.0,"repeats":len(xs)/per if per else 0})
+          print("ENDLUME_1003_EFFECT_PERIODS "+json.dumps(rows,ensure_ascii=False))
+          PY

@@ -188,7 +188,7 @@ jobs:
           PY
             if [ -s "$RUNNER_TEMP/e1002-cycle-source.txt" ]; then
               CYCLE="$(cat "$RUNNER_TEMP/e1002-cycle-source.txt")"
-              "$GITHUB_WORKSPACE/src-tauri/binaries/ffmpeg-aarch64-apple-darwin" -hide_banner -loglevel error -i "$CYCLE" -t 20.033 -map 0:v:0 -an -c:v copy -movflags +faststart -y "$RECOVERED"
+              "$GITHUB_WORKSPACE/src-tauri/binaries/ffmpeg-aarch64-apple-darwin" -hide_banner -loglevel error -i "$CYCLE" -t 20.033 -map 0:v:0 -an -c:v hevc_videotoolbox -realtime 1 -prio_speed 1 -power_efficient 0 -constant_bit_rate 1 -b:v 20M -g 1800 -tag:v hvc1 -pix_fmt yuv420p -r 60 -movflags +faststart -y "$RECOVERED"
               test -s "$RECOVERED"
               PING_SOURCE="$RECOVERED"
               echo "RECOVERED_REAL_PING_SOURCE=$PING_SOURCE"

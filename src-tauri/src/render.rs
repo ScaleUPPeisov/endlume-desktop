@@ -952,9 +952,20 @@ fn subscribe_first_sec(s:&SubscribePreset)->f64{
 
 async fn prepare_overlays(app:&AppHandle,job:&QueueJob,started:i64,timer:&Instant,encoder:&str,attempt:u32)->Result<(Vec<EffectPreset>,Vec<SubscribePreset>),String>{
   if smart_repeat_project(job){
-    emit_progress(app,job,started,timer,26.0,"Strict 8.56: проверяю быстрый lossless Effects cache",encoder,attempt,None);let mark=Instant::now();let mut fx=Vec::new();
-    for e in job.effects.iter().filter(|e|effect_usage_mode(e)!="off"){match cache::prepare_strict_856(app,e,30,1920,1080).await{Ok(p)=>fx.push(p),Err(err)=>return Err(format!("Strict 8.56 Effects cache: {err}"))}}
-    let effects_sec=mark.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"effects-cache",effects_sec);emit_timing(app,&job.project.id,"effects",effects_sec);emit_timing(app,&job.project.id,"subscribe",0.0);emit_progress(app,job,started,timer,31.0,"Strict 8.56: lossless Effects cache готов",encoder,attempt,None);return Ok((fx,job.subscribes.clone()))
+    emit_progress(app,job,started,timer,26.0,"Strict 10.0.2: параллельно готовлю lossless Effects cache",encoder,attempt,None);let mark=Instant::now();
+    let active=job.effects.iter().filter(|e|effect_usage_mode(e)!="off").cloned().collect::<Vec<_>>();
+    let mut tasks=Vec::with_capacity(active.len());
+    for (idx,e) in active.into_iter().enumerate(){
+      let app2=app.clone();
+      tasks.push((idx,tauri::async_runtime::spawn(async move{cache::prepare_strict_856(&app2,&e,30,1920,1080).await})));
+    }
+    let mut prepared=Vec::with_capacity(tasks.len());
+    for (idx,task) in tasks{
+      let p=task.await.map_err(|e|format!("Strict 10.0.2 Effects cache task: {e}"))?.map_err(|err|format!("Strict 8.56 Effects cache: {err}"))?;
+      prepared.push((idx,p));
+    }
+    prepared.sort_by_key(|x|x.0);let fx=prepared.into_iter().map(|x|x.1).collect::<Vec<_>>();
+    let effects_sec=mark.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"effects-cache",effects_sec);emit_timing(app,&job.project.id,"effects",effects_sec);emit_timing(app,&job.project.id,"subscribe",0.0);emit_progress(app,job,started,timer,31.0,"Strict 10.0.2: parallel lossless Effects cache готов",encoder,attempt,None);return Ok((fx,job.subscribes.clone()))
   }
   emit_progress(app,job,started,timer,26.0,"Проверяю кэш Effects и Subscribe",encoder,attempt,None);let mark=Instant::now();let effects_mark=Instant::now();let mut fx=Vec::new();let mut subs=Vec::new();
   for e in &job.effects{
@@ -1525,10 +1536,17 @@ pub async fn render_job(app:&AppHandle,job:&QueueJob,cancel:Arc<AtomicBool>)->Re
     let result:Result<(Vec<f64>,f64,bool),String>=async{
       emit_progress(app,job,started,&timer,4.0,"Проверяю самый быстрый движок",&encoder,attempt,None);
       let fast_static_no_source=smart_repeat&&job.project.media.len()==1&&is_image(&job.project.media[0]);
-      let (source_master,master_duration)=if fast_static_no_source{
-        emit_timing(app,&job.project.id,"source-master-skipped",0.0);(PathBuf::new(),1.0)
-      }else{build_source_master(app,job,started,&timer,&work,&encoder,attempt,&cancel).await?};
-      let (fx,subs)=prepare_overlays(app,job,started,&timer,&encoder,attempt).await?;
+      let ((source_master,master_duration),(fx,subs))=if fast_pingpong_project(job){
+        let source_future=build_source_master(app,job,started,&timer,&work,&encoder,attempt,&cancel);
+        let overlays_future=prepare_overlays(app,job,started,&timer,&encoder,attempt);
+        tokio::try_join!(source_future,overlays_future)?
+      }else{
+        let source=if fast_static_no_source{
+          emit_timing(app,&job.project.id,"source-master-skipped",0.0);(PathBuf::new(),1.0)
+        }else{build_source_master(app,job,started,&timer,&work,&encoder,attempt,&cancel).await?};
+        let overlays=prepare_overlays(app,job,started,&timer,&encoder,attempt).await?;
+        (source,overlays)
+      };
       let visual_master_duration=if smart_repeat{smart_repeat_visual_seconds(app,master_duration,&fx).await}else{master_duration};
       let target=job.settings.duration_hours*3600.0;
       let (audio,durations,final_duration,original_audio)=if smart_repeat{

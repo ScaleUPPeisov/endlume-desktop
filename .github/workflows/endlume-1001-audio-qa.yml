@@ -3,6 +3,16 @@ name: ENDLUME 10.0.1 Audio Hotfix QA
 on:
   push:
     branches: [hotfix/endlume-10.0.1-audio]
+    paths:
+      - 'src-tauri/src/render.rs'
+      - 'scripts/run-endlume-1000-render-job-e2e.py'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'src-tauri/Cargo.toml'
+      - 'src-tauri/Cargo.lock'
+      - 'src-tauri/tauri.conf.json'
+      - 'src/components/ReleaseHistory.tsx'
+      - 'src/pages/SettingsPage.tsx'
   workflow_dispatch:
 
 permissions:

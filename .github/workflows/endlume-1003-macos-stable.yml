@@ -1,0 +1,173 @@
+name: ENDLUME 10.0.3 macOS Stable Release
+
+on:
+  push:
+    branches:
+      - hotfix/endlume-10.0.3-performance
+    paths:
+      - "release/endlume-10.0.3-macos.json"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: endlume-1003-macos-stable-release
+  cancel-in-progress: true
+
+jobs:
+  release:
+    name: macOS ARM64 • Build • Sign • Publish Stable
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 150
+    env:
+      RELEASE_TOKEN: ${{ secrets.ENDLUME_RELEASE_TOKEN }}
+    steps:
+      - name: Checkout exact release commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify identity approval and green QA
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          test "$(uname -s)" = "Darwin"
+          test "$(uname -m)" = "arm64"
+          test -n "${RELEASE_TOKEN:-}"
+          test -s "$HOME/.endlume-updater/endlume.key"
+          python3 - <<'PY'
+          import json,re
+          from pathlib import Path
+          v='10.0.3'
+          m=json.loads(Path('release/endlume-10.0.3-macos.json').read_text())
+          assert m['enabled'] is True and m['user_release_approval'] is True,m
+          assert m['version']==v and m['platform']=='darwin-aarch64',m
+          assert json.loads(Path('package.json').read_text())['version']==v
+          assert json.loads(Path('package-lock.json').read_text())['version']==v
+          assert json.loads(Path('src-tauri/tauri.conf.json').read_text())['version']==v
+          assert re.search(r'^version = "10\.0\.3"$',Path('src-tauri/Cargo.toml').read_text(),re.M)
+          assert int(m['qa_run_id'])>0
+          print(m['qa_run_id'])
+          PY
+          QA_RUN="$(python3 - <<'PY'
+          import json
+          print(json.load(open('release/endlume-10.0.3-macos.json'))['qa_run_id'])
+          PY
+          )"
+          GH_TOKEN="$RELEASE_TOKEN" gh api "repos/$GITHUB_REPOSITORY/actions/runs/$QA_RUN" --jq '.conclusion' | grep -qx success
+          echo ENDLUME_1003_MAC_QA_GREEN
+
+      - name: Bound build cache and stage Apple Silicon FFmpeg
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export CARGO_TARGET_DIR="$HOME/.endlume-build-cache/target-1003-release"
+          ENDLUME_BUILD_CACHE_KEEP=2 ENDLUME_BUILD_CACHE_MAX_BYTES=12000000000 bash scripts/cleanup-endlume-build-cache.sh
+          FOUNDATION="$HOME/.endlume-local-builder/endlume-desktop-8.40-bootstrap"
+          test -d "$FOUNDATION/src-tauri/binaries"
+          mkdir -p src-tauri/binaries
+          rsync -a "$FOUNDATION/src-tauri/binaries/" src-tauri/binaries/
+          chmod +x src-tauri/binaries/ffmpeg* src-tauri/binaries/ffprobe*
+          test -x src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          test -x src-tauri/binaries/ffprobe-aarch64-apple-darwin
+
+      - name: Frontend and Rust release gate
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          export CARGO_TARGET_DIR="$HOME/.endlume-build-cache/target-1003-release"
+          npm ci
+          npm run check
+          npm run build
+          cargo check --manifest-path src-tauri/Cargo.toml
+          cargo test --manifest-path src-tauri/Cargo.toml -- --nocapture
+
+      - name: Build signed macOS updater
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          export CARGO_TARGET_DIR="$HOME/.endlume-build-cache/target-1003-release"
+          KEY="$HOME/.endlume-updater/endlume.key"
+          export TAURI_SIGNING_PRIVATE_KEY_PATH="$KEY"
+          export TAURI_SIGNING_PRIVATE_KEY="$KEY"
+          export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
+          npx tauri build --bundles app
+
+      - name: Stage macOS 10.0.3 assets
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          BUNDLE="$HOME/.endlume-build-cache/target-1003-release/release/bundle/macos"
+          TAR="$(find "$BUNDLE" -maxdepth 1 -type f -name '*.app.tar.gz' -print -quit)"
+          test -n "$TAR" -a -s "$TAR"
+          test -s "$TAR.sig"
+          STAGE="$RUNNER_TEMP/endlume-1003-release"
+          rm -rf "$STAGE"; mkdir -p "$STAGE/unpack"
+          cp "$TAR" "$STAGE/ENDLUME-macos-aarch64.app.tar.gz"
+          cp "$TAR.sig" "$STAGE/ENDLUME-macos-aarch64.app.tar.gz.sig"
+          cp "$TAR" "$STAGE/ENDLUME-YT-Studio-PEISOV-10.0.3-macOS-ARM64.app.tar.gz"
+          cp "$TAR.sig" "$STAGE/ENDLUME-YT-Studio-PEISOV-10.0.3-macOS-ARM64.app.tar.gz.sig"
+          tar -xzf "$TAR" -C "$STAGE/unpack"
+          APP="$(find "$STAGE/unpack" -maxdepth 4 -type d -name '*.app' -print -quit)"
+          test -n "$APP" -a -d "$APP"
+          BID="$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$APP/Contents/Info.plist")"
+          VER="$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist")"
+          EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
+          test "$BID" = "studio.endlume.desktop"
+          test "$VER" = "10.0.3"
+          /usr/bin/lipo -archs "$APP/Contents/MacOS/$EXE" | grep -qw arm64
+          test -x "$(find "$APP/Contents/MacOS" -maxdepth 1 -type f -name 'ffmpeg*' -print -quit)"
+          test -x "$(find "$APP/Contents/MacOS" -maxdepth 1 -type f -name 'ffprobe*' -print -quit)"
+          SIG="$(tr -d '\r\n' < "$STAGE/ENDLUME-macos-aarch64.app.tar.gz.sig")"
+          python3 - "$STAGE/latest.json" "$SIG" <<'PY'
+          import json,sys,datetime
+          out,sig=sys.argv[1:]
+          data={
+            "version":"10.0.3",
+            "notes":"ENDLUME 10.0.3: accelerated physical masters and AAC caching, bounded build/runtime caches, SSD and TOSHIBA performance gates.",
+            "pub_date":datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00","Z"),
+            "platforms":{"darwin-aarch64":{
+              "url":"https://github.com/ScaleUPPeisov/scaleup-site/releases/download/endlume-stable/ENDLUME-macos-aarch64.app.tar.gz",
+              "signature":sig
+            }}
+          }
+          json.dump(data,open(out,"w"),ensure_ascii=False,indent=2)
+          PY
+          echo "ENDLUME_STAGE=$STAGE" >> "$GITHUB_ENV"
+          echo ENDLUME_1003_MAC_BUILD_GREEN
+
+      - name: Publish macOS stable
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.ENDLUME_RELEASE_TOKEN }}
+        run: |
+          set -Eeuo pipefail
+          HOST_REPO="ScaleUPPeisov/scaleup-site"
+          TAG="endlume-stable"
+          gh release view "$TAG" --repo "$HOST_REPO" >/dev/null
+          gh release upload "$TAG"             "$ENDLUME_STAGE/ENDLUME-macos-aarch64.app.tar.gz"             "$ENDLUME_STAGE/ENDLUME-macos-aarch64.app.tar.gz.sig"             "$ENDLUME_STAGE/ENDLUME-YT-Studio-PEISOV-10.0.3-macOS-ARM64.app.tar.gz"             "$ENDLUME_STAGE/ENDLUME-YT-Studio-PEISOV-10.0.3-macOS-ARM64.app.tar.gz.sig"             "$ENDLUME_STAGE/latest.json" --clobber --repo "$HOST_REPO"
+
+      - name: Verify public macOS stable
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          BASE="https://github.com/ScaleUPPeisov/scaleup-site/releases/download/endlume-stable"
+          curl -fsSL --retry 6 --retry-delay 3 "$BASE/latest.json?run=$GITHUB_RUN_ID" -o "$RUNNER_TEMP/latest-public.json"
+          python3 - "$RUNNER_TEMP/latest-public.json" <<'PY'
+          import json,sys
+          d=json.load(open(sys.argv[1]))
+          assert d.get('version')=='10.0.3',d
+          p=d.get('platforms',{}).get('darwin-aarch64')
+          assert p and p.get('url') and p.get('signature'),d
+          print('ENDLUME_1003_MAC_PUBLIC_STABLE_GREEN')
+          PY
+          curl -fsIL "$BASE/ENDLUME-macos-aarch64.app.tar.gz" >/dev/null
+          curl -fsIL "$BASE/ENDLUME-YT-Studio-PEISOV-10.0.3-macOS-ARM64.app.tar.gz" >/dev/null

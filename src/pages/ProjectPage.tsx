@@ -57,6 +57,20 @@ export function ProjectPage(){
     return()=>unlisten?.();
   },[scanRoots]);
 
+  // 10.0.3: once the project/settings settle, start the expensive static visual
+  // and AAC cache work in the background. A later settings change supersedes it,
+  // and enqueue_projects cancels any still-running stale prewarm before live render.
+  useEffect(()=>{
+    if(!draftProjects.length)return;
+    const timer=window.setTimeout(()=>{
+      const activeEffects=features.effects?effects.filter(e=>e.enabled):[];
+      const activeSubscribes=features.subscribe?subscribes.filter(e=>e.enabled):[];
+      const activeAmbient=features.ambient?ambient:undefined;
+      void api.prewarm(draftProjects,settings,activeEffects,activeSubscribes,activeAmbient).catch(()=>{});
+    },700);
+    return()=>window.clearTimeout(timer);
+  },[draftProjects,settings,effects,subscribes,ambient,features]);
+
   const enqueue=async()=>{
     if(!draftProjects.length)return;
     if(!settings.outputDir){await api.showError('Сначала выберите папку результата.');return}

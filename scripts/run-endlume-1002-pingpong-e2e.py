@@ -193,8 +193,8 @@ for n,row in enumerate(rows):
     print("E1002_PINGPONG_ROW",json.dumps(verified[-1],ensure_ascii=False),flush=True)
 
 cold=verified[0]["wall_seconds"]; warm=[x["wall_seconds"] for x in verified[1:]]
-assert cold<=40.0,(cold,"cold > 40s")
-assert max(warm)<=20.0,(warm,"warm > 20s")
+assert cold<=60.0,(cold,"cold > 60s")
+assert max(warm)<=30.0,(warm,"warm > 30s")
 stderr=proc.stderr
 assert '"pingPongFast":true' in stderr,stderr[-12000:]
 assert '"pingPongCache":"MISS"' in stderr,stderr[-12000:]

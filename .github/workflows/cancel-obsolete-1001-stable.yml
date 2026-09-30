@@ -1,0 +1,18 @@
+name: Cancel obsolete ENDLUME 10.0.1 stable run
+
+on:
+  push:
+    branches: [hotfix/endlume-10.0.1-audio]
+    paths:
+      - '.github/workflows/cancel-obsolete-1001-stable.yml'
+
+concurrency:
+  group: endlume-1001-dual-stable
+  cancel-in-progress: true
+
+jobs:
+  noop:
+    if: ${{ false }}
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo obsolete stable run cancelled

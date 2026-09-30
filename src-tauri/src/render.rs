@@ -52,7 +52,9 @@ fn encoder_class(encoder:&str)->&'static str{if matches!(encoder,"hevc_videotool
 
 const P0C_MIN_FREE_BYTES:u64=3_000_000_000;
 const P0C_MAX_PHYSICAL_STAGE_BYTES:u64=3_000_000_000;
+const P0C_MAX_TEMP_DIR_BYTES:u64=3_000_000_000;
 const P0C_MAX_LOGICAL_STAGE_BYTES:u64=800_000_000;
+const P0C_ABORT_FREE_BYTES:u64=1_000_000_000;
 const P0C_FINAL_MIN_BYTES:u64=400_000_000;
 const P0C_FINAL_MAX_BYTES:u64=600_000_000;
 
@@ -70,6 +72,17 @@ fn p0c_disk_snapshot(job:&QueueJob,work:&Path,out:&Path,label:&str){
   diag_line(json!({"kind":"p0c-disk","projectId":job.project.id,"label":label,
     "workBytes":p0c_recursive_bytes(work),"outputBytes":std::fs::metadata(out).map(|m|m.len()).unwrap_or(0),
     "workDiskFree":p0c_disk_free_bytes(work),"outputDiskFree":out.parent().and_then(p0c_disk_free_bytes)}));
+}
+fn p0c_work_dir_path(app:&AppHandle,job:&QueueJob,attempt:u32)->Option<PathBuf>{
+  let base=app.path().app_cache_dir().ok().unwrap_or_else(||std::env::temp_dir().join("studio.endlume.desktop"));
+  Some(base.join("render-work").join(format!("{}-{}",safe_name(&job.project.id),attempt)))
+}
+fn cleanup_destination_partial(out:&Path){
+  if let Ok(part)=destination_partial_path(out){let _=std::fs::remove_file(part);}
+  if let Some(parent)=out.parent(){
+    let part=parent.join(format!(".{}.endlume-part",out.file_name().and_then(|x|x.to_str()).unwrap_or("render.mp4")));
+    let _=std::fs::remove_file(part);
+  }
 }
 
 
@@ -492,6 +505,12 @@ fn render_work_dir(app:&AppHandle,id:&str,attempt:u32)->Result<PathBuf,String>{
   let base=app.path().app_cache_dir().unwrap_or_else(|_|std::env::temp_dir().join("studio.endlume.desktop"));
   let root=base.join("render-work");
   std::fs::create_dir_all(&root).map_err(|e|format!("Не удалось создать локальную рабочую папку ENDLUME: {e}"))?;
+  if let Ok(entries)=std::fs::read_dir(&root){
+    for e in entries.flatten(){
+      let p=e.path();let stale=e.metadata().ok().and_then(|m|m.modified().ok()).and_then(|t|t.elapsed().ok()).map(|x|x>=Duration::from_secs(86_400)).unwrap_or(false);
+      if stale{let _=std::fs::remove_dir_all(p);}
+    }
+  }
   let dir=root.join(format!("{}-{}",safe_name(id),attempt));
   let _=std::fs::remove_dir_all(&dir);
   std::fs::create_dir_all(&dir).map_err(|e|format!("Не удалось создать локальную рабочую папку проекта: {e}"))?;
@@ -714,7 +733,8 @@ async fn run_ffmpeg(app:&AppHandle,job:&QueueJob,started:i64,timer:&Instant,args
   let (mut rx,child)=app.shell().sidecar("ffmpeg").map_err(|e|format!("{stage}: FFmpeg недоступен: {e}"))?.args(args).spawn().map_err(|e|format!("{stage}: не удалось запустить FFmpeg: {e}"))?;
   let spawn_seconds=spawn_mark.elapsed().as_secs_f64();
   let pid=child.pid();let mut child=Some(child);let mut last=base;let mut stderr_tail=String::new();let mut sys=System::new_all();let mut metric_tick=Instant::now();
-  let output_candidate=argv.last().map(PathBuf::from);let mut last_guard_bytes=0u64;
+  let output_candidate=argv.last().map(PathBuf::from);let mut last_guard_bytes=0u64;let mut guard_tick=Instant::now();
+  if fast_pingpong_project(job){diag_line(json!({"kind":"p0c-ffmpeg-start","projectId":job.project.id,"stage":stage,"expectedSeconds":expected_sec,"activeOutputPath":output_candidate,"args":argv}));}
   let mut startup_seconds:Option<f64>=None;let mut last_progress_at:Option<Instant>=None;let mut last_fps:Option<f64>=None;let mut last_speed:Option<f64>=None;
   loop{
     if crate::license::production_blocked(){if let Some(c)=child.take(){let _=c.kill();}return Err(LICENSE_BLOCKED.into())}
@@ -729,6 +749,15 @@ async fn run_ffmpeg(app:&AppHandle,job:&QueueJob,started:i64,timer:&Instant,args
           let limit=if expected_sec>300.0{P0C_MAX_LOGICAL_STAGE_BYTES}else{P0C_MAX_PHYSICAL_STAGE_BYTES};
           if bytes>=last_guard_bytes.saturating_add(10_000_000)||bytes>limit{diag_line(json!({"kind":"p0c-growth","projectId":job.project.id,"stage":stage,"path":path,"currentBytes":bytes,"limitBytes":limit,"expectedSeconds":expected_sec}));last_guard_bytes=bytes;}
           if bytes>limit{if let Some(c)=child.take(){let _=c.kill();}let _=std::fs::remove_file(path);return Err(format!("ENDLUME остановил рендер: обнаружен аномальный рост временного видеофайла. stage={stage}, bytes={bytes}, limit={limit}"))}
+        }
+        if guard_tick.elapsed()>=Duration::from_secs(2){
+          if let Some(work)=p0c_work_dir_path(app,job,attempt){
+            let temp_bytes=p0c_recursive_bytes(&work);let disk_free=p0c_disk_free_bytes(&work);
+            diag_line(json!({"kind":"p0c-temp-guard","projectId":job.project.id,"stage":stage,"tempBytesCurrent":temp_bytes,"diskFreeCurrent":disk_free}));
+            if temp_bytes>P0C_MAX_TEMP_DIR_BYTES{if let Some(c)=child.take(){let _=c.kill();}return Err(format!("ENDLUME остановил рендер: временные файлы превысили безопасный лимит: {temp_bytes} bytes"))}
+            if disk_free.map(|x|x<P0C_ABORT_FREE_BYTES).unwrap_or(false){if let Some(c)=child.take(){let _=c.kill();}return Err("ENDLUME остановил рендер: свободное место на диске упало ниже 1 GB.".into())}
+          }
+          guard_tick=Instant::now();
         }
       }
       metric_tick=Instant::now();
@@ -1720,7 +1749,7 @@ pub async fn render_job(app:&AppHandle,job:&QueueJob,cancel:Arc<AtomicBool>)->Re
     }.await;
     match result{
       Ok((_durations,fd,original_audio))=>{
-        if let Err(e)=ensure_license_allowed(){let _=std::fs::remove_dir_all(&work);let _=std::fs::remove_file(&out);return Err(e)}
+        if let Err(e)=ensure_license_allowed(){let _=std::fs::remove_dir_all(&work);cleanup_destination_partial(&out);let _=std::fs::remove_file(&out);return Err(e)}
         let bytes=std::fs::metadata(&out).ok().map(|m|m.len());let bitrate=probe_video_bitrate(app,&out).await;
         let codec_args=vec!["-v","error","-show_entries","stream=codec_type,codec_name","-of","json",out.to_string_lossy().as_ref()].into_iter().map(String::from).collect();
         let (video_codec,audio_codec)=match output(app,"ffprobe",codec_args).await{
@@ -1738,7 +1767,7 @@ pub async fn render_job(app:&AppHandle,job:&QueueJob,cancel:Arc<AtomicBool>)->Re
         if fast_pingpong_project(job){diag_line(json!({"kind":"p0c-cleanup","projectId":job.project.id,"tempBeforeCleanup":temp_before_cleanup,"tempAfterCleanup":temp_after_cleanup,"diskFreeAfter":p0c_disk_free_bytes(&out_dir)}));}
         return Ok(outcome)
       },
-      Err(e)=>{last_error=e;if smart_repeat&&attempt==1{invalidate_hybrid_encoder_cache(app);}emit_warning(app,&job.project.id,&format!("Попытка {attempt} не прошла: {last_error}"));let _=std::fs::remove_dir_all(&work);let _=std::fs::remove_file(&out);if last_error==CANCELLED{return Err(last_error)}if attempt<max_attempts{emit_progress(app,job,started,&timer,2.0,"Повторяю безопасную попытку",&encoder,attempt+1,None);}}
+      Err(e)=>{last_error=e;if smart_repeat&&attempt==1{invalidate_hybrid_encoder_cache(app);}emit_warning(app,&job.project.id,&format!("Попытка {attempt} не прошла: {last_error}"));let temp_before=p0c_recursive_bytes(&work);let _=std::fs::remove_dir_all(&work);cleanup_destination_partial(&out);let _=std::fs::remove_file(&out);if fast_pingpong_project(job){diag_line(json!({"kind":"p0c-error-cleanup","projectId":job.project.id,"tempBeforeCleanup":temp_before,"tempAfterCleanup":p0c_recursive_bytes(&work)}));}if last_error==CANCELLED{return Err(last_error)}if attempt<max_attempts{emit_progress(app,job,started,&timer,2.0,"Повторяю безопасную попытку",&encoder,attempt+1,None);}}
     }
   }
   Err(last_error)

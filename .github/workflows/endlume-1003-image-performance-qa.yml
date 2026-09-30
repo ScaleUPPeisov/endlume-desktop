@@ -116,7 +116,7 @@ jobs:
           FFP="$GITHUB_WORKSPACE/src-tauri/binaries/ffprobe-aarch64-apple-darwin"
           mkdir -p "$GITHUB_WORKSPACE/e1003-qa"
           ENDLUME_1000_OUTPUT_DIR="$OUT" \
-          ENDLUME_1000_COLD_LIMIT_SECONDS=15 \
+          ENDLUME_1000_COLD_LIMIT_SECONDS=10 \
           ENDLUME_1000_WARM_LIMIT_SECONDS=10 \
           ENDLUME_FINAL_MIN_BYTES=400000000 \
           ENDLUME_FINAL_MAX_BYTES=600000000 \
@@ -134,7 +134,7 @@ jobs:
           import json
           p=json.load(open('e1003-qa/image-performance.json'))
           assert p['status']=='passed' and p['release_gate'] is True,p
-          assert p['cold_seconds']<=15,p
+          assert p['cold_seconds']<=10,p
           assert max(p['warm_seconds'])<=10,p
           for row in p['results']:
               assert 400_000_000 <= row['bytes'] <= 600_000_000,row

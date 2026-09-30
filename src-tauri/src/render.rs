@@ -1404,10 +1404,87 @@ fn cache_root_1000(app:&AppHandle,name:&str)->Result<PathBuf,String>{
   std::fs::create_dir_all(&root).map_err(|e|format!("10.0 cache mkdir: {e}"))?;Ok(root)
 }
 fn prune_cache_1000(root:&Path,protect:&Path){
-  const MAX_BYTES:u64=16*1024*1024*1024;const MAX_ENTRIES:usize=64;
+  const MAX_BYTES:u64=2*1024*1024*1024;const MAX_ENTRIES:usize=24;
   let Ok(rd)=std::fs::read_dir(root) else{return};let mut items=rd.filter_map(Result::ok).filter_map(|e|{let p=e.path();if p==protect||!p.is_file(){return None}let m=e.metadata().ok()?;let t=m.modified().ok()?.duration_since(UNIX_EPOCH).ok()?.as_secs();Some((p,m.len(),t))}).collect::<Vec<_>>();
   items.sort_by_key(|x|x.2);let mut bytes=items.iter().map(|x|x.1).sum::<u64>();let mut count=items.len()+1;
   for (p,size,_) in items{if bytes<=MAX_BYTES&&count<=MAX_ENTRIES{break}if std::fs::remove_file(&p).is_ok(){bytes=bytes.saturating_sub(size);count=count.saturating_sub(1)}}
+}
+
+const ENDLUME_RUNTIME_CACHE_MAX_BYTES_1003:u64=6*1024*1024*1024;
+const ENDLUME_RUNTIME_CACHE_MAX_FILES_1003:usize=120;
+
+fn runtime_cache_dirs_1003()->&'static [&'static str]{
+  &[
+    "visual-master-v10","subscribe-master-v10","pingpong-master-v10",
+    "pingpong-audio-v1002","pingpong-visual-v10",
+    "audio-track-aac-v1003","audio-playlist-aac-v1003",
+    "live-preview-v6","previews-v3","effects-v4-aspect-safe","strict-effects-856",
+  ]
+}
+
+fn runtime_cache_prefix_1003(name:&str)->bool{
+  ["visual-master-v","subscribe-master-v","pingpong-master-v","pingpong-audio-v","pingpong-visual-v",
+   "audio-track-aac-v","audio-playlist-aac-v","live-preview-v","previews-v","effects-v","strict-effects-"]
+    .iter().any(|p|name.starts_with(p))
+}
+
+pub fn cleanup_runtime_caches_1003(app:&AppHandle){
+  let Ok(root)=app.path().app_cache_dir() else{return};
+  let _=std::fs::create_dir_all(&root);
+  let allowed=runtime_cache_dirs_1003();
+
+  // Remove obsolete versioned cache roots left by older ENDLUME builds.
+  if let Ok(rd)=std::fs::read_dir(&root){
+    for e in rd.flatten(){
+      let p=e.path();if !p.is_dir(){continue}
+      let name=e.file_name().to_string_lossy().into_owned();
+      if runtime_cache_prefix_1003(&name)&&!allowed.iter().any(|x|*x==name){
+        let bytes=p0c_recursive_bytes(&p);
+        if std::fs::remove_dir_all(&p).is_ok(){diag_line(json!({"kind":"runtime-cache-obsolete-cleanup","path":p,"reclaimedBytes":bytes}));}
+      }
+    }
+  }
+
+  // Reclaim orphan render-work directories at app startup. Never delete a directory
+  // whose owner PID is still alive.
+  let work_root=root.join("render-work");
+  if let Ok(rd)=std::fs::read_dir(&work_root){
+    for e in rd.flatten(){
+      let p=e.path();if !p.is_dir(){continue}
+      let marker=p.join(".endlume-owner-pid");
+      let age=e.metadata().ok().and_then(|m|m.modified().ok()).and_then(|t|t.elapsed().ok());
+      let orphan=if marker.is_file(){!render_work_owner_alive_1002(&p)}else{age.map(|x|x>=Duration::from_secs(6*3600)).unwrap_or(false)};
+      if orphan{
+        let bytes=p0c_recursive_bytes(&p);
+        if std::fs::remove_dir_all(&p).is_ok(){diag_line(json!({"kind":"startup-render-work-cleanup","path":p,"reclaimedBytes":bytes}));}
+      }
+    }
+  }
+
+  // Global budget across all persistent caches. Individual roots are already capped
+  // at 2 GiB; this prevents 7-10 roots from summing to tens of GiB.
+  let mut files=Vec::<(PathBuf,u64,u64)>::new();
+  for name in allowed{
+    let dir=root.join(name);if !dir.is_dir(){continue}
+    for e in walkdir::WalkDir::new(&dir).into_iter().filter_map(Result::ok){
+      if !e.file_type().is_file(){continue}
+      let p=e.path().to_path_buf();
+      let Ok(m)=e.metadata() else{continue};
+      let t=m.modified().ok().and_then(|x|x.duration_since(UNIX_EPOCH).ok()).map(|x|x.as_secs()).unwrap_or(0);
+      files.push((p,m.len(),t));
+    }
+  }
+  files.sort_by_key(|x|x.2);
+  let mut bytes=files.iter().map(|x|x.1).sum::<u64>();
+  let mut count=files.len();
+  let before_bytes=bytes;let before_count=count;
+  for (p,size,_) in files{
+    if bytes<=ENDLUME_RUNTIME_CACHE_MAX_BYTES_1003&&count<=ENDLUME_RUNTIME_CACHE_MAX_FILES_1003{break}
+    if std::fs::remove_file(&p).is_ok(){bytes=bytes.saturating_sub(size);count=count.saturating_sub(1);}
+  }
+  if bytes!=before_bytes||count!=before_count{
+    diag_line(json!({"kind":"runtime-cache-budget-cleanup","bytesBefore":before_bytes,"bytesAfter":bytes,"filesBefore":before_count,"filesAfter":count,"maxBytes":ENDLUME_RUNTIME_CACHE_MAX_BYTES_1003,"maxFiles":ENDLUME_RUNTIME_CACHE_MAX_FILES_1003}));
+  }
 }
 async fn build_cached_visual_master_1000(app:&AppHandle,job:&QueueJob,effects:&[EffectPreset],master_frames:usize,work:&Path,encoder:&str,periodic:bool,attempt:u32,cancel:&AtomicBool,started:i64,timer:&Instant)->Result<PathBuf,String>{
   let lookup=Instant::now();let profile=if periodic{"periodic"}else{"strict"};let key=visual_master_key_1000(job,effects,master_frames,encoder,profile)?;
@@ -1909,9 +1986,10 @@ pub async fn render_job(app:&AppHandle,job:&QueueJob,cancel:Arc<AtomicBool>)->Re
         if fast_pingpong_project(job){p0c_disk_snapshot(job,&work,&out,"before-cleanup");}
         let temp_before_cleanup=p0c_recursive_bytes(&work);let _=std::fs::remove_dir_all(&work);let temp_after_cleanup=p0c_recursive_bytes(&work);
         if fast_pingpong_project(job){diag_line(json!({"kind":"p0c-cleanup","projectId":job.project.id,"tempBeforeCleanup":temp_before_cleanup,"tempAfterCleanup":temp_after_cleanup,"diskFreeAfter":p0c_disk_free_bytes(&out_dir)}));}
+        cleanup_runtime_caches_1003(app);
         return Ok(outcome)
       },
-      Err(e)=>{last_error=e;if smart_repeat&&attempt==1{invalidate_hybrid_encoder_cache(app);}emit_warning(app,&job.project.id,&format!("Попытка {attempt} не прошла: {last_error}"));let temp_before=p0c_recursive_bytes(&work);let _=std::fs::remove_dir_all(&work);cleanup_destination_partial(&out);let _=std::fs::remove_file(&out);if fast_pingpong_project(job){diag_line(json!({"kind":"p0c-error-cleanup","projectId":job.project.id,"tempBeforeCleanup":temp_before,"tempAfterCleanup":p0c_recursive_bytes(&work)}));}if last_error==CANCELLED{return Err(last_error)}if attempt<max_attempts{emit_progress(app,job,started,&timer,2.0,"Повторяю безопасную попытку",&encoder,attempt+1,None);}}
+      Err(e)=>{last_error=e;if smart_repeat&&attempt==1{invalidate_hybrid_encoder_cache(app);}emit_warning(app,&job.project.id,&format!("Попытка {attempt} не прошла: {last_error}"));let temp_before=p0c_recursive_bytes(&work);let _=std::fs::remove_dir_all(&work);cleanup_destination_partial(&out);let _=std::fs::remove_file(&out);if fast_pingpong_project(job){diag_line(json!({"kind":"p0c-error-cleanup","projectId":job.project.id,"tempBeforeCleanup":temp_before,"tempAfterCleanup":p0c_recursive_bytes(&work)}));}cleanup_runtime_caches_1003(app);if last_error==CANCELLED{return Err(last_error)}if attempt<max_attempts{emit_progress(app,job,started,&timer,2.0,"Повторяю безопасную попытку",&encoder,attempt+1,None);}}
     }
   }
   Err(last_error)

@@ -1937,7 +1937,7 @@ async fn render_pingpong_zero_copy_1002(app:&AppHandle,job:&QueueJob,source_mast
   emit_progress(app,job,started,timer,96.0,"10.0.2 SHORT_VIDEO_PINGPONG_FAST zero-copy готов",encoder,attempt,None);Ok(true)
 }
 
-pub async fn prewarm_job_1003(app:&AppHandle,source_job:&QueueJob)->Result<serde_json::Value,String>{
+pub async fn prewarm_job_1003(app:&AppHandle,source_job:&QueueJob,cancel:Arc<AtomicBool>)->Result<serde_json::Value,String>{
   ensure_license_allowed()?;
   let mut resolved=source_job.clone();refresh_project_paths(&mut resolved);
   let decision=fast_path_decision(&resolved);
@@ -1954,7 +1954,7 @@ pub async fn prewarm_job_1003(app:&AppHandle,source_job:&QueueJob)->Result<serde
   let mut warm_job=resolved.clone();
   warm_job.project.id=format!("prewarm-{}",safe_name(&resolved.project.id));
   let job=&warm_job;
-  let started=chrono::Utc::now().timestamp_millis();let timer=Instant::now();let cancel=AtomicBool::new(false);
+  let started=chrono::Utc::now().timestamp_millis();let timer=Instant::now();
   let encoder=choose_hybrid_encoder(app,1).await;
   if !strict_856_encoder_allowed(&encoder){return Err(format!("Prewarm HEVC encoder unavailable: {encoder}"))}
   let work=render_work_dir(app,&job.project.id,1)?;
@@ -1965,21 +1965,21 @@ pub async fn prewarm_job_1003(app:&AppHandle,source_job:&QueueJob)->Result<serde
     let audio_encoder=choose_audio_encoder(app).await;
     let audio_allowed=!audio_processing_requested(job);
     let audio_future=async{
-      if audio_allowed{build_cached_aac_playlist_1003(app,job,&audio_encoder,&cancel).await.map(|_|true)}
+      if audio_allowed{build_cached_aac_playlist_1003(app,job,&audio_encoder,cancel.as_ref()).await.map(|_|true)}
       else{Ok(false)}
     };
     let visual_future=async{
       if timed_effects(&fx,target){return Ok::<bool,String>(false)}
       if let Some(plan)=interval_1000_plan(job,&fx,&subs,target,visual_seconds){
-        let master=build_cached_visual_master_1000(app,job,&fx,plan.master_frames,&work,&encoder,true,1,&cancel,started,&timer).await?;
-        let _=render_periodic_sub_852(app,job,&master,&plan.sub,plan.phase_frames,plan.duration_frames,&work,"prewarm-v1003",&encoder,1,&cancel,started,&timer).await?;
+        let master=build_cached_visual_master_1000(app,job,&fx,plan.master_frames,&work,&encoder,true,1,cancel.as_ref(),started,&timer).await?;
+        let _=render_periodic_sub_852(app,job,&master,&plan.sub,plan.phase_frames,plan.duration_frames,&work,"prewarm-v1003",&encoder,1,cancel.as_ref(),started,&timer).await?;
         return Ok(true)
       }
       let active=subs.iter().filter(|x|subscribe_usage_mode(x)!="off"&&!x.effect.source.trim().is_empty()).collect::<Vec<_>>();
       if active.iter().any(|x|subscribe_usage_mode(x)!="always"){return Ok(false)}
       let mut combined=fx.clone();for sub in active{combined.push(sub.effect.clone())}
       let duration=visual_seconds.clamp(8.0,60.0);let frames=(duration*job.settings.fps.max(1) as f64).round().max(1.0) as usize;
-      let _=build_cached_visual_master_1000(app,job,&combined,frames,&work,&encoder,false,1,&cancel,started,&timer).await?;
+      let _=build_cached_visual_master_1000(app,job,&combined,frames,&work,&encoder,false,1,cancel.as_ref(),started,&timer).await?;
       Ok(true)
     };
     let (visual,audio)=tokio::join!(visual_future,audio_future);

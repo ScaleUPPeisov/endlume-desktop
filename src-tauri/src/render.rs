@@ -1562,6 +1562,7 @@ async fn render_pingpong_zero_copy_1002(app:&AppHandle,job:&QueueJob,source_mast
   let map_mark=Instant::now();ensure_license_allowed()?;crate::mp4_manifest::remap_video_samples(&seed,&seed,&selected)?;ensure_license_allowed()?;let map_sec=map_mark.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"sample-table",map_sec);emit_timing(app,&job.project.id,"zero-copy-manifest",map_sec);
   strict_856_validate_natural_size(&seed)?;verify_result(app,&seed,final_duration,&job.settings).await?;let (fsync_sec,rename_sec)=commit_destination_partial(&seed,out)?;emit_timing(app,&job.project.id,"fsync",fsync_sec);emit_timing(app,&job.project.id,"atomic-rename",rename_sec);
   let bytes=std::fs::metadata(out).map(|m|m.len()).unwrap_or(0);let _=app.emit("engine-profile",json!({"id":job.project.id,"pingPongFast":true,"pingPongPhysicalFrames":cycle_frames,"pingPongPhysicalSeconds":cycle_frames as f64/fps as f64,"pingPongPhysicalPoolFrames":pool_frames,"pingPongCache":"ACTIVE","numberOfSubscribeAppearances":appearances,"finalBytes":bytes}));
+  diag_line(json!({"kind":"pingpong-fast","projectId":job.project.id,"pingPongFast":true,"pingPongPhysicalFrames":cycle_frames,"pingPongPhysicalPoolFrames":pool_frames,"numberOfSubscribeAppearances":appearances,"finalBytes":bytes}));
   emit_progress(app,job,started,timer,96.0,"10.0.2 SHORT_VIDEO_PINGPONG_FAST zero-copy готов",encoder,attempt,None);Ok(true)
 }
 

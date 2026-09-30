@@ -114,8 +114,18 @@ jobs:
           source "$TMP/env"
           test "$AUDIO_COUNT" = 15
           test -f "$SIDE"
-          test -d "/Users/peisov/Desktop/Новая папка"
-          test -f "/Users/peisov/Desktop/Новая папка/для Японского канала .mp4"
+          PING_SOURCE="$(mdfind 'kMDItemFSName == "для Японского канала .mp4"c' | head -n 1 || true)"
+          if [ -z "$PING_SOURCE" ]; then
+            PING_SOURCE="$(find "$HOME/Desktop" "$HOME/Movies" "$HOME/Downloads" -maxdepth 6 -type f -name 'для Японского канала .mp4' -print -quit 2>/dev/null || true)"
+          fi
+          test -n "$PING_SOURCE" -a -f "$PING_SOURCE"
+          PING_DIR="$(dirname "$PING_SOURCE")"
+          AVAIL_KB="$(df -Pk "$HOME/Movies" | awk 'NR==2{print $4}')"
+          test "$AVAIL_KB" -ge 3500000
+          echo "E1002_PING_PROJECT_DIR=$PING_DIR" >> "$GITHUB_ENV"
+          echo "E1002_PING_SOURCE=$PING_SOURCE" >> "$GITHUB_ENV"
+          echo "PING_SOURCE=$PING_SOURCE"
+          df -h "$HOME/Movies"
 
       - name: Clear only ENDLUME render caches for true cold Ping-Pong run
         shell: bash
@@ -137,7 +147,7 @@ jobs:
           FFM="$GITHUB_WORKSPACE/src-tauri/binaries/ffmpeg-aarch64-apple-darwin"
           FFP="$GITHUB_WORKSPACE/src-tauri/binaries/ffprobe-aarch64-apple-darwin"
           mkdir -p "$GITHUB_WORKSPACE/e1002-qa"
-          ENDLUME_1002_OUTPUT_DIR="$OUT" python3 scripts/run-endlume-1002-pingpong-e2e.py             "/Users/peisov/Desktop/Новая папка"             "$GITHUB_WORKSPACE/e1002-subscribe.json"             "$E1002_E2E_BIN" "$FFM" "$FFP" "$GITHUB_WORKSPACE/e1002-qa/pingpong.json"
+          ENDLUME_1002_OUTPUT_DIR="$OUT" python3 scripts/run-endlume-1002-pingpong-e2e.py             "$E1002_PING_PROJECT_DIR"             "$GITHUB_WORKSPACE/e1002-subscribe.json"             "$E1002_E2E_BIN" "$FFM" "$FFP" "$GITHUB_WORKSPACE/e1002-qa/pingpong.json"
           cat "$GITHUB_WORKSPACE/e1002-qa/pingpong.json"
           rm -rf "$OUT"
 

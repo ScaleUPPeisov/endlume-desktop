@@ -197,14 +197,14 @@ fn pingpong_fidelity_args_1002(s:&RenderSettings,encoder:&str,duration:f64)->Vec
 }
 
 fn cached_master_fidelity_args_1000(s:&RenderSettings,encoder:&str,duration:f64)->Vec<String>{
-  // 10.0.3: keep roughly 250 MB of real HEVC payload in the short physical master
-  // instead of forcing a fixed 100 Mbps for every master duration. Shorter masters
-  // therefore contain fewer frames (faster encode) while receiving MORE bits/frame,
-  // so visual fidelity is not traded for speed.
+  // 10.0.3: target ~150 MB of HEVC payload in the short physical master.
+  // The final 2h MP4 also carries ~300 MB of AAC 320k audio, so a ~150 MB
+  // video master keeps the complete file near 450-550 MB while retaining a
+  // very high 60-180 Mbps physical encode budget at 1080p60.
   let duration=duration.max(2.0);
   let frames=(s.fps.max(1) as f64*duration).round().max(1.0) as u32;
   let g=frames.min(STRICT_857_MAX_GOP_FRAMES).to_string();
-  let mbps=(2000.0/duration).clamp(80.0,220.0).round() as u32;
+  let mbps=(1200.0/duration).clamp(60.0,180.0).round() as u32;
   let rate=format!("{mbps}M");let buf=format!("{}M",mbps.saturating_mul(2));let kbps=mbps.saturating_mul(1000);
   match encoder{
     "hevc_videotoolbox"=>vec!["-c:v","hevc_videotoolbox","-realtime","1","-prio_speed","1","-power_efficient","0","-constant_bit_rate","1","-b:v",&rate,"-g",&g,"-tag:v","hvc1","-pix_fmt","yuv420p"].into_iter().map(String::from).collect(),
@@ -1578,7 +1578,9 @@ async fn build_cached_visual_master_1000(app:&AppHandle,job:&QueueJob,effects:&[
   let mark=Instant::now();run_ffmpeg(app,job,started,timer,args,"10.0: BASE_VISUAL_MASTER",55.0,18.0,duration,encoder,attempt,cancel).await?;
   let packets=probe_video_packets_857(app,&tmp).await?;if packets!=master_frames{let _=std::fs::remove_file(&tmp);return Err(format!("10.0 BASE_VISUAL_MASTER packets={packets}/{master_frames}"))}
   if out.exists(){let _=std::fs::remove_file(&tmp);}else{std::fs::rename(&tmp,&out).map_err(|e|format!("10.0 visual cache commit: {e}"))?}
-  let sec=mark.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"base-visual-cache",sec);emit_timing(app,&job.project.id,"visual-preparation",sec);prune_cache_1000(&root,&out);Ok(out)
+  let sec=mark.elapsed().as_secs_f64();let bytes=std::fs::metadata(&out).map(|m|m.len()).unwrap_or(0);
+  diag_line(json!({"kind":"visual-master-1003","projectId":job.project.id,"durationSeconds":duration,"frames":master_frames,"bytes":bytes,"seconds":sec}));
+  emit_timing(app,&job.project.id,"base-visual-cache",sec);emit_timing(app,&job.project.id,"visual-preparation",sec);prune_cache_1000(&root,&out);Ok(out)
 }
 fn subscribe_master_key_1000(master:&Path,sub:&SubscribePreset,start_frame:usize,frames:usize,encoder:&str)->Result<String,String>{
   let mut h=Sha256::new();h.update(b"ENDLUME-10-SUBSCRIBE-v1");h.update(file_stamp_1000(master).as_bytes());h.update(serde_json::to_vec(sub).map_err(|e|e.to_string())?);h.update(start_frame.to_le_bytes());h.update(frames.to_le_bytes());h.update(encoder.as_bytes());Ok(hex::encode(h.finalize()))

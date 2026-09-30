@@ -1537,9 +1537,13 @@ pub async fn render_job(app:&AppHandle,job:&QueueJob,cancel:Arc<AtomicBool>)->Re
       emit_progress(app,job,started,&timer,4.0,"Проверяю самый быстрый движок",&encoder,attempt,None);
       let fast_static_no_source=smart_repeat&&job.project.media.len()==1&&is_image(&job.project.media[0]);
       let ((source_master,master_duration),(fx,subs))=if fast_pingpong_project(job){
-        let source_future=build_source_master(app,job,started,&timer,&work,&encoder,attempt,&cancel);
-        let overlays_future=prepare_overlays(app,job,started,&timer,&encoder,attempt);
-        tokio::try_join!(source_future,overlays_future)?
+        let source_app=app.clone();let source_job=job.clone();let source_timer=timer.clone();let source_work=work.clone();let source_encoder=encoder.clone();let source_cancel=cancel.clone();
+        let source_task=tauri::async_runtime::spawn(async move{build_source_master(&source_app,&source_job,started,&source_timer,&source_work,&source_encoder,attempt,&source_cancel).await});
+        let overlay_app=app.clone();let overlay_job=job.clone();let overlay_timer=timer.clone();let overlay_encoder=encoder.clone();
+        let overlay_task=tauri::async_runtime::spawn(async move{prepare_overlays(&overlay_app,&overlay_job,started,&overlay_timer,&overlay_encoder,attempt).await});
+        let source=source_task.await.map_err(|e|format!("10.0.2 Ping-Pong source task: {e}"))??;
+        let overlays=overlay_task.await.map_err(|e|format!("10.0.2 Ping-Pong Effects task: {e}"))??;
+        (source,overlays)
       }else{
         let source=if fast_static_no_source{
           emit_timing(app,&job.project.id,"source-master-skipped",0.0);(PathBuf::new(),1.0)

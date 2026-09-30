@@ -34,6 +34,7 @@ fn maybe_start_render_e2e(app:tauri::AppHandle){
   E2E_RENDER_ACTIVE.store(true,Ordering::SeqCst);
   let Ok(fixture_path)=std::env::var("ENDLUME_E2E_RENDER_JOB") else{return};
   let Ok(result_path)=std::env::var("ENDLUME_E2E_RESULT") else{return};
+  let (done_tx,done_rx)=std::sync::mpsc::sync_channel::<i32>(1);
   tauri::async_runtime::spawn(async move{
     let started_all=std::time::Instant::now();
     let parsed=std::fs::read(&fixture_path)
@@ -100,8 +101,12 @@ fn maybe_start_render_e2e(app:tauri::AppHandle){
     });
     let _=std::fs::write(&result_path,serde_json::to_vec_pretty(&payload).unwrap_or_default());
     E2E_RENDER_ACTIVE.store(false,Ordering::SeqCst);
-    app.exit(if ok{0}else{31});
+    let _=done_tx.send(if ok{0}else{31});
   });
+  // E2E-only lifetime keeper: do not let Tauri exit while the render task
+  // is still running. Production builds do not compile this feature path.
+  let code=done_rx.recv().unwrap_or(32);
+  std::process::exit(code);
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

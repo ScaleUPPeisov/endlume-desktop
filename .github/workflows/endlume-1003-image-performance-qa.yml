@@ -126,33 +126,11 @@ jobs:
           cat "$GITHUB_WORKSPACE/e1003-qa/image-performance.json"
           rm -rf "$OUT"
 
-      - name: Final performance verdict
+      - name: TOSHIBA EXT cold + warm performance gate
         shell: bash
         run: |
           set -Eeuo pipefail
-          python3 - <<'PY'
-          import json
-          p=json.load(open('e1003-qa/image-performance.json'))
-          assert p['status']=='passed' and p['release_gate'] is True,p
-          assert p['cold_seconds']<=10,p
-          assert max(p['warm_seconds'])<=10,p
-          for row in p['results']:
-              assert 400_000_000 <= row['bytes'] <= 600_000_000,row
-          print('ENDLUME_1003_IMAGE_PERFORMANCE_GREEN')
-          print('COLD_SECONDS=',p['cold_seconds'])
-          print('WARM_SECONDS=',p['warm_seconds'])
-          print('FINAL_BYTES=',[r['bytes'] for r in p['results']])
-          PY
-
-
-      - name: Optional TOSHIBA EXT warm-cache gate
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          if [[ ! -d "/Volumes/TOSHIBA EXT" ]]; then
-            echo "ENDLUME_1003_TOSHIBA_NOT_MOUNTED"
-            exit 0
-          fi
+          test -d "/Volumes/TOSHIBA EXT"
           OUT="/Volumes/TOSHIBA EXT/ENDLUME-1003-IMAGE-QA"
           rm -rf "$OUT"; mkdir -p "$OUT"
           FFM="$GITHUB_WORKSPACE/src-tauri/binaries/ffmpeg-aarch64-apple-darwin"
@@ -167,6 +145,32 @@ jobs:
             "$GITHUB_WORKSPACE/e1003-qa/toshiba-performance.json"
           cat "$GITHUB_WORKSPACE/e1003-qa/toshiba-performance.json"
           rm -rf "$OUT"
+
+      - name: Final performance verdict
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import json
+          internal=json.load(open('e1003-qa/image-performance.json'))
+          toshiba=json.load(open('e1003-qa/toshiba-performance.json'))
+          assert internal['status']=='passed' and internal['release_gate'] is True,internal
+          assert internal['cold_seconds']<=10,internal
+          assert max(internal['warm_seconds'])<=10,internal
+          assert toshiba['status']=='passed' and toshiba['release_gate'] is True,toshiba
+          assert toshiba['cold_seconds']<=20,toshiba
+          assert max(toshiba['warm_seconds'])<=20,toshiba
+          for label,p in [('INTERNAL',internal),('TOSHIBA',toshiba)]:
+              for row in p['results']:
+                  assert 400_000_000 <= row['bytes'] <= 600_000_000,(label,row)
+          print('ENDLUME_1003_IMAGE_PERFORMANCE_GREEN')
+          print('INTERNAL_COLD_SECONDS=',internal['cold_seconds'])
+          print('INTERNAL_WARM_SECONDS=',internal['warm_seconds'])
+          print('TOSHIBA_COLD_SECONDS=',toshiba['cold_seconds'])
+          print('TOSHIBA_WARM_SECONDS=',toshiba['warm_seconds'])
+          print('INTERNAL_FINAL_BYTES=',[r['bytes'] for r in internal['results']])
+          print('TOSHIBA_FINAL_BYTES=',[r['bytes'] for r in toshiba['results']])
+          PY
 
       - name: Prune build cache after QA
         if: always()

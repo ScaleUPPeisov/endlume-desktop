@@ -836,6 +836,7 @@ async fn build_cached_pingpong_source_1002(app:&AppHandle,job:&QueueJob,encoder:
   if out.is_file()&&probe_video_packets_857(app,&out).await.ok()==Some(cycle_frames){
     let sec=lookup.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"pingpong-cache",sec);
     let _=app.emit("engine-profile",json!({"id":job.project.id,"pingPongCache":"HIT","pingPongCacheKey":key,"pingPongSourceFrames":source_frames,"pingPongForwardFrames":forward_frames,"pingPongPhysicalFrames":cycle_frames,"pingPongPhysicalSeconds":cycle_duration}));
+    diag_line(json!({"kind":"cache","projectId":job.project.id,"pingPongCache":"HIT","pingPongCacheKey":key,"pingPongPhysicalFrames":cycle_frames}));
     return Ok((out,cycle_duration))
   }
   let _=std::fs::remove_file(&out);let tmp=root.join(format!(".{key}-{}.tmp.mp4",uuid::Uuid::new_v4()));
@@ -848,6 +849,7 @@ async fn build_cached_pingpong_source_1002(app:&AppHandle,job:&QueueJob,encoder:
   if out.exists(){let _=std::fs::remove_file(&tmp);}else{std::fs::rename(&tmp,&out).map_err(|e|format!("10.0.2 Ping-Pong cache commit: {e}"))?}
   let bytes=std::fs::metadata(&out).map(|m|m.len()).unwrap_or(0);let sec=mark.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"pingpong-master",sec);emit_timing(app,&job.project.id,"pingpong-cache",sec);prune_cache_1000(&root,&out);
   let _=app.emit("engine-profile",json!({"id":job.project.id,"pingPongCache":"MISS","pingPongCacheKey":key,"pingPongSourceFrames":source_frames,"pingPongForwardFrames":forward_frames,"pingPongPhysicalFrames":cycle_frames,"pingPongPhysicalSeconds":cycle_duration,"pingPongPhysicalBytes":bytes,"pingPongEncoder":encoder}));
+  diag_line(json!({"kind":"cache","projectId":job.project.id,"pingPongCache":"MISS","pingPongCacheKey":key,"pingPongPhysicalFrames":cycle_frames,"pingPongPhysicalBytes":bytes,"pingPongEncoder":encoder}));
   Ok((out,cycle_duration))
 }
 

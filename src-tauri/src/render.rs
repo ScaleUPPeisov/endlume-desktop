@@ -513,7 +513,7 @@ fn another_endlume_process_alive_1002()->bool{
   let current=Pid::from_u32(std::process::id());
   let sys=System::new_all();
   sys.processes().iter().any(|(pid,p)|{
-    **pid!=current&&p.name().to_string_lossy().to_ascii_lowercase().contains("endlume")
+    *pid!=current&&p.name().to_string_lossy().to_ascii_lowercase().contains("endlume")
   })
 }
 

@@ -204,7 +204,7 @@ fn cached_master_fidelity_args_1000(s:&RenderSettings,encoder:&str,duration:f64)
   let duration=duration.max(2.0);
   let frames=(s.fps.max(1) as f64*duration).round().max(1.0) as u32;
   let g=frames.min(STRICT_857_MAX_GOP_FRAMES).to_string();
-  let mbps=(1200.0/duration).clamp(60.0,180.0).round() as u32;
+  let mbps=(1200.0/duration).clamp(30.0,180.0).round() as u32;
   let rate=format!("{mbps}M");let buf=format!("{}M",mbps.saturating_mul(2));let kbps=mbps.saturating_mul(1000);
   match encoder{
     "hevc_videotoolbox"=>vec!["-c:v","hevc_videotoolbox","-realtime","1","-prio_speed","1","-power_efficient","0","-constant_bit_rate","1","-b:v",&rate,"-g",&g,"-tag:v","hvc1","-pix_fmt","yuv420p"].into_iter().map(String::from).collect(),
@@ -782,27 +782,41 @@ async fn build_cached_aac_playlist_1003(app:&AppHandle,job:&QueueJob,encoder:&st
   let total_mark=Instant::now();
   let track_root=cache_root_1000(app,"audio-track-aac-v1003")?;
   let playlist_root=cache_root_1000(app,"audio-playlist-aac-v1003")?;
+  let stage_root=app.path().app_cache_dir().map_err(|e|e.to_string())?.join("audio-stage-v1003").join(uuid::Uuid::new_v4().to_string());
   let mut tasks=Vec::with_capacity(job.project.audio.len());
+  let stage_mark=Instant::now();let mut staged_bytes=0u64;
   for (idx,src) in job.project.audio.iter().enumerate(){
     let app=app.clone();
     let source=PathBuf::from(src);
     let root=track_root.clone();
     let enc=encoder.to_string();
+    let key=audio_track_aac_key_1003(&source,&enc);
+    let out=root.join(format!("{key}.m4a"));
+    // Warm cache hits stay exactly zero-process and do not touch the source disk.
+    if committed_aac_cache_file_1003(&out){
+      tasks.push(async move{Ok::<(usize,PathBuf,bool),String>((idx,out,true))});
+      continue
+    }
+    let external=source.starts_with("/Volumes/");
+    let input=if external{
+      std::fs::create_dir_all(&stage_root).map_err(|e|format!("10.0.3 AAC local stage mkdir: {e}"))?;
+      let ext=source.extension().and_then(|x|x.to_str()).unwrap_or("audio");
+      let local=stage_root.join(format!("{idx:03}.{ext}"));
+      let bytes=std::fs::copy(&source,&local).map_err(|e|format!("10.0.3 AAC local stage {}: {e}",source.display()))?;
+      staged_bytes=staged_bytes.saturating_add(bytes);
+      local
+    }else{source.clone()};
     tasks.push(async move{
-      let key=audio_track_aac_key_1003(&source,&enc);
-      let out=root.join(format!("{key}.m4a"));
-      // Cache files are committed with tmp -> atomic rename and their key already
-      // includes source path/size/mtime + encoder settings. A committed file is safe
-      // to trust here; final playlist/output playback gates still run afterwards.
-      if committed_aac_cache_file_1003(&out){
-        return Ok::<(usize,PathBuf,bool),String>((idx,out,true))
-      }
       let _=std::fs::remove_file(&out);
       let tmp=root.join(format!(".{key}-{}.tmp.m4a",uuid::Uuid::new_v4()));
-      let mut args:Vec<String>=vec!["-hide_banner","-loglevel","error","-i",source.to_string_lossy().as_ref(),"-map","0:a:0","-vn","-map_metadata","-1"].into_iter().map(String::from).collect();
+      let mut args:Vec<String>=vec!["-hide_banner","-loglevel","error","-i",input.to_string_lossy().as_ref(),"-map","0:a:0","-vn","-map_metadata","-1"].into_iter().map(String::from).collect();
       args.extend(audio_encoder_args(&enc));
-      args.extend(vec!["-tag:a","mp4a","-disposition:a:0","default","-metadata:s:a:0","language=und","-movflags","+faststart","-y",tmp.to_string_lossy().as_ref()].into_iter().map(String::from));
-      if let Err(e)=output(&app,"ffmpeg",args).await{
+      // Internal cache: faststart only rewrites atoms and adds cold latency; the
+      // final public MP4 remains independently validated after atomic rename.
+      args.extend(vec!["-tag:a","mp4a","-disposition:a:0","default","-metadata:s:a:0","language=und","-y",tmp.to_string_lossy().as_ref()].into_iter().map(String::from));
+      let encoded=output(&app,"ffmpeg",args).await;
+      if external{let _=std::fs::remove_file(&input);}
+      if let Err(e)=encoded{
         let _=std::fs::remove_file(&tmp);
         return Err(format!("10.0.3 AAC track cache {}: {e}",source.display()))
       }
@@ -814,6 +828,9 @@ async fn build_cached_aac_playlist_1003(app:&AppHandle,job:&QueueJob,encoder:&st
       Ok((idx,out,false))
     });
   }
+  if staged_bytes>0{
+    diag_line(json!({"kind":"audio-stage-1003","projectId":job.project.id,"bytes":staged_bytes,"seconds":stage_mark.elapsed().as_secs_f64(),"source":"external-volume","target":"local-cache"}));
+  }
   let mut set=tokio::task::JoinSet::new();
   for task in tasks{set.spawn(task);}
   let mut ordered=Vec::<(usize,PathBuf,bool)>::new();
@@ -822,6 +839,7 @@ async fn build_cached_aac_playlist_1003(app:&AppHandle,job:&QueueJob,encoder:&st
     ordered.push(row.map_err(|e|format!("10.0.3 AAC worker join: {e}"))??);
   }
   ordered.sort_by_key(|x|x.0);
+  let _=std::fs::remove_dir_all(&stage_root);
   let hits=ordered.iter().filter(|x|x.2).count();
   let misses=ordered.len().saturating_sub(hits);
   let playlist_key=audio_playlist_aac_key_1003(job,encoder);
@@ -837,7 +855,7 @@ async fn build_cached_aac_playlist_1003(app:&AppHandle,job:&QueueJob,encoder:&st
   let body=ordered.iter().map(|(_,p,_)|format!("file {}\n",ffconcat_escape(p))).collect::<String>();
   std::fs::write(&list,body).map_err(|e|format!("10.0.3 AAC playlist list: {e}"))?;
   let tmp=playlist_root.join(format!(".{playlist_key}-{}.tmp.m4a",uuid::Uuid::new_v4()));
-  let args=vec!["-hide_banner","-loglevel","error","-f","concat","-safe","0","-i",list.to_string_lossy().as_ref(),"-map","0:a:0","-c:a","copy","-tag:a","mp4a","-disposition:a:0","default","-metadata:s:a:0","language=und","-movflags","+faststart","-y",tmp.to_string_lossy().as_ref()].into_iter().map(String::from).collect();
+  let args=vec!["-hide_banner","-loglevel","error","-f","concat","-safe","0","-i",list.to_string_lossy().as_ref(),"-map","0:a:0","-c:a","copy","-tag:a","mp4a","-disposition:a:0","default","-metadata:s:a:0","language=und","-y",tmp.to_string_lossy().as_ref()].into_iter().map(String::from).collect();
   let mux_result=output(app,"ffmpeg",args).await;
   let _=std::fs::remove_file(&list);
   if let Err(e)=mux_result{let _=std::fs::remove_file(&tmp);return Err(format!("10.0.3 AAC playlist concat: {e}"))}

@@ -86,7 +86,7 @@ print("AVFOUNDATION_PLAYBACK_GATE=PASS")
     assert "AVFOUNDATION_PLAYBACK_GATE=PASS" in p.stdout,p.stdout
     return p.stdout.strip()
 
-source=PROJECT_DIR/"для Японского канала .mp4"
+source=Path(os.environ.get("ENDLUME_1002_SOURCE",str(PROJECT_DIR/"для Японского канала .mp4"))).resolve()
 assert source.is_file(),source
 source_meta=ffprobe_json(source)
 sv=next(s for s in source_meta["streams"] if s.get("codec_type")=="video")

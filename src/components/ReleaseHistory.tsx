@@ -3,7 +3,13 @@ import React from 'react';
 type Release={version:string;date:string;current?:boolean;title:string;items:string[]};
 
 const releases:Release[]=[
-  {version:'10.0.0',date:'29.09.2026',current:true,title:'Grand Performance • Persistent Masters • Scheduling',items:[
+  {version:'10.0.1',date:'30.09.2026',current:true,title:'P0 Audio Hotfix • Songs Restored',items:[
+    'P0 HOTFIX: исправление музыки в финальном MP4 выпущено отдельной версией, чтобы updater гарантированно доставил его поверх 10.0.0.',
+    'Финальная проверка декодирует аудио и измеряет реальную громкость; silent/near-silent результат блокируется и не может получить ложное «Готово».',
+    'Original MP3 packet-copy и полная длительность песен сохранены без повторного lossy-перекодирования.',
+    'Рендер, Effects, Subscribe, persistent cache, HEVC 1080p60 и размер 500–700 МБ не изменены.'
+  ]},
+  {version:'10.0.0',date:'29.09.2026',current:false,title:'Grand Performance • Persistent Masters • Scheduling',items:[
     'Effects и Subscribe: ВЫКЛ / ВСЕГДА / ПО ИНТЕРВАЛУ.',
     'Subscribe: интервал, длительность показа, первое появление и live calculation.',
     'Persistent visual/Subscribe masters и zero-copy 10.0 performance path.',

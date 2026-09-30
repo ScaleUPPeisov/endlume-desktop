@@ -9,6 +9,7 @@ on:
       - 'src-tauri/Cargo.toml'
       - 'src-tauri/Cargo.lock'
       - 'scripts/run-endlume-1000-render-job-e2e.py'
+      - 'scripts/cleanup-endlume-build-cache.sh'
   workflow_dispatch:
 
 permissions:
@@ -30,6 +31,13 @@ jobs:
           clean: true
           fetch-depth: 1
           persist-credentials: false
+
+      - name: Bound local ENDLUME build cache
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export CARGO_TARGET_DIR="$HOME/.endlume-build-cache/target-1003"
+          ENDLUME_BUILD_CACHE_KEEP=2 ENDLUME_BUILD_CACHE_MAX_BYTES=18000000000 bash scripts/cleanup-endlume-build-cache.sh
 
       - name: Stage native Apple Silicon FFmpeg
         shell: bash
@@ -108,7 +116,7 @@ jobs:
           FFP="$GITHUB_WORKSPACE/src-tauri/binaries/ffprobe-aarch64-apple-darwin"
           mkdir -p "$GITHUB_WORKSPACE/e1003-qa"
           ENDLUME_1000_OUTPUT_DIR="$OUT" \
-          ENDLUME_1000_COLD_LIMIT_SECONDS=22 \
+          ENDLUME_1000_COLD_LIMIT_SECONDS=15 \
           ENDLUME_1000_WARM_LIMIT_SECONDS=10 \
           ENDLUME_FINAL_MIN_BYTES=400000000 \
           ENDLUME_FINAL_MAX_BYTES=600000000 \
@@ -126,7 +134,7 @@ jobs:
           import json
           p=json.load(open('e1003-qa/image-performance.json'))
           assert p['status']=='passed' and p['release_gate'] is True,p
-          assert p['cold_seconds']<=22,p
+          assert p['cold_seconds']<=15,p
           assert max(p['warm_seconds'])<=10,p
           for row in p['results']:
               assert 400_000_000 <= row['bytes'] <= 600_000_000,row
@@ -135,3 +143,35 @@ jobs:
           print('WARM_SECONDS=',p['warm_seconds'])
           print('FINAL_BYTES=',[r['bytes'] for r in p['results']])
           PY
+
+
+      - name: Optional TOSHIBA EXT warm-cache gate
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          if [[ ! -d "/Volumes/TOSHIBA EXT" ]]; then
+            echo "ENDLUME_1003_TOSHIBA_NOT_MOUNTED"
+            exit 0
+          fi
+          OUT="/Volumes/TOSHIBA EXT/ENDLUME-1003-IMAGE-QA"
+          rm -rf "$OUT"; mkdir -p "$OUT"
+          FFM="$GITHUB_WORKSPACE/src-tauri/binaries/ffmpeg-aarch64-apple-darwin"
+          FFP="$GITHUB_WORKSPACE/src-tauri/binaries/ffprobe-aarch64-apple-darwin"
+          ENDLUME_1000_OUTPUT_DIR="$OUT" \
+          ENDLUME_1000_COLD_LIMIT_SECONDS=20 \
+          ENDLUME_1000_WARM_LIMIT_SECONDS=20 \
+          ENDLUME_FINAL_MIN_BYTES=400000000 \
+          ENDLUME_FINAL_MAX_BYTES=600000000 \
+          python3 scripts/run-endlume-1000-render-job-e2e.py \
+            "$SIDE" "$GITHUB_WORKSPACE/e1003-subscribe.json" "$E1003_E2E_BIN" "$FFM" "$FFP" \
+            "$GITHUB_WORKSPACE/e1003-qa/toshiba-performance.json"
+          cat "$GITHUB_WORKSPACE/e1003-qa/toshiba-performance.json"
+          rm -rf "$OUT"
+
+      - name: Prune build cache after QA
+        if: always()
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export CARGO_TARGET_DIR="$HOME/.endlume-build-cache/target-1003"
+          ENDLUME_BUILD_CACHE_KEEP=2 ENDLUME_BUILD_CACHE_MAX_BYTES=18000000000 bash scripts/cleanup-endlume-build-cache.sh

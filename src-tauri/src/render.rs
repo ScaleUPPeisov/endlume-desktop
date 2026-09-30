@@ -1937,6 +1937,60 @@ async fn render_pingpong_zero_copy_1002(app:&AppHandle,job:&QueueJob,source_mast
   emit_progress(app,job,started,timer,96.0,"10.0.2 SHORT_VIDEO_PINGPONG_FAST zero-copy готов",encoder,attempt,None);Ok(true)
 }
 
+pub async fn prewarm_job_1003(app:&AppHandle,source_job:&QueueJob)->Result<serde_json::Value,String>{
+  ensure_license_allowed()?;
+  let mut resolved=source_job.clone();refresh_project_paths(&mut resolved);
+  let decision=fast_path_decision(&resolved);
+  // 10.0.3 prewarm is intentionally scoped to the expensive single-image fast path.
+  // Other project types keep their existing renderer unchanged.
+  if !decision.eligible||resolved.project.media.len()!=1||!is_image(&resolved.project.media[0]){
+    return Ok(json!({"eligible":false,"reason":decision.reason}))
+  }
+  resolved.settings.width=1920;resolved.settings.height=1080;resolved.settings.fps=60;resolved.settings.codec="h265".into();resolved.settings.duration_mode="whole-track".into();
+  for p in &resolved.project.media{if !Path::new(p).is_file(){return Err(format!("Prewarm media missing: {p}"))}}
+  for p in &resolved.project.audio{if !Path::new(p).is_file(){return Err(format!("Prewarm audio missing: {p}"))}}
+  if resolved.project.audio.is_empty(){return Err("Prewarm: no audio tracks".into())}
+
+  let mut warm_job=resolved.clone();
+  warm_job.project.id=format!("prewarm-{}",safe_name(&resolved.project.id));
+  let job=&warm_job;
+  let started=chrono::Utc::now().timestamp_millis();let timer=Instant::now();let cancel=AtomicBool::new(false);
+  let encoder=choose_hybrid_encoder(app,1).await;
+  if !strict_856_encoder_allowed(&encoder){return Err(format!("Prewarm HEVC encoder unavailable: {encoder}"))}
+  let work=render_work_dir(app,&job.project.id,1)?;
+  let result:Result<serde_json::Value,String>=async{
+    let (fx,subs)=prepare_overlays(app,job,started,&timer,&encoder,1).await?;
+    let visual_seconds=smart_repeat_visual_seconds(app,1.0,&fx).await;
+    let target=job.settings.duration_hours*3600.0;
+    let audio_encoder=choose_audio_encoder(app).await;
+    let audio_allowed=!audio_processing_requested(job);
+    let audio_future=async{
+      if audio_allowed{build_cached_aac_playlist_1003(app,job,&audio_encoder,&cancel).await.map(|_|true)}
+      else{Ok(false)}
+    };
+    let visual_future=async{
+      if timed_effects(&fx,target){return Ok::<bool,String>(false)}
+      if let Some(plan)=interval_1000_plan(job,&fx,&subs,target,visual_seconds){
+        let master=build_cached_visual_master_1000(app,job,&fx,plan.master_frames,&work,&encoder,true,1,&cancel,started,&timer).await?;
+        let _=render_periodic_sub_852(app,job,&master,&plan.sub,plan.phase_frames,plan.duration_frames,&work,"prewarm-v1003",&encoder,1,&cancel,started,&timer).await?;
+        return Ok(true)
+      }
+      let active=subs.iter().filter(|x|subscribe_usage_mode(x)!="off"&&!x.effect.source.trim().is_empty()).collect::<Vec<_>>();
+      if active.iter().any(|x|subscribe_usage_mode(x)!="always"){return Ok(false)}
+      let mut combined=fx.clone();for sub in active{combined.push(sub.effect.clone())}
+      let duration=visual_seconds.clamp(8.0,60.0);let frames=(duration*job.settings.fps.max(1) as f64).round().max(1.0) as usize;
+      let _=build_cached_visual_master_1000(app,job,&combined,frames,&work,&encoder,false,1,&cancel,started,&timer).await?;
+      Ok(true)
+    };
+    let (visual,audio)=tokio::join!(visual_future,audio_future);
+    let visual_ready=visual?;let audio_ready=audio?;
+    Ok(json!({"eligible":true,"visualReady":visual_ready,"audioReady":audio_ready,"encoder":encoder,"seconds":timer.elapsed().as_secs_f64()}))
+  }.await;
+  let _=std::fs::remove_dir_all(&work);
+  if let Ok(v)=&result{diag_line(json!({"kind":"prewarm-1003","projectId":source_job.project.id,"result":v}));}
+  result
+}
+
 pub async fn render_job(app:&AppHandle,job:&QueueJob,cancel:Arc<AtomicBool>)->Result<RenderOutcome,String>{
   ensure_license_allowed()?;
   let mut resolved_job=job.clone();refresh_project_paths(&mut resolved_job);

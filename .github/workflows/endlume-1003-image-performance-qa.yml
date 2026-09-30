@@ -1,0 +1,137 @@
+name: ENDLUME 10.0.3 Image Performance QA
+
+on:
+  push:
+    branches: [hotfix/endlume-10.0.3-performance]
+    paths:
+      - '.github/workflows/endlume-1003-image-performance-qa.yml'
+      - 'src-tauri/src/render.rs'
+      - 'src-tauri/Cargo.toml'
+      - 'src-tauri/Cargo.lock'
+      - 'scripts/run-endlume-1000-render-job-e2e.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-1003-image-performance
+  cancel-in-progress: true
+
+jobs:
+  qa:
+    name: macOS ARM64 • 1 image + real audio • 400-600MB • performance
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Stage native Apple Silicon FFmpeg
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          FOUNDATION="$HOME/.endlume-local-builder/endlume-desktop-8.40-bootstrap"
+          test -d "$FOUNDATION/src-tauri/binaries"
+          mkdir -p src-tauri/binaries
+          rsync -a "$FOUNDATION/src-tauri/binaries/" src-tauri/binaries/
+          chmod +x src-tauri/binaries/ffmpeg* src-tauri/binaries/ffprobe*
+          test -x src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          test -x src-tauri/binaries/ffprobe-aarch64-apple-darwin
+
+      - name: Frontend + Rust regression
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export CARGO_TARGET_DIR="$HOME/.endlume-build-cache/target-1003"
+          npm ci
+          npm run check
+          npm run build
+          cargo check --manifest-path src-tauri/Cargo.toml
+          cargo test --manifest-path src-tauri/Cargo.toml -- --nocapture
+
+      - name: Build audit-only candidate app
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export CARGO_TARGET_DIR="$HOME/.endlume-build-cache/target-1003"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('src-tauri/tauri.conf.json')
+          d=json.loads(p.read_text())
+          d['bundle']['createUpdaterArtifacts']=False
+          d['app']['windows']=[]
+          p.write_text(json.dumps(d,ensure_ascii=False,indent=2)+'\n')
+          PY
+          npm run tauri build -- --bundles app --features e2e-render
+          APP="$(find "$CARGO_TARGET_DIR/release/bundle/macos" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          test -n "$APP" -a -d "$APP"
+          EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
+          echo "E1003_E2E_BIN=$APP/Contents/MacOS/$EXE" >> "$GITHUB_ENV"
+
+      - name: Resolve real image fixture
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/find-endlume-real-subscribe.py "$GITHUB_WORKSPACE/e1003-subscribe.json"
+          test -s "$GITHUB_WORKSPACE/e1003-subscribe.json"
+          TMP="$(mktemp -d /tmp/e1003fixture.XXXXXX)"
+          python3 scripts/find-endlume-real-fixture.py "$TMP/env"
+          cat "$TMP/env" >> "$GITHUB_ENV"
+          source "$TMP/env"
+          test "$AUDIO_COUNT" = 15
+          test "$EFFECT_COUNT" -ge 2
+          test -f "$SIDE"
+          echo "ENDLUME_1003_FIXTURE_GREEN project=$PROJECT_NAME audio=$AUDIO_COUNT effects=$EFFECT_COUNT"
+
+      - name: Clear performance caches for true cold run
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ROOT="$HOME/Library/Caches/studio.endlume.desktop"
+          rm -rf "$ROOT/visual-master-v10" "$ROOT/subscribe-master-v10"
+          rm -rf "$ROOT/audio-track-aac-v1003" "$ROOT/audio-playlist-aac-v1003"
+          rm -rf /tmp/endlume1003.* 2>/dev/null || true
+
+      - name: Real 1-image cold + warm performance gate
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          OUT="$HOME/Movies/ENDLUME Studio/ENDLUME-1003-IMAGE-QA"
+          rm -rf "$OUT"; mkdir -p "$OUT"
+          FFM="$GITHUB_WORKSPACE/src-tauri/binaries/ffmpeg-aarch64-apple-darwin"
+          FFP="$GITHUB_WORKSPACE/src-tauri/binaries/ffprobe-aarch64-apple-darwin"
+          mkdir -p "$GITHUB_WORKSPACE/e1003-qa"
+          ENDLUME_1000_OUTPUT_DIR="$OUT" \
+          ENDLUME_1000_COLD_LIMIT_SECONDS=22 \
+          ENDLUME_1000_WARM_LIMIT_SECONDS=10 \
+          ENDLUME_FINAL_MIN_BYTES=400000000 \
+          ENDLUME_FINAL_MAX_BYTES=600000000 \
+          python3 scripts/run-endlume-1000-render-job-e2e.py \
+            "$SIDE" "$GITHUB_WORKSPACE/e1003-subscribe.json" "$E1003_E2E_BIN" "$FFM" "$FFP" \
+            "$GITHUB_WORKSPACE/e1003-qa/image-performance.json"
+          cat "$GITHUB_WORKSPACE/e1003-qa/image-performance.json"
+          rm -rf "$OUT"
+
+      - name: Final performance verdict
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import json
+          p=json.load(open('e1003-qa/image-performance.json'))
+          assert p['status']=='passed' and p['release_gate'] is True,p
+          assert p['cold_seconds']<=22,p
+          assert max(p['warm_seconds'])<=10,p
+          for row in p['results']:
+              assert 400_000_000 <= row['bytes'] <= 600_000_000,row
+          print('ENDLUME_1003_IMAGE_PERFORMANCE_GREEN')
+          print('COLD_SECONDS=',p['cold_seconds'])
+          print('WARM_SECONDS=',p['warm_seconds'])
+          print('FINAL_BYTES=',[r['bytes'] for r in p['results']])
+          PY

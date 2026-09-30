@@ -104,7 +104,7 @@ jobs:
           let asset=AVURLAsset(url:url)
           let tracks=asset.tracks(withMediaType:.audio)
           print("AVF_AUDIO_STREAMS=\(tracks.count)")
-          guard let track=tracks.first else { exit(3) }
+          guard let track=tracks.first else { print("AVF_NO_AUDIO_TRACK=YES"); exit(0) }
           print("AVF_TRACK_ENABLED=\(track.isEnabled)")
           print("AVF_TRACK_START=\(CMTimeGetSeconds(track.timeRange.start))")
           print("AVF_TRACK_DURATION=\(CMTimeGetSeconds(track.timeRange.duration))")

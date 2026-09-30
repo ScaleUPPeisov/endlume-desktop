@@ -134,6 +134,35 @@ jobs:
           if [ -z "$PING_SOURCE" ]; then
             PING_SOURCE="$(find "$HOME/Desktop" "$HOME/Movies" "$HOME/Downloads" -maxdepth 6 -type f -name 'для Японского канала .mp4' -print -quit 2>/dev/null || true)"
           fi
+          if [ -z "$PING_SOURCE" ]; then
+            python3 - "$GITHUB_WORKSPACE/src-tauri/binaries/ffprobe-aarch64-apple-darwin" "$RUNNER_TEMP/e1002-relocated-source.txt" <<'PY'
+          import json,os,subprocess,sys
+          from pathlib import Path
+          ffprobe=Path(sys.argv[1]);out=Path(sys.argv[2])
+          roots=[Path.home()/"Desktop",Path.home()/"Movies",Path.home()/"Downloads"]
+          candidates=[]
+          for root in roots:
+              if not root.exists(): continue
+              try:
+                  for p in root.rglob("*.mp4"):
+                      try:
+                          candidates.append((p.stat().st_mtime,p))
+                      except OSError: pass
+              except OSError: pass
+          for _,p in sorted(candidates,reverse=True)[:600]:
+              try:
+                  raw=subprocess.check_output([str(ffprobe),"-v","error","-select_streams","v:0","-show_entries","stream=codec_name,width,height,avg_frame_rate:format=duration","-of","json",str(p)],stderr=subprocess.DEVNULL,timeout=5)
+                  d=json.loads(raw)
+                  s=(d.get("streams") or [{}])[0];dur=float((d.get("format") or {}).get("duration") or 0)
+                  if s.get("codec_name")=="hevc" and s.get("width")==1920 and s.get("height")==1080 and s.get("avg_frame_rate")=="60/1" and 19.0<=dur<=21.0:
+                      out.write_text(str(p))
+                      print("RELOCATED_PING_SOURCE="+str(p))
+                      break
+              except Exception:
+                  pass
+          PY
+            if [ -s "$RUNNER_TEMP/e1002-relocated-source.txt" ]; then PING_SOURCE="$(cat "$RUNNER_TEMP/e1002-relocated-source.txt")"; fi
+          fi
           test -n "$PING_SOURCE" -a -f "$PING_SOURCE"
           PING_DIR="$(dirname "$PING_SOURCE")"
           AVAIL_KB="$(df -Pk "$HOME/Movies" | awk 'NR==2{print $4}')"
@@ -164,7 +193,7 @@ jobs:
           FFM="$GITHUB_WORKSPACE/src-tauri/binaries/ffmpeg-aarch64-apple-darwin"
           FFP="$GITHUB_WORKSPACE/src-tauri/binaries/ffprobe-aarch64-apple-darwin"
           mkdir -p "$GITHUB_WORKSPACE/e1002-qa"
-          ENDLUME_1002_OUTPUT_DIR="$OUT" python3 scripts/run-endlume-1002-pingpong-e2e.py             "$E1002_PING_PROJECT_DIR"             "$GITHUB_WORKSPACE/e1002-subscribe.json"             "$E1002_E2E_BIN" "$FFM" "$FFP" "$GITHUB_WORKSPACE/e1002-qa/pingpong.json"
+          ENDLUME_1002_SOURCE="$E1002_PING_SOURCE" ENDLUME_1002_OUTPUT_DIR="$OUT" python3 scripts/run-endlume-1002-pingpong-e2e.py             "$E1002_PING_PROJECT_DIR"             "$GITHUB_WORKSPACE/e1002-subscribe.json"             "$E1002_E2E_BIN" "$FFM" "$FFP" "$GITHUB_WORKSPACE/e1002-qa/pingpong.json"
           cat "$GITHUB_WORKSPACE/e1002-qa/pingpong.json"
           rm -rf "$OUT"
 

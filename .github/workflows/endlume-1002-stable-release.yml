@@ -16,6 +16,7 @@ concurrency:
 
 jobs:
   release:
+    if: false # TEMP P0 HOLD
     name: macOS ARM64 • Build • Sign • Publish Stable
     runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
     timeout-minutes: 150

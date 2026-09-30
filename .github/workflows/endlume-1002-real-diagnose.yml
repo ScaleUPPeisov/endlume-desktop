@@ -233,3 +233,38 @@ jobs:
           else
             echo PINGPONG_SOURCE_NOT_FOUND=YES
           fi
+
+      - name: Inspect exact project shape and installed app
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          echo '=== PROJECT_SHAPE ==='
+          LOG="$(find "$HOME/Movies/ENDLUME Studio/logs" -maxdepth 1 -type f -name '*Новая папка*project.json' -print 2>/dev/null | tail -n 1 || true)"
+          echo "PROJECT_LOG=$LOG"
+          if [ -n "$LOG" ]; then
+            python3 - "$LOG" <<'PY'
+          import json,sys
+          j=json.load(open(sys.argv[1]))
+          p=j.get("project",j)
+          s=j.get("settings",{})
+          print("PROJECT_NAME="+str(p.get("name")))
+          print("MEDIA_COUNT="+str(len(p.get("media",[]))))
+          print("AUDIO_COUNT="+str(len(p.get("audio",[]))))
+          print("LOOP_MODE="+str(s.get("loopMode",s.get("loop_mode"))))
+          print("DURATION_HOURS="+str(s.get("durationHours",s.get("duration_hours"))))
+          print("EFFECTS="+json.dumps([{k:e.get(k) for k in ["id","name","enabled","usageMode","usage_mode","startSec","endSec","intervalSec","usageDurationSec"]} for e in j.get("effects",[])],ensure_ascii=False))
+          print("SUBSCRIBES="+json.dumps([{k:x.get(k) for k in ["firstAtSec","secondAtSec","repeatEverySec","showDurationSec","firstAppearance"]} | {"effect":{k:(x.get("effect") or {}).get(k) for k in ["id","name","enabled","usageMode","usage_mode","intervalSec","usageDurationSec","mode"]}} for x in j.get("subscribes",[])],ensure_ascii=False))
+          PY
+          fi
+          echo '=== INSTALLED_APP ==='
+          APP="$(mdfind 'kMDItemCFBundleIdentifier == "studio.endlume.desktop"c' | grep '\.app$' | head -n 1 || true)"
+          echo "INSTALLED_APP=$APP"
+          if [ -n "$APP" ]; then
+            /usr/bin/defaults read "$APP/Contents/Info" CFBundleShortVersionString 2>/dev/null | sed 's/^/APP_VERSION=/' || true
+            BIN="$(find "$APP/Contents/MacOS" -maxdepth 1 -type f -perm -111 -print -quit 2>/dev/null || true)"
+            echo "APP_BINARY=$BIN"
+            if [ -n "$BIN" ]; then
+              if strings "$BIN" | grep -q 'SOURCE_MP3_TO_AAC_320K'; then echo APP_HAS_AAC_1001_MARKER=YES; else echo APP_HAS_AAC_1001_MARKER=NO; fi
+              if strings "$BIN" | grep -q 'DISQUALIFIED_SHORT_VIDEO_LOOP_UNSUPPORTED'; then echo APP_HAS_OLD_PINGPONG_DISQUALIFIER=YES; else echo APP_HAS_OLD_PINGPONG_DISQUALIFIER=NO; fi
+            fi
+          fi

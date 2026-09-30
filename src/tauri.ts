@@ -91,6 +91,7 @@ export const api = {
     return importManagedAsset(result,'ambient');
   },
   scanRoot:(path:string)=>invoke<ProjectScanItem[]>('scan_root',{path}),
+  prewarm:(projects:ProjectScanItem[],settings:RenderSettings,effects:EffectPreset[],subscribes:SubscribePreset[],ambient?:string)=>invoke<{started:number;generation:number}>('prewarm_projects',{projects,settings,effects,subscribes,ambient}),
   enqueue:(projects:ProjectScanItem[],settings:RenderSettings,effects:EffectPreset[],subscribes:SubscribePreset[],ambient?:string)=>invoke<void>('enqueue_projects',{projects,settings,effects,subscribes,ambient}),
   queueSnapshot:()=>invoke<any>('queue_snapshot'),
   reorderQueue:(ids:string[])=>invoke<void>('reorder_queue',{ids}),

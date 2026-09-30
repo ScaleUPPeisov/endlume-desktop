@@ -1430,6 +1430,60 @@ async fn render_periodic_zero_copy_852(app:&AppHandle,job:&QueueJob,effects:&[Ef
 }
 
 
+fn pingpong_audio_key_1002(job:&QueueJob,final_duration:f64,encoder:&str)->Result<String,String>{
+  let mut h=Sha256::new();
+  h.update(b"ENDLUME-10.0.2-PINGPONG-AAC-v1");
+  h.update(((final_duration*1000.0).round() as u64).to_le_bytes());
+  h.update(encoder.as_bytes());
+  h.update(job.settings.crossfade_sec.to_le_bytes());
+  h.update([job.settings.normalize_lufs as u8]);
+  for p in &job.project.audio{h.update(file_stamp_1000(Path::new(p)).as_bytes());}
+  if let Some(a)=job.ambient.as_ref(){h.update(file_stamp_1000(Path::new(a)).as_bytes());}
+  Ok(hex::encode(h.finalize()))
+}
+
+async fn build_cached_pingpong_aac_1002(app:&AppHandle,job:&QueueJob,audio:&AudioSource,final_duration:f64,encoder:&str,attempt:u32,cancel:&AtomicBool,started:i64,timer:&Instant)->Result<PathBuf,String>{
+  let key=pingpong_audio_key_1002(job,final_duration,encoder)?;
+  let root=cache_root_1000(app,"pingpong-audio-v1002")?;
+  let out=root.join(format!("{key}.m4a"));
+  let lookup=Instant::now();
+  if out.is_file(){
+    let duration_ok=probe_duration(app,out.to_string_lossy().as_ref()).await.map(|d|(d-final_duration).abs()<=0.35).unwrap_or(false);
+    if duration_ok&&verify_final_audio_structure_1002(app,&out).await.is_ok()&&probe_audio_decodes(app,&out).await{
+      let sec=lookup.elapsed().as_secs_f64();
+      emit_timing(app,&job.project.id,"pingpong-audio-cache",sec);
+      let _=app.emit("engine-profile",json!({"id":job.project.id,"pingPongAudioCache":"HIT","pingPongAudioCacheKey":key}));
+      diag_line(json!({"kind":"cache","projectId":job.project.id,"pingPongAudioCache":"HIT","pingPongAudioCacheKey":key}));
+      return Ok(out)
+    }
+    let _=std::fs::remove_file(&out);
+  }
+  let _=app.emit("engine-profile",json!({"id":job.project.id,"pingPongAudioCache":"MISS","pingPongAudioCacheKey":key}));
+  diag_line(json!({"kind":"cache","projectId":job.project.id,"pingPongAudioCache":"MISS","pingPongAudioCacheKey":key}));
+  let tmp=root.join(format!(".{key}-{}.tmp.m4a",uuid::Uuid::new_v4()));
+  let mut args:Vec<String>=vec!["-hide_banner","-loglevel","error"].into_iter().map(String::from).collect();
+  match audio{
+    AudioSource::Loop(p)=>args.extend(vec!["-stream_loop","-1","-fflags","+genpts","-i",p.to_string_lossy().as_ref()].into_iter().map(String::from)),
+    AudioSource::Long(p)=>args.extend(vec!["-i",p.to_string_lossy().as_ref()].into_iter().map(String::from)),
+    AudioSource::ConcatList(p)=>args.extend(vec!["-stream_loop","-1","-f","concat","-safe","0","-fflags","+genpts","-i",p.to_string_lossy().as_ref()].into_iter().map(String::from)),
+  }
+  let audio_encoder=choose_audio_encoder(app).await;
+  args.extend(vec!["-t",&final_duration.to_string(),"-map","0:a:0"].into_iter().map(String::from));
+  args.extend(audio_encoder_args(&audio_encoder));
+  args.extend(vec!["-tag:a","mp4a","-disposition:a:0","default","-metadata:s:a:0","language=und","-movflags","+faststart","-progress","pipe:1","-y",tmp.to_string_lossy().as_ref()].into_iter().map(String::from));
+  let mark=Instant::now();
+  run_ffmpeg(app,job,started,timer,args,"10.0.2: Apple AAC persistent cache",34.0,18.0,final_duration,encoder,attempt,cancel).await?;
+  verify_final_audio_structure_1002(app,&tmp).await?;
+  if !probe_audio_decodes(app,&tmp).await{let _=std::fs::remove_file(&tmp);return Err("10.0.2 Apple AAC cache: encoded audio does not decode".into())}
+  let d=probe_duration(app,tmp.to_string_lossy().as_ref()).await?;
+  if (d-final_duration).abs()>0.35{let _=std::fs::remove_file(&tmp);return Err(format!("10.0.2 Apple AAC cache duration {d:.3}s != {final_duration:.3}s"))}
+  if out.exists(){let _=std::fs::remove_file(&tmp);}else{std::fs::rename(&tmp,&out).map_err(|e|format!("10.0.2 Apple AAC cache commit: {e}"))?}
+  let sec=mark.elapsed().as_secs_f64();
+  emit_timing(app,&job.project.id,"pingpong-audio-cache",sec);
+  prune_cache_1000(&root,&out);
+  Ok(out)
+}
+
 fn pingpong_visual_key_1002(source:&Path,effects:&[EffectPreset],frames:usize,encoder:&str)->Result<String,String>{
   let mut h=Sha256::new();h.update(b"ENDLUME-10.0.2-PINGPONG-VISUAL-v2");h.update(file_stamp_1000(source).as_bytes());h.update(frames.to_le_bytes());h.update(encoder.as_bytes());
   for e in effects{h.update(serde_json::to_vec(e).map_err(|x|x.to_string())?);if let Some(k)=e.cache_key.as_ref(){h.update(k.as_bytes())}else{h.update(file_stamp_1000(Path::new(&e.source)).as_bytes())}}
@@ -1466,7 +1520,12 @@ async fn render_pingpong_zero_copy_1002(app:&AppHandle,job:&QueueJob,source_mast
       other=>return Err(format!("10.0.2 Ping-Pong fast path: Subscribe mode '{other}' требует отдельной оптимизации; медленный многочасовой encode запрещён"))
     }
   }
-  let master=build_cached_pingpong_visual_1002(app,job,source_master,&baked,cycle_frames,encoder,attempt,cancel,started,timer).await?;
+  let (master_result,audio_result)=tokio::join!(
+    build_cached_pingpong_visual_1002(app,job,source_master,&baked,cycle_frames,encoder,attempt,cancel,started,timer),
+    build_cached_pingpong_aac_1002(app,job,audio,final_duration,encoder,attempt,cancel,started,timer)
+  );
+  let master=master_result?;
+  let cached_audio=audio_result?;
   let mut pool=master.clone();let mut pool_frames=cycle_frames;let mut sub_plan:Option<(usize,usize,usize)>=None;
   if let Some(sub)=interval{
     let repeat_frames=(subscribe_interval_sec(&sub)*fps as f64).round().max(1.0) as usize;
@@ -1476,10 +1535,18 @@ async fn render_pingpong_zero_copy_1002(app:&AppHandle,job:&QueueJob,source_mast
     let phase=first_frames%cycle_frames;let sub_master=render_periodic_sub_852(app,job,&master,&sub,phase,duration_frames,work,"pingpong-v1002",encoder,attempt,cancel,started,timer).await?;
     pool=work.join("pingpong-1002-video-pool.mp4");pool_frames=cycle_frames+duration_frames;concat_video_parts_852(app,job,&[master.clone(),sub_master],&pool,pool_frames,work,encoder,attempt,cancel,started,timer).await?;sub_plan=Some((first_frames,repeat_frames,duration_frames));
   }
-  let seed=destination_partial_path(out)?;let _=std::fs::remove_file(&seed);let mut args:Vec<String>=vec!["-hide_banner","-loglevel","error","-i",pool.to_string_lossy().as_ref()].into_iter().map(String::from).collect();
-  match audio{AudioSource::Loop(p)=>args.extend(vec!["-stream_loop","-1","-fflags","+genpts","-i",p.to_string_lossy().as_ref()].into_iter().map(String::from)),AudioSource::Long(p)=>args.extend(vec!["-i",p.to_string_lossy().as_ref()].into_iter().map(String::from)),AudioSource::ConcatList(p)=>args.extend(vec!["-stream_loop","-1","-f","concat","-safe","0","-fflags","+genpts","-i",p.to_string_lossy().as_ref()].into_iter().map(String::from))}
-  let final_audio_encoder=choose_audio_encoder(app).await;args.extend(vec!["-t",&final_duration.to_string(),"-map","0:v:0","-map","1:a:0","-c:v","copy"].into_iter().map(String::from));args.extend(final_mp4_audio_args(audio,&final_audio_encoder));args.extend(vec!["-progress","pipe:1","-y",seed.to_string_lossy().as_ref()].into_iter().map(String::from));
-  let mux_mark=Instant::now();run_ffmpeg(app,job,started,timer,args,"10.0.2: Ping-Pong + Apple AAC final mux",58.0,22.0,final_duration,encoder,attempt,cancel).await?;let mux_sec=mux_mark.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"final-mux",mux_sec);emit_timing(app,&job.project.id,"destination-write",mux_sec);
+  let seed=destination_partial_path(out)?;let _=std::fs::remove_file(&seed);
+  let args:Vec<String>=vec![
+    "-hide_banner","-loglevel","error",
+    "-i",pool.to_string_lossy().as_ref(),
+    "-i",cached_audio.to_string_lossy().as_ref(),
+    "-t",&final_duration.to_string(),
+    "-map","0:v:0","-map","1:a:0",
+    "-c:v","copy","-c:a","copy",
+    "-tag:a","mp4a","-disposition:a:0","default","-metadata:s:a:0","language=und",
+    "-progress","pipe:1","-y",seed.to_string_lossy().as_ref()
+  ].into_iter().map(String::from).collect();
+  let mux_mark=Instant::now();run_ffmpeg(app,job,started,timer,args,"10.0.2: Ping-Pong cached AAC packet-copy mux",58.0,10.0,final_duration,encoder,attempt,cancel).await?;let mux_sec=mux_mark.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"final-mux",mux_sec);emit_timing(app,&job.project.id,"destination-write",mux_sec);
   let total_frames=(final_duration*fps as f64).round().max(cycle_frames as f64) as usize;let mut selected=Vec::with_capacity(total_frames);let mut appearances=0usize;
   for frame in 0..total_frames{
     if let Some((first,repeat,duration))=sub_plan{

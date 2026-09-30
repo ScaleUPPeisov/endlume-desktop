@@ -181,6 +181,8 @@ jobs:
           if ffmpeg -hide_banner -encoders 2>/dev/null | grep -q 'aac_at'; then AENC=aac_at; else AENC=aac; fi
           ffmpeg -hide_banner -loglevel error -i "$TARGET" -t 5 -map 0:v:0 -map 0:a:0 -c:v copy -c:a "$AENC" -b:a 320k -ar 48000 -ac 2 -tag:a mp4a -disposition:a:0 default -movflags +faststart -y "$TMP/aac.mp4"
           /usr/bin/swift /tmp/endlume-audio-native.swift "$TMP/aac.mp4"
+          echo '=== AFINFO_AAC_CONTROL ==='
+          /usr/bin/afinfo "$TMP/aac.mp4"
           rm -rf "$TMP"
 
       - name: Inspect Ping-Pong source and hardware encoder

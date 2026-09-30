@@ -1,0 +1,39 @@
+name: ENDLUME 10.0.3 Hosted Compile Smoke
+
+on:
+  push:
+    branches: [hotfix/endlume-10.0.3-performance]
+    paths:
+      - 'src/**'
+      - 'src-tauri/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/endlume-1003-hosted-compile.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-1003-hosted-compile
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    runs-on: macos-14
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          clean: true
+          fetch-depth: 1
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Frontend compile
+        run: |
+          npm ci
+          npm run check
+          npm run build
+      - name: Rust compile + tests
+        run: |
+          cargo check --manifest-path src-tauri/Cargo.toml
+          cargo test --manifest-path src-tauri/Cargo.toml --lib -- --nocapture

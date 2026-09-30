@@ -6,6 +6,7 @@ on:
     paths:
       - '.github/workflows/endlume-1003-image-performance-qa.yml'
       - 'src-tauri/src/render.rs'
+      - 'src-tauri/src/lib.rs'
       - 'src-tauri/Cargo.toml'
       - 'src-tauri/Cargo.lock'
       - 'scripts/run-endlume-1000-render-job-e2e.py'

@@ -1,0 +1,36 @@
+name: ENDLUME 10.0.3 Windows Stable Release
+
+on:
+  push:
+    branches:
+      - hotfix/endlume-10.0.3-performance
+    paths:
+      - "release/endlume-10.0.3-windows.json"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-1003-windows-stable
+  cancel-in-progress: true
+
+jobs:
+  release:
+    name: Windows x64 • Build • Sign • Publish Stable
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 150
+    env:
+      RELEASE_TOKEN: ${{ secrets.ENDLUME_RELEASE_TOKEN }}
+    steps:
+      - name: Checkout exact release commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Build sign and publish Windows 10.0.3
+        shell: bash
+        run: bash scripts/release-endlume-1003-windows.sh

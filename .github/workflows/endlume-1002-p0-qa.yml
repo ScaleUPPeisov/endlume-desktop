@@ -242,7 +242,7 @@ jobs:
           FFM="$GITHUB_WORKSPACE/src-tauri/binaries/ffmpeg-aarch64-apple-darwin"
           FFP="$GITHUB_WORKSPACE/src-tauri/binaries/ffprobe-aarch64-apple-darwin"
           mkdir -p "$GITHUB_WORKSPACE/e1002-qa"
-          ENDLUME_1002_SOURCE="$E1002_PING_SOURCE" ENDLUME_1002_OUTPUT_DIR="$OUT" python3 scripts/run-endlume-1002-pingpong-e2e.py             "$E1002_PING_PROJECT_DIR"             "$GITHUB_WORKSPACE/e1002-subscribe.json"             "$E1002_E2E_BIN" "$FFM" "$FFP" "$GITHUB_WORKSPACE/e1002-qa/pingpong.json"
+          ENDLUME_1002_SOURCE="$E1002_PING_SOURCE" ENDLUME_1002_AUDIO_SIDE="$SIDE" ENDLUME_1002_OUTPUT_DIR="$OUT" python3 scripts/run-endlume-1002-pingpong-e2e.py             "$E1002_PING_PROJECT_DIR"             "$GITHUB_WORKSPACE/e1002-subscribe.json"             "$E1002_E2E_BIN" "$FFM" "$FFP" "$GITHUB_WORKSPACE/e1002-qa/pingpong.json"
           cat "$GITHUB_WORKSPACE/e1002-qa/pingpong.json"
           rm -rf "$OUT"
 

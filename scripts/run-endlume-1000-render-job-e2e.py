@@ -187,7 +187,9 @@ for row in rows:
     assert max(peaks)>-55.0,("SILENT_FINAL_AUDIO",peaks,p)
     for pos in (0.0,fd*.5,max(0.0,fd-2.0)):
         seek(p,pos,"video");seek(p,pos,"audio")
-    assert 500_000_000<=size<=700_000_000,("FINAL_SIZE_OUT_OF_RANGE",size,p)
+    size_min=int(os.environ.get("ENDLUME_FINAL_MIN_BYTES","500000000"))
+    size_max=int(os.environ.get("ENDLUME_FINAL_MAX_BYTES","700000000"))
+    assert size_min<=size<=size_max,("FINAL_SIZE_OUT_OF_RANGE",size,p,size_min,size_max)
     verified.append({"id":row["id"],"wall_seconds":wall,"bytes":size,"duration":round(fd,3),"peaks_db":peaks,"path":str(p)})
 
 cold=verified[0]["wall_seconds"];warm=[x["wall_seconds"] for x in verified[1:]]

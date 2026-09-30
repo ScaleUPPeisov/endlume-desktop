@@ -37,7 +37,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           export CARGO_TARGET_DIR="$HOME/.endlume-build-cache/target-1003"
-          ENDLUME_BUILD_CACHE_KEEP=2 ENDLUME_BUILD_CACHE_MAX_BYTES=18000000000 bash scripts/cleanup-endlume-build-cache.sh
+          ENDLUME_BUILD_CACHE_KEEP=2 ENDLUME_BUILD_CACHE_MAX_BYTES=12000000000 bash scripts/cleanup-endlume-build-cache.sh
 
       - name: Stage native Apple Silicon FFmpeg
         shell: bash
@@ -174,4 +174,4 @@ jobs:
         run: |
           set -Eeuo pipefail
           export CARGO_TARGET_DIR="$HOME/.endlume-build-cache/target-1003"
-          ENDLUME_BUILD_CACHE_KEEP=2 ENDLUME_BUILD_CACHE_MAX_BYTES=18000000000 bash scripts/cleanup-endlume-build-cache.sh
+          ENDLUME_BUILD_CACHE_KEEP=2 ENDLUME_BUILD_CACHE_MAX_BYTES=12000000000 bash scripts/cleanup-endlume-build-cache.sh

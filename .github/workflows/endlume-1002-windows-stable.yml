@@ -1,4 +1,5 @@
 name: ENDLUME 10.0.2 Windows Stable Release
+# source: 9489387fc6030709e873ea31526355ba7e629063
 
 on:
   push:

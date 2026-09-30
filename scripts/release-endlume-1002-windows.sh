@@ -58,6 +58,11 @@ PY
 npm ci
 npm run check
 npm run build
+
+mkdir -p src-tauri/binaries
+cp "$(command -v ffmpeg)" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+cp "$(command -v ffprobe)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+chmod +x src-tauri/binaries/ffmpeg-aarch64-apple-darwin src-tauri/binaries/ffprobe-aarch64-apple-darwin
 cargo check --manifest-path src-tauri/Cargo.toml
 cargo test --manifest-path src-tauri/Cargo.toml -- --nocapture
 

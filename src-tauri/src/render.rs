@@ -783,7 +783,7 @@ async fn build_cached_aac_playlist_1003(app:&AppHandle,job:&QueueJob,encoder:&st
   let track_root=cache_root_1000(app,"audio-track-aac-v1003")?;
   let playlist_root=cache_root_1000(app,"audio-playlist-aac-v1003")?;
   let stage_root=app.path().app_cache_dir().map_err(|e|e.to_string())?.join("audio-stage-v1003").join(uuid::Uuid::new_v4().to_string());
-  let mut tasks=Vec::with_capacity(job.project.audio.len());
+  let mut set=tokio::task::JoinSet::new();
   let stage_mark=Instant::now();let mut staged_bytes=0u64;
   for (idx,src) in job.project.audio.iter().enumerate(){
     let app=app.clone();
@@ -802,7 +802,7 @@ async fn build_cached_aac_playlist_1003(app:&AppHandle,job:&QueueJob,encoder:&st
       staged_bytes=staged_bytes.saturating_add(bytes);
       local
     }else{source.clone()};
-    tasks.push(async move{
+    set.spawn(async move{
       // Warm cache hit: no FFmpeg and no source-disk read.
       if cached{return Ok::<(usize,PathBuf,bool),String>((idx,out,true))}
       let _=std::fs::remove_file(&out);
@@ -829,8 +829,6 @@ async fn build_cached_aac_playlist_1003(app:&AppHandle,job:&QueueJob,encoder:&st
   if staged_bytes>0{
     diag_line(json!({"kind":"audio-stage-1003","projectId":job.project.id,"bytes":staged_bytes,"seconds":stage_mark.elapsed().as_secs_f64(),"source":"external-volume","target":"local-cache"}));
   }
-  let mut set=tokio::task::JoinSet::new();
-  for task in tasks{set.spawn(task);}
   let mut ordered=Vec::<(usize,PathBuf,bool)>::new();
   while let Some(row)=set.join_next().await{
     if cancel.load(Ordering::SeqCst){set.abort_all();return Err(CANCELLED.into())}

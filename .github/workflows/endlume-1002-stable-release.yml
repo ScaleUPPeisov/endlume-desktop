@@ -11,8 +11,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: endlume-1002-macos-stable-release
-  cancel-in-progress: false
+  group: endlume-1002-macos-stable-cross
+  cancel-in-progress: true
 
 jobs:
   release:

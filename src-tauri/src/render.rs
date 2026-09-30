@@ -2,7 +2,7 @@ use crate::{cache,model::{EffectPreset,Progress,QueueJob,RenderSettings,Subscrib
 use serde_json::json;
 use sha2::{Digest,Sha256};
 use std::{collections::HashMap,io::Read,path::{Path,PathBuf},process::Command,sync::{Arc,OnceLock,atomic::{AtomicBool,AtomicU64,Ordering}},time::{Duration,Instant,UNIX_EPOCH}};
-use sysinfo::{Pid,ProcessesToUpdate,System};
+use sysinfo::{Disks,Pid,ProcessesToUpdate,System};
 use tauri::{AppHandle,Emitter,Manager};
 use tauri_plugin_shell::{process::CommandEvent,ShellExt};
 
@@ -49,6 +49,28 @@ fn color_ffmpeg(hex:&str)->String{format!("0x{}",hex.trim().trim_start_matches('
 fn emit_timing(app:&AppHandle,id:&str,key:&str,sec:f64){let _=app.emit("engine-timing",json!({"id":id,"key":key,"seconds":sec}));}
 fn diag_line(value:serde_json::Value){eprintln!("ENDLUME_DIAG {}",value);}
 fn encoder_class(encoder:&str)->&'static str{if matches!(encoder,"hevc_videotoolbox"|"hevc_nvenc"|"hevc_qsv"|"hevc_amf"|"h264_videotoolbox"|"h264_nvenc"|"h264_qsv"|"h264_amf"){"hardware"}else{"software"}}
+
+const P0C_MIN_FREE_BYTES:u64=3_000_000_000;
+const P0C_MAX_PHYSICAL_STAGE_BYTES:u64=3_000_000_000;
+const P0C_MAX_LOGICAL_STAGE_BYTES:u64=800_000_000;
+const P0C_FINAL_MIN_BYTES:u64=400_000_000;
+const P0C_FINAL_MAX_BYTES:u64=600_000_000;
+
+fn p0c_recursive_bytes(path:&Path)->u64{
+  if path.is_file(){return std::fs::metadata(path).map(|m|m.len()).unwrap_or(0)}
+  walkdir::WalkDir::new(path).into_iter().filter_map(Result::ok).filter_map(|e|if e.file_type().is_file(){e.metadata().ok().map(|m|m.len())}else{None}).sum()
+}
+fn p0c_disk_free_bytes(path:&Path)->Option<u64>{
+  let disks=Disks::new_with_refreshed_list();
+  disks.iter().filter(|d|path.starts_with(d.mount_point()))
+    .max_by_key(|d|d.mount_point().to_string_lossy().len()).map(|d|d.available_space())
+}
+fn p0c_disk_snapshot(job:&QueueJob,work:&Path,out:&Path,label:&str){
+  if !fast_pingpong_project(job){return}
+  diag_line(json!({"kind":"p0c-disk","projectId":job.project.id,"label":label,
+    "workBytes":p0c_recursive_bytes(work),"outputBytes":std::fs::metadata(out).map(|m|m.len()).unwrap_or(0),
+    "workDiskFree":p0c_disk_free_bytes(work),"outputDiskFree":out.parent().and_then(p0c_disk_free_bytes)}));
+}
 
 
 const AUDIO_EXT:&[&str]=&["mp3","wav","m4a","aac","flac","ogg","opus","aif","aiff"];
@@ -692,6 +714,7 @@ async fn run_ffmpeg(app:&AppHandle,job:&QueueJob,started:i64,timer:&Instant,args
   let (mut rx,child)=app.shell().sidecar("ffmpeg").map_err(|e|format!("{stage}: FFmpeg недоступен: {e}"))?.args(args).spawn().map_err(|e|format!("{stage}: не удалось запустить FFmpeg: {e}"))?;
   let spawn_seconds=spawn_mark.elapsed().as_secs_f64();
   let pid=child.pid();let mut child=Some(child);let mut last=base;let mut stderr_tail=String::new();let mut sys=System::new_all();let mut metric_tick=Instant::now();
+  let output_candidate=argv.last().map(PathBuf::from);let mut last_guard_bytes=0u64;
   let mut startup_seconds:Option<f64>=None;let mut last_progress_at:Option<Instant>=None;let mut last_fps:Option<f64>=None;let mut last_speed:Option<f64>=None;
   loop{
     if crate::license::production_blocked(){if let Some(c)=child.take(){let _=c.kill();}return Err(LICENSE_BLOCKED.into())}
@@ -700,6 +723,14 @@ async fn run_ffmpeg(app:&AppHandle,job:&QueueJob,started:i64,timer:&Instant,args
     if metric_tick.elapsed()>=Duration::from_millis(480){
       let pids=[Pid::from_u32(pid)];sys.refresh_processes(ProcessesToUpdate::Some(&pids),true);sys.refresh_memory();
       if let Some(p)=sys.process(pids[0]){let cpu=(p.cpu_usage()/(sys.cpus().len().max(1) as f32)).clamp(0.0,100.0);emit_progress(app,job,started,timer,last,stage,encoder,attempt,Some((cpu,p.memory(),sys.total_memory(),sys.available_memory())))}
+      if fast_pingpong_project(job){
+        if let Some(path)=output_candidate.as_ref(){
+          let bytes=std::fs::metadata(path).map(|m|m.len()).unwrap_or(0);
+          let limit=if expected_sec>300.0{P0C_MAX_LOGICAL_STAGE_BYTES}else{P0C_MAX_PHYSICAL_STAGE_BYTES};
+          if bytes>=last_guard_bytes.saturating_add(10_000_000)||bytes>limit{diag_line(json!({"kind":"p0c-growth","projectId":job.project.id,"stage":stage,"path":path,"currentBytes":bytes,"limitBytes":limit,"expectedSeconds":expected_sec}));last_guard_bytes=bytes;}
+          if bytes>limit{if let Some(c)=child.take(){let _=c.kill();}let _=std::fs::remove_file(path);return Err(format!("ENDLUME остановил рендер: обнаружен аномальный рост временного видеофайла. stage={stage}, bytes={bytes}, limit={limit}"))}
+        }
+      }
       metric_tick=Instant::now();
     }
     let ev=match event{Err(_)=>continue,Ok(Some(ev))=>ev,Ok(None)=>return Err(format!("{stage}: FFmpeg закрыл канал без статуса завершения"))};
@@ -1518,7 +1549,17 @@ async fn render_pingpong_zero_copy_1002(app:&AppHandle,job:&QueueJob,source_mast
   if timed_effects(effects,final_duration){return Err("10.0.2 Ping-Pong fast path: timed Effects пока не могут быть развёрнуты без физического многочасового encode".into())}
   if !strict_856_encoder_allowed(encoder){return Err(format!("10.0.2 Ping-Pong: HEVC hardware encoder {encoder} unavailable"))}
   let cycle_frames=probe_video_packets_857(app,source_master).await?;if cycle_frames<2{return Err("10.0.2 Ping-Pong: empty physical cycle".into())}
-  let fps=job.settings.fps.max(1) as usize;let mut baked=effects.to_vec();let active=subs.iter().filter(|s|subscribe_usage_mode(s)!="off"&&!s.effect.source.trim().is_empty()).collect::<Vec<_>>();
+  let fps=job.settings.fps.max(1) as usize;
+  let source_duration=probe_duration(app,&job.project.media[0]).await?;
+  let expected_physical=source_duration*2.0;let actual_physical=cycle_frames as f64/fps as f64;
+  let source_bytes=std::fs::metadata(&job.project.media[0]).map(|m|m.len()).unwrap_or(0);
+  let physical_bytes=std::fs::metadata(source_master).map(|m|m.len()).unwrap_or(0);
+  diag_line(json!({"kind":"p0c-physical","projectId":job.project.id,"sourceDuration":source_duration,"sourceBytes":source_bytes,
+    "expectedPingPongPhysicalDuration":expected_physical,"actualPingPongPhysicalDuration":actual_physical,"physicalMasterBytes":physical_bytes}));
+  if actual_physical>180.0||actual_physical>expected_physical*1.10+0.5||actual_physical+0.5<expected_physical*0.90{
+    return Err(format!("P0-C BLOCKER: physical Ping-Pong duration anomalous: expected {:.3}s, actual {:.3}s",expected_physical,actual_physical))
+  }
+  let mut baked=effects.to_vec();let active=subs.iter().filter(|s|subscribe_usage_mode(s)!="off"&&!s.effect.source.trim().is_empty()).collect::<Vec<_>>();
   let mut interval:Option<SubscribePreset>=None;
   for s in active{
     match subscribe_usage_mode(s){
@@ -1563,7 +1604,9 @@ async fn render_pingpong_zero_copy_1002(app:&AppHandle,job:&QueueJob,source_mast
   }
   let map_mark=Instant::now();ensure_license_allowed()?;crate::mp4_manifest::remap_video_samples(&seed,&seed,&selected)?;ensure_license_allowed()?;let map_sec=map_mark.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"sample-table",map_sec);emit_timing(app,&job.project.id,"zero-copy-manifest",map_sec);
   strict_856_validate_natural_size(&seed)?;verify_result(app,&seed,final_duration,&job.settings).await?;let (fsync_sec,rename_sec)=commit_destination_partial(&seed,out)?;emit_timing(app,&job.project.id,"fsync",fsync_sec);emit_timing(app,&job.project.id,"atomic-rename",rename_sec);
-  let bytes=std::fs::metadata(out).map(|m|m.len()).unwrap_or(0);let _=app.emit("engine-profile",json!({"id":job.project.id,"pingPongFast":true,"pingPongPhysicalFrames":cycle_frames,"pingPongPhysicalSeconds":cycle_frames as f64/fps as f64,"pingPongPhysicalPoolFrames":pool_frames,"pingPongCache":"ACTIVE","numberOfSubscribeAppearances":appearances,"finalBytes":bytes}));
+  let bytes=std::fs::metadata(out).map(|m|m.len()).unwrap_or(0);
+  if bytes<P0C_FINAL_MIN_BYTES||bytes>P0C_FINAL_MAX_BYTES{let _=std::fs::remove_file(out);return Err(format!("ENDLUME FINAL SIZE BLOCKER: final bytes={bytes}, required={}..{}",P0C_FINAL_MIN_BYTES,P0C_FINAL_MAX_BYTES))}
+  let _=app.emit("engine-profile",json!({"id":job.project.id,"pingPongFast":true,"pingPongPhysicalFrames":cycle_frames,"pingPongPhysicalSeconds":cycle_frames as f64/fps as f64,"pingPongPhysicalPoolFrames":pool_frames,"pingPongCache":"ACTIVE","numberOfSubscribeAppearances":appearances,"finalBytes":bytes}));
   diag_line(json!({"kind":"pingpong-fast","projectId":job.project.id,"pingPongFast":true,"pingPongPhysicalFrames":cycle_frames,"pingPongPhysicalPoolFrames":pool_frames,"numberOfSubscribeAppearances":appearances,"finalBytes":bytes}));
   emit_progress(app,job,started,timer,96.0,"10.0.2 SHORT_VIDEO_PINGPONG_FAST zero-copy готов",encoder,attempt,None);Ok(true)
 }
@@ -1597,12 +1640,21 @@ pub async fn render_job(app:&AppHandle,job:&QueueJob,cancel:Arc<AtomicBool>)->Re
     let smart_repeat=smart_repeat_project(job);let _=std::fs::remove_file(&out);let encoder_mark=Instant::now();let encoder=if smart_repeat{let e=choose_hybrid_encoder(app,attempt).await;if !strict_856_encoder_allowed(&e){return Err(format!("Strict 8.63: HEVC encoder {e} недоступен для fast pipeline"))}e}else if attempt==1{choose_encoder(app,&job.settings).await}else{software_encoder(&job.settings)};let encoder_seconds=encoder_mark.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"encoder-benchmark",encoder_seconds);emit_timing(app,&job.project.id,"encoder-detection",encoder_seconds);
     let _=app.emit("engine-profile",json!({"id":job.project.id,"smartSize":smart_repeat,"smartRepeat":smart_repeat,"originalFidelity":smart_repeat,"fastPath":smart_repeat,"fastPathReason":decision.reason,"audioProcessingRequested":requested_audio_processing,"targetVideoKbps":None::<u64>}));
     emit_progress(app,job,started,&timer,1.0,"Анализ файлов",&encoder,attempt,None);let work=render_work_dir(app,&job.project.id,attempt)?;
+    if fast_pingpong_project(job){
+      let work_free=p0c_disk_free_bytes(&work);let out_free=p0c_disk_free_bytes(&out_dir);
+      diag_line(json!({"kind":"p0c-disk-before","projectId":job.project.id,"workDiskFree":work_free,"outputDiskFree":out_free}));
+      if work_free.map(|x|x<P0C_MIN_FREE_BYTES).unwrap_or(false)||out_free.map(|x|x<P0C_MIN_FREE_BYTES).unwrap_or(false){
+        let _=std::fs::remove_dir_all(&work);return Err("ENDLUME остановил рендер: недостаточно свободного места для безопасного Ping-Pong render (нужно минимум 3 GB).".into())
+      }
+      p0c_disk_snapshot(job,&work,&out,"render-start");
+    }
     let result:Result<(Vec<f64>,f64,bool),String>=async{
       emit_progress(app,job,started,&timer,4.0,"Проверяю самый быстрый движок",&encoder,attempt,None);
       let fast_static_no_source=smart_repeat&&job.project.media.len()==1&&is_image(&job.project.media[0]);
       let (source_master,master_duration)=if fast_static_no_source{
         emit_timing(app,&job.project.id,"source-master-skipped",0.0);(PathBuf::new(),1.0)
       }else{build_source_master(app,job,started,&timer,&work,&encoder,attempt,&cancel).await?};
+      p0c_disk_snapshot(job,&work,&out,"after-source-master");
       let (fx,subs)=prepare_overlays(app,job,started,&timer,&encoder,attempt).await?;
       let visual_master_duration=if smart_repeat{smart_repeat_visual_seconds(app,master_duration,&fx).await}else{master_duration};
       let target=job.settings.duration_hours*3600.0;
@@ -1681,7 +1733,10 @@ pub async fn render_job(app:&AppHandle,job:&QueueJob,cancel:Arc<AtomicBool>)->Re
         let result_path=out.to_string_lossy().into_owned();
         let _=app.emit("render-done",Progress{id:job.project.id.clone(),status:"done".into(),progress:100.0,stage:"Готово".into(),started_at:Some(started),elapsed_sec:elapsed,eta_sec:Some(0.0),result_path:Some(result_path.clone()),result_bytes:bytes,actual_video_bitrate:bitrate,cpu_pct:None,ram_bytes:None,ram_total_bytes:None,ram_available_bytes:None,gpu_pct:None,encoder:Some(encoder.clone()),attempt:Some(attempt)});
         let outcome=RenderOutcome{output_path:result_path,output_bytes:bytes,encoder:encoder.clone(),final_video_duration_seconds:fd,fast_path:smart_repeat,fast_path_reason:decision.reason.to_string(),audio_mode:if original_audio{"SOURCE_MP3_TO_AAC_320K".into()}else{"PROCESSED_AAC".into()},video_codec,audio_codec};
-        let _=std::fs::remove_dir_all(&work);return Ok(outcome)
+        if fast_pingpong_project(job){p0c_disk_snapshot(job,&work,&out,"before-cleanup");}
+        let temp_before_cleanup=p0c_recursive_bytes(&work);let _=std::fs::remove_dir_all(&work);let temp_after_cleanup=p0c_recursive_bytes(&work);
+        if fast_pingpong_project(job){diag_line(json!({"kind":"p0c-cleanup","projectId":job.project.id,"tempBeforeCleanup":temp_before_cleanup,"tempAfterCleanup":temp_after_cleanup,"diskFreeAfter":p0c_disk_free_bytes(&out_dir)}));}
+        return Ok(outcome)
       },
       Err(e)=>{last_error=e;if smart_repeat&&attempt==1{invalidate_hybrid_encoder_cache(app);}emit_warning(app,&job.project.id,&format!("Попытка {attempt} не прошла: {last_error}"));let _=std::fs::remove_dir_all(&work);let _=std::fs::remove_file(&out);if last_error==CANCELLED{return Err(last_error)}if attempt<max_attempts{emit_progress(app,job,started,&timer,2.0,"Повторяю безопасную попытку",&encoder,attempt+1,None);}}
     }

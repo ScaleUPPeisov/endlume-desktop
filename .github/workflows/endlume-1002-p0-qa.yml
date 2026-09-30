@@ -161,7 +161,7 @@ jobs:
           rm -rf "$OUT"; mkdir -p "$OUT"
           FFM="$GITHUB_WORKSPACE/src-tauri/binaries/ffmpeg-aarch64-apple-darwin"
           FFP="$GITHUB_WORKSPACE/src-tauri/binaries/ffprobe-aarch64-apple-darwin"
-          ENDLUME_1000_OUTPUT_DIR="$OUT" python3 scripts/run-endlume-1000-render-job-e2e.py             "$SIDE" "$GITHUB_WORKSPACE/e1002-subscribe.json" "$E1002_E2E_BIN" "$FFM" "$FFP"             "$GITHUB_WORKSPACE/e1002-qa/image-regression.json"
+          ENDLUME_1000_OUTPUT_DIR="$OUT" ENDLUME_1000_COLD_LIMIT_SECONDS=65 ENDLUME_1000_WARM_LIMIT_SECONDS=30 python3 scripts/run-endlume-1000-render-job-e2e.py             "$SIDE" "$GITHUB_WORKSPACE/e1002-subscribe.json" "$E1002_E2E_BIN" "$FFM" "$FFP"             "$GITHUB_WORKSPACE/e1002-qa/image-regression.json"
           cat "$GITHUB_WORKSPACE/e1002-qa/image-regression.json"
           rm -rf "$OUT"
 

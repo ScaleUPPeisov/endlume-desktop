@@ -157,6 +157,8 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
+          ROOT="$HOME/Library/Caches/studio.endlume.desktop"
+          rm -rf "$ROOT/visual-master-v10" "$ROOT/subscribe-master-v10"
           OUT="$HOME/Movies/ENDLUME Studio/ENDLUME-1002-IMAGE-REGRESSION"
           rm -rf "$OUT"; mkdir -p "$OUT"
           FFM="$GITHUB_WORKSPACE/src-tauri/binaries/ffmpeg-aarch64-apple-darwin"

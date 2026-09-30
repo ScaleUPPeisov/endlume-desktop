@@ -164,6 +164,23 @@ assert raw.get("status")=="passed",raw
 rows=raw.get("results") or []
 assert len(rows)==3,rows
 
+# Always surface the real ENDLUME stage profile, even when a later size/speed
+# assertion fails. This keeps performance work evidence-driven.
+diag=[]
+for line in proc.stderr.splitlines():
+    if not line.startswith("ENDLUME_DIAG "):
+        continue
+    try:
+        row=json.loads(line[len("ENDLUME_DIAG "):])
+    except Exception:
+        continue
+    if row.get("projectId")=="e1000-1" and row.get("kind") in (
+        "ffmpeg-process","audio-cache-1003","visual-master-1003","cache","audio-audibility"
+    ):
+        diag.append(row)
+print("E1000_COLD_DIAGNOSTICS",json.dumps(diag,ensure_ascii=False),flush=True)
+print("E1000_RAW_WALL_SECONDS",json.dumps([round(float(x.get("wallSeconds") or 0),3) for x in rows]),flush=True)
+
 verified=[]
 source=audio[0]
 for row in rows:

@@ -72,13 +72,12 @@ export PATH="$(brew --prefix llvm)/bin:$HOME/.cargo/bin:/opt/homebrew/opt/node@2
 rustup target add "$WINDOWS_TARGET"
 command -v cargo-xwin >/dev/null 2>&1 || cargo install --locked cargo-xwin
 
-TAG='autobuild-2026-09-14-13-17'
-ARCHIVE='ffmpeg-N-126549-ga51bb69b09-win64-gpl.zip'
+ARCHIVE='ffmpeg-master-latest-win64-gpl.zip'
 CACHE="$HOME/.endlume-build-cache/windows-sidecars-1002"
 ZIP="$CACHE/$ARCHIVE"
 EXTRACT="$CACHE/extract"
 mkdir -p "$CACHE" src-tauri/binaries
-[ -s "$ZIP" ] || curl -fL --retry 4 --connect-timeout 15 -o "$ZIP" "https://github.com/BtbN/FFmpeg-Builds/releases/download/$TAG/$ARCHIVE"
+[ -s "$ZIP" ] || curl -fL --retry 4 --connect-timeout 15 -o "$ZIP" "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/$ARCHIVE"
 rm -rf "$EXTRACT"
 mkdir -p "$EXTRACT"
 ditto -x -k "$ZIP" "$EXTRACT"

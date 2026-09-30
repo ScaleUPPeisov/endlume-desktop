@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import json, os, re, subprocess, sys, time
+import json, os, re, shutil, subprocess, sys, threading, time
 from pathlib import Path
 
 PROJECT_DIR=Path(sys.argv[1]).resolve()
@@ -153,9 +153,60 @@ env=os.environ.copy()
 env["ENDLUME_E2E_RENDER_JOB"]=str(fixture)
 env["ENDLUME_E2E_RESULT"]=str(result)
 env["RUST_BACKTRACE"]="1"
+cache_root=Path.home()/"Library/Caches/studio.endlume.desktop"
+render_work_root=cache_root/"render-work"
+def tree_bytes(root):
+    total=0
+    if not root.exists(): return 0
+    for p in root.rglob("*"):
+        try:
+            if p.is_file(): total+=p.stat().st_size
+        except OSError:
+            pass
+    return total
+def tracked_bytes():
+    return tree_bytes(cache_root)+tree_bytes(OUTPUT_DIR)
+def largest_files(roots,limit=20):
+    rows=[]
+    for root in roots:
+        if not root.exists(): continue
+        for p in root.rglob("*"):
+            try:
+                if p.is_file(): rows.append((p.stat().st_size,str(p)))
+            except OSError:
+                pass
+    rows.sort(reverse=True)
+    out=[]
+    for size,path in rows[:limit]:
+        low=path.lower()
+        role=("FINAL_OUTPUT" if str(OUTPUT_DIR) in path and path.endswith(".mp4") and ".partial." not in low
+              else "FINAL_PARTIAL" if "partial" in low
+              else "PINGPONG_MASTER" if "pingpong-master" in low
+              else "EFFECTS_MASTER" if "pingpong-visual" in low or "visual-master" in low
+              else "AUDIO_CACHE" if "pingpong-audio" in low
+              else "RENDER_WORK" if "render-work" in low
+              else "CACHE_OR_TEMP")
+        out.append({"path":path,"role":role,"bytes":size})
+    return out
+
+disk_free_before=shutil.disk_usage(OUTPUT_DIR).free
+baseline_tracked=tracked_bytes()
+peak={"bytes":baseline_tracked}
+stop_watch=threading.Event()
+def watch_disk():
+    while not stop_watch.is_set():
+        peak["bytes"]=max(peak["bytes"],tracked_bytes())
+        time.sleep(0.10)
+watcher=threading.Thread(target=watch_disk,daemon=True)
+watcher.start()
 started=time.perf_counter()
-proc=subprocess.run([str(APP)],env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,timeout=360)
+try:
+    proc=subprocess.run([str(APP)],env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,timeout=360)
+finally:
+    stop_watch.set();watcher.join(timeout=2)
+    peak["bytes"]=max(peak["bytes"],tracked_bytes())
 app_wall=time.perf_counter()-started
+disk_free_after=shutil.disk_usage(OUTPUT_DIR).free
 print(proc.stdout)
 print(proc.stderr,file=sys.stderr)
 assert proc.returncode==0,proc.returncode
@@ -185,7 +236,7 @@ for n,row in enumerate(rows):
     assert all(x>-55.0 for x in peaks),peaks
     native=native_audio_gate(p,[("START",1.0),("MIDDLE",fd*.5),("END",max(0.5,fd-5.0))]) if n==0 else "ALREADY_PASSED"
     wall=float(row.get("wallSeconds") or 0)
-    assert 500_000_000 <= size <= 700_000_000,(size,p)
+    assert 400_000_000 <= size <= 600_000_000,(size,p)
     assert row.get("fastPath") is True,row
     assert row.get("fastPathReason")=="FAST_SHORT_VIDEO_PINGPONG",row
     assert row.get("audioMode") in ("SOURCE_MP3_TO_AAC_320K","PROCESSED_AAC"),row
@@ -205,10 +256,32 @@ m=re.findall(r'"pingPongPhysicalFrames":(\d+)',stderr)
 assert m,m
 assert 2398 <= int(m[-1]) <= 2402,m[-10:]
 
+physical_diag=re.findall(r'ENDLUME_DIAG (\{[^\n]*"kind":"p0c-physical"[^\n]*\})',stderr)
+physical_rows=[json.loads(x) for x in physical_diag]
+cleanup_diag=re.findall(r'ENDLUME_DIAG (\{[^\n]*"kind":"p0c-cleanup"[^\n]*\})',stderr)
+cleanup_rows=[json.loads(x) for x in cleanup_diag]
+growth_diag=re.findall(r'ENDLUME_DIAG (\{[^\n]*"kind":"p0c-growth"[^\n]*\})',stderr)
+growth_rows=[json.loads(x) for x in growth_diag]
+assert physical_rows,stderr[-16000:]
+assert cleanup_rows,stderr[-16000:]
+assert all(x["actualPingPongPhysicalDuration"] <= x["expectedPingPongPhysicalDuration"]*1.10+0.5 for x in physical_rows),physical_rows
+assert all(x["actualPingPongPhysicalDuration"] < 180.0 for x in physical_rows),physical_rows
+assert all(x["tempAfterCleanup"]==0 for x in cleanup_rows),cleanup_rows
+peak_temp_delta=max(0,peak["bytes"]-baseline_tracked)
+assert peak_temp_delta < 2_000_000_000,peak_temp_delta
+assert disk_free_after > 0
+largest=largest_files([cache_root,OUTPUT_DIR],20)
 metrics={
-  "status":"passed","release_gate":True,"kind":"ENDLUME_1002_REAL_PINGPONG",
+  "status":"passed","release_gate":True,"kind":"ENDLUME_1002_REAL_PINGPONG_P0C",
   "source":str(source),"source_bytes":source.stat().st_size,"source_seconds":source_seconds,
   "source_audio_count":len(audio),"effects_count":len(effects),"subscribe_interval_sec":240,
+  "expected_pingpong_physical_duration":physical_rows[0]["expectedPingPongPhysicalDuration"],
+  "actual_pingpong_physical_duration":physical_rows[0]["actualPingPongPhysicalDuration"],
+  "physical_master_bytes":physical_rows[0]["physicalMasterBytes"],
+  "disk_free_before":disk_free_before,"disk_free_after":disk_free_after,
+  "tracked_baseline_bytes":baseline_tracked,"peak_tracked_bytes":peak["bytes"],"peak_temp_bytes":peak_temp_delta,
+  "temp_after_cleanup":max(x["tempAfterCleanup"] for x in cleanup_rows),
+  "largest_temp_files":largest,"growth_events":growth_rows,
   "app_wall_seconds":round(app_wall,3),"cold_seconds":cold,"warm_seconds":warm,"results":verified
 }
 METRICS.write_text(json.dumps(metrics,ensure_ascii=False,indent=2))

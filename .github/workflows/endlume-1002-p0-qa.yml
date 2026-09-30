@@ -104,6 +104,20 @@ jobs:
           EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
           echo "E1002_E2E_BIN=$APP/Contents/MacOS/$EXE" >> "$GITHUB_ENV"
 
+      - name: Reclaim release-only CI cache and audit free disk
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          echo "DISK_BEFORE_CI_CLEANUP"
+          df -Pk "$HOME/Movies"
+          du -sh "$HOME/.endlume-build-cache/target-1002-windows" 2>/dev/null || true
+          du -sh "$HOME/.endlume-build-cache/windows-sidecars-1002" 2>/dev/null || true
+          rm -rf "$HOME/.endlume-build-cache/target-1002-windows"
+          rm -rf "$HOME/.endlume-build-cache/windows-sidecars-1002/extract"
+          rm -f "$HOME/.endlume-build-cache/windows-sidecars-1002/"*.zip 2>/dev/null || true
+          echo "DISK_AFTER_CI_CLEANUP"
+          df -Pk "$HOME/Movies"
+
       - name: Resolve real Subscribe and image regression fixture
         shell: bash
         run: |
@@ -123,6 +137,7 @@ jobs:
           test -n "$PING_SOURCE" -a -f "$PING_SOURCE"
           PING_DIR="$(dirname "$PING_SOURCE")"
           AVAIL_KB="$(df -Pk "$HOME/Movies" | awk 'NR==2{print $4}')"
+          echo "DISK_FREE_PREFLIGHT_KB=$AVAIL_KB"
           test "$AVAIL_KB" -ge 3500000
           echo "E1002_PING_PROJECT_DIR=$PING_DIR" >> "$GITHUB_ENV"
           echo "E1002_PING_SOURCE=$PING_SOURCE" >> "$GITHUB_ENV"

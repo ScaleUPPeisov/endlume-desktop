@@ -1,0 +1,184 @@
+name: ENDLUME 10.0.2 P0 Candidate QA
+
+on:
+  push:
+    branches: [hotfix/endlume-10.0.2-p0]
+    paths:
+      - '.github/workflows/endlume-1002-p0-qa.yml'
+      - 'src-tauri/src/render.rs'
+      - 'src-tauri/src/mp4_manifest.rs'
+      - 'src-tauri/src/cache.rs'
+      - 'scripts/run-endlume-1002-pingpong-e2e.py'
+      - 'scripts/run-endlume-1000-render-job-e2e.py'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'src-tauri/Cargo.toml'
+      - 'src-tauri/Cargo.lock'
+      - 'src-tauri/tauri.conf.json'
+      - 'src/pages/SettingsPage.tsx'
+      - 'src/components/ReleaseHistory.tsx'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-1002-p0-candidate
+  cancel-in-progress: true
+
+jobs:
+  qa:
+    name: macOS ARM64 • Real Audio + Real Ping-Pong • NO RELEASE
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Contract guard — no release mutation
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "${GITHUB_REF_NAME}" = "hotfix/endlume-10.0.2-p0"
+          python3 - <<'PY'
+          from pathlib import Path
+          r=Path('src-tauri/src/render.rs').read_text()
+          for token in [
+            'FAST_SHORT_VIDEO_PINGPONG',
+            'pingpong-master-v10',
+            'pingpong-visual-v10',
+            'verify_final_audio_structure_1002',
+            'APPLE AUDIO BLOCKER',
+            'SOURCE_MP3_TO_AAC_320K',
+            'remap_video_samples'
+          ]:
+              assert token in r,token
+          print('ENDLUME_1002_SOURCE_CONTRACT_GREEN')
+          PY
+
+      - name: Stage native Apple Silicon FFmpeg
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          FOUNDATION="$HOME/.endlume-local-builder/endlume-desktop-8.40-bootstrap"
+          test -d "$FOUNDATION/src-tauri/binaries"
+          mkdir -p src-tauri/binaries
+          rsync -a "$FOUNDATION/src-tauri/binaries/" src-tauri/binaries/
+          chmod +x src-tauri/binaries/ffmpeg* src-tauri/binaries/ffprobe*
+          test -x src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          test -x src-tauri/binaries/ffprobe-aarch64-apple-darwin
+
+      - name: Frontend + Rust regression
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export CARGO_TARGET_DIR="$HOME/.endlume-build-cache/target-1002"
+          npm ci
+          npm run check
+          npm run build
+          cargo check --manifest-path src-tauri/Cargo.toml
+          cargo test --manifest-path src-tauri/Cargo.toml -- --nocapture
+
+      - name: Build audit-only candidate app
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export CARGO_TARGET_DIR="$HOME/.endlume-build-cache/target-1002"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('src-tauri/tauri.conf.json')
+          d=json.loads(p.read_text())
+          d['bundle']['createUpdaterArtifacts']=False
+          p.write_text(json.dumps(d,ensure_ascii=False,indent=2)+'\n')
+          PY
+          npm run tauri build -- --bundles app --features e2e-render
+          APP="$(find "$CARGO_TARGET_DIR/release/bundle/macos" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          test -n "$APP" -a -d "$APP"
+          EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
+          echo "E1002_E2E_BIN=$APP/Contents/MacOS/$EXE" >> "$GITHUB_ENV"
+
+      - name: Resolve real Subscribe and image regression fixture
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/find-endlume-real-subscribe.py "$GITHUB_WORKSPACE/e1002-subscribe.json"
+          test -s "$GITHUB_WORKSPACE/e1002-subscribe.json"
+          TMP="$(mktemp -d /tmp/e1002fixture.XXXXXX)"
+          python3 scripts/find-endlume-real-fixture.py "$TMP/env"
+          cat "$TMP/env" >> "$GITHUB_ENV"
+          source "$TMP/env"
+          test "$AUDIO_COUNT" = 15
+          test -f "$SIDE"
+          test -d "/Users/peisov/Desktop/Новая папка"
+          test -f "/Users/peisov/Desktop/Новая папка/для Японского канала .mp4"
+          test -d "/Volumes/TOSHIBA EXT"
+
+      - name: Clear only ENDLUME render caches for true cold Ping-Pong run
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ROOT="$HOME/Library/Caches/studio.endlume.desktop"
+          for name in pingpong-master-v10 pingpong-visual-v10 visual-master-v10 subscribe-master-v10 strict-effects-856; do
+            rm -rf "$ROOT/$name"
+          done
+          rm -rf /tmp/endlume1002.* /tmp/pingpong1002.* 2>/dev/null || true
+
+      - name: Real short-video Ping-Pong • cold + warm + Apple audio gate
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export CARGO_TARGET_DIR="$HOME/.endlume-build-cache/target-1002"
+          OUT="/Volumes/TOSHIBA EXT/ENDLUME-1002-PINGPONG-QA"
+          rm -rf "$OUT"; mkdir -p "$OUT"
+          FFM="$GITHUB_WORKSPACE/src-tauri/binaries/ffmpeg-aarch64-apple-darwin"
+          FFP="$GITHUB_WORKSPACE/src-tauri/binaries/ffprobe-aarch64-apple-darwin"
+          mkdir -p "$GITHUB_WORKSPACE/e1002-qa"
+          ENDLUME_1002_OUTPUT_DIR="$OUT" python3 scripts/run-endlume-1002-pingpong-e2e.py             "/Users/peisov/Desktop/Новая папка"             "$GITHUB_WORKSPACE/e1002-subscribe.json"             "$E1002_E2E_BIN" "$FFM" "$FFP" "$GITHUB_WORKSPACE/e1002-qa/pingpong.json"
+          cat "$GITHUB_WORKSPACE/e1002-qa/pingpong.json"
+          rm -rf "$OUT"
+
+      - name: One-image fast-path regression
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          OUT="/Volumes/TOSHIBA EXT/ENDLUME-1002-IMAGE-REGRESSION"
+          rm -rf "$OUT"; mkdir -p "$OUT"
+          FFM="$GITHUB_WORKSPACE/src-tauri/binaries/ffmpeg-aarch64-apple-darwin"
+          FFP="$GITHUB_WORKSPACE/src-tauri/binaries/ffprobe-aarch64-apple-darwin"
+          ENDLUME_1000_OUTPUT_DIR="$OUT" python3 scripts/run-endlume-1000-render-job-e2e.py             "$SIDE" "$GITHUB_WORKSPACE/e1002-subscribe.json" "$E1002_E2E_BIN" "$FFM" "$FFP"             "$GITHUB_WORKSPACE/e1002-qa/image-regression.json"
+          cat "$GITHUB_WORKSPACE/e1002-qa/image-regression.json"
+          rm -rf "$OUT"
+
+      - name: Final P0 verdict
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import json
+          p=json.load(open('e1002-qa/pingpong.json'))
+          i=json.load(open('e1002-qa/image-regression.json'))
+          assert p['status']=='passed' and p['release_gate'] is True,p
+          assert p['cold_seconds']<=40,p
+          assert max(p['warm_seconds'])<=20,p
+          assert i['status']=='passed' and i['release_gate'] is True,i
+          print('ENDLUME_1002_P0_CANDIDATE_GREEN')
+          print('PINGPONG_COLD_SECONDS=',p['cold_seconds'])
+          print('PINGPONG_WARM_SECONDS=',p['warm_seconds'])
+          print('IMAGE_COLD_SECONDS=',i['cold_seconds'])
+          print('IMAGE_WARM_SECONDS=',i['warm_seconds'])
+          PY
+          echo "NO_STABLE_RELEASE_PERFORMED=YES"
+
+      - name: Upload QA metrics only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: endlume-1002-p0-qa-metrics
+          path: e1002-qa/*.json
+          if-no-files-found: warn
+          retention-days: 30

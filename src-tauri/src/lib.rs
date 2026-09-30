@@ -23,10 +23,15 @@ mod mp4_manifest_probe_tests;
 mod vyron_bridge_tests;
 
 use std::sync::Arc;
+#[cfg(feature="e2e-render")]
+use std::sync::atomic::{AtomicBool,Ordering};
+#[cfg(feature="e2e-render")]
+static E2E_RENDER_ACTIVE:AtomicBool=AtomicBool::new(false);
 use tauri::Manager;
 
 #[cfg(feature="e2e-render")]
 fn maybe_start_render_e2e(app:tauri::AppHandle){
+  E2E_RENDER_ACTIVE.store(true,Ordering::SeqCst);
   let Ok(fixture_path)=std::env::var("ENDLUME_E2E_RENDER_JOB") else{return};
   let Ok(result_path)=std::env::var("ENDLUME_E2E_RESULT") else{return};
   tauri::async_runtime::spawn(async move{
@@ -94,13 +99,14 @@ fn maybe_start_render_e2e(app:tauri::AppHandle){
       "results":results
     });
     let _=std::fs::write(&result_path,serde_json::to_vec_pretty(&payload).unwrap_or_default());
+    E2E_RENDER_ACTIVE.store(false,Ordering::SeqCst);
     app.exit(if ok{0}else{31});
   });
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run(){
-  tauri::Builder::default()
+  let app=tauri::Builder::default()
     .manage(Arc::new(queue::QueueRuntime::default()))
     .plugin(tauri_plugin_dialog::init())
     .plugin(tauri_plugin_fs::init())
@@ -138,6 +144,12 @@ pub fn run(){
       }
       if let tauri::WindowEvent::Destroyed=event{let _=persistence::mark_session_closed(window.app_handle());}
     })
-    .run(tauri::generate_context!())
-    .expect("error while running ENDLUME");
+    .build(tauri::generate_context!())
+    .expect("error while building ENDLUME");
+  app.run(|_app_handle,event|{
+    #[cfg(feature="e2e-render")]
+    if E2E_RENDER_ACTIVE.load(Ordering::SeqCst){
+      if let tauri::RunEvent::ExitRequested{api,..}=event{api.prevent_exit();}
+    }
+  });
 }

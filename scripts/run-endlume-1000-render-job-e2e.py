@@ -151,6 +151,8 @@ fixture.write_text(json.dumps({"jobs":jobs},ensure_ascii=False,indent=2))
 env=os.environ.copy()
 env["ENDLUME_E2E_RENDER_JOB"]=str(fixture)
 env["ENDLUME_E2E_RESULT"]=str(result)
+if os.environ.get("ENDLUME_1003_PREWARM","").lower() in ("1","true","yes"):
+    env["ENDLUME_E2E_PREWARM"]="1"
 env["RUST_BACKTRACE"]="1"
 started=time.perf_counter()
 proc=subprocess.run([str(APP)],env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,timeout=360)
@@ -161,6 +163,10 @@ if proc.returncode!=0:
     raise SystemExit(f"ENDLUME 10 E2E exited {proc.returncode}")
 raw=json.loads(result.read_text(errors="replace"))
 assert raw.get("status")=="passed",raw
+prewarm_seconds=raw.get("prewarmSeconds")
+if prewarm_seconds is not None:
+    prewarm_seconds=round(float(prewarm_seconds),3)
+    print("E1000_PREWARM_SECONDS",prewarm_seconds,flush=True)
 rows=raw.get("results") or []
 assert len(rows)==3,rows
 
@@ -224,6 +230,6 @@ assert '"subscribeCache":"MISS"' in stderr,stderr[-8000:]
 assert '"subscribeCache":"HIT"' in stderr,stderr[-8000:]
 assert '"kind":"audio-audibility"' in stderr,stderr[-8000:]
 
-metrics={"status":"passed","release_gate":True,"kind":"ENDLUME_1000_REAL_RENDER_JOB","app_wall_seconds":round(app_wall,3),"cold_seconds":cold,"warm_seconds":warm,"cold_limit":cold_limit,"warm_limit":warm_limit,"storage":"TOSHIBA_EXT" if is_toshiba else "LOCAL","results":verified}
+metrics={"status":"passed","release_gate":True,"kind":"ENDLUME_1000_REAL_RENDER_JOB","app_wall_seconds":round(app_wall,3),"prewarm_seconds":prewarm_seconds,"cold_seconds":cold,"warm_seconds":warm,"cold_limit":cold_limit,"warm_limit":warm_limit,"storage":"TOSHIBA_EXT" if is_toshiba else "LOCAL","results":verified}
 METRICS.write_text(json.dumps(metrics,ensure_ascii=False,indent=2))
 print("ENDLUME_1000_REAL_RENDER_JOB_GREEN",json.dumps(metrics,ensure_ascii=False))

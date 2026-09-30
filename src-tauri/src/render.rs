@@ -783,7 +783,9 @@ async fn build_cached_aac_playlist_1003(app:&AppHandle,job:&QueueJob,encoder:&st
   let track_root=cache_root_1000(app,"audio-track-aac-v1003")?;
   let playlist_root=cache_root_1000(app,"audio-playlist-aac-v1003")?;
   let stage_root=app.path().app_cache_dir().map_err(|e|e.to_string())?.join("audio-stage-v1003").join(uuid::Uuid::new_v4().to_string());
+  const AAC_WORKERS_1003:usize=6;
   let mut set=tokio::task::JoinSet::new();
+  let mut ordered=Vec::<(usize,PathBuf,bool)>::new();
   let stage_mark=Instant::now();let mut staged_bytes=0u64;
   for (idx,src) in job.project.audio.iter().enumerate(){
     let app=app.clone();
@@ -825,11 +827,14 @@ async fn build_cached_aac_playlist_1003(app:&AppHandle,job:&QueueJob,encoder:&st
       if out.exists(){let _=std::fs::remove_file(&tmp);}else{std::fs::rename(&tmp,&out).map_err(|e|format!("10.0.3 AAC track cache commit: {e}"))?}
       Ok((idx,out,false))
     });
+    if set.len()>=AAC_WORKERS_1003{
+      if cancel.load(Ordering::SeqCst){set.abort_all();return Err(CANCELLED.into())}
+      if let Some(row)=set.join_next().await{ordered.push(row.map_err(|e|format!("10.0.3 AAC worker join: {e}"))??);}
+    }
   }
   if staged_bytes>0{
     diag_line(json!({"kind":"audio-stage-1003","projectId":job.project.id,"bytes":staged_bytes,"seconds":stage_mark.elapsed().as_secs_f64(),"source":"external-volume","target":"local-cache"}));
   }
-  let mut ordered=Vec::<(usize,PathBuf,bool)>::new();
   while let Some(row)=set.join_next().await{
     if cancel.load(Ordering::SeqCst){set.abort_all();return Err(CANCELLED.into())}
     ordered.push(row.map_err(|e|format!("10.0.3 AAC worker join: {e}"))??);
@@ -1587,15 +1592,19 @@ async fn build_cached_visual_master_1000(app:&AppHandle,job:&QueueJob,effects:&[
   for e in effects.iter().filter(|x|effect_usage_mode(x)!="off"&&!x.source.trim().is_empty()){args.extend(vec!["-stream_loop","-1","-i",e.source.as_str()].into_iter().map(String::from));}
   let rate_mul=(fps/work_fps).max(1);if fps%work_fps!=0{return Err(format!("10.0 visual master fps ratio unsupported: {fps}/{work_fps}"))}
   let encode_frames=master_frames/rate_mul as usize;if encode_frames==0||encode_frames*rate_mul as usize!=master_frames{return Err("10.0 visual master frame ratio mismatch".into())}
-  let base=format!("[0:v]fps={work_fps},setsar=1[b0]");let (graph,last)=apply_effects_filter(base,"b0".into(),effects,&ws,1);let graph=format!("{graph};[{last}]fps={work_fps},format=yuv420p[outv]");
+  let base=format!("[0:v]fps={work_fps},setsar=1[b0]");let (graph,last)=apply_effects_filter(base,"b0".into(),effects,&ws,1);
+  // Keep every unique 30fps Effect frame, compress its timestamps 2x, and feed
+  // VideoToolbox at 60fps. The manifest below repeats each encoded sample twice,
+  // restoring the original 40s/60fps playback without re-encoding duplicates.
+  let graph=format!("{graph};[{last}]setpts=PTS/{rate_mul},fps={fps},format=yuv420p[outv]");
   args.extend(vec!["-filter_complex",&graph,"-map","[outv]","-frames:v",&encode_frames.to_string(),"-an"].into_iter().map(String::from));
   let _=periodic;args.extend(cached_master_fidelity_args_1000(&job.settings,encoder,duration));
-  args.extend(vec!["-fps_mode","cfr","-r",&work_fps.to_string(),"-video_track_timescale","60000","-progress","pipe:1","-y",tmp.to_string_lossy().as_ref()].into_iter().map(String::from));
-  let mark=Instant::now();run_ffmpeg(app,job,started,timer,args,"10.0.3: BASE_VISUAL_MASTER unique frames",55.0,18.0,duration,encoder,attempt,cancel).await?;
+  args.extend(vec!["-fps_mode","cfr","-r",&fps.to_string(),"-video_track_timescale","60000","-progress","pipe:1","-y",tmp.to_string_lossy().as_ref()].into_iter().map(String::from));
+  let mark=Instant::now();run_ffmpeg(app,job,started,timer,args,"10.0.3: BASE_VISUAL_MASTER 2x timeline turbo",55.0,18.0,duration/rate_mul as f64,encoder,attempt,cancel).await?;
   let encoded_packets=probe_video_packets_857(app,&tmp).await?;if encoded_packets!=encode_frames{let _=std::fs::remove_file(&tmp);return Err(format!("10.0 BASE_VISUAL_MASTER unique packets={encoded_packets}/{encode_frames}"))}
   if rate_mul>1{
     let selected=(0..encode_frames).flat_map(|i|std::iter::repeat(i).take(rate_mul as usize)).collect::<Vec<_>>();
-    crate::mp4_manifest::remap_video_samples_with_timing_divisor(&tmp,&tmp,&selected,rate_mul)?;
+    crate::mp4_manifest::remap_video_samples(&tmp,&tmp,&selected)?;
   }
   let packets=probe_video_packets_857(app,&tmp).await?;if packets!=master_frames{let _=std::fs::remove_file(&tmp);return Err(format!("10.0 BASE_VISUAL_MASTER expanded packets={packets}/{master_frames}"))}
   if out.exists(){let _=std::fs::remove_file(&tmp);}else{std::fs::rename(&tmp,&out).map_err(|e|format!("10.0 visual cache commit: {e}"))?}
@@ -1624,13 +1633,13 @@ async fn render_periodic_sub_852(app:&AppHandle,job:&QueueJob,master:&Path,sub:&
   let mut args:Vec<String>=vec!["-hide_banner","-loglevel","error","-stream_loop","-1","-ss",&phase.to_string(),"-i",master.to_string_lossy().as_ref(),"-i",sub.effect.source.as_str()].into_iter().map(String::from).collect();
   let rate_mul=(fps/work_fps).max(1);if fps%work_fps!=0{return Err(format!("10.0 subscribe fps ratio unsupported: {fps}/{work_fps}"))}
   let encode_frames=frames/rate_mul as usize;if encode_frames==0||encode_frames*rate_mul as usize!=frames{return Err("10.0 subscribe frame ratio mismatch".into())}
-  let one=vec![sub.effect.clone()];let (graph,last)=apply_effects_filter(format!("[0:v]fps={work_fps},setpts=PTS-STARTPTS[b0]"),"b0".into(),&one,&ws,1);let graph=graph.replace(":shortest=1:eof_action=repeat",":shortest=0:eof_action=pass");let graph=format!("{graph};[{last}]fps={work_fps},format=yuv420p[outv]");
-  let duration=frames as f64/fps as f64;args.extend(vec!["-filter_complex",&graph,"-map","[outv]","-frames:v",&encode_frames.to_string(),"-an"].into_iter().map(String::from));args.extend(periodic_fidelity_args(&job.settings,encoder,duration));args.extend(vec!["-fps_mode","cfr","-r",&work_fps.to_string(),"-video_track_timescale","60000","-progress","pipe:1","-y",tmp.to_string_lossy().as_ref()].into_iter().map(String::from));
-  let mark=Instant::now();run_ffmpeg(app,job,started,timer,args,&format!("10.0.3: SUBSCRIBE_MASTER unique {label}"),69.0,4.0,duration,encoder,attempt,cancel).await?;
+  let one=vec![sub.effect.clone()];let (graph,last)=apply_effects_filter(format!("[0:v]fps={work_fps},setpts=PTS-STARTPTS[b0]"),"b0".into(),&one,&ws,1);let graph=graph.replace(":shortest=1:eof_action=repeat",":shortest=0:eof_action=pass");let graph=format!("{graph};[{last}]setpts=PTS/{rate_mul},fps={fps},format=yuv420p[outv]");
+  let duration=frames as f64/fps as f64;args.extend(vec!["-filter_complex",&graph,"-map","[outv]","-frames:v",&encode_frames.to_string(),"-an"].into_iter().map(String::from));args.extend(periodic_fidelity_args(&job.settings,encoder,duration));args.extend(vec!["-fps_mode","cfr","-r",&fps.to_string(),"-video_track_timescale","60000","-progress","pipe:1","-y",tmp.to_string_lossy().as_ref()].into_iter().map(String::from));
+  let mark=Instant::now();run_ffmpeg(app,job,started,timer,args,&format!("10.0.3: SUBSCRIBE_MASTER 2x timeline turbo {label}"),69.0,4.0,duration/rate_mul as f64,encoder,attempt,cancel).await?;
   let encoded_packets=probe_video_packets_857(app,&tmp).await?;if encoded_packets!=encode_frames{let _=std::fs::remove_file(&tmp);return Err(format!("10.0 Subscribe unique packets={encoded_packets}/{encode_frames}"))}
   if rate_mul>1{
     let selected=(0..encode_frames).flat_map(|i|std::iter::repeat(i).take(rate_mul as usize)).collect::<Vec<_>>();
-    crate::mp4_manifest::remap_video_samples_with_timing_divisor(&tmp,&tmp,&selected,rate_mul)?;
+    crate::mp4_manifest::remap_video_samples(&tmp,&tmp,&selected)?;
   }
   let packets=probe_video_packets_857(app,&tmp).await?;if packets!=frames{let _=std::fs::remove_file(&tmp);return Err(format!("10.0 Subscribe expanded packets={packets}/{frames}"))}
   if out.exists(){let _=std::fs::remove_file(&tmp);}else{std::fs::rename(&tmp,&out).map_err(|e|format!("10.0 subscribe cache commit: {e}"))?}let sec=mark.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"subscribe-cache",sec);prune_cache_1000(&root,&out);Ok(out)

@@ -1,0 +1,24 @@
+name: ENDLUME 10.0.1 runner status
+
+on:
+  push:
+    branches: [hotfix/endlume-10.0.1-audio]
+    paths:
+      - '.github/workflows/endlume-1001-runner-status.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  status:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ secrets.ENDLUME_RELEASE_TOKEN }}
+    steps:
+      - name: Read ENDLUME self-hosted runner status
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "${GH_TOKEN:-}"
+          gh api "/repos/ScaleUPPeisov/endlume-desktop/actions/runners" --jq '.runners[] | {id,name,os,status,busy,labels:[.labels[].name]}'

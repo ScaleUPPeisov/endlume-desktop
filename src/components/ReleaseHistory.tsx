@@ -3,7 +3,14 @@ import React from 'react';
 type Release={version:string;date:string;current?:boolean;title:string;items:string[]};
 
 const releases:Release[]=[
-  {version:'10.0.1',date:'30.09.2026',current:true,title:'P0 Audio Compatibility • AAC-LC Final MP4',items:[
+  {version:'10.0.2',date:'30.09.2026',current:true,title:'P0 Apple Audio • Fast Ping-Pong • Persistent AAC Cache',items:[
+    'P0 macOS: финальный MP4 использует совместимую AAC-LC 320 кбит/с / 48 кГц / stereo дорожку с default disposition; AVFoundation больше не получает MP3-in-MP4.',
+    'Короткое исходное видео в Ping-Pong собирается как короткий физический цикл, а двухчасовой таймлайн расширяется через zero-copy sample-table без многочасового перекодирования.',
+    'Persistent Ping-Pong AAC cache строится параллельно visual cache и повторно используется на warm render.',
+    'Финальный Ping-Pong mux переведён на packet-copy video + packet-copy AAC; повторное двухчасовое AAC-кодирование убрано.',
+    'Сохранены HEVC 1080p60, Effects, Subscribe, резкость, полные песни, target-size и текущая updater identity.'
+  ]},
+  {version:'10.0.1',date:'30.09.2026',current:false,title:'P0 Audio Compatibility • AAC-LC Final MP4',items:[
     'P0: исправлен финальный MP4 без слышимого звука в системных проигрывателях.',
     'Исходные MP3 сохраняют порядок и полную длительность, но финальный MP4 получает совместимую AAC-LC 320 кбит/с / 48 кГц / stereo дорожку вместо MP3-in-MP4.',
     'AAC-дорожка помечается default audio track; уже обработанный AAC повторно не перекодируется.',

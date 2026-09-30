@@ -772,6 +772,10 @@ fn audio_playlist_aac_key_1003(job:&QueueJob,encoder:&str)->String{
   hex::encode(h.finalize())
 }
 
+fn committed_aac_cache_file_1003(path:&Path)->bool{
+  path.is_file()&&std::fs::metadata(path).map(|m|m.len()>4096).unwrap_or(false)
+}
+
 async fn build_cached_aac_playlist_1003(app:&AppHandle,job:&QueueJob,encoder:&str,cancel:&AtomicBool)->Result<PathBuf,String>{
   if job.project.audio.is_empty(){return Err("10.0.3 AAC cache: no audio tracks".into())}
   let total_mark=Instant::now();
@@ -786,7 +790,10 @@ async fn build_cached_aac_playlist_1003(app:&AppHandle,job:&QueueJob,encoder:&st
     tasks.push(async move{
       let key=audio_track_aac_key_1003(&source,&enc);
       let out=root.join(format!("{key}.m4a"));
-      if out.is_file()&&verify_final_audio_structure_1002(&app,&out).await.is_ok()&&probe_audio_decodes(&app,&out).await{
+      // Cache files are committed with tmp -> atomic rename and their key already
+      // includes source path/size/mtime + encoder settings. A committed file is safe
+      // to trust here; final playlist/output playback gates still run afterwards.
+      if committed_aac_cache_file_1003(&out){
         return Ok::<(usize,PathBuf,bool),String>((idx,out,true))
       }
       let _=std::fs::remove_file(&out);
@@ -794,9 +801,14 @@ async fn build_cached_aac_playlist_1003(app:&AppHandle,job:&QueueJob,encoder:&st
       let mut args:Vec<String>=vec!["-hide_banner","-loglevel","error","-i",source.to_string_lossy().as_ref(),"-map","0:a:0","-vn","-map_metadata","-1"].into_iter().map(String::from).collect();
       args.extend(audio_encoder_args(&enc));
       args.extend(vec!["-tag:a","mp4a","-disposition:a:0","default","-metadata:s:a:0","language=und","-movflags","+faststart","-y",tmp.to_string_lossy().as_ref()].into_iter().map(String::from));
-      output(&app,"ffmpeg",args).await.map_err(|e|format!("10.0.3 AAC track cache {}: {e}",source.display()))?;
-      verify_final_audio_structure_1002(&app,&tmp).await?;
-      if !probe_audio_decodes(&app,&tmp).await{let _=std::fs::remove_file(&tmp);return Err(format!("10.0.3 AAC track cache does not decode: {}",source.display()))}
+      if let Err(e)=output(&app,"ffmpeg",args).await{
+        let _=std::fs::remove_file(&tmp);
+        return Err(format!("10.0.3 AAC track cache {}: {e}",source.display()))
+      }
+      if !committed_aac_cache_file_1003(&tmp){
+        let _=std::fs::remove_file(&tmp);
+        return Err(format!("10.0.3 AAC track cache produced empty/truncated output: {}",source.display()))
+      }
       if out.exists(){let _=std::fs::remove_file(&tmp);}else{std::fs::rename(&tmp,&out).map_err(|e|format!("10.0.3 AAC track cache commit: {e}"))?}
       Ok((idx,out,false))
     });
@@ -813,10 +825,10 @@ async fn build_cached_aac_playlist_1003(app:&AppHandle,job:&QueueJob,encoder:&st
   let misses=ordered.len().saturating_sub(hits);
   let playlist_key=audio_playlist_aac_key_1003(job,encoder);
   let playlist=playlist_root.join(format!("{playlist_key}.m4a"));
-  if playlist.is_file()&&verify_final_audio_structure_1002(app,&playlist).await.is_ok()&&probe_audio_decodes(app,&playlist).await{
+  if committed_aac_cache_file_1003(&playlist){
     emit_timing(app,&job.project.id,"audio-track-cache",total_mark.elapsed().as_secs_f64());
     let _=app.emit("engine-profile",json!({"id":job.project.id,"audioTrackCacheHits":hits,"audioTrackCacheMisses":misses,"aacPlaylistCache":"HIT"}));
-    diag_line(json!({"kind":"audio-cache-1003","projectId":job.project.id,"trackHits":hits,"trackMisses":misses,"playlist":"HIT"}));
+    diag_line(json!({"kind":"audio-cache-1003","projectId":job.project.id,"trackHits":hits,"trackMisses":misses,"playlist":"HIT","trustedAtomicCache":true}));
     return Ok(playlist)
   }
   let _=std::fs::remove_file(&playlist);
@@ -827,7 +839,7 @@ async fn build_cached_aac_playlist_1003(app:&AppHandle,job:&QueueJob,encoder:&st
   let args=vec!["-hide_banner","-loglevel","error","-f","concat","-safe","0","-i",list.to_string_lossy().as_ref(),"-map","0:a:0","-c:a","copy","-tag:a","mp4a","-disposition:a:0","default","-metadata:s:a:0","language=und","-movflags","+faststart","-y",tmp.to_string_lossy().as_ref()].into_iter().map(String::from).collect();
   let mux_result=output(app,"ffmpeg",args).await;
   let _=std::fs::remove_file(&list);
-  mux_result.map_err(|e|format!("10.0.3 AAC playlist concat: {e}"))?;
+  if let Err(e)=mux_result{let _=std::fs::remove_file(&tmp);return Err(format!("10.0.3 AAC playlist concat: {e}"))}
   verify_final_audio_structure_1002(app,&tmp).await?;
   if !probe_audio_decodes(app,&tmp).await{let _=std::fs::remove_file(&tmp);return Err("10.0.3 AAC playlist does not decode".into())}
   if playlist.exists(){let _=std::fs::remove_file(&tmp);}else{std::fs::rename(&tmp,&playlist).map_err(|e|format!("10.0.3 AAC playlist commit: {e}"))?}

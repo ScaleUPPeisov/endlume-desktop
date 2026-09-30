@@ -30,7 +30,6 @@ uuid = { version = "1", features = ["v4", "serde"] }
 walkdir = "2"
 sha2 = "0.10"
 hex = "0.4"
-futures = "0.3"
 chrono = { version = "0.4", features = ["serde"] }
 parking_lot = "0.12"
 anyhow = "1"

@@ -3,7 +3,15 @@ import React from 'react';
 type Release={version:string;date:string;current?:boolean;title:string;items:string[]};
 
 const releases:Release[]=[
-  {version:'10.0.2',date:'30.09.2026',current:true,title:'P0 Apple Audio • Fast Ping-Pong • Persistent AAC Cache',items:[
+  {version:'10.0.3',date:'30.09.2026',current:true,title:'Performance Hotfix • Parallel AAC • 400–600 MB',items:[
+    '1-image fast-path: 10 MP3 больше не перекодируются последовательно внутри final mux; Apple-compatible AAC 320k/48k/stereo кэшируется по каждой песне и строится параллельно.',
+    'AAC playlist собирается packet-copy и переиспользуется между рендерами; warm render не выполняет повторное двухчасовое AAC-кодирование.',
+    'Visual master и AAC cache готовятся параллельно, а final mux получает уже готовую AAC дорожку packet-copy.',
+    'Interval visual master выбирается по целевому payload около 500 МБ при сохранении 100M physical-master fidelity; итоговый target 400–600 МБ.',
+    'Для sample-table fast-path убрана лишняя middle video decode-проверка; обязательные Apple AAC / audible start-middle-end проверки сохранены.',
+    'Цели QA: local Mac warm ≤10 сек, cold ≤22 сек; без потери HEVC 1080p60, Effects, Subscribe и слышимой музыки.'
+  ]},
+  {version:'10.0.2',date:'30.09.2026',current:false,title:'P0 Apple Audio • Fast Ping-Pong • Persistent AAC Cache',items:[
     'P0 macOS: финальный MP4 использует совместимую AAC-LC 320 кбит/с / 48 кГц / stereo дорожку с default disposition; AVFoundation больше не получает MP3-in-MP4.',
     'Короткое исходное видео в Ping-Pong собирается как короткий физический цикл, а двухчасовой таймлайн расширяется через zero-copy sample-table без многочасового перекодирования.',
     'Persistent Ping-Pong AAC cache строится параллельно visual cache и повторно используется на warm render.',

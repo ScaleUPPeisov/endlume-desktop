@@ -1626,7 +1626,7 @@ fn interval_1000_plan(job:&QueueJob,effects:&[EffectPreset],subs:&[SubscribePres
   // the shortest Subscribe-compatible divisor near 10 seconds. The HQ encoder
   // raises bitrate for shorter masters, preserving/increasing bits per frame.
   let min_seconds=min_visual_seconds.max(8.0).min(40.0);
-  let desired_seconds=min_seconds.max(10.0).min(40.0);
+  let desired_seconds=min_seconds.max(8.0).min(40.0);
   let desired=(desired_seconds*fps).round() as usize;
   let lo=(min_seconds*fps).ceil() as usize;let hi=(40.0*fps).round() as usize;let mut best=None;let mut dist=usize::MAX;
   for d in lo.max(1)..=hi.max(lo.max(1)){

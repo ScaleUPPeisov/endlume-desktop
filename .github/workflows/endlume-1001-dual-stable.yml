@@ -11,12 +11,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: endlume-1001-dual-stable
+  group: endlume-1001-audio-qa
   cancel-in-progress: true
 
 env:
   VERSION: 10.0.1
-  HOTFIX_SHA: c69cfef48dbe05b7649220ed1432cfe490c5434b
+  HOTFIX_SHA: d1faf9d0395b0d0b53d535ebb98149bcc618bd4b
   TESTED_RENDER_BLOB: 7cb098bd74a3ba4c5e9d1aa2b7fee22bb9c66350
   WINDOWS_TARGET: x86_64-pc-windows-msvc
   WINDOWS_ASSET: ENDLUME-YT-Studio-PEISOV-Setup-10.0.1-x64.exe

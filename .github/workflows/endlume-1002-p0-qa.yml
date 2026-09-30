@@ -165,6 +165,24 @@ jobs:
             if [ -s "$RUNNER_TEMP/e1002-relocated-source.txt" ]; then PING_SOURCE="$(cat "$RUNNER_TEMP/e1002-relocated-source.txt")"; fi
           fi
           if [ -z "$PING_SOURCE" ]; then
+            DURABLE_RECOVERED="$HOME/.endlume-ci-fixtures/pingpong-source-1002/recovered-real-forward.mp4"
+            if [ -s "$DURABLE_RECOVERED" ]; then
+              DUR="$("$GITHUB_WORKSPACE/src-tauri/binaries/ffprobe-aarch64-apple-darwin" -v error -show_entries format=duration -of default=nw=1:nk=1 "$DURABLE_RECOVERED" 2>/dev/null || true)"
+              if python3 - "$DUR" <<'PY'
+          import sys
+          try:
+              d=float(sys.argv[1])
+              raise SystemExit(0 if 19.0 <= d <= 21.0 else 1)
+          except Exception:
+              raise SystemExit(1)
+          PY
+              then
+                PING_SOURCE="$DURABLE_RECOVERED"
+                echo "DURABLE_REAL_PING_SOURCE=$PING_SOURCE"
+              fi
+            fi
+          fi
+          if [ -z "$PING_SOURCE" ]; then
             CACHE_ROOT="$HOME/Library/Caches/studio.endlume.desktop/pingpong-master-v10"
             RECOVER_DIR="$HOME/.endlume-ci-fixtures/pingpong-source-1002"
             mkdir -p "$RECOVER_DIR"

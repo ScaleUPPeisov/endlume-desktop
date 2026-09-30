@@ -57,7 +57,7 @@ jobs:
           assert json.load(open('src-tauri/tauri.conf.json'))['version']==v
           assert json.load(open('release/endlume-10.0.2.json'))['version']==v
           c=pathlib.Path('src-tauri/Cargo.toml').read_text()
-          assert re.search(r'^version = "10\.0\.2"
+          assert f'version = "{v}"' in c
           w=json.load(open('src-tauri/tauri.windows.conf.json'))
           assert w['identifier']=='studio.endlume.desktop'
           assert w['bundle']['targets']==['nsis']

@@ -224,9 +224,14 @@ assert max(warm)<=warm_limit,(warm,f"warm > {warm_limit}s",str(OUTPUT_DIR))
 if is_toshiba and (cold>45.0 or max(warm)>25.0):
     print("ENDLUME_1000_TOSHIBA_CACHE_IO_WARNING",json.dumps({"cold_seconds":cold,"warm_seconds":warm,"cold_limit":cold_limit,"warm_limit":warm_limit},ensure_ascii=False),flush=True)
 stderr=proc.stderr
-assert '"visualCache":"MISS"' in stderr,stderr[-8000:]
+prewarm_enabled=os.environ.get("ENDLUME_1003_PREWARM","").lower() in ("1","true","yes")
+# With automatic prewarm, a second storage-target pass can legitimately be all-HIT:
+# the expensive MISS happened before the first interactive render. Never require a
+# synthetic MISS just to satisfy the harness.
+if not prewarm_enabled:
+    assert '"visualCache":"MISS"' in stderr,stderr[-8000:]
+    assert '"subscribeCache":"MISS"' in stderr,stderr[-8000:]
 assert '"visualCache":"HIT"' in stderr,stderr[-8000:]
-assert '"subscribeCache":"MISS"' in stderr,stderr[-8000:]
 assert '"subscribeCache":"HIT"' in stderr,stderr[-8000:]
 assert '"kind":"audio-audibility"' in stderr,stderr[-8000:]
 

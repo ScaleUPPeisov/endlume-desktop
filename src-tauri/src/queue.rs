@@ -1,10 +1,17 @@
 use crate::{license,model::{EffectPreset,ProjectScanItem,QueueJob,RenderSettings,SubscribePreset},persistence,render};
 use parking_lot::Mutex;
 use serde_json::{json,Value};
-use std::{collections::{HashSet,VecDeque},fs,path::PathBuf,sync::{Arc,atomic::{AtomicBool,Ordering}},time::{Instant,UNIX_EPOCH}};
+use std::{collections::{HashSet,VecDeque},fs,path::PathBuf,sync::{Arc,OnceLock,atomic::{AtomicBool,AtomicU64,Ordering}},time::{Instant,UNIX_EPOCH}};
 use tauri::{AppHandle,Emitter,State};
 
 const LICENSE_BLOCKED:&str="__ENDLUME_LICENSE_BLOCKED__";
+static PREWARM_GENERATION:AtomicU64=AtomicU64::new(0);
+static PREWARM_CANCEL:OnceLock<Mutex<Option<Arc<AtomicBool>>>>=OnceLock::new();
+fn prewarm_cancel_slot()->&'static Mutex<Option<Arc<AtomicBool>>>{PREWARM_CANCEL.get_or_init(||Mutex::new(None))}
+fn cancel_background_prewarm(){
+  PREWARM_GENERATION.fetch_add(1,Ordering::SeqCst);
+  if let Some(flag)=prewarm_cancel_slot().lock().take(){flag.store(true,Ordering::SeqCst);}
+}
 
 #[derive(Default)]
 pub struct QueueRuntime{
@@ -75,6 +82,8 @@ pub(crate) fn done_payload_from_summary(job:&QueueJob,id:&str,summary:&render::R
 #[tauri::command]
 pub async fn enqueue_projects(app:AppHandle,runtime:State<'_,Arc<QueueRuntime>>,projects:Vec<ProjectScanItem>,settings:RenderSettings,effects:Vec<EffectPreset>,subscribes:Vec<SubscribePreset>,ambient:Option<String>)->Result<(),String>{
   license::assert_production_allowed(&app).await?;
+  // Live render always wins over idle optimization.
+  cancel_background_prewarm();
   if settings.output_dir.trim().is_empty(){return Err("Не выбрана папка результата".into())}
   {
     let active=runtime.active.lock();
@@ -88,6 +97,34 @@ pub async fn enqueue_projects(app:AppHandle,runtime:State<'_,Arc<QueueRuntime>>,
     }
   }
   runtime.persist(&app);let _=app.emit("queue-changed",queue_snapshot_value(runtime.inner().as_ref()));start_worker_if_needed(app,runtime.inner().clone());Ok(())
+}
+
+#[tauri::command]
+pub async fn prewarm_projects(app:AppHandle,projects:Vec<ProjectScanItem>,settings:RenderSettings,effects:Vec<EffectPreset>,subscribes:Vec<SubscribePreset>,ambient:Option<String>)->Result<Value,String>{
+  license::assert_production_allowed(&app).await?;
+  cancel_background_prewarm();
+  let generation=PREWARM_GENERATION.load(Ordering::SeqCst);
+  let cancel=Arc::new(AtomicBool::new(false));
+  *prewarm_cancel_slot().lock()=Some(cancel.clone());
+  let jobs=projects.into_iter().filter(|p|p.valid).map(|project|QueueJob{
+    project,settings:settings.clone(),effects:effects.clone(),subscribes:subscribes.clone(),ambient:ambient.clone()
+  }).collect::<Vec<_>>();
+  let count=jobs.len();
+  let app2=app.clone();
+  tauri::async_runtime::spawn(async move{
+    for (index,job) in jobs.into_iter().enumerate(){
+      if cancel.load(Ordering::SeqCst)||PREWARM_GENERATION.load(Ordering::SeqCst)!=generation{break}
+      let id=job.project.id.clone();let mark=Instant::now();
+      let _=app2.emit("prewarm-status",json!({"id":id,"status":"running","index":index,"total":count}));
+      match render::prewarm_job_1003(&app2,&job,cancel.clone()).await{
+        Ok(result)=>{let _=app2.emit("prewarm-status",json!({"id":id,"status":"ready","seconds":mark.elapsed().as_secs_f64(),"result":result,"index":index,"total":count}));},
+        Err(error) if error=="__ENDLUME_CANCELLED__"=>break,
+        Err(error)=>{let _=app2.emit("prewarm-status",json!({"id":id,"status":"error","error":error,"index":index,"total":count}));}
+      }
+    }
+    let _=app2.emit("prewarm-status",json!({"status":"idle","generation":generation}));
+  });
+  Ok(json!({"started":count,"generation":generation}))
 }
 
 fn useful_detail(raw:&str)->String{

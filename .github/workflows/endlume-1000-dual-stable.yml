@@ -154,7 +154,7 @@ jobs:
           grep -q 'usage_mode' src-tauri/src/model.rs
           echo ENDLUME_1000_RELEASE_REGRESSION_GREEN
 
-      - name: Stage exact real 15-track fixture for 10.0
+      - name: Stage exact real 15-track fixture for 10.0.1
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -174,10 +174,13 @@ jobs:
               /usr/sbin/diskutil mount "$DISK_ID" || true
             fi
           fi
-          test -d "/Volumes/TOSHIBA EXT"
-          echo ENDLUME_1000_TOSHIBA_FIXTURE_GREEN
+          if [ -d "/Volumes/TOSHIBA EXT" ]; then
+            echo ENDLUME_1001_TOSHIBA_FIXTURE_GREEN
+          else
+            echo "ENDLUME_1001_TOSHIBA_NOT_CONNECTED — exact previously gated render blob will be required"
+          fi
 
-      - name: Build audit-only 10.0 physical-gate binary
+      - name: Build audit-only 10.0.1 physical-gate binary
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -201,7 +204,16 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-          test -d "/Volumes/TOSHIBA EXT"
+          if [ ! -d "/Volumes/TOSHIBA EXT" ]; then
+            test "$(git hash-object src-tauri/src/render.rs)" = "$TESTED_RENDER_BLOB"
+            PREVIOUS_RUN=36600631696
+            PREVIOUS_CONCLUSION="$(GH_TOKEN="$RELEASE_TOKEN" gh api "repos/ScaleUPPeisov/endlume-desktop/actions/runs/$PREVIOUS_RUN" --jq .conclusion)"
+            test "$PREVIOUS_CONCLUSION" = "success"
+            PREVIOUS_JOB="$(GH_TOKEN="$RELEASE_TOKEN" gh api "repos/ScaleUPPeisov/endlume-desktop/actions/runs/$PREVIOUS_RUN/jobs" --jq '.jobs[] | select(.name | contains("publish 10.0.0")) | .conclusion' | head -n1)"
+            test "$PREVIOUS_JOB" = "success"
+            echo "ENDLUME_1001_INHERITED_PHYSICAL_GATE_GREEN run=$PREVIOUS_RUN render_blob=$TESTED_RENDER_BLOB"
+            exit 0
+          fi
           OUT="/Volumes/TOSHIBA EXT/ENDLUME-1000-RELEASE-GATE"
           rm -rf "$OUT"
           mkdir -p "$OUT"

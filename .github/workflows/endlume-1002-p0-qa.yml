@@ -116,7 +116,6 @@ jobs:
           test -f "$SIDE"
           test -d "/Users/peisov/Desktop/Новая папка"
           test -f "/Users/peisov/Desktop/Новая папка/для Японского канала .mp4"
-          test -d "/Volumes/TOSHIBA EXT"
 
       - name: Clear only ENDLUME render caches for true cold Ping-Pong run
         shell: bash
@@ -133,7 +132,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           export CARGO_TARGET_DIR="$HOME/.endlume-build-cache/target-1002"
-          OUT="/Volumes/TOSHIBA EXT/ENDLUME-1002-PINGPONG-QA"
+          OUT="$HOME/Movies/ENDLUME Studio/ENDLUME-1002-PINGPONG-QA"
           rm -rf "$OUT"; mkdir -p "$OUT"
           FFM="$GITHUB_WORKSPACE/src-tauri/binaries/ffmpeg-aarch64-apple-darwin"
           FFP="$GITHUB_WORKSPACE/src-tauri/binaries/ffprobe-aarch64-apple-darwin"
@@ -146,7 +145,7 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-          OUT="/Volumes/TOSHIBA EXT/ENDLUME-1002-IMAGE-REGRESSION"
+          OUT="$HOME/Movies/ENDLUME Studio/ENDLUME-1002-IMAGE-REGRESSION"
           rm -rf "$OUT"; mkdir -p "$OUT"
           FFM="$GITHUB_WORKSPACE/src-tauri/binaries/ffmpeg-aarch64-apple-darwin"
           FFP="$GITHUB_WORKSPACE/src-tauri/binaries/ffprobe-aarch64-apple-darwin"

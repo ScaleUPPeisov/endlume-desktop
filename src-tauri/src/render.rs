@@ -347,7 +347,8 @@ async fn verify_audio_audible_1000(app:&AppHandle,path:&Path,expected:f64)->Resu
   let positions=[1.0_f64.min((expected-0.5).max(0.0)),(expected*0.50).max(0.5),(expected-5.0).max(0.5)];
   let mut args:Vec<String>=vec!["-hide_banner","-nostats","-v","info"].into_iter().map(String::from).collect();
   for pos in positions{
-    args.extend(vec!["-ss",&format!("{pos:.3}"),"-t","2.0","-i",path.to_string_lossy().as_ref()].into_iter().map(String::from));
+    let ss=format!("{pos:.3}");
+    args.extend(vec!["-ss",ss.as_str(),"-t","2.0","-i",path.to_string_lossy().as_ref()].into_iter().map(String::from));
   }
   args.extend(vec![
     "-filter_complex",

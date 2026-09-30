@@ -52,12 +52,28 @@ fn maybe_start_render_e2e(app:tauri::AppHandle){
 
     let mut results=Vec::<serde_json::Value>::new();
     let mut ok=true;
+    let mut prewarm_seconds:Option<f64>=None;
     if let Err(error)=license::assert_production_allowed(&app).await{
       ok=false;
       results.push(serde_json::json!({"status":"failed","stage":"license-gate","error":error}));
     }
     match parsed{
       Ok(jobs)=>{
+        if std::env::var_os("ENDLUME_E2E_PREWARM").is_some(){
+          if let Some(first)=jobs.first(){
+            let mark=std::time::Instant::now();
+            match render::prewarm_job_1003(&app,first,Arc::new(std::sync::atomic::AtomicBool::new(false))).await{
+              Ok(result)=>{
+                prewarm_seconds=Some(mark.elapsed().as_secs_f64());
+                eprintln!("ENDLUME_E2E_PREWARM_GREEN {}",serde_json::json!({"seconds":prewarm_seconds,"result":result}));
+              },
+              Err(error)=>{
+                ok=false;
+                results.push(serde_json::json!({"status":"failed","stage":"prewarm","error":error}));
+              }
+            }
+          }
+        }
         for job in jobs{
           if !ok{break}
           let id=job.project.id.clone();
@@ -97,6 +113,7 @@ fn maybe_start_render_e2e(app:tauri::AppHandle){
     let payload=serde_json::json!({
       "status":if ok{"passed"}else{"failed"},
       "wallSeconds":started_all.elapsed().as_secs_f64(),
+      "prewarmSeconds":prewarm_seconds,
       "results":results
     });
     let _=std::fs::write(&result_path,serde_json::to_vec_pretty(&payload).unwrap_or_default());
@@ -121,7 +138,7 @@ pub fn run(){
     .plugin(tauri_plugin_shell::init())
     .invoke_handler(tauri::generate_handler![
       scan::scan_root,
-      queue::enqueue_projects,queue::queue_snapshot,queue::reorder_queue,queue::cancel_project,queue::resume_recovery,queue::resume_license_queue,
+      queue::enqueue_projects,queue::prewarm_projects,queue::queue_snapshot,queue::reorder_queue,queue::cancel_project,queue::resume_recovery,queue::resume_license_queue,
       preview::generate_preview,live_preview::prepare_live_preview,assets::import_library_asset,
       persistence::load_library,persistence::save_library,persistence::load_recovery,persistence::dismiss_recovery,
       benchmark::benchmark_engine,

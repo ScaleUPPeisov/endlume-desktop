@@ -163,6 +163,36 @@ jobs:
           PY
             if [ -s "$RUNNER_TEMP/e1002-relocated-source.txt" ]; then PING_SOURCE="$(cat "$RUNNER_TEMP/e1002-relocated-source.txt")"; fi
           fi
+          if [ -z "$PING_SOURCE" ]; then
+            CACHE_ROOT="$HOME/Library/Caches/studio.endlume.desktop/pingpong-master-v10"
+            RECOVER_DIR="$HOME/.endlume-ci-fixtures/pingpong-source-1002"
+            mkdir -p "$RECOVER_DIR"
+            RECOVERED="$RECOVER_DIR/recovered-real-forward.mp4"
+            python3 - "$GITHUB_WORKSPACE/src-tauri/binaries/ffprobe-aarch64-apple-darwin" "$CACHE_ROOT" "$RUNNER_TEMP/e1002-cycle-source.txt" <<'PY'
+          import json,sys,subprocess
+          from pathlib import Path
+          ffprobe=Path(sys.argv[1]);root=Path(sys.argv[2]);out=Path(sys.argv[3])
+          rows=[]
+          if root.exists():
+              for p in root.glob("*.mp4"):
+                  try: rows.append((p.stat().st_mtime,p))
+                  except OSError: pass
+          for _,p in sorted(rows,reverse=True):
+              try:
+                  raw=subprocess.check_output([str(ffprobe),"-v","error","-select_streams","v:0","-show_entries","stream=codec_name,width,height,avg_frame_rate:format=duration","-of","json",str(p)],stderr=subprocess.DEVNULL,timeout=5)
+                  d=json.loads(raw);s=(d.get("streams") or [{}])[0];dur=float((d.get("format") or {}).get("duration") or 0)
+                  if s.get("codec_name")=="hevc" and s.get("width")==1920 and s.get("height")==1080 and s.get("avg_frame_rate")=="60/1" and 39.0<=dur<=42.0:
+                      out.write_text(str(p));print("RECOVERABLE_REAL_PINGPONG_CYCLE="+str(p));break
+              except Exception: pass
+          PY
+            if [ -s "$RUNNER_TEMP/e1002-cycle-source.txt" ]; then
+              CYCLE="$(cat "$RUNNER_TEMP/e1002-cycle-source.txt")"
+              "$GITHUB_WORKSPACE/src-tauri/binaries/ffmpeg-aarch64-apple-darwin" -hide_banner -loglevel error -i "$CYCLE" -t 20.033 -map 0:v:0 -an -c:v copy -movflags +faststart -y "$RECOVERED"
+              test -s "$RECOVERED"
+              PING_SOURCE="$RECOVERED"
+              echo "RECOVERED_REAL_PING_SOURCE=$PING_SOURCE"
+            fi
+          fi
           test -n "$PING_SOURCE" -a -f "$PING_SOURCE"
           PING_DIR="$(dirname "$PING_SOURCE")"
           AVAIL_KB="$(df -Pk "$HOME/Movies" | awk 'NR==2{print $4}')"

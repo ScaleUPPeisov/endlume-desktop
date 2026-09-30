@@ -97,9 +97,14 @@ source_seconds=float(source_meta["format"]["duration"])
 assert 19.0 <= source_seconds <= 21.0,source_seconds
 
 audio=sorted([p for p in PROJECT_DIR.rglob("*") if p.is_file() and p.suffix.lower()==".mp3"],key=lambda p:p.name.lower())
+preferred_side=os.environ.get("ENDLUME_1002_AUDIO_SIDE")
 if len(audio)<10:
-    # Project audio can live on an external disk; reuse the most recent ENDLUME side file only for source paths.
-    candidates=sorted((Path.home()/"Movies/ENDLUME Studio/logs").glob("*project.json"),key=lambda p:p.stat().st_mtime,reverse=True)
+    # Video fixture may live separately from the real audio project. Prefer the explicitly
+    # resolved real ENDLUME side file, then fall back to recent ENDLUME logs.
+    candidates=[]
+    if preferred_side and Path(preferred_side).is_file():
+        candidates.append(Path(preferred_side))
+    candidates += [p for p in sorted((Path.home()/"Movies/ENDLUME Studio/logs").glob("*project.json"),key=lambda p:p.stat().st_mtime,reverse=True) if p not in candidates]
     for side in candidates:
         try:
             j=json.loads(side.read_text(errors="replace"))
@@ -115,7 +120,10 @@ audio=audio[:10]
 # Reuse actual enabled ENDLUME effects whose source files still exist, but make them ALWAYS
 # so the short physical Ping-Pong cycle exercises the same visual path without a long encode.
 effects=[]
-candidates=sorted((Path.home()/"Movies/ENDLUME Studio/logs").glob("*project.json"),key=lambda p:p.stat().st_mtime,reverse=True)
+candidates=[]
+if preferred_side and Path(preferred_side).is_file():
+    candidates.append(Path(preferred_side))
+candidates += [p for p in sorted((Path.home()/"Movies/ENDLUME Studio/logs").glob("*project.json"),key=lambda p:p.stat().st_mtime,reverse=True) if p not in candidates]
 for side in candidates:
     try:
         j=json.loads(side.read_text(errors="replace"))

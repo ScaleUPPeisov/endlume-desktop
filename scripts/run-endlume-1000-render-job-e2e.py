@@ -192,8 +192,8 @@ for row in rows:
 
 cold=verified[0]["wall_seconds"];warm=[x["wall_seconds"] for x in verified[1:]]
 is_toshiba=str(OUTPUT_DIR).startswith("/Volumes/TOSHIBA EXT/")
-cold_limit=60.0 if is_toshiba else 50.0
-warm_limit=30.0 if is_toshiba else 25.0
+cold_limit=float(os.environ.get("ENDLUME_1000_COLD_LIMIT_SECONDS",60.0 if is_toshiba else 50.0))
+warm_limit=float(os.environ.get("ENDLUME_1000_WARM_LIMIT_SECONDS",30.0 if is_toshiba else 25.0))
 assert cold<=cold_limit,(cold,f"cold > {cold_limit}s",str(OUTPUT_DIR))
 assert max(warm)<=warm_limit,(warm,f"warm > {warm_limit}s",str(OUTPUT_DIR))
 if is_toshiba and (cold>45.0 or max(warm)>25.0):

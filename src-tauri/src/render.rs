@@ -1301,7 +1301,7 @@ async fn verify_result(app:&AppHandle,out:&Path,expected:f64,s:&RenderSettings)-
 }
 
 
-async fn verify_strict_857_result(app:&AppHandle,out:&Path,expected:f64,original_audio:bool,track_durations:&[f64],sample_table_pingpong:bool)->Result<(),String>{
+async fn verify_strict_857_result(app:&AppHandle,out:&Path,expected:f64,original_audio:bool,track_durations:&[f64],sample_table_fast:bool)->Result<(),String>{
   let bytes=std::fs::metadata(out).map_err(|e|format!("Strict 8.64 final stat: {e}"))?.len();
   if bytes<1_000_000{return Err(format!("Strict 8.64 final file too small: {} bytes",bytes))}
   let d=probe_duration(app,out.to_string_lossy().as_ref()).await?;
@@ -1322,7 +1322,7 @@ async fn verify_strict_857_result(app:&AppHandle,out:&Path,expected:f64,original
   // remapped. Decoding the middle of a 2h HEVC file adds ~1.8s on Apple Silicon
   // while duplicating that structural gate. Keep start + tail decode here; the
   // external P0 QA still decodes START/MIDDLE/END on the produced file.
-  let video_positions=if sample_table_pingpong{vec![0.0,(expected-2.0).max(0.0)]}else{vec![0.0,(expected*0.5).max(0.0),(expected-2.0).max(0.0)]};
+  let video_positions=if sample_table_fast{vec![0.0,(expected-2.0).max(0.0)]}else{vec![0.0,(expected*0.5).max(0.0),(expected-2.0).max(0.0)]};
   for pos in video_positions{
     let ss=format!("{pos:.3}");let args=vec!["-v","error","-ss",ss.as_str(),"-i",out.to_string_lossy().as_ref(),"-map","0:v:0","-frames:v","2","-f","null","-"].into_iter().map(String::from).collect();
     output(app,"ffmpeg",args).await.map_err(|e|format!("Strict 8.57 video seek/decode @ {ss}s: {e}"))?;
@@ -1887,7 +1887,7 @@ pub async fn render_job(app:&AppHandle,job:&QueueJob,cancel:Arc<AtomicBool>)->Re
         args.extend(vec!["-movflags","+faststart","-progress","pipe:1","-y",out.to_string_lossy().as_ref()].into_iter().map(String::from));
         run_ffmpeg(app,job,started,&timer,args,"10.0.2: собираю MP4 с Apple-compatible AAC",90.0,6.0,final_duration,&encoder,attempt,&cancel).await?;emit_timing(app,&job.project.id,"final-mux",mux_mark.elapsed().as_secs_f64());
       }
-      ensure_license_allowed()?;emit_progress(app,job,started,&timer,97.0,"Финальная проверка FFprobe",&encoder,attempt,None);let verify_mark=Instant::now();verify_result(app,&out,final_duration,&job.settings).await?;if smart_repeat{verify_strict_857_result(app,&out,final_duration,original_audio,&durations,fast_pingpong_project(job)).await?;}let validation_seconds=verify_mark.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"ffprobe-validation",validation_seconds);emit_timing(app,&job.project.id,"validation",validation_seconds);ensure_license_allowed()?;
+      ensure_license_allowed()?;emit_progress(app,job,started,&timer,97.0,"Финальная проверка FFprobe",&encoder,attempt,None);let verify_mark=Instant::now();verify_result(app,&out,final_duration,&job.settings).await?;if smart_repeat{verify_strict_857_result(app,&out,final_duration,original_audio,&durations,zero_copy).await?;}let validation_seconds=verify_mark.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"ffprobe-validation",validation_seconds);emit_timing(app,&job.project.id,"validation",validation_seconds);ensure_license_allowed()?;
       let result_stem=out.file_stem().and_then(|x|x.to_str()).unwrap_or(&job.project.name);let side_mark=Instant::now();if let Err(err)=write_side_files(job,&out_dir,&durations,final_duration,result_stem){emit_warning(app,&job.project.id,&format!("Видео готово, но служебные файлы не записаны: {err}"));}emit_timing(app,&job.project.id,"side-files",side_mark.elapsed().as_secs_f64());ensure_license_allowed()?;
       Ok((durations,final_duration,original_audio))
     }.await;

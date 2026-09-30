@@ -149,6 +149,18 @@ fn hybrid_fidelity_args(s:&RenderSettings,encoder:&str,duration:f64)->Vec<String
   }
 }
 
+fn pingpong_fidelity_args_1002(s:&RenderSettings,encoder:&str,duration:f64)->Vec<String>{
+  let frames=(s.fps.max(1) as f64*duration.max(2.0)).round().max(1.0) as u32;
+  let g=frames.min(STRICT_857_MAX_GOP_FRAMES).to_string();
+  match encoder{
+    "hevc_videotoolbox"=>vec!["-c:v","hevc_videotoolbox","-realtime","1","-prio_speed","1","-power_efficient","0","-constant_bit_rate","1","-b:v","50M","-g",&g,"-tag:v","hvc1","-pix_fmt","yuv420p"].into_iter().map(String::from).collect(),
+    "hevc_nvenc"=>vec!["-c:v","hevc_nvenc","-preset","p4","-rc","cbr","-b:v","50M","-maxrate","50M","-bufsize","100M","-g",&g,"-tag:v","hvc1","-pix_fmt","yuv420p"].into_iter().map(String::from).collect(),
+    "hevc_qsv"=>vec!["-c:v","hevc_qsv","-b:v","50M","-maxrate","50M","-bufsize","100M","-g",&g,"-tag:v","hvc1","-pix_fmt","nv12"].into_iter().map(String::from).collect(),
+    "hevc_amf"=>vec!["-c:v","hevc_amf","-quality","speed","-rc","cbr","-b:v","50M","-maxrate","50M","-g",&g,"-tag:v","hvc1","-pix_fmt","yuv420p"].into_iter().map(String::from).collect(),
+    _=>fidelity_video_args(encoder,s),
+  }
+}
+
 fn cached_master_fidelity_args_1000(s:&RenderSettings,encoder:&str,duration:f64)->Vec<String>{
   // 10.0: the persistent physical master is intentionally high-bitrate.
   // sample-table expansion reuses these packets for hours, so spending bytes here
@@ -305,7 +317,7 @@ async fn verify_audio_audible_1000(app:&AppHandle,path:&Path,expected:f64)->Resu
 }
 
 async fn verify_final_audio_structure_1002(app:&AppHandle,path:&Path)->Result<(),String>{
-  let args=vec!["-v","error","-select_streams","a","-show_entries","stream=index,codec_name,codec_tag_string,sample_rate,channels,start_time,duration,disposition","-of","json",path.to_string_lossy().as_ref()].into_iter().map(String::from).collect();
+  let args=vec!["-v","error","-select_streams","a","-show_entries","stream=index,codec_name,codec_tag_string,sample_rate,channels,start_time,duration:stream_disposition=default","-of","json",path.to_string_lossy().as_ref()].into_iter().map(String::from).collect();
   let (raw,_)=output(app,"ffprobe",args).await.map_err(|e|format!("10.0.2 final audio structure probe: {e}"))?;
   let v:serde_json::Value=serde_json::from_slice(&raw).map_err(|e|format!("10.0.2 final audio JSON: {e}"))?;
   let streams=v.get("streams").and_then(|x|x.as_array()).cloned().unwrap_or_default();
@@ -829,7 +841,7 @@ async fn build_cached_pingpong_source_1002(app:&AppHandle,job:&QueueJob,encoder:
   let _=std::fs::remove_file(&out);let tmp=root.join(format!(".{key}-{}.tmp.mp4",uuid::Uuid::new_v4()));
   let graph=format!("[0:v]fps={fps},trim=start_frame=0:end_frame={forward_frames},setpts=PTS-STARTPTS,split=2[f][r];[r]reverse,trim=start_frame=1:end_frame={},setpts=PTS-STARTPTS[rr];[f][rr]concat=n=2:v=1:a=0[x];{}[outv]",forward_frames-1,base_filter(&job.settings,"x"));
   let mut args:Vec<String>=vec!["-hide_banner","-loglevel","error","-filter_complex_threads","8","-i",source.to_string_lossy().as_ref(),"-filter_complex",&graph,"-map","[outv]","-frames:v",&cycle_frames.to_string(),"-an"].into_iter().map(String::from).collect();
-  args.extend(fidelity_video_args(encoder,&job.settings));
+  args.extend(pingpong_fidelity_args_1002(&job.settings,encoder,cycle_duration));
   args.extend(vec!["-fps_mode","cfr","-r",&fps.to_string(),"-video_track_timescale","60000","-progress","pipe:1","-y",tmp.to_string_lossy().as_ref()].into_iter().map(String::from));
   let mark=Instant::now();run_ffmpeg(app,job,started,timer,args,"10.0.2: SHORT_VIDEO_PINGPONG_FAST physical master",8.0,20.0,cycle_duration,encoder,attempt,cancel).await?;
   let packets=probe_video_packets_857(app,&tmp).await?;if packets!=cycle_frames{let _=std::fs::remove_file(&tmp);return Err(format!("10.0.2 Ping-Pong master packets={packets}/{cycle_frames}"))}
@@ -1433,8 +1445,8 @@ async fn build_cached_pingpong_visual_1002(app:&AppHandle,job:&QueueJob,source:&
   let _=std::fs::remove_file(&out);let tmp=root.join(format!(".{key}-{}.tmp.mp4",uuid::Uuid::new_v4()));let mut args:Vec<String>=vec!["-hide_banner","-loglevel","error","-stream_loop","-1","-i",source.to_string_lossy().as_ref()].into_iter().map(String::from).collect();
   for e in effects.iter().filter(|e|effect_usage_mode(e)!="off"&&!e.source.trim().is_empty()){args.extend(vec!["-stream_loop","-1","-i",e.source.as_str()].into_iter().map(String::from));}
   let (graph,last)=apply_effects_filter("[0:v]fps=60,setpts=PTS-STARTPTS[b0]".into(),"b0".into(),effects,&job.settings,1);let graph=format!("{graph};[{last}]fps=60,format=yuv420p[outv]");
-  args.extend(vec!["-filter_complex",&graph,"-map","[outv]","-frames:v",&frames.to_string(),"-an"].into_iter().map(String::from));args.extend(fidelity_video_args(encoder,&job.settings));args.extend(vec!["-fps_mode","cfr","-r","60","-video_track_timescale","60000","-progress","pipe:1","-y",tmp.to_string_lossy().as_ref()].into_iter().map(String::from));
-  let duration=frames as f64/60.0;let mark=Instant::now();run_ffmpeg(app,job,started,timer,args,"10.0.2: Ping-Pong Effects physical cycle",30.0,18.0,duration,encoder,attempt,cancel).await?;
+  args.extend(vec!["-filter_complex",&graph,"-map","[outv]","-frames:v",&frames.to_string(),"-an"].into_iter().map(String::from));let duration=frames as f64/60.0;args.extend(pingpong_fidelity_args_1002(&job.settings,encoder,duration));args.extend(vec!["-fps_mode","cfr","-r","60","-video_track_timescale","60000","-progress","pipe:1","-y",tmp.to_string_lossy().as_ref()].into_iter().map(String::from));
+  let mark=Instant::now();run_ffmpeg(app,job,started,timer,args,"10.0.2: Ping-Pong Effects physical cycle",30.0,18.0,duration,encoder,attempt,cancel).await?;
   let packets=probe_video_packets_857(app,&tmp).await?;if packets!=frames{let _=std::fs::remove_file(&tmp);return Err(format!("10.0.2 Ping-Pong visual packets={packets}/{frames}"))}
   if out.exists(){let _=std::fs::remove_file(&tmp);}else{std::fs::rename(&tmp,&out).map_err(|e|format!("10.0.2 Ping-Pong visual cache commit: {e}"))?}
   let sec=mark.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"base-visual-cache",sec);emit_timing(app,&job.project.id,"base-visual-master",sec);prune_cache_1000(&root,&out);let _=app.emit("engine-profile",json!({"id":job.project.id,"pingPongVisualCache":"MISS","pingPongVisualCacheKey":key}));Ok(out)

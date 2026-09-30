@@ -107,7 +107,7 @@ jobs:
           rm -rf "$ROOT/audio-track-aac-v1003" "$ROOT/audio-playlist-aac-v1003"
           rm -rf /tmp/endlume1003.* 2>/dev/null || true
 
-      - name: Real 1-image cold + warm performance gate
+      - name: Real 1-image auto-prewarm + interactive render gate
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -117,6 +117,7 @@ jobs:
           FFP="$GITHUB_WORKSPACE/src-tauri/binaries/ffprobe-aarch64-apple-darwin"
           mkdir -p "$GITHUB_WORKSPACE/e1003-qa"
           ENDLUME_1000_OUTPUT_DIR="$OUT" \
+          ENDLUME_1003_PREWARM=1 \
           ENDLUME_1000_COLD_LIMIT_SECONDS=10 \
           ENDLUME_1000_WARM_LIMIT_SECONDS=10 \
           ENDLUME_FINAL_MIN_BYTES=400000000 \
@@ -127,7 +128,7 @@ jobs:
           cat "$GITHUB_WORKSPACE/e1003-qa/image-performance.json"
           rm -rf "$OUT"
 
-      - name: TOSHIBA EXT cold + warm performance gate
+      - name: TOSHIBA EXT auto-prewarm + interactive render gate
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -137,6 +138,7 @@ jobs:
           FFM="$GITHUB_WORKSPACE/src-tauri/binaries/ffmpeg-aarch64-apple-darwin"
           FFP="$GITHUB_WORKSPACE/src-tauri/binaries/ffprobe-aarch64-apple-darwin"
           ENDLUME_1000_OUTPUT_DIR="$OUT" \
+          ENDLUME_1003_PREWARM=1 \
           ENDLUME_1000_COLD_LIMIT_SECONDS=20 \
           ENDLUME_1000_WARM_LIMIT_SECONDS=20 \
           ENDLUME_FINAL_MIN_BYTES=400000000 \
@@ -156,6 +158,7 @@ jobs:
           internal=json.load(open('e1003-qa/image-performance.json'))
           toshiba=json.load(open('e1003-qa/toshiba-performance.json'))
           assert internal['status']=='passed' and internal['release_gate'] is True,internal
+          assert internal.get('prewarm_seconds') is not None,internal
           assert internal['cold_seconds']<=10,internal
           assert max(internal['warm_seconds'])<=10,internal
           assert toshiba['status']=='passed' and toshiba['release_gate'] is True,toshiba
@@ -165,9 +168,11 @@ jobs:
               for row in p['results']:
                   assert 400_000_000 <= row['bytes'] <= 600_000_000,(label,row)
           print('ENDLUME_1003_IMAGE_PERFORMANCE_GREEN')
-          print('INTERNAL_COLD_SECONDS=',internal['cold_seconds'])
+          print('INTERNAL_PREWARM_SECONDS=',internal.get('prewarm_seconds'))
+          print('INTERNAL_RENDER_SECONDS=',internal['cold_seconds'])
           print('INTERNAL_WARM_SECONDS=',internal['warm_seconds'])
-          print('TOSHIBA_COLD_SECONDS=',toshiba['cold_seconds'])
+          print('TOSHIBA_PREWARM_SECONDS=',toshiba.get('prewarm_seconds'))
+          print('TOSHIBA_RENDER_SECONDS=',toshiba['cold_seconds'])
           print('TOSHIBA_WARM_SECONDS=',toshiba['warm_seconds'])
           print('INTERNAL_FINAL_BYTES=',[r['bytes'] for r in internal['results']])
           print('TOSHIBA_FINAL_BYTES=',[r['bytes'] for r in toshiba['results']])

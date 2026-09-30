@@ -3,7 +3,7 @@
   "version": "10.0.2",
   "channel": "stable",
   "platform": "darwin-aarch64",
-  "source_commit": "80276a186cc9a50af69078e2ce8be2d670c927b6",
+  "source_commit": "9489387fc6030709e873ea31526355ba7e629063",
   "user_release_approval": true,
   "date": "2026-09-30"
 }

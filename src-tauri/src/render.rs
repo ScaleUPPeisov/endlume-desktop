@@ -501,19 +501,35 @@ fn resolve_output_dir(app:&AppHandle,requested:&Path)->Result<PathBuf,String>{
   if writable_dir(&fallback){Ok(fallback)}else{Err("ENDLUME не может записать ни в выбранную папку, ни в Movies/ENDLUME Studio".into())}
 }
 
+fn render_work_owner_alive_1002(dir:&Path)->bool{
+  let marker=dir.join(".endlume-owner-pid");
+  let Ok(raw)=std::fs::read_to_string(marker) else{return false};
+  let Ok(pid)=raw.trim().parse::<u32>() else{return false};
+  let mut sys=System::new_all();let p=Pid::from_u32(pid);
+  sys.refresh_processes(ProcessesToUpdate::Some(&[p]),true);
+  sys.process(p).is_some()
+}
+
 fn render_work_dir(app:&AppHandle,id:&str,attempt:u32)->Result<PathBuf,String>{
   let base=app.path().app_cache_dir().unwrap_or_else(|_|std::env::temp_dir().join("studio.endlume.desktop"));
   let root=base.join("render-work");
   std::fs::create_dir_all(&root).map_err(|e|format!("Не удалось создать локальную рабочую папку ENDLUME: {e}"))?;
   if let Ok(entries)=std::fs::read_dir(&root){
     for e in entries.flatten(){
-      let p=e.path();let stale=e.metadata().ok().and_then(|m|m.modified().ok()).and_then(|t|t.elapsed().ok()).map(|x|x>=Duration::from_secs(86_400)).unwrap_or(false);
-      if stale{let _=std::fs::remove_dir_all(p);}
+      let p=e.path();if !p.is_dir(){continue}
+      let marker=p.join(".endlume-owner-pid");
+      let legacy_age=e.metadata().ok().and_then(|m|m.modified().ok()).and_then(|t|t.elapsed().ok());
+      let orphan=if marker.is_file(){!render_work_owner_alive_1002(&p)}else{legacy_age.map(|x|x>=Duration::from_secs(6*3600)).unwrap_or(false)};
+      if orphan{
+        let bytes=p0c_recursive_bytes(&p);
+        if std::fs::remove_dir_all(&p).is_ok(){diag_line(json!({"kind":"crash-recovery-cleanup","path":p,"reclaimedBytes":bytes}));}
+      }
     }
   }
   let dir=root.join(format!("{}-{}",safe_name(id),attempt));
   let _=std::fs::remove_dir_all(&dir);
   std::fs::create_dir_all(&dir).map_err(|e|format!("Не удалось создать локальную рабочую папку проекта: {e}"))?;
+  std::fs::write(dir.join(".endlume-owner-pid"),std::process::id().to_string()).map_err(|e|format!("Не удалось записать owner marker render-work: {e}"))?;
   Ok(dir)
 }
 

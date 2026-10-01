@@ -10,13 +10,13 @@ const ROUND_EQUALIZER_859_SIMILARITY:f64=0.18;
 const ROUND_EQUALIZER_859_BLEND:f64=0.03;
 
 fn color(hex:&str)->String{format!("0x{}",hex.trim().trim_start_matches('#').trim_start_matches("0x"))}
-fn despill_type(hex:&str)->&'static str{
+pub(crate) fn despill_type(hex:&str)->&'static str{
   let raw=hex.trim().trim_start_matches('#');
   if raw.len()==6{if let Ok(v)=u32::from_str_radix(raw,16){let g=(v>>8)&255;let b=v&255;if b>g{return "blue"}}}
   "green"
 }
 
-fn chromakey_params_859(e:&EffectPreset)->(f64,f64){
+pub(crate) fn chromakey_params_859(e:&EffectPreset)->(f64,f64){
   // 8.59 is intentionally scoped to this one existing preset only. The legacy
   // 0.60 / 0.184 values key away the equalizer itself, leaving it mostly
   // semi-transparent. Every other Effect keeps its user-selected key values.
@@ -97,11 +97,10 @@ pub async fn prepare_strict_856(app:&AppHandle,e:&EffectPreset,fps:u32,width:u32
   let mut prepared=e.clone();prepared.source=path.to_string_lossy().into_owned();prepared.cache_key=Some(key);prepared.cache_ready=Some(true);prepared.mode=if e.mode=="screen"||e.mode=="screen-cache"{"strict-screen-cache".into()}else{"strict-prealpha".into()};Ok(prepared)
 }
 
-pub fn start_strict_prewarm_856(app:AppHandle){
-  let value=crate::persistence::read_value(&app,"library.json");let effects=value.get("effects").cloned().and_then(|v|serde_json::from_value::<Vec<EffectPreset>>(v).ok()).unwrap_or_default();
-  for e in effects.into_iter().filter(|e|e.enabled&&!e.source.trim().is_empty()){
-    let app2=app.clone();tauri::async_runtime::spawn(async move{let _=prepare_strict_856(&app2,&e,30,1920,1080).await;});
-  }
+pub fn start_strict_prewarm_856(_app:AppHandle){
+  // 10.0.8: smart static renders fuse keying directly into the persistent HEVC
+  // visual master. Pre-rendering a full-duration qtrle copy duplicated the same
+  // chroma/luma work and cost the measured cold path ~6-15 seconds.
 }
 
 pub async fn prepare(app:&AppHandle,e:&EffectPreset,fps:u32)->Result<EffectPreset,String>{

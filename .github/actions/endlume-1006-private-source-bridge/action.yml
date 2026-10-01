@@ -1,0 +1,22 @@
+name: ENDLUME 10.0.6 Private Source Bridge
+description: Private-source bridge for the public release runner without exposing repository contents.
+
+runs:
+  using: composite
+  steps:
+    - name: Verify exact private ENDLUME source
+      shell: bash
+      run: |
+        set -Eeuo pipefail
+        ROOT="$(cd "${{ github.action_path }}/../../.." && pwd)"
+        test -f "$ROOT/package.json"
+        test -f "$ROOT/src-tauri/tauri.conf.json"
+        python3 - "$ROOT" <<'PY'
+        import json,sys
+        from pathlib import Path
+        root=Path(sys.argv[1])
+        assert json.loads((root/'package.json').read_text())['version']=='10.0.6'
+        assert json.loads((root/'src-tauri/tauri.conf.json').read_text())['version']=='10.0.6'
+        print('ENDLUME_1006_PRIVATE_ACTION_SOURCE_GREEN')
+        PY
+        echo "ENDLUME_PRIVATE_SOURCE_ROOT=$ROOT" >> "$GITHUB_ENV"

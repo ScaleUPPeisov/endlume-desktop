@@ -1,5 +1,5 @@
 import React,{useEffect,useRef,useState} from 'react';
-import type {EffectPreset} from '../types';
+import type {AnchorPoint,EffectPreset} from '../types';
 
 export type LivePreviewAssets={basePath:string;baseKind:'image'|'video';overlayPath:string};
 
@@ -12,12 +12,15 @@ type Props={
   onDragStart:(e:React.PointerEvent<HTMLDivElement>)=>void;
   onResizeStart:(e:React.PointerEvent<HTMLElement>)=>void;
   onPickColor?:(hex:string)=>void;
+  anchor?:AnchorPoint;
+  anchorMode?:boolean;
+  onAnchorPick?:(x:number,y:number)=>void;
 };
 
 function hexRgb(hex:string){const raw=hex.replace('#','').trim();const v=Number.parseInt(raw.length===3?raw.split('').map(x=>x+x).join(''):raw,16);return [((v>>16)&255)/255,((v>>8)&255)/255,(v&255)/255] as const}
 function rgbHex(r:number,g:number,b:number){return `#${[r,g,b].map(v=>Math.max(0,Math.min(255,Math.round(v))).toString(16).padStart(2,'0')).join('')}`}
 
-export function LiveCompositePreview({assets,effect,busy,overlayRef,overlayStyle,onDragStart,onResizeStart,onPickColor}:Props){
+export function LiveCompositePreview({assets,effect,busy,overlayRef,overlayStyle,onDragStart,onResizeStart,onPickColor,anchor,anchorMode,onAnchorPick}:Props){
   const canvasRef=useRef<HTMLCanvasElement>(null),videoRef=useRef<HTMLVideoElement>(null),rafRef=useRef<number|undefined>(undefined),effectRef=useRef(effect),brushRaf=useRef<number|undefined>(undefined),lastBrushPoint=useRef<{x:number;y:number}|undefined>(undefined),brushDown=useRef(false);
   const [picker,setPicker]=useState(false),[overlayAspect,setOverlayAspect]=useState<number>(1);
   effectRef.current=effect;
@@ -31,6 +34,12 @@ export function LiveCompositePreview({assets,effect,busy,overlayRef,overlayStyle
     try{ctx.drawImage(video,sx,sy,1,1,0,0,1,1);const p=ctx.getImageData(0,0,1,1).data;onPickColor(rgbHex(p[0],p[1],p[2]));}catch{}
   };
   const scheduleSample=(x:number,y:number)=>{lastBrushPoint.current={x,y};if(brushRaf.current!=null)return;brushRaf.current=requestAnimationFrame(()=>{brushRaf.current=undefined;const p=lastBrushPoint.current;if(p)sampleAt(p.x,p.y)})};
+  const pickAnchor=(event:React.PointerEvent<HTMLDivElement>)=>{
+    if(!anchorMode||!onAnchorPick)return;
+    event.preventDefault();event.stopPropagation();
+    const r=event.currentTarget.getBoundingClientRect();if(r.width<2||r.height<2)return;
+    onAnchorPick(Math.max(0,Math.min(1,(event.clientX-r.left)/r.width)),Math.max(0,Math.min(1,(event.clientY-r.top)/r.height)));
+  };
 
   useEffect(()=>{
     const canvas=canvasRef.current,video=videoRef.current;if(!canvas||!video||!assets?.overlayPath)return;
@@ -54,8 +63,9 @@ export function LiveCompositePreview({assets,effect,busy,overlayRef,overlayStyle
   if(!assets)return <div className="livePreviewEmpty"><span>{busy?'Подготавливаю Live Preview…':'Выберите проект на основном экране'}</span></div>;
   const base=assets.baseKind==='video'?<video className="livePreviewBase" src={assets.basePath} autoPlay loop muted playsInline/>:<img className="livePreviewBase" src={assets.basePath} draggable={false}/>;
   const exactOverlayStyle:React.CSSProperties=effect.fullscreen?overlayStyle:{...overlayStyle,aspectRatio:String(Math.max(.05,overlayAspect)),height:'auto'};
-  return <div className={`liveComposite ${picker?'chromaPicking':''}`}>
+  return <div className={`liveComposite ${picker?'chromaPicking':''} ${anchorMode?'anchorPicking':''}`} onPointerDownCapture={pickAnchor}>
     {base}
+    {anchor&&<div aria-hidden="true" style={{position:'absolute',left:`${anchor.x*100}%`,top:`${anchor.y*100}%`,width:18,height:18,border:'2px solid currentColor',borderRadius:'50%',transform:'translate(-50%,-50%)',boxShadow:'0 0 0 1px rgba(0,0,0,.75)',zIndex:12,pointerEvents:'none'}}><i style={{position:'absolute',left:'50%',top:-7,bottom:-7,width:1,background:'currentColor',transform:'translateX(-50%)'}}/><i style={{position:'absolute',top:'50%',left:-7,right:-7,height:1,background:'currentColor',transform:'translateY(-50%)'}}/></div>}
     {effect.mode==='chromakey'&&<button type="button" className={`chromaPickerButton ${picker?'active':''}`} onClick={e=>{e.preventDefault();e.stopPropagation();setPicker(v=>!v)}}>{picker?'✓ ВЫБЕРИ/ПРОВЕДИ ПО ФОНУ':'⌾ ПИПЕТКА / КИСТЬ'}</button>}
     <div ref={overlayRef} className={`liveGpuOverlay ${effect.fullscreen?'fullscreen':''}`} style={exactOverlayStyle}
       onPointerDown={e=>{if(picker){e.preventDefault();e.stopPropagation();brushDown.current=true;scheduleSample(e.clientX,e.clientY);return}onDragStart(e)}}
@@ -63,7 +73,7 @@ export function LiveCompositePreview({assets,effect,busy,overlayRef,overlayStyle
       onPointerUp={e=>{if(picker){e.preventDefault();e.stopPropagation();brushDown.current=false;sampleAt(e.clientX,e.clientY)}}}
       onPointerCancel={()=>{brushDown.current=false}}>
       <video ref={videoRef} className="liveOverlaySource" src={assets.overlayPath} autoPlay loop muted playsInline/>
-      <canvas ref={canvasRef} className="liveOverlayCanvas" style={{mixBlendMode:effect.mode==='screen'?'screen':'normal'}}/>
+      <canvas ref={canvasRef} className="liveOverlayCanvas" style={{mixBlendMode:effect.mode==='screen'?'screen':'normal',opacity:Math.max(0,Math.min(1,effect.opacity??1))}}/>
       {!effect.fullscreen&&!picker&&<><i className="corner nw"/><i className="corner ne"/><i className="corner sw"/><i className="corner se" onPointerDown={onResizeStart}/></>}
     </div>
     {busy&&<div className="livePreviewPreparing">Обновляю proxy…</div>}

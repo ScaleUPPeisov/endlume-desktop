@@ -1,0 +1,8 @@
+{
+  "enabled": false,
+  "version_from": "10.0.3",
+  "version_to": "10.0.6",
+  "baseline_source_sha": "2ca40787fd7b36fc0f793aaa69c3297ed581232f",
+  "updater_endpoint": "https://github.com/ScaleUPPeisov/scaleup-site/releases/download/endlume-stable/latest.json",
+  "production_publish_run_id": null
+}

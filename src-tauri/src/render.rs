@@ -298,7 +298,7 @@ fn cached_master_fidelity_args_1000(s:&RenderSettings,encoder:&str,duration:f64)
   let mbps=(2000.0/duration).clamp(80.0,220.0).round() as u32;
   let rate=format!("{mbps}M");let buf=format!("{}M",mbps.saturating_mul(2));let kbps=mbps.saturating_mul(1000);
   match encoder{
-    "hevc_videotoolbox"=>vec!["-c:v","hevc_videotoolbox","-realtime","1","-prio_speed","1","-power_efficient","0","-constant_bit_rate","1","-b:v","28M","-g",&g,"-tag:v","hvc1","-pix_fmt","yuv420p"].into_iter().map(String::from).collect(),
+    "hevc_videotoolbox"=>vec!["-c:v","hevc_videotoolbox","-realtime","1","-prio_speed","1","-power_efficient","0","-constant_bit_rate","1","-b:v","22M","-g",&g,"-tag:v","hvc1","-pix_fmt","yuv420p"].into_iter().map(String::from).collect(),
     "hevc_nvenc"=>vec!["-c:v","hevc_nvenc","-preset","p4","-rc","cbr","-b:v",&rate,"-maxrate",&rate,"-bufsize",&buf,"-g",&g,"-tag:v","hvc1","-pix_fmt","yuv420p"].into_iter().map(String::from).collect(),
     "hevc_qsv"=>vec!["-c:v","hevc_qsv","-b:v",&rate,"-maxrate",&rate,"-bufsize",&buf,"-g",&g,"-tag:v","hvc1","-pix_fmt","nv12"].into_iter().map(String::from).collect(),
     "hevc_amf"=>vec!["-c:v","hevc_amf","-quality","speed","-rc","cbr","-b:v",&rate,"-maxrate",&rate,"-bufsize",&buf,"-g",&g,"-tag:v","hvc1","-pix_fmt","yuv420p"].into_iter().map(String::from).collect(),
@@ -1411,7 +1411,7 @@ async fn copy_segment(app:&AppHandle,job:&QueueJob,variant:&Path,variant_duratio
 }
 
 async fn render_sub_segment(app:&AppHandle,job:&QueueJob,variant:&Path,variant_duration:f64,start:f64,len:f64,active:&[SubEvent],out:&Path,encoder:&str,attempt:u32,cancel:&AtomicBool,base:f64,span:f64,started:i64,timer:&Instant)->Result<(),String>{
-  let phase=(start%variant_duration.max(0.1)).max(0.0);let mut args:Vec<String>=vec!["-hide_banner","-loglevel","error","-stream_loop","-1","-ss",&phase.to_string(),"-i",variant.to_string_lossy().as_ref()].into_iter().map(String::from).collect();
+  let phase=(start%variant_duration.max(0.1)).max(0.0);let mut args:Vec<String>=vec!["-hide_banner","-loglevel","error","-filter_complex_threads","2","-stream_loop","-1","-ss",&phase.to_string(),"-i",variant.to_string_lossy().as_ref()].into_iter().map(String::from).collect();
   for ev in active{let offset=(start-ev.event_start).max(0.0);args.extend(vec!["-ss",&offset.to_string(),"-i",ev.sub.effect.source.as_str()].into_iter().map(String::from));}
   let sub_effects=active.iter().map(|e|e.sub.effect.clone()).collect::<Vec<_>>();let (graph,last)=apply_effects_filter("[0:v]setpts=PTS-STARTPTS[b0]".into(),"b0".into(),&sub_effects,&job.settings,1);let graph=format!("{graph};[{last}]format=yuv420p[outv]");
   args.extend(vec!["-filter_complex",&graph,"-map","[outv]","-t",&len.to_string(),"-an"].into_iter().map(String::from));if smart_repeat_project(job){args.extend(hybrid_fidelity_args(&job.settings,encoder,len));}else{args.extend(encoder_args(encoder,&job.settings,false));}args.extend(vec!["-progress","pipe:1","-y",out.to_string_lossy().as_ref()].into_iter().map(String::from));run_ffmpeg(app,job,started,timer,args,"Добавляю Subscribe",base,span,len,encoder,attempt,cancel).await
@@ -1593,7 +1593,7 @@ fn visual_master_key_1000(job:&QueueJob,effects:&[EffectPreset],master_frames:us
   let mut h=Sha256::new();h.update(b"ENDLUME-10.0.8-BASE-VISUAL-v4-DIRECT-VBR");
   h.update(profile.as_bytes());h.update(encoder.as_bytes());h.update(master_frames.to_le_bytes());
   h.update(job.settings.width.to_le_bytes());h.update(job.settings.height.to_le_bytes());h.update(job.settings.fps.to_le_bytes());
-  h.update(b"yuv420p|hevc|visual-cache-v11-cbr28m");
+  h.update(b"yuv420p|hevc|visual-cache-v12-cbr22m");
   let image=Path::new(job.project.media.first().ok_or("10.0 visual cache: image missing")?);
   hash_file_into_1000(&mut h,image)?;
   for e in effects.iter().filter(|e|effect_usage_mode(e)!="off"){
@@ -1707,7 +1707,7 @@ async fn build_cached_visual_master_1000(app:&AppHandle,job:&QueueJob,effects:&[
   let vf=base_filter(&ws,"0:v");let vf=vf.trim_start_matches("[0:v]").to_string();
   let prep=vec!["-hide_banner","-loglevel","error","-i",job.project.media[0].as_str(),"-vf",vf.as_str(),"-frames:v","1","-compression_level","1","-y",base_still.to_string_lossy().as_ref()].into_iter().map(String::from).collect();
   output(app,"ffmpeg",prep).await.map_err(|e|format!("10.0 base preprocess: {e}"))?;emit_timing(app,&job.project.id,"image-preprocess",prep_mark.elapsed().as_secs_f64());
-  let tmp=root.join(format!(".{key}-{}.tmp.mp4",uuid::Uuid::new_v4()));let mut args:Vec<String>=vec!["-hide_banner","-loglevel","error","-filter_complex_threads","8","-loop","1","-framerate",&work_fps.to_string(),"-i",base_still.to_string_lossy().as_ref()].into_iter().map(String::from).collect();
+  let tmp=root.join(format!(".{key}-{}.tmp.mp4",uuid::Uuid::new_v4()));let mut args:Vec<String>=vec!["-hide_banner","-loglevel","error","-filter_complex_threads","2","-loop","1","-framerate",&work_fps.to_string(),"-i",base_still.to_string_lossy().as_ref()].into_iter().map(String::from).collect();
   for e in effects.iter().filter(|x|effect_usage_mode(x)!="off"&&!x.source.trim().is_empty()){args.extend(vec!["-stream_loop","-1","-i",e.source.as_str()].into_iter().map(String::from));}
   let base=format!("[0:v]fps={work_fps},setsar=1[b0]");let (graph,last)=apply_effects_filter(base,"b0".into(),effects,&ws,1);let graph=format!("{graph};[{last}]fps={fps},format=yuv420p[outv]");
   args.extend(vec!["-filter_complex",&graph,"-map","[outv]","-frames:v",&master_frames.to_string(),"-an"].into_iter().map(String::from));
@@ -2112,7 +2112,9 @@ pub async fn render_job(app:&AppHandle,job:&QueueJob,cancel:Arc<AtomicBool>)->Re
           let app_bg=app.clone();let mut job_bg=(*job).clone();job_bg.project.id=format!("{}::visual-prewarm",job.project.id);
           let fx_bg=fx.clone();let work_bg=work.clone();let encoder_bg=encoder.clone();let cancel_bg=cancel.clone();let timer_bg=timer.clone();
           tauri::async_runtime::spawn(async move{
-            build_cached_visual_master_1000(&app_bg,&job_bg,&fx_bg,plan.master_frames,&work_bg,&encoder_bg,true,attempt,cancel_bg.as_ref(),started,&timer_bg).await
+            let master=build_cached_visual_master_1000(&app_bg,&job_bg,&fx_bg,plan.master_frames,&work_bg,&encoder_bg,true,attempt,cancel_bg.as_ref(),started,&timer_bg).await?;
+            let _=render_periodic_sub_852(&app_bg,&job_bg,&master,&plan.sub,plan.phase_frames,plan.duration_frames,&work_bg,"prewarm-v1008",&encoder_bg,attempt,cancel_bg.as_ref(),started,&timer_bg).await?;
+            Ok::<PathBuf,String>(master)
           })
         })
       }else{None};

@@ -56,13 +56,19 @@ ASSET_URL="https://github.com/$HOST_REPO/releases/download/$TAG/$(basename "$FIX
 LATEST="$ART/latest.json"
 OLD="$ART/old-latest.json"
 if gh release download "$TAG" --repo "$HOST_REPO" --pattern latest.json --output "$OLD" >/dev/null 2>&1; then :; else printf '{}\n' > "$OLD"; fi
-python3 - "$OLD" "$LATEST" "$VERSION" "$NOTES" "$ASSET_URL" "$SIG" <<'PY'
-import json,sys,datetime
-old,out,version,notes,url,sig=sys.argv[1:]
+WINDOWS_META="$ART/windows-platform.json"
+python3 - "$OLD" "$LATEST" "$VERSION" "$NOTES" "$ASSET_URL" "$SIG" "$WINDOWS_META" <<'PY'
+import json,sys,datetime,pathlib
+old,out,version,notes,url,sig,windows_meta=sys.argv[1:]
 try: d=json.load(open(old))
 except: d={}
 platforms=d.get('platforms') if isinstance(d.get('platforms'),dict) else {}
 platforms['darwin-aarch64']={'url':url,'signature':sig}
+wm=pathlib.Path(windows_meta)
+if wm.is_file():
+    w=json.loads(wm.read_text())
+    assert w.get('url') and w.get('signature'),'invalid windows updater metadata'
+    platforms['windows-x86_64']=w
 obj={'version':version,'notes':notes,'pub_date':datetime.datetime.now(datetime.timezone.utc).isoformat(),'platforms':platforms}
 json.dump(obj,open(out,'w'),ensure_ascii=False,indent=2)
 PY

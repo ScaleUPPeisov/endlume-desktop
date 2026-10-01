@@ -43,7 +43,7 @@ fx2={"id":"fx-off","name":"OFF", "source":str(fx_off),"enabled":False,"x":0.50,"
 sub_effect={"id":"sub","name":"Subscribe","source":str(sub),"enabled":True,"x":0.72,"y":0.70,"scale":0.14,
             "usageMode":"interval","intervalSec":60.0,"usageDurationSec":8.0,**base_effect}
 subscribe={**sub_effect,"firstAtSec":60.0,"secondAtSec":120.0,"repeatEverySec":60.0,
-           "firstAppearance":"immediate","customFirstAtSec":0.0,"showDurationSec":5.0}
+           "firstAppearance":"immediate","customFirstAtSec":0.0,"showDurationSec":2.0}
 
 job={
  "project":{"id":"e1007-prod","name":"ENDLUME 10.0.7 Production Smoke","path":str(root),"media":[str(base_video)],"audio":[str(main_audio)],"valid":True,"error":None,"anchors":{}},
@@ -72,10 +72,10 @@ def rgb(cx,cy,t="2"):
     return tuple(raw[:3])
 on=rgb(1920*.30,1080*.30)
 off=rgb(1920*.50,1080*.50)
-sb=rgb(1920*.72,1080*.70)
+sb=rgb(1920*.72,1080*.70,"1")
 assert on[0] > on[2]+35,("effect ON missing",on)
 assert off[2] > off[0]-5 and off[0] < 90,("disabled effect leaked",off)
-assert sb[2] > sb[0]+25,("subscribe missing",sb)
+assert sb[2] > 150 and sb[1] > 60 and sb[2] > sb[0]+100,("subscribe missing",sb)
 
 def band_mean(freq):
     q=subprocess.run([str(ffmpeg),"-hide_banner","-i",str(video),"-af",f"bandpass=f={freq}:width_type=h:w=35,volumedetect","-f","null","-"],

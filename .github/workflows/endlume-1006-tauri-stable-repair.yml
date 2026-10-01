@@ -13,7 +13,7 @@ permissions:
 
 concurrency:
   group: endlume-1006-tauri-stable-repair
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 env:
   VERSION: "10.0.6"
@@ -138,7 +138,7 @@ jobs:
 
   windows:
     name: Windows x64 • build • sign updater
-    runs-on: windows-2025
+    runs-on: windows-latest
     timeout-minutes: 120
     env:
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}

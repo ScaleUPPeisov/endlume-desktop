@@ -1,0 +1,157 @@
+name: ENDLUME 10.0.6 Windows QA
+
+on:
+  push:
+    branches:
+      - qa/endlume-10.0.6-full-production
+    paths:
+      - ".github/workflows/endlume-1006-windows-qa.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Product/version contract
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $pkg=Get-Content package.json -Raw | ConvertFrom-Json
+          $base=Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json
+          $win=Get-Content src-tauri/tauri.windows.conf.json -Raw | ConvertFrom-Json
+          if($pkg.version -ne '10.0.6'){throw "package version $($pkg.version)"}
+          if($base.version -ne '10.0.6'){throw "tauri version $($base.version)"}
+          if($base.identifier -ne 'studio.endlume.desktop'){throw 'identifier drift'}
+          if($win.identifier -ne 'studio.endlume.desktop'){throw 'windows identifier drift'}
+          if($win.productName -ne 'ENDLUME YT Studio PEISOV'){throw 'product name drift'}
+          if($win.mainBinaryName -ne 'ENDLUME YT Studio PEISOV'){throw 'binary name drift'}
+          Write-Host ENDLUME_1006_WINDOWS_CONTRACT_GREEN
+
+      - name: Stage pinned Windows FFmpeg
+        shell: pwsh
+        run: ./scripts/prepare-windows-sidecars.ps1
+
+      - name: Frontend and Rust regression
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          npm ci
+          npm run check
+          npm run build
+          cargo check --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-msvc
+          cargo test --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-msvc --lib -- --nocapture
+          Write-Host ENDLUME_1006_WINDOWS_REGRESSION_GREEN
+
+      - name: Build exact NSIS candidate
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:CARGO_TARGET_DIR=Join-Path $env:RUNNER_TEMP 'e1006-windows'
+          npm run tauri build -- --target x86_64-pc-windows-msvc --bundles nsis --features e2e-render
+          $installer=Get-ChildItem "$env:CARGO_TARGET_DIR\x86_64-pc-windows-msvc\release\bundle\nsis" -Filter '*.exe' -File | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+          if(!$installer){throw 'NSIS installer not produced'}
+          if($installer.Length -lt 50000000){throw "Installer unexpectedly small: $($installer.Length)"}
+          "E1006_INSTALLER=$($installer.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $sha=(Get-FileHash $installer.FullName -Algorithm SHA256).Hash.ToLower()
+          New-Item -ItemType Directory -Force windows-qa | Out-Null
+          @{installer=$installer.FullName;bytes=$installer.Length;sha256=$sha} | ConvertTo-Json | Out-File windows-qa\installer.json -Encoding utf8
+          Write-Host "ENDLUME_1006_WINDOWS_NSIS_GREEN $($installer.FullName) $sha"
+
+      - name: Silent install exact candidate
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $p=Start-Process -FilePath $env:E1006_INSTALLER -ArgumentList '/S' -PassThru -Wait
+          if($p.ExitCode -ne 0){throw "Installer exit $($p.ExitCode)"}
+          Start-Sleep -Seconds 2
+          $roots=@(
+            (Join-Path $env:LOCALAPPDATA 'ENDLUME YT Studio PEISOV'),
+            (Join-Path $env:LOCALAPPDATA 'Programs\ENDLUME YT Studio PEISOV'),
+            (Join-Path $env:LOCALAPPDATA 'Programs')
+          )
+          $exe=$null
+          foreach($root in $roots){
+            if(Test-Path $root){
+              $candidate=Get-ChildItem $root -Recurse -Filter 'ENDLUME YT Studio PEISOV.exe' -File -ErrorAction SilentlyContinue | Select-Object -First 1
+              if($candidate){$exe=$candidate;break}
+            }
+          }
+          if(!$exe){throw 'Installed ENDLUME executable not found'}
+          "E1006_INSTALLED_EXE=$($exe.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "ENDLUME_1006_WINDOWS_INSTALL_GREEN $($exe.FullName)"
+
+      - name: Installed EXE icon resource
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          Add-Type -AssemblyName System.Drawing
+          $ico=[System.Drawing.Icon]::ExtractAssociatedIcon($env:E1006_INSTALLED_EXE)
+          if($null -eq $ico){throw 'No associated app icon'}
+          $bmp=$ico.ToBitmap()
+          if($bmp.Width -lt 16 -or $bmp.Height -lt 16){throw "Invalid app icon $($bmp.Width)x$($bmp.Height)"}
+          $bmp.Save((Join-Path (Resolve-Path windows-qa) 'installed-icon.png'),[System.Drawing.Imaging.ImageFormat]::Png)
+          Write-Host "ENDLUME_1006_WINDOWS_ICON_GREEN $($bmp.Width)x$($bmp.Height)"
+
+      - name: Installed app frontend launch marker
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $marker=Join-Path $env:RUNNER_TEMP 'e1006-windows-launch.json'
+          Remove-Item $marker -Force -ErrorAction SilentlyContinue
+          $env:ENDLUME_LAUNCH_SMOKE_MARKER=$marker
+          $p=Start-Process -FilePath $env:E1006_INSTALLED_EXE -PassThru
+          for($i=0;$i -lt 80;$i++){
+            if(Test-Path $marker){if((Get-Item $marker).Length -gt 0){break}}
+            Start-Sleep -Milliseconds 250
+          }
+          if(!(Test-Path $marker)){Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue;throw 'Frontend launch marker missing'}
+          $d=Get-Content $marker -Raw | ConvertFrom-Json
+          if($d.label -ne 'main' -or $d.frontendLoaded -ne $true){throw "Bad launch marker: $(Get-Content $marker -Raw)"}
+          Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+          Copy-Item $marker windows-qa\launch.json
+          Write-Host ENDLUME_1006_WINDOWS_LAUNCH_GREEN
+
+      - name: Built runtime render smoke
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $target=Join-Path $env:RUNNER_TEMP 'e1006-windows\x86_64-pc-windows-msvc\release'
+          $exe=Get-ChildItem $target -Filter '*.exe' -File | Where-Object {$_.Name -notmatch 'build-script'} | Sort-Object Length -Descending | Select-Object -First 1
+          if(!$exe){throw 'Built ENDLUME runtime exe missing'}
+          $ffmpeg=Resolve-Path 'src-tauri\binaries\ffmpeg-x86_64-pc-windows-msvc.exe'
+          $ffprobe=Resolve-Path 'src-tauri\binaries\ffprobe-x86_64-pc-windows-msvc.exe'
+          python scripts\qa-endlume-1005-normal-render-smoke.py $target $ffmpeg $ffprobe windows-qa\normal-render.json
+          if($LASTEXITCODE -ne 0){throw 'Windows normal render smoke failed'}
+          Write-Host ENDLUME_1006_WINDOWS_RENDER_GREEN
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ENDLUME-10.0.6-Windows-QA
+          path: windows-qa/
+          if-no-files-found: warn
+          retention-days: 7

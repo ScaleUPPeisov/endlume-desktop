@@ -1,0 +1,133 @@
+name: ENDLUME 10.0.8 Preview Proxy Benchmark
+
+on:
+  push:
+    branches: [hotfix/endlume-10.0.8-performance-visual]
+    paths:
+      - ".github/workflows/endlume-1008-preview-proxy-benchmark.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-1008-preview-proxy-benchmark
+  cancel-in-progress: true
+
+jobs:
+  bench:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 20
+    steps:
+      - name: Benchmark proxy fidelity against Final
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+          ROOT="$RUNNER_TEMP/e1008-proxy-bench"; rm -rf "$ROOT"; mkdir -p "$ROOT"
+
+          LIB=""
+          while IFS= read -r p; do
+            if python3 - "$p" <<'PY'
+          import json,sys
+          try:d=json.load(open(sys.argv[1]))
+          except Exception:raise SystemExit(1)
+          ok=any(isinstance(x,dict) and (x.get("id")=="825dd7a4-f0cf-4032-a3c9-64290cb5756d" or "эквалайзер круглый" in str(x.get("name","")).lower()) for x in (d.get("effects") or []))
+          raise SystemExit(0 if ok else 1)
+          PY
+            then LIB="$p"; break; fi
+          done < <(find "$HOME/Library/Application Support" "$HOME/Library/Containers" -type f -name library.json 2>/dev/null)
+          test -n "$LIB"
+
+          python3 - "$LIB" "$ROOT/effect.json" <<'PY'
+          import json,sys
+          d=json.load(open(sys.argv[1]))
+          for x in d.get("effects") or []:
+            if isinstance(x,dict) and (x.get("id")=="825dd7a4-f0cf-4032-a3c9-64290cb5756d" or "эквалайзер круглый" in str(x.get("name","")).lower()):
+              json.dump(x,open(sys.argv[2],"w"),ensure_ascii=False);break
+          PY
+          python3 - "$ROOT/effect.json" > "$ROOT/env" <<'PY'
+          import json,sys,shlex
+          e=json.load(open(sys.argv[1]))
+          for k,v in {
+            "SRC":e["source"],"KEY":e.get("keyColor","#00ff00"),"SIM":0.18,"BLEND":0.03,
+            "DESPILL":float(e.get("despill",0) or 0),"SCALE":float(e.get("scale",1) or 1),
+            "X":float(e.get("x",.5) or .5),"Y":float(e.get("y",.5) or .5),
+            "OPACITY":float(e.get("opacity",1) if e.get("opacity") is not None else 1),
+            "SEEK":float(e.get("previewFrameTime",0) or 0)
+          }.items(): print(f"{k}={shlex.quote(str(v))}")
+          PY
+          source "$ROOT/env"; test -f "$SRC"; KEY_RAW="$(printf '%s' "$KEY"|sed 's/^#//')"
+          echo "SOURCE_GEOMETRY=$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "$SRC")"
+
+          ffmpeg -hide_banner -loglevel error -f lavfi -i "gradients=s=960x540:r=1:c0=0x0f1728:c1=0x3c526d" -frames:v 1 -y "$ROOT/base.png"
+          TARGET="$(python3 -c 'import sys;x=round(960*float(sys.argv[1]));print(max(2,x if x%2==0 else x+1))' "$SCALE")"
+
+          ffmpeg -hide_banner -loglevel error -i "$ROOT/base.png" -ss "$SEEK" -i "$SRC"             -filter_complex "[0:v]format=rgba[b];[1:v]format=rgba,colorkey=0x$KEY_RAW:$SIM:$BLEND,despill=type=green:mix=$DESPILL:expand=0.20,scale=$TARGET:-2:flags=lanczos,colorchannelmixer=aa=$OPACITY[fx];[b][fx]overlay=x='max(0,min(W-w,W*$X-w/2))':y='max(0,min(H-h,H*$Y-h/2))':shortest=1:eof_action=repeat:format=auto,format=rgb24[out]"             -map "[out]" -frames:v 1 -y "$ROOT/final.png"
+
+          make_proxy(){
+            name="$1"; vf="$2"; crf="$3"
+            ffmpeg -hide_banner -loglevel error -stream_loop -1 -ss "$SEEK" -i "$SRC" -t 1 -an -vf "$vf"               -c:v libx264 -preset ultrafast -crf "$crf" -pix_fmt yuv420p -y "$ROOT/$name.mp4"
+          }
+          make_proxy current "scale=640:-2:flags=fast_bilinear,fps=60" 18
+          make_proxy hq640 "scale=640:-2:flags=lanczos,fps=60" 6
+          make_proxy hq960 "scale=960:-2:flags=lanczos,fps=60" 6
+          make_proxy native "fps=60" 6
+
+          cat > "$ROOT/render_preview.py" <<'PY'
+          import math,subprocess,sys,os
+          root,name,key,sim,blend,dsp,opacity,scale,x,y=sys.argv[1:]
+          sim=float(sim);blend=float(blend);dsp=float(dsp);opacity=float(opacity);scale=float(scale);x=float(x);y=float(y)
+          mp4=os.path.join(root,name+".mp4")
+          wh=subprocess.check_output(["ffprobe","-v","error","-select_streams","v:0","-show_entries","stream=width,height","-of","csv=p=0",mp4],text=True).strip().split(",")
+          w,h=map(int,wh)
+          inp=subprocess.check_output(["ffmpeg","-hide_banner","-loglevel","error","-i",mp4,"-frames:v","1","-f","rawvideo","-pix_fmt","rgb24","-"])
+          kv=int(key.lstrip("#"),16);kr,kg,kb=((kv>>16&255)/255,(kv>>8&255)/255,(kv&255)/255)
+          buf=bytearray(w*h*4); factor=(1-dsp)*.8
+          for i in range(w*h):
+            r,g,b=(inp[i*3]/255,inp[i*3+1]/255,inp[i*3+2]/255)
+            d=math.sqrt((r-kr)**2+(g-kg)**2+(b-kb)**2)/math.sqrt(3)
+            a=max(0,min(1,(d-sim)/max(.001,blend)))*opacity
+            if kg>=kb:
+              sp=max(g-(r*dsp+b*factor),0);g=max(g-sp,0)
+            else:
+              sp=max(b-(r*dsp+g*factor),0);b=max(b-sp,0)
+            j=i*4;buf[j:j+4]=bytes((round(r*255),round(g*255),round(b*255),round(a*255)))
+          raw=os.path.join(root,name+".rgba");open(raw,"wb").write(buf)
+          target=round(960*scale);target=max(2,target if target%2==0 else target+1)
+          fx=os.path.join(root,name+"-fx.png")
+          subprocess.run(["ffmpeg","-hide_banner","-loglevel","error","-f","rawvideo","-pix_fmt","rgba","-s",f"{w}x{h}","-i",raw,"-frames:v","1","-vf",f"scale={target}:-2:flags=bilinear","-y",fx],check=True)
+          th=int(subprocess.check_output(["ffprobe","-v","error","-select_streams","v:0","-show_entries","stream=height","-of","default=nw=1:nk=1",fx],text=True))
+          px=max(0,min(960-target,round(960*x-target/2)));py=max(0,min(540-th,round(540*y-th/2)))
+          out=os.path.join(root,name+".png")
+          subprocess.run(["ffmpeg","-hide_banner","-loglevel","error","-i",os.path.join(root,"base.png"),"-i",fx,"-filter_complex",f"[0:v]format=rgba[b];[b][1:v]overlay=x={px}:y={py}:format=auto,format=rgb24[out]","-map","[out]","-frames:v","1","-y",out],check=True)
+          print(f"{name.upper()}_PROXY_BYTES={os.path.getsize(mp4)}")
+          PY
+
+          for n in current hq640 hq960 native; do
+            python3 "$ROOT/render_preview.py" "$ROOT" "$n" "$KEY" "$SIM" "$BLEND" "$DESPILL" "$OPACITY" "$SCALE" "$X" "$Y"
+          done
+
+          for n in base final current hq640 hq960 native; do
+            ffmpeg -hide_banner -loglevel error -i "$ROOT/$n.png" -frames:v 1 -f rawvideo -pix_fmt rgb24 "$ROOT/$n.rgb"
+          done
+
+          python3 - "$ROOT" <<'PY'
+          import os,subprocess,re,sys
+          root=sys.argv[1]
+          def raw(n):return open(os.path.join(root,n+".rgb"),"rb").read()
+          base,fin=raw("base"),raw("final");N=len(base)//3
+          fm=[i for i in range(N) if max(abs(fin[i*3+j]-base[i*3+j]) for j in range(3))>=8]
+          def lum(img,i):
+            r,g,b=img[i*3:i*3+3];return .2126*r+.7152*g+.0722*b
+          for name in ["current","hq640","hq960","native"]:
+            img=raw(name); pm=[i for i in range(N) if max(abs(img[i*3+j]-base[i*3+j]) for j in range(3))>=8]
+            union=sorted(set(pm)|set(fm))
+            pl=sum(lum(img,i) for i in union)/max(1,len(union));fl=sum(lum(fin,i) for i in union)/max(1,len(union))
+            pw=sorted(max(img[i*3:i*3+3]) for i in union)[int(.99*(len(union)-1))] if union else 0
+            fw=sorted(max(fin[i*3:i*3+3]) for i in union)[int(.99*(len(union)-1))] if union else 0
+            mad=sum(abs(img[i*3+j]-fin[i*3+j]) for i in union for j in range(3))/max(1,len(union)*3)
+            p=subprocess.run(["ffmpeg","-hide_banner","-nostats","-loglevel","info","-i",os.path.join(root,name+".png"),"-i",os.path.join(root,"final.png"),"-lavfi","[0:v][1:v]ssim","-f","null","-"],text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+            m=re.findall(r"All:([0-9.]+)",p.stderr);ssim=float(m[-1]) if m else 0
+            print(f"PROXY_{name.upper()}|luma={pl:.3f}|finalLuma={fl:.3f}|lumaDelta={abs(pl-fl)/max(1,fl):.6f}|white={pw}|finalWhite={fw}|whiteDelta={abs(pw-fw)/max(1,fw):.6f}|rgbMAD={mad:.3f}|ssim={ssim:.6f}|areaDelta={abs(len(pm)-len(fm))/max(1,len(fm)):.6f}")
+          PY

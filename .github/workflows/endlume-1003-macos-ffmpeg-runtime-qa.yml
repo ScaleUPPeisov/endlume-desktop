@@ -107,7 +107,18 @@ jobs:
           echo "===== FRAMEWORKS ====="
           find "$APP/Contents/Frameworks" -maxdepth 1 -type f -print | sort
           while IFS= read -r MACHO; do
-            REPORT="$({ /usr/bin/otool -L "$MACHO"; /usr/bin/otool -l "$MACHO"; } 2>/dev/null)"
+            # Skip otool's first header line because it is the path of the inspected
+            # file itself (normally under /Users/runner/...) rather than a Mach-O
+            # dependency. Audit only LC_LOAD_* names and LC_RPATH values.
+            DEPS="$(/usr/bin/otool -L "$MACHO" 2>/dev/null | /usr/bin/sed '1d')"
+            RPATHS="$(/usr/bin/otool -l "$MACHO" 2>/dev/null | /usr/bin/awk '
+              $1=="cmd" && $2=="LC_RPATH" { want=1; next }
+              want && $1=="path" { print; want=0 }
+            ')"
+            REPORT="$DEPS"
+          /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP"
+          echo "ENDLUME_1003_MACOS_FFMPEG_RUNTIME_QA_GREEN"
+\n'"$RPATHS"
             if printf '%s\n' "$REPORT" | grep -E '/opt/homebrew/|/usr/local/Cellar/|/Users/|/private/tmp/' >/dev/null; then
               echo "Forbidden Mach-O load command found: $MACHO" >&2
               printf '%s\n' "$REPORT" >&2

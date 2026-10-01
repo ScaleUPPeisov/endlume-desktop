@@ -70,7 +70,7 @@ jobs:
 
           "$FFMPEG" -hide_banner -loglevel error -stream_loop -1 -ss "$SEEK" -i "$SRC" -t 1             -an -vf "scale=640:-2:flags=fast_bilinear,fps=60"             -c:v libx264 -preset ultrafast -crf 18 -pix_fmt yuv420p -y "$ROOT/proxy.mp4"
 
-          read PW PH <<<"$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0:s=' ' "$ROOT/proxy.mp4")"
+          IFS=',' read -r PW PH <<<"$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "$ROOT/proxy.mp4")"
           "$FFMPEG" -hide_banner -loglevel error -i "$ROOT/proxy.mp4" -frames:v 1 -f rawvideo -pix_fmt rgb24 "$ROOT/proxy.rgb"
 
           python3 - "$ROOT/proxy.rgb" "$ROOT/preview-fx.rgba" "$PW" "$PH" "$KEY" "$SIM" "$BLEND" "$DESPILL" "$OPACITY" <<'PY'

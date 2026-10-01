@@ -1,0 +1,195 @@
+name: ENDLUME 10.0.3 Updater Promotion
+
+on:
+  push:
+    branches:
+      - hotfix/endlume-10.0.3-performance
+    paths:
+      - ".github/workflows/endlume-1003-updater-promotion.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-1003-updater-promotion
+  cancel-in-progress: true
+
+env:
+  VERSION: "10.0.3"
+  STABLE_REPO: ScaleUPPeisov/scaleup-site
+  STABLE_TAG: endlume-stable
+  MAC_MANUAL_ASSET: ENDLUME-YT-Studio-PEISOV-10.0.3-macOS-ARM64.zip
+  MAC_UPDATER_ASSET: ENDLUME-YT-Studio-PEISOV-10.0.3-macOS-ARM64.app.tar.gz
+  WINDOWS_ASSET: ENDLUME-YT-Studio-PEISOV-Setup-10.0.3-x64.exe
+  EXPECTED_UPDATER_PUBKEY_B64: dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEQzMjJDRDUwNDkxRDM1MDAKUldRQU5SMUpVTTBpMCs2TTF5UjZkS1h3K0N5UUlBb0srYmVtN1lianVCdEY2ZkxuN2FlM1AyQmoK
+
+jobs:
+  promote:
+    name: Sign existing 10.0.3 packages • Publish updater
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 45
+    env:
+      RELEASE_TOKEN: ${{ secrets.ENDLUME_RELEASE_TOKEN }}
+
+    steps:
+      - name: Checkout exact updater source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify identity and local updater key
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          test "$(uname -s)" = "Darwin"
+          test "$(uname -m)" = "arm64"
+          test -n "${RELEASE_TOKEN:-}"
+          KEY="$HOME/.endlume-updater/endlume.key"
+          PUB="$HOME/.endlume-updater/endlume.key.pub"
+          test -s "$KEY"
+          test -s "$PUB"
+          python3 - <<'PY'
+          import json,os
+          from pathlib import Path
+          cfg=json.loads(Path('src-tauri/tauri.conf.json').read_text())
+          assert cfg['version']=='10.0.3',cfg['version']
+          assert cfg['productName']=='ENDLUME YT Studio PEISOV'
+          assert cfg['identifier']=='studio.endlume.desktop'
+          embedded=cfg['plugins']['updater']['pubkey'].strip()
+          disk=Path.home().joinpath('.endlume-updater/endlume.key.pub').read_text().replace('\r','').replace('\n','').strip()
+          assert embedded==os.environ['EXPECTED_UPDATER_PUBKEY_B64'].strip(),'embedded updater key changed'
+          assert embedded==disk,'local private key does not match embedded updater public key'
+          print('ENDLUME_1003_UPDATER_KEY_GREEN')
+          PY
+
+      - name: Download already-published 10.0.3 packages
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.ENDLUME_RELEASE_TOKEN }}
+        run: |
+          set -Eeuo pipefail
+          rm -rf "$RUNNER_TEMP/endlume-1003-promote"
+          mkdir -p "$RUNNER_TEMP/endlume-1003-promote"
+          WORK="$RUNNER_TEMP/endlume-1003-promote"
+          gh release download "$STABLE_TAG" --repo "$STABLE_REPO" --dir "$WORK" --pattern "$MAC_MANUAL_ASSET" --clobber
+          gh release download "$STABLE_TAG" --repo "$STABLE_REPO" --dir "$WORK" --pattern "$WINDOWS_ASSET" --clobber
+          test -s "$WORK/$MAC_MANUAL_ASSET"
+          test -s "$WORK/$WINDOWS_ASSET"
+          test "$(python3 - "$WORK/$WINDOWS_ASSET" <<'PY'
+          import sys
+          print(open(sys.argv[1],'rb').read(2).decode('latin1'))
+          PY
+          )" = "MZ"
+          echo "ENDLUME_PROMOTE_WORK=$WORK" >> "$GITHUB_ENV"
+
+      - name: Convert Mac ZIP to updater tarball without rebuilding
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          WORK="$ENDLUME_PROMOTE_WORK"
+          mkdir -p "$WORK/mac-unpack"
+          /usr/bin/ditto -x -k "$WORK/$MAC_MANUAL_ASSET" "$WORK/mac-unpack"
+          APP="$(find "$WORK/mac-unpack" -maxdepth 2 -type d -name '*.app' -print -quit)"
+          test -n "$APP" -a -d "$APP"
+          BID="$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$APP/Contents/Info.plist")"
+          VER="$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist")"
+          EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
+          test "$BID" = "studio.endlume.desktop"
+          test "$VER" = "$VERSION"
+          /usr/bin/lipo -archs "$APP/Contents/MacOS/$EXE" | grep -qw arm64
+          /usr/bin/codesign --verify --deep --strict "$APP"
+          /usr/bin/tar -czf "$WORK/$MAC_UPDATER_ASSET" -C "$(dirname "$APP")" "$(basename "$APP")"
+          test -s "$WORK/$MAC_UPDATER_ASSET"
+          echo "ENDLUME_1003_MAC_REPACK_GREEN"
+
+      - name: Sign Mac and Windows updater artifacts
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
+          WORK="$ENDLUME_PROMOTE_WORK"
+          KEY="$HOME/.endlume-updater/endlume.key"
+          export TAURI_SIGNING_PRIVATE_KEY_PATH="$KEY"
+          export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
+          unset TAURI_SIGNING_PRIVATE_KEY || true
+          npx --yes @tauri-apps/cli@2.10.1 signer sign "$WORK/$MAC_UPDATER_ASSET"
+          npx --yes @tauri-apps/cli@2.10.1 signer sign "$WORK/$WINDOWS_ASSET"
+          test -s "$WORK/$MAC_UPDATER_ASSET.sig"
+          test -s "$WORK/$WINDOWS_ASSET.sig"
+          echo "ENDLUME_1003_DUAL_SIGNATURE_GREEN"
+
+      - name: Build dual-platform latest.json
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          WORK="$ENDLUME_PROMOTE_WORK"
+          MAC_SIG="$(tr -d '\r\n' < "$WORK/$MAC_UPDATER_ASSET.sig")"
+          WIN_SIG="$(tr -d '\r\n' < "$WORK/$WINDOWS_ASSET.sig")"
+          MAC_SHA="$(shasum -a 256 "$WORK/$MAC_UPDATER_ASSET" | awk '{print $1}')"
+          WIN_SHA="$(shasum -a 256 "$WORK/$WINDOWS_ASSET" | awk '{print $1}')"
+          MAC_URL="https://github.com/$STABLE_REPO/releases/download/$STABLE_TAG/$MAC_UPDATER_ASSET"
+          WIN_URL="https://github.com/$STABLE_REPO/releases/download/$STABLE_TAG/$WINDOWS_ASSET"
+          python3 - "$WORK/latest.json" "$MAC_URL" "$WIN_URL" "$MAC_SIG" "$WIN_SIG" "$MAC_SHA" "$WIN_SHA" <<'PY'
+          import datetime,json,sys
+          out,mac_url,win_url,mac_sig,win_sig,mac_sha,win_sha=sys.argv[1:]
+          data={
+            'version':'10.0.3',
+            'notes':'ENDLUME 10.0.3: accelerated physical masters and AAC caching, bounded caches, SSD/TOSHIBA performance gates and release fixes.',
+            'pub_date':datetime.datetime.now(datetime.timezone.utc).isoformat().replace('+00:00','Z'),
+            'platforms':{
+              'darwin-aarch64':{'url':mac_url,'signature':mac_sig,'sha256':mac_sha},
+              'windows-x86_64':{'url':win_url,'signature':win_sig,'sha256':win_sha}
+            }
+          }
+          json.dump(data,open(out,'w'),ensure_ascii=False,indent=2)
+          PY
+          python3 - "$WORK/latest.json" <<'PY'
+          import json,sys
+          d=json.load(open(sys.argv[1]))
+          assert d['version']=='10.0.3'
+          assert set(d['platforms'])=={'darwin-aarch64','windows-x86_64'}
+          assert all(d['platforms'][p]['signature'] for p in d['platforms'])
+          print('ENDLUME_1003_MANIFEST_GREEN')
+          PY
+
+      - name: Publish updater artifacts first and latest.json last
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.ENDLUME_RELEASE_TOKEN }}
+        run: |
+          set -Eeuo pipefail
+          WORK="$ENDLUME_PROMOTE_WORK"
+          gh release upload "$STABLE_TAG"             "$WORK/$MAC_UPDATER_ASSET"             "$WORK/$MAC_UPDATER_ASSET.sig"             "$WORK/$WINDOWS_ASSET.sig"             --clobber --repo "$STABLE_REPO"
+          gh release upload "$STABLE_TAG" "$WORK/latest.json" --clobber --repo "$STABLE_REPO"
+          echo "ENDLUME_1003_UPDATER_PUBLISHED"
+
+      - name: Verify public updater discovery
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          URL="https://github.com/$STABLE_REPO/releases/download/$STABLE_TAG/latest.json"
+          PUBLIC="$RUNNER_TEMP/endlume-1003-public-latest.json"
+          OK=0
+          for i in {1..24}; do
+            if curl -fsSL --connect-timeout 10 --max-time 30 "$URL?run=$GITHUB_RUN_ID-$i" -o "$PUBLIC"; then
+              if python3 - "$PUBLIC" <<'PY'
+          import json,sys
+          d=json.load(open(sys.argv[1]))
+          assert d.get('version')=='10.0.3',d
+          p=d.get('platforms',{})
+          for k in ('darwin-aarch64','windows-x86_64'):
+              assert p.get(k,{}).get('url')
+              assert p.get(k,{}).get('signature')
+              assert len(p.get(k,{}).get('sha256',''))==64
+          PY
+              then OK=1; break; fi
+            fi
+            sleep 5
+          done
+          test "$OK" = "1"
+          echo "ENDLUME_1003_PUBLIC_UPDATER_GREEN"

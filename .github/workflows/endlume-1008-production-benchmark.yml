@@ -5,6 +5,8 @@ on:
     branches: [hotfix/endlume-10.0.8-performance-visual]
     paths:
       - ".github/workflows/endlume-1008-production-benchmark.yml"
+      - "src-tauri/src/render.rs"
+      - "src-tauri/src/mp4_manifest.rs"
   workflow_dispatch: {}
 
 permissions:

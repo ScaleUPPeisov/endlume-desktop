@@ -69,36 +69,55 @@ assert re.search(r'^version\s*=\s*"10[.]0[.]6"$',cargo,re.M)
 print('ENDLUME_1006_EXACT_SOURCE_GREEN')
 PY
 
-echo "2/8 Stage full Apple Silicon FFmpeg/FFprobe with acrossfade"
-export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+echo "2/8 Stage static Apple Silicon FFmpeg/FFprobe"
+STATIC_DIR="$TMP/static-ffmpeg"
+mkdir -p "$STATIC_DIR"
 
-if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v ffprobe >/dev/null 2>&1; then
-  command -v brew >/dev/null 2>&1 || { echo "Homebrew missing and full FFmpeg is not installed" >&2; exit 22; }
-  brew install ffmpeg
-fi
+FFMPEG_ZIP="$STATIC_DIR/ffmpeg.zip"
+FFPROBE_ZIP="$STATIC_DIR/ffprobe.zip"
 
-FFMPEG_BIN="$(command -v ffmpeg)"
-FFPROBE_BIN="$(command -v ffprobe)"
+curl -fL --retry 4 --connect-timeout 20 --max-time 300 \
+  "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffmpeg.zip" \
+  -o "$FFMPEG_ZIP"
+curl -fL --retry 4 --connect-timeout 20 --max-time 300 \
+  "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffprobe.zip" \
+  -o "$FFPROBE_ZIP"
 
-test -x "$FFMPEG_BIN"
-test -x "$FFPROBE_BIN"
+mkdir -p "$STATIC_DIR/ffmpeg" "$STATIC_DIR/ffprobe"
+/usr/bin/ditto -x -k "$FFMPEG_ZIP" "$STATIC_DIR/ffmpeg"
+/usr/bin/ditto -x -k "$FFPROBE_ZIP" "$STATIC_DIR/ffprobe"
 
-FF_FILTERS="$("$FFMPEG_BIN" -hide_banner -filters 2>/dev/null || true)"
-grep -q acrossfade <<<"$FF_FILTERS" || {
-  echo "Installed FFmpeg does not provide acrossfade" >&2
-  "$FFMPEG_BIN" -version | head -1 >&2 || true
-  exit 23
-}
+FFMPEG_BIN="$(find "$STATIC_DIR/ffmpeg" -type f -name ffmpeg -perm +111 -print -quit)"
+FFPROBE_BIN="$(find "$STATIC_DIR/ffprobe" -type f -name ffprobe -perm +111 -print -quit)"
+test -n "$FFMPEG_BIN" -a -x "$FFMPEG_BIN"
+test -n "$FFPROBE_BIN" -a -x "$FFPROBE_BIN"
 
 file "$FFMPEG_BIN" | grep -E 'arm64|Mach-O'
 file "$FFPROBE_BIN" | grep -E 'arm64|Mach-O'
 
+FF_FILTERS="$("$FFMPEG_BIN" -hide_banner -filters 2>/dev/null || true)"
+grep -q acrossfade <<<"$FF_FILTERS" || {
+  echo "Static FFmpeg does not provide acrossfade" >&2
+  "$FFMPEG_BIN" -version | head -1 >&2 || true
+  exit 23
+}
+
+# Reject Homebrew/MacPorts/local dylib dependencies before bundling.
+for BIN in "$FFMPEG_BIN" "$FFPROBE_BIN"; do
+  BAD="$(/usr/bin/otool -L "$BIN" | tail -n +2 | awk '{print $1}' | grep -Ev '^(/usr/lib/|/System/Library/)' || true)"
+  if [[ -n "$BAD" ]]; then
+    echo "Non-system dylib dependency detected in $(basename "$BIN"):" >&2
+    echo "$BAD" >&2
+    exit 24
+  fi
+done
+
 mkdir -p "$WORK/src-tauri/binaries"
-cp -L "$FFMPEG_BIN" "$WORK/src-tauri/binaries/ffmpeg-aarch64-apple-darwin"
-cp -L "$FFPROBE_BIN" "$WORK/src-tauri/binaries/ffprobe-aarch64-apple-darwin"
+cp "$FFMPEG_BIN" "$WORK/src-tauri/binaries/ffmpeg-aarch64-apple-darwin"
+cp "$FFPROBE_BIN" "$WORK/src-tauri/binaries/ffprobe-aarch64-apple-darwin"
 chmod 755 "$WORK/src-tauri/binaries/ffmpeg-aarch64-apple-darwin" "$WORK/src-tauri/binaries/ffprobe-aarch64-apple-darwin"
 
-"$WORK/src-tauri/binaries/ffmpeg-aarch64-apple-darwin" -hide_banner -filters 2>/dev/null | grep acrossfade | head -1
+"$WORK/src-tauri/binaries/ffmpeg-aarch64-apple-darwin" -version | head -1
 "$WORK/src-tauri/binaries/ffprobe-aarch64-apple-darwin" -version | head -1
 echo ENDLUME_1006_PORTABLE_FFMPEG_GREEN
 

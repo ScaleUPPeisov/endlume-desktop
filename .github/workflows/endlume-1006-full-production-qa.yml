@@ -280,11 +280,85 @@ jobs:
             e1006-qa/effect-anchor-render.json
           grep -q 'ENDLUME_1006_EFFECT_ANCHOR_RENDER_PASS' e1006-qa/effect-anchor-render.json
 
+      - name: Resolve real 2-hour fixture
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/find-endlume-real-subscribe.py "$GITHUB_WORKSPACE/e1006-qa/real-subscribe.json"
+          test -s "$GITHUB_WORKSPACE/e1006-qa/real-subscribe.json"
+          FIXTURE_DIR="$(mktemp -d /tmp/e1006fixture.XXXXXX)"
+          python3 scripts/find-endlume-real-fixture.py "$FIXTURE_DIR/env"
+          cat "$FIXTURE_DIR/env" >> "$GITHUB_ENV"
+          source "$FIXTURE_DIR/env"
+          test "$AUDIO_COUNT" = 15
+          test "$EFFECT_COUNT" -ge 2
+          test -f "$SIDE"
+          echo "ENDLUME_1006_REAL_FIXTURE_GREEN project=$PROJECT_NAME audio=$AUDIO_COUNT effects=$EFFECT_COUNT"
+
+      - name: Real 2-hour internal SSD • cold + warm • release gate
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          CACHE="$HOME/Library/Caches/studio.endlume.desktop"
+          rm -rf "$CACHE/visual-master-v10" "$CACHE/subscribe-master-v10" "$CACHE/audio-track-aac-v1003" "$CACHE/audio-playlist-aac-v1003"
+          OUT="$HOME/Movies/ENDLUME Studio/ENDLUME-1006-PRODUCTION-QA"
+          rm -rf "$OUT"; mkdir -p "$OUT"
+          ENDLUME_1000_OUTPUT_DIR="$OUT" \
+          ENDLUME_1000_COLD_LIMIT_SECONDS=10 \
+          ENDLUME_1000_WARM_LIMIT_SECONDS=10 \
+          ENDLUME_FINAL_MIN_BYTES=400000000 \
+          ENDLUME_FINAL_MAX_BYTES=600000000 \
+          python3 scripts/run-endlume-1000-render-job-e2e.py \
+            "$SIDE" "$GITHUB_WORKSPACE/e1006-qa/real-subscribe.json" \
+            "$E1006_APP_BIN" "$E1006_UNPACKED_APP/Contents/MacOS/ffmpeg" "$E1006_UNPACKED_APP/Contents/MacOS/ffprobe" \
+            "$GITHUB_WORKSPACE/e1006-qa/ssd-performance.json"
+          python3 - <<'PY'
+          import json
+          d=json.load(open('e1006-qa/ssd-performance.json'))
+          assert d['status']=='passed' and d['release_gate'] is True,d
+          assert d['cold_seconds']<=10,d
+          assert max(d['warm_seconds'])<=10,d
+          for row in d['results']:
+              assert 400_000_000 <= row['bytes'] <= 600_000_000,row
+          print('ENDLUME_1006_SSD_PERFORMANCE_GREEN',d['cold_seconds'],d['warm_seconds'])
+          PY
+          rm -rf "$OUT"
+
+      - name: Real 2-hour TOSHIBA EXT • cold + warm • release gate
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -d "/Volumes/TOSHIBA EXT" || { echo "TOSHIBA EXT is required for final production QA" >&2; exit 44; }
+          CACHE="$HOME/Library/Caches/studio.endlume.desktop"
+          rm -rf "$CACHE/visual-master-v10" "$CACHE/subscribe-master-v10" "$CACHE/audio-track-aac-v1003" "$CACHE/audio-playlist-aac-v1003"
+          OUT="/Volumes/TOSHIBA EXT/ENDLUME-1006-PRODUCTION-QA"
+          rm -rf "$OUT"; mkdir -p "$OUT"
+          ENDLUME_1000_OUTPUT_DIR="$OUT" \
+          ENDLUME_1000_COLD_LIMIT_SECONDS=20 \
+          ENDLUME_1000_WARM_LIMIT_SECONDS=20 \
+          ENDLUME_FINAL_MIN_BYTES=400000000 \
+          ENDLUME_FINAL_MAX_BYTES=600000000 \
+          python3 scripts/run-endlume-1000-render-job-e2e.py \
+            "$SIDE" "$GITHUB_WORKSPACE/e1006-qa/real-subscribe.json" \
+            "$E1006_APP_BIN" "$E1006_UNPACKED_APP/Contents/MacOS/ffmpeg" "$E1006_UNPACKED_APP/Contents/MacOS/ffprobe" \
+            "$GITHUB_WORKSPACE/e1006-qa/toshiba-performance.json"
+          python3 - <<'PY'
+          import json
+          d=json.load(open('e1006-qa/toshiba-performance.json'))
+          assert d['status']=='passed' and d['release_gate'] is True,d
+          assert d['cold_seconds']<=20,d
+          assert max(d['warm_seconds'])<=20,d
+          for row in d['results']:
+              assert 400_000_000 <= row['bytes'] <= 600_000_000,row
+          print('ENDLUME_1006_TOSHIBA_PERFORMANCE_GREEN',d['cold_seconds'],d['warm_seconds'])
+          PY
+          rm -rf "$OUT"
+
       - name: Verdict
         shell: bash
         run: |
           set -Eeuo pipefail
-          echo "ENDLUME_1006_HOSTED_FULL_QA_GREEN"
+          echo "ENDLUME_1006_FULL_PRODUCTION_QA_GREEN"
           echo "HEAD=$GITHUB_SHA"
 
       - uses: actions/upload-artifact@v4

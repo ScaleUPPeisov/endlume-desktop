@@ -16,6 +16,8 @@ static AUDIO_ENCODER_CACHE:OnceLock<String>=OnceLock::new();
 static AUDIO_PROBE_CACHE:OnceLock<parking_lot::Mutex<HashMap<String,AudioProbe>>>=OnceLock::new();
 static FFMPEG_LAUNCHES:AtomicU64=AtomicU64::new(0);
 static FFPROBE_LAUNCHES:AtomicU64=AtomicU64::new(0);
+static ETA_STAGE_HISTORY:OnceLock<parking_lot::Mutex<HashMap<String,f64>>>=OnceLock::new();
+static ETA_JOB_SMOOTH:OnceLock<parking_lot::Mutex<HashMap<String,f64>>>=OnceLock::new();
 
 #[derive(Clone,Debug)]
 struct AudioProbe{codec:String,sample_rate:u32,channels:u32,duration:f64}
@@ -70,7 +72,56 @@ fn unique_output(dir:&Path,name:&str)->PathBuf{let safe=safe_name(name);let mut 
 fn unique_output_ext(dir:&Path,name:&str,ext:&str)->PathBuf{let safe=safe_name(name);let ext=ext.trim_start_matches('.');let mut p=dir.join(format!("{} — Ready Videos.{}",safe,ext));let mut n=2;while p.exists(){p=dir.join(format!("{} — Ready Videos_{}.{}",safe,n,ext));n+=1}p}
 fn fmt_ts(sec:f64)->String{let s=sec.max(0.0).round() as u64;format!("{:02}:{:02}:{:02}",s/3600,(s%3600)/60,s%60)}
 fn color_ffmpeg(hex:&str)->String{format!("0x{}",hex.trim().trim_start_matches('#').trim_start_matches("0x"))}
-fn emit_timing(app:&AppHandle,id:&str,key:&str,sec:f64){let _=app.emit("engine-timing",json!({"id":id,"key":key,"seconds":sec}));}
+fn emit_timing(app:&AppHandle,id:&str,key:&str,sec:f64){
+  if sec.is_finite()&&sec>=0.0{
+    let mut h=ETA_STAGE_HISTORY.get_or_init(||parking_lot::Mutex::new(HashMap::new())).lock();
+    let next=if let Some(prev)=h.get(key).copied(){prev*0.72+sec*0.28}else{sec};
+    h.insert(key.to_string(),next);
+  }
+  let _=app.emit("engine-timing",json!({"id":id,"key":key,"seconds":sec}));
+}
+fn eta_stage_value(key:&str,default:f64)->f64{
+  ETA_STAGE_HISTORY.get_or_init(||parking_lot::Mutex::new(HashMap::new())).lock().get(key).copied().unwrap_or(default)
+}
+fn stage_eta_prior(stage:&str)->Option<f64>{
+  let x=stage.to_lowercase();
+  let effects=eta_stage_value("effects-cache",14.7);
+  let visual=eta_stage_value("base-visual-master",21.2).max(eta_stage_value("visual-master",18.8));
+  let audio=eta_stage_value("audio-track-cache",4.2);
+  let mux=eta_stage_value("final-mux",9.7);
+  let validation=eta_stage_value("validation",1.1);
+  let side=eta_stage_value("side-files",0.2);
+  if x.contains("готово"){return Some(0.0)}
+  if x.contains("финальная проверка")||x.contains("ffprobe"){return Some(validation+side)}
+  if x.contains("zero-copy")||x.contains("manifest"){return Some(validation+side+0.8)}
+  if x.contains("aac")||x.contains("mux")||x.contains("итоговое видео")||x.contains("destination"){return Some(mux+validation+side)}
+  if x.contains("subscribe"){return Some(eta_stage_value("subscribe-cache",2.5)+mux+validation+side)}
+  if x.contains("base_visual_master")||x.contains("короткий master")||x.contains("визуаль"){return Some(visual+mux+validation+side)}
+  if x.contains("музык")||x.contains("audio")||x.contains("аудио"){return Some(audio+visual+mux+validation+side)}
+  if x.contains("кэш effects")&&x.contains("готов"){return Some(visual+audio+mux+validation+side)}
+  if x.contains("кэш effects")||x.contains("lossless effects"){return Some(effects+visual+audio+mux+validation+side)}
+  if x.contains("анализ")||x.contains("движок")||x.contains("медиа"){return Some(effects+visual+audio+mux+validation+side)}
+  None
+}
+fn smooth_eta(job:&QueueJob,stage:&str,elapsed:f64,progress:f64)->Option<f64>{
+  if elapsed<1.2&&progress<5.0{return None}
+  let prior=stage_eta_prior(stage)?;
+  if prior<=0.25{return Some(0.0)}
+  let pct_eta=if progress>2.0{Some(elapsed*(100.0-progress)/progress)}else{None};
+  let mut candidate=match pct_eta{
+    Some(raw) if raw.is_finite()=>prior*0.78+raw.clamp(prior*0.35,prior*2.5)*0.22,
+    _=>prior,
+  };
+  candidate=candidate.max(0.6);
+  let key=job.project.id.clone();
+  let mut map=ETA_JOB_SMOOTH.get_or_init(||parking_lot::Mutex::new(HashMap::new())).lock();
+  let next=if let Some(prev)=map.get(&key).copied(){
+    let ema=prev*0.76+candidate*0.24;
+    ema.clamp((prev-8.0).max(0.5),prev+12.0)
+  }else{candidate};
+  map.insert(key,next);
+  Some(next)
+}
 fn diag_line(value:serde_json::Value){eprintln!("ENDLUME_DIAG {}",value);}
 fn encoder_class(encoder:&str)->&'static str{if matches!(encoder,"hevc_videotoolbox"|"hevc_nvenc"|"hevc_qsv"|"hevc_amf"|"h264_videotoolbox"|"h264_nvenc"|"h264_qsv"|"h264_amf"){"hardware"}else{"software"}}
 
@@ -647,9 +698,16 @@ async fn probe_duration(app:&AppHandle,path:&str)->Result<f64,String>{
   let (stdout,_)=output(app,"ffprobe",vec!["-v","error","-show_entries","format=duration","-of","default=nw=1:nk=1",path].into_iter().map(String::from).collect()).await?;
   String::from_utf8_lossy(&stdout).trim().parse::<f64>().map_err(|_|format!("Не удалось определить длительность: {path}"))
 }
-async fn probe_video_bitrate(app:&AppHandle,path:&Path)->Option<u64>{
-  let args=vec!["-v","error","-select_streams","v:0","-show_entries","stream=bit_rate","-of","default=nw=1:nk=1",path.to_string_lossy().as_ref()].into_iter().map(String::from).collect();
-  output(app,"ffprobe",args).await.ok().and_then(|(o,_)|String::from_utf8_lossy(&o).trim().parse().ok())
+async fn probe_video_bitrate(app:&AppHandle,path:&Path,final_duration:f64)->Option<u64>{
+  let bytes=std::fs::metadata(path).ok()?.len();
+  if final_duration>0.05{
+    let container_bps=((bytes as f64*8.0)/final_duration).round().max(0.0) as u64;
+    let args=vec!["-v","error","-select_streams","v:0","-show_entries","stream=bit_rate","-of","default=nw=1:nk=1",path.to_string_lossy().as_ref()].into_iter().map(String::from).collect();
+    let ffprobe_bps=output(app,"ffprobe",args).await.ok().and_then(|(o,_)|String::from_utf8_lossy(&o).trim().parse::<u64>().ok());
+    let _=app.emit("engine-profile",json!({"finalContainerBitrate":container_bps,"ffprobeVideoBitrate":ffprobe_bps,"finalBytes":bytes,"finalDuration":final_duration}));
+    return Some(container_bps)
+  }
+  None
 }
 async fn probe_has_audio(app:&AppHandle,path:&Path)->bool{
   let args=vec!["-v","error","-select_streams","a:0","-show_entries","stream=codec_type","-of","default=nw=1:nk=1",path.to_string_lossy().as_ref()].into_iter().map(String::from).collect();
@@ -886,10 +944,7 @@ async fn prepare_fast_aac_audio_1003(app:&AppHandle,job:&QueueJob,audio:&AudioSo
 
 fn emit_progress(app:&AppHandle,job:&QueueJob,started:i64,timer:&Instant,progress:f64,stage:&str,encoder:&str,attempt:u32,metrics:Option<(f32,u64,u64,u64)>){
   let elapsed=timer.elapsed().as_secs_f64();
-  let raw_eta=if progress>1.0{Some(elapsed*(100.0-progress)/progress)}else{None};
-  // Fast-path progress is phase-based (short master -> audio -> manifest -> verify), not proportional
-  // to the multi-hour final media duration. Never extrapolate it into a multi-minute fake ETA.
-  let eta=if smart_repeat_project(job)&&!audio_processing_requested(job){raw_eta.map(|v|v.min(30.0))}else{raw_eta};
+  let eta=smooth_eta(job,stage,elapsed,progress);
   let (cpu,ram,total,available)=metrics.unwrap_or((0.0,0,0,0));
   let _=app.emit("render-progress",Progress{id:job.project.id.clone(),status:"rendering".into(),progress:progress.clamp(0.0,99.9),stage:stage.into(),started_at:Some(started),elapsed_sec:elapsed,eta_sec:eta,result_path:None,result_bytes:None,actual_video_bitrate:None,cpu_pct:metrics.map(|_|cpu),ram_bytes:metrics.map(|_|ram),ram_total_bytes:metrics.map(|_|total),ram_available_bytes:metrics.map(|_|available),gpu_pct:None,encoder:Some(encoder.into()),attempt:Some(attempt)});
   crate::license::telemetry_render_progress(job,progress.clamp(0.0,99.9),eta,stage,encoder);
@@ -2069,7 +2124,7 @@ pub async fn render_job(app:&AppHandle,job:&QueueJob,cancel:Arc<AtomicBool>)->Re
     match result{
       Ok((_durations,fd,original_audio))=>{
         if let Err(e)=ensure_license_allowed(){let _=std::fs::remove_dir_all(&work);cleanup_destination_partial(&out);let _=std::fs::remove_file(&out);return Err(e)}
-        let bytes=std::fs::metadata(&out).ok().map(|m|m.len());let bitrate=probe_video_bitrate(app,&out).await;
+        let bytes=std::fs::metadata(&out).ok().map(|m|m.len());let bitrate=probe_video_bitrate(app,&out,fd).await;
         let codec_args=vec!["-v","error","-show_entries","stream=codec_type,codec_name","-of","json",out.to_string_lossy().as_ref()].into_iter().map(String::from).collect();
         let (video_codec,audio_codec)=match output(app,"ffprobe",codec_args).await{
           Ok((raw,_))=>{let v:serde_json::Value=serde_json::from_slice(&raw).unwrap_or_else(|_|json!({}));let streams=v.get("streams").and_then(|x|x.as_array()).cloned().unwrap_or_default();let vc=streams.iter().find(|x|x.get("codec_type").and_then(|y|y.as_str())==Some("video")).and_then(|x|x.get("codec_name")).and_then(|x|x.as_str()).unwrap_or("unknown").to_string();let ac=streams.iter().find(|x|x.get("codec_type").and_then(|y|y.as_str())==Some("audio")).and_then(|x|x.get("codec_name")).and_then(|x|x.as_str()).unwrap_or("unknown").to_string();(vc,ac)},
@@ -2085,6 +2140,7 @@ pub async fn render_job(app:&AppHandle,job:&QueueJob,cancel:Arc<AtomicBool>)->Re
         let temp_before_cleanup=p0c_recursive_bytes(&work);let _=std::fs::remove_dir_all(&work);let temp_after_cleanup=p0c_recursive_bytes(&work);
         if fast_pingpong_project(job){diag_line(json!({"kind":"p0c-cleanup","projectId":job.project.id,"tempBeforeCleanup":temp_before_cleanup,"tempAfterCleanup":temp_after_cleanup,"diskFreeAfter":p0c_disk_free_bytes(&out_dir)}));}
         cleanup_runtime_caches_1003(app);
+        if let Some(map)=ETA_JOB_SMOOTH.get(){map.lock().remove(&job.project.id);}
         return Ok(outcome)
       },
       Err(e)=>{last_error=e;if smart_repeat&&attempt==1{invalidate_hybrid_encoder_cache(app);}emit_warning(app,&job.project.id,&format!("Попытка {attempt} не прошла: {last_error}"));let temp_before=p0c_recursive_bytes(&work);let _=std::fs::remove_dir_all(&work);cleanup_destination_partial(&out);let _=std::fs::remove_file(&out);if fast_pingpong_project(job){diag_line(json!({"kind":"p0c-error-cleanup","projectId":job.project.id,"tempBeforeCleanup":temp_before,"tempAfterCleanup":p0c_recursive_bytes(&work)}));}cleanup_runtime_caches_1003(app);if last_error==CANCELLED{return Err(last_error)}if attempt<max_attempts{emit_progress(app,job,started,&timer,2.0,"Повторяю безопасную попытку",&encoder,attempt+1,None);}}

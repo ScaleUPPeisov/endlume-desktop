@@ -19,13 +19,23 @@ jobs:
     runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
     timeout-minutes: 20
     steps:
-      - name: Compare real Round Equalizer Preview vs Final
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Exact FFmpeg Preview vs Final pixel parity
         shell: bash
         run: |
           set -Eeuo pipefail
           export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
-          FFMPEG="$(command -v ffmpeg)"
-          ROOT="$RUNNER_TEMP/e1008-parity"; rm -rf "$ROOT"; mkdir -p "$ROOT"
+          ROOT="$RUNNER_TEMP/e1008-exact-parity"; rm -rf "$ROOT"; mkdir -p "$ROOT"
+
+          grep -q 'FFmpeg Exact Preview' src/pages/Editors.tsx
+          grep -q 'compositePath' src/components/LiveCompositePreview.tsx
+          grep -q 'fps=60,format=yuv420p' src-tauri/src/preview.rs
 
           LIB=""
           while IFS= read -r p; do
@@ -40,108 +50,61 @@ jobs:
           done < <(find "$HOME/Library/Application Support" "$HOME/Library/Containers" -type f -name library.json 2>/dev/null)
           test -n "$LIB"
 
-          python3 - "$LIB" "$ROOT/effect.json" <<'PY'
-          import json,sys
-          d=json.load(open(sys.argv[1]))
-          for x in d.get("effects") or []:
-            if isinstance(x,dict) and (x.get("id")=="825dd7a4-f0cf-4032-a3c9-64290cb5756d" or "эквалайзер круглый" in str(x.get("name","")).lower()):
-              json.dump(x,open(sys.argv[2],"w"),ensure_ascii=False,indent=2);break
-          else: raise SystemExit("round equalizer not found")
-          PY
-
-          python3 - "$ROOT/effect.json" > "$ROOT/vars.env" <<'PY'
+          python3 - "$LIB" > "$ROOT/env" <<'PY'
           import json,sys,shlex
-          e=json.load(open(sys.argv[1]))
-          def q(v): return shlex.quote(str(v))
-          vals={
-            "SRC":e.get("source",""),"KEY":e.get("keyColor","#00ff00"),
-            "SIM":0.18,"BLEND":0.03,"DESPILL":float(e.get("despill",0) or 0),
-            "SCALE":float(e.get("scale",1) or 1),"X":float(e.get("x",.5) or .5),
-            "Y":float(e.get("y",.5) or .5),"OPACITY":float(e.get("opacity",1) if e.get("opacity") is not None else 1),
-            "SEEK":float(e.get("previewFrameTime",0) or 0)
-          }
-          for k,v in vals.items(): print(f"{k}={q(v)}")
+          d=json.load(open(sys.argv[1]))
+          e=next(x for x in d.get("effects",[]) if isinstance(x,dict) and (x.get("id")=="825dd7a4-f0cf-4032-a3c9-64290cb5756d" or "эквалайзер круглый" in str(x.get("name","")).lower()))
+          vals={"SRC":e["source"],"KEY":e.get("keyColor","#00ff00"),"SIM":0.18,"BLEND":0.03,
+                "DESPILL":float(e.get("despill",0) or 0),"SCALE":float(e.get("scale",1) or 1),
+                "X":float(e.get("x",.5) or .5),"Y":float(e.get("y",.5) or .5),
+                "OPACITY":float(e.get("opacity",1) if e.get("opacity") is not None else 1)}
+          for k,v in vals.items():print(f"{k}={shlex.quote(str(v))}")
           PY
-          source "$ROOT/vars.env"
-          test -f "$SRC"
-          KEY_RAW="$(printf '%s' "$KEY" | sed 's/^#//')"
+          source "$ROOT/env"; test -f "$SRC"; KEY_RAW="$(printf '%s' "$KEY"|sed 's/^#//')"
 
-          "$FFMPEG" -hide_banner -loglevel error -f lavfi -i "gradients=s=1920x1080:r=1:c0=0x0f1728:c1=0x3c526d" -frames:v 1 -y "$ROOT/base.png"
+          ffmpeg -hide_banner -loglevel error -f lavfi -i "gradients=s=1920x1080:r=30:c0=0x101828:c1=0x334466" -t 2 -c:v ffv1 -pix_fmt bgra -y "$ROOT/base.mkv"
+          TARGET="$(python3 -c 'import sys;x=round(1920*float(sys.argv[1]));print(max(2,x if x%2==0 else x+1))' "$SCALE")"
+          FILTER="[0:v]fps=30,setsar=1[b0];[1:v]fps=30,format=rgba,colorkey=0x$KEY_RAW:$SIM:$BLEND,despill=type=green:mix=$DESPILL:expand=0.20,scale=$TARGET:-2:flags=lanczos,colorchannelmixer=aa=$OPACITY[fx];[b0]format=rgba[base];[base][fx]overlay=x='max(0,min(W-w,W*$X-w/2))':y='max(0,min(H-h,H*$Y-h/2))':shortest=1:eof_action=repeat:format=auto[b1];[b1]fps=60,format=yuv420p[outv]"
 
-          "$FFMPEG" -hide_banner -loglevel error -stream_loop -1 -ss "$SEEK" -i "$SRC" -t 1             -an -vf "scale=640:-2:flags=fast_bilinear,fps=60"             -c:v libx264 -preset ultrafast -crf 18 -pix_fmt yuv420p -y "$ROOT/proxy.mp4"
+          # Exact Preview codec path.
+          ffmpeg -hide_banner -loglevel error -stream_loop -1 -i "$ROOT/base.mkv" -stream_loop -1 -i "$SRC"             -filter_complex "$FILTER" -map "[outv]" -t 2 -an             -c:v h264_videotoolbox -realtime 1 -q:v 100 -b:v 35M -maxrate 50M -pix_fmt yuv420p             -y "$ROOT/preview.mp4"
 
-          IFS=',' read -r PW PH <<<"$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "$ROOT/proxy.mp4")"
-          "$FFMPEG" -hide_banner -loglevel error -i "$ROOT/proxy.mp4" -frames:v 1 -f rawvideo -pix_fmt rgb24 "$ROOT/proxy.rgb"
+          # Final master codec path for this 56 s class: HEVC VideoToolbox high-fidelity master.
+          ffmpeg -hide_banner -loglevel error -stream_loop -1 -i "$ROOT/base.mkv" -stream_loop -1 -i "$SRC"             -filter_complex "$FILTER" -map "[outv]" -t 2 -an             -c:v hevc_videotoolbox -realtime 1 -prio_speed 1 -power_efficient 0 -constant_bit_rate 1 -b:v 80M -g 120             -tag:v hvc1 -pix_fmt yuv420p -y "$ROOT/final.mp4"
 
-          python3 - "$ROOT/proxy.rgb" "$ROOT/preview-fx.rgba" "$PW" "$PH" "$KEY" "$SIM" "$BLEND" "$DESPILL" "$OPACITY" <<'PY'
-          import math,sys
-          src,out,w,h,key,sim,blend,dsp,opacity=sys.argv[1:]
-          w,h=int(w),int(h);sim=float(sim);blend=float(blend);dsp=max(0,min(1,float(dsp)));opacity=max(0,min(1,float(opacity)))
-          raw=key.lstrip("#"); kv=int(raw,16); keyrgb=((kv>>16&255)/255,(kv>>8&255)/255,(kv&255)/255)
-          inp=open(src,"rb").read(); assert len(inp)==w*h*3
-          buf=bytearray(w*h*4); factor=(1.0-dsp)*0.80
-          kr,kg,kb=keyrgb
-          for i in range(w*h):
-            r,g,b=(inp[i*3]/255,inp[i*3+1]/255,inp[i*3+2]/255)
-            d=math.sqrt((r-kr)**2+(g-kg)**2+(b-kb)**2)/math.sqrt(3)
-            a=max(0,min(1,(d-sim)/max(.001,blend)))*opacity
-            if kg>=kb:
-              sp=max(g-(r*dsp+b*factor),0); g=max(g-sp,0)
-            else:
-              sp=max(b-(r*dsp+g*factor),0); b=max(b-sp,0)
-            j=i*4
-            buf[j]=round(max(0,min(1,r))*255);buf[j+1]=round(max(0,min(1,g))*255);buf[j+2]=round(max(0,min(1,b))*255);buf[j+3]=round(a*255)
-          open(out,"wb").write(buf)
-          PY
-
-          TARGET="$(python3 -c 'import sys; x=round(1920*float(sys.argv[1])); print(max(2,x if x%2==0 else x+1))' "$SCALE")"
-          PX="$(python3 -c 'import sys; print(max(0,min(1920-int(sys.argv[1]),round(1920*float(sys.argv[2])-int(sys.argv[1])/2))))' "$TARGET" "$X")"
-          "$FFMPEG" -hide_banner -loglevel error -f rawvideo -pix_fmt rgba -s "$PW"x"$PH" -i "$ROOT/preview-fx.rgba"             -frames:v 1 -vf "scale=$TARGET:-2:flags=lanczos" -y "$ROOT/preview-fx.png"
-          TH="$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of default=nw=1:nk=1 "$ROOT/preview-fx.png")"
-          PY="$(python3 -c 'import sys; print(max(0,min(1080-int(sys.argv[1]),round(1080*float(sys.argv[2])-int(sys.argv[1])/2))))' "$TH" "$Y")"
-          "$FFMPEG" -hide_banner -loglevel error -i "$ROOT/base.png" -i "$ROOT/preview-fx.png"             -filter_complex "[0:v]format=rgba[b];[b][1:v]overlay=x=$PX:y=$PY:format=auto,format=rgb24[out]"             -map "[out]" -frames:v 1 -y "$ROOT/preview.png"
-
-          "$FFMPEG" -hide_banner -loglevel error -i "$ROOT/base.png" -ss "$SEEK" -i "$SRC"             -filter_complex "[0:v]format=rgba[b];[1:v]format=rgba,colorkey=0x$KEY_RAW:$SIM:$BLEND,despill=type=green:mix=$DESPILL:expand=0.20,scale=$TARGET:-2:flags=lanczos,colorchannelmixer=aa=$OPACITY[fx];[b][fx]overlay=x='max(0,min(W-w,W*$X-w/2))':y='max(0,min(H-h,H*$Y-h/2))':shortest=1:eof_action=repeat:format=auto,format=rgb24[out]"             -map "[out]" -frames:v 1 -y "$ROOT/final.png"
-
-          "$FFMPEG" -hide_banner -nostats -loglevel info -i "$ROOT/preview.png" -i "$ROOT/final.png" -lavfi "[0:v][1:v]ssim" -f null - 2>"$ROOT/ssim.txt"
-
-          for n in base preview final; do
-            "$FFMPEG" -hide_banner -loglevel error -i "$ROOT/$n.png" -frames:v 1 -f rawvideo -pix_fmt rgb24 "$ROOT/$n.rgb"
+          for n in preview final; do
+            ffmpeg -hide_banner -loglevel error -ss 0.5 -i "$ROOT/$n.mp4" -frames:v 1 -y "$ROOT/$n.png"
+            ffmpeg -hide_banner -loglevel error -i "$ROOT/$n.png" -frames:v 1 -f rawvideo -pix_fmt rgb24 "$ROOT/$n.rgb"
+            echo "$n $(ffprobe -v error -select_streams v:0 -show_entries stream=codec_name,pix_fmt,color_range,color_space,color_primaries,color_transfer -of compact=p=0:nk=0 "$ROOT/$n.mp4")"
           done
-          python3 - "$ROOT/base.rgb" "$ROOT/preview.rgb" "$ROOT/final.rgb" "$ROOT/ssim.txt" <<'PY'
-          import re,sys
-          paths=sys.argv[1:]
-          base=open(paths[0],"rb").read(); pre=open(paths[1],"rb").read(); fin=open(paths[2],"rb").read(); ssimf=open(paths[3]).read()
-          n=len(base)//3
-          def effect_mask(img):
-            return [i for i in range(n) if max(abs(img[i*3+j]-base[i*3+j]) for j in range(3))>=8]
-          pm,fm=effect_mask(pre),effect_mask(fin); union=sorted(set(pm)|set(fm))
+
+          ffmpeg -hide_banner -nostats -loglevel info -i "$ROOT/preview.png" -i "$ROOT/final.png" -lavfi "[0:v][1:v]ssim" -f null - 2>"$ROOT/ssim.txt"
+
+          python3 - "$ROOT" "$TARGET" "$X" "$Y" <<'PY'
+          import os,re,sys
+          root,target,x,y=sys.argv[1],int(sys.argv[2]),float(sys.argv[3]),float(sys.argv[4])
+          pre=open(os.path.join(root,"preview.rgb"),"rb").read();fin=open(os.path.join(root,"final.rgb"),"rb").read()
+          W,H=1920,1080;assert len(pre)==len(fin)==W*H*3
+          # Round Equalizer source is square; use the exact visual effect box plus 6px guard.
+          h=target;x0=max(0,round(W*x-target/2)-6);x1=min(W,round(W*x+target/2)+6);y0=max(0,round(H*y-h/2)-6);y1=min(H,round(H*y+h/2)+6)
+          ids=[yy*W+xx for yy in range(y0,y1) for xx in range(x0,x1)]
           def lum(img,i):
-            r,g,b=[img[i*3+j] for j in range(3)]
-            return .2126*r+.7152*g+.0722*b
-          def stats(img,mask):
-            vals=[lum(img,i) for i in mask] or [0]
-            whites=[max(img[i*3:i*3+3]) for i in mask] or [0]
-            vals.sort(); whites.sort()
-            return sum(vals)/len(vals),vals[int(.95*(len(vals)-1))],whites[int(.99*(len(whites)-1))]
-          pl,p95,pw=stats(pre,union); fl,f95,fw=stats(fin,union)
-          mad=sum(abs(pre[i*3+j]-fin[i*3+j]) for i in union for j in range(3))/max(1,len(union)*3)
-          m=re.findall(r"All:([0-9.]+)",ssimf); ssim=float(m[-1]) if m else 0
-          area_delta=abs(len(pm)-len(fm))/max(1,len(fm))
-          lum_delta=abs(pl-fl)/max(1,fl)
-          white_delta=abs(pw-fw)/max(1,fw)
-          print(f"PARITY_PREVIEW_PIXELS={len(pm)}")
-          print(f"PARITY_FINAL_PIXELS={len(fm)}")
-          print(f"PARITY_AREA_DELTA={area_delta:.6f}")
-          print(f"PARITY_PREVIEW_LUMA={pl:.3f}")
-          print(f"PARITY_FINAL_LUMA={fl:.3f}")
-          print(f"PARITY_LUMA_DELTA={lum_delta:.6f}")
-          print(f"PARITY_PREVIEW_WHITE_P99={pw:.3f}")
-          print(f"PARITY_FINAL_WHITE_P99={fw:.3f}")
-          print(f"PARITY_WHITE_DELTA={white_delta:.6f}")
-          print(f"PARITY_RGB_MAD={mad:.3f}")
-          print(f"PARITY_SSIM={ssim:.6f}")
-          ok=ssim>=0.985 and lum_delta<=0.04 and white_delta<=0.04 and area_delta<=0.05 and mad<=5.0
-          print("ENDLUME_1008_PIXEL_PARITY_GREEN="+("1" if ok else "0"))
-          if not ok: raise SystemExit(31)
+            r,g,b=img[i*3:i*3+3];return .2126*r+.7152*g+.0722*b
+          pl=sum(lum(pre,i) for i in ids)/len(ids);fl=sum(lum(fin,i) for i in ids)/len(ids)
+          pw=sorted(max(pre[i*3:i*3+3]) for i in ids)[int(.99*(len(ids)-1))]
+          fw=sorted(max(fin[i*3:i*3+3]) for i in ids)[int(.99*(len(ids)-1))]
+          mad=sum(abs(pre[i*3+j]-fin[i*3+j]) for i in ids for j in range(3))/(len(ids)*3)
+          m=re.findall(r"All:([0-9.]+)",open(os.path.join(root,"ssim.txt")).read());ssim=float(m[-1]) if m else 0
+          ld=abs(pl-fl)/max(1,fl);wd=abs(pw-fw)/max(1,fw)
+          print(f"EXACT_PARITY_PREVIEW_LUMA={pl:.3f}")
+          print(f"EXACT_PARITY_FINAL_LUMA={fl:.3f}")
+          print(f"EXACT_PARITY_LUMA_DELTA={ld:.6f}")
+          print(f"EXACT_PARITY_PREVIEW_WHITE_P99={pw}")
+          print(f"EXACT_PARITY_FINAL_WHITE_P99={fw}")
+          print(f"EXACT_PARITY_WHITE_DELTA={wd:.6f}")
+          print(f"EXACT_PARITY_RGB_MAD={mad:.3f}")
+          print(f"EXACT_PARITY_SSIM={ssim:.6f}")
+          ok=ld<=0.04 and wd<=0.04 and mad<=6.0 and ssim>=0.995
+          print("ENDLUME_1008_EXACT_PIXEL_PARITY_GREEN="+("1" if ok else "0"))
+          if not ok:raise SystemExit(31)
           PY

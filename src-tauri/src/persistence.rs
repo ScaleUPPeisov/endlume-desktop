@@ -42,6 +42,16 @@ fn migrate_item(app:&AppHandle,item:&mut Value,kind:&str)->bool{
       changed=true;
     }
   }
+  // ENDLUME 10.0.6 could leave an explicit OFF usage mode behind while a
+  // quick UI toggle set enabled=true. The renderer correctly treats usageMode=off
+  // as disabled, so normalize only this contradictory legacy state.
+  let enabled=obj.get("enabled").and_then(Value::as_bool).unwrap_or(false);
+  let usage=obj.get("usageMode").and_then(Value::as_str).unwrap_or("");
+  if enabled&&usage=="off"{
+    obj.insert("usageMode".into(),json!(if kind=="subscribe"{"interval"}else{"always"}));
+    changed=true;
+  }
+
   // alpha.8.18 could leave chromakey at extreme 0.9–1.0 values while the old
   // WebGL preview also boosted saturation. Those values erase most of the overlay.
   // Bring only obviously broken legacy presets back to conservative defaults.

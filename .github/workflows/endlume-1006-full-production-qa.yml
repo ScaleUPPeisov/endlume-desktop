@@ -67,6 +67,11 @@ jobs:
           assert "<span>Версия <b>{appVersion||'…'}</b></span>" in settings
           history=Path('src/components/ReleaseHistory.tsx').read_text()
           assert "release.version===currentVersion" in history
+          render_page=Path('src/pages/RenderPage.tsx').read_text()
+          queue=Path('src-tauri/src/queue.rs').read_text()
+          assert "Рендер завершён с ошибкой" in render_page
+          assert "ОШИБКА РЕНДЕРА" in render_page
+          assert "Не удалось запустить внутренний видео-движок FFmpeg." in queue
           print('ENDLUME_1006_VERSION_UI_GREEN')
           PY
 

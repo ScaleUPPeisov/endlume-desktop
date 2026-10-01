@@ -1,0 +1,49 @@
+name: ENDLUME 10.0.8 Fast Compile Gate
+
+on:
+  push:
+    branches: [hotfix/endlume-10.0.8-performance-visual]
+    paths:
+      - ".github/workflows/endlume-1008-fast-compile.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-1008-fast-compile
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Compile and unit tests
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
+          export CARGO_TARGET_DIR="$HOME/.endlume-build-cache/target-1006-updater-repair"
+          npm ci
+          npm run check
+          npm run build
+          cargo check --manifest-path src-tauri/Cargo.toml --target aarch64-apple-darwin
+          cargo test --manifest-path src-tauri/Cargo.toml --lib -- --nocapture
+          python3 - <<'PY'
+          import json,re
+          from pathlib import Path
+          v="10.0.8"
+          assert json.loads(Path("package.json").read_text())["version"]==v
+          assert json.loads(Path("package-lock.json").read_text())["version"]==v
+          assert json.loads(Path("src-tauri/tauri.conf.json").read_text())["version"]==v
+          assert re.search(r'^version\s*=\s*"10\.0\.8"$',Path("src-tauri/Cargo.toml").read_text(),re.M)
+          assert 'name = "endlume"\nversion = "10.0.8"' in Path("src-tauri/Cargo.lock").read_text()
+          print("ENDLUME_1008_COMPILE_GREEN")
+          PY

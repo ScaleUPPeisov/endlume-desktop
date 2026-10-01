@@ -5,5 +5,6 @@
   "platform": "darwin-aarch64",
   "qa_run_id": 36749164733,
   "qa_head_sha": "463b16c1f503eb66f2b04ac00fea88824751af5c",
-  "notes": "User requested immediate publication. Hosted Apple Silicon manual package fallback; updater latest.json remains untouched until original updater signing key runner is online."
+  "notes": "User requested immediate publication; retry after full-history lineage gate fix.",
+  "retry": 1
 }

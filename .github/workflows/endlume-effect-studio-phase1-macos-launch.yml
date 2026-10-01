@@ -1,0 +1,146 @@
+name: ENDLUME Effect Studio Phase 1 macOS Launch Gate
+
+on:
+  push:
+    branches:
+      - feature/endlume-effect-studio-phase1-10.0.5
+    paths:
+      - ".github/workflows/endlume-effect-studio-phase1-macos-launch.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-effect-studio-phase1-macos-launch
+  cancel-in-progress: true
+
+jobs:
+  macos-launch:
+    name: macOS ARM64 • Developer ID • Notary • Gatekeeper • Launch
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Resolve Developer ID
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          IDENTITIES="$(/usr/bin/security find-identity -v -p codesigning 2>&1 || true)"
+          IDENTITY="$(printf '%s\n' "$IDENTITIES" | grep 'Developer ID Application:' | head -1 | sed -E 's/.*"([^"]+)".*/\1/' || true)"
+          test -n "$IDENTITY"
+          echo "APPLE_SIGNING_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+          echo "ENDLUME_EFFECT_STUDIO_DEVELOPER_ID_GREEN"
+
+      - name: Stage portable FFmpeg source
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+          mkdir -p src-tauri/binaries
+          cp -L "$(command -v ffmpeg)" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp -L "$(command -v ffprobe)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          chmod +x src-tauri/binaries/*
+          /usr/bin/file src-tauri/binaries/ffmpeg-aarch64-apple-darwin | grep -q arm64
+
+      - name: Compile regression
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
+          npm ci
+          npm run check
+          npm run build
+          cargo check --manifest-path src-tauri/Cargo.toml
+          cargo test --manifest-path src-tauri/Cargo.toml --lib -- --nocapture
+
+      - name: Build signed portable app
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
+          export CARGO_TARGET_DIR="$RUNNER_TEMP/endlume-effect-studio-phase1"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path("src-tauri/tauri.conf.json")
+          d=json.loads(p.read_text())
+          d["bundle"]["createUpdaterArtifacts"]=False
+          assert d["app"]["windows"] and any(w.get("label")=="main" for w in d["app"]["windows"])
+          p.write_text(json.dumps(d,ensure_ascii=False,indent=2)+"\n")
+          PY
+          npm run tauri build -- --target aarch64-apple-darwin --bundles app
+          APP="$(find "$CARGO_TARGET_DIR" -type d -path '*/release/bundle/macos/*.app' -print -quit)"
+          test -n "$APP" -a -d "$APP"
+          /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP"
+          /usr/bin/codesign -dv --verbose=4 "$APP" 2>&1 | grep -q 'Authority=Developer ID Application:'
+          echo "ENDLUME_APP=$APP" >> "$GITHUB_ENV"
+          echo "ENDLUME_EFFECT_STUDIO_SIGNED_BUILD_GREEN"
+
+      - name: Notarize and staple
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          STAGE="$RUNNER_TEMP/endlume-effect-studio-notary"
+          rm -rf "$STAGE"; mkdir -p "$STAGE"
+          ZIP="$STAGE/notary.zip"
+          /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$ENDLUME_APP" "$ZIP"
+          if /usr/bin/xcrun stapler validate "$ENDLUME_APP" >/dev/null 2>&1; then
+            echo "Already notarized"
+          elif printenv APPLE_ID >/dev/null 2>&1 && printenv APPLE_PASSWORD >/dev/null 2>&1 && printenv APPLE_TEAM_ID >/dev/null 2>&1; then
+            /usr/bin/xcrun notarytool submit "$ZIP" --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait
+            /usr/bin/xcrun stapler staple "$ENDLUME_APP"
+          elif printenv APPLE_API_KEY_PATH >/dev/null 2>&1 && printenv APPLE_API_KEY >/dev/null 2>&1 && printenv APPLE_API_ISSUER >/dev/null 2>&1; then
+            /usr/bin/xcrun notarytool submit "$ZIP" --key "$APPLE_API_KEY_PATH" --key-id "$APPLE_API_KEY" --issuer "$APPLE_API_ISSUER" --wait
+            /usr/bin/xcrun stapler staple "$ENDLUME_APP"
+          else
+            echo "No notarization credentials" >&2
+            exit 42
+          fi
+          /usr/bin/xcrun stapler validate "$ENDLUME_APP"
+          /usr/sbin/spctl -a -vv "$ENDLUME_APP"
+          echo "ENDLUME_EFFECT_STUDIO_GATEKEEPER_GREEN"
+
+      - name: Exact ZIP launch smoke
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          OUT="$GITHUB_WORKSPACE/effect-studio-launch"
+          rm -rf "$OUT"; mkdir -p "$OUT"
+          ZIP="$OUT/ENDLUME-10.0.5-Effect-Studio-Phase1-macOS-ARM64-SIGNED.zip"
+          /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$ENDLUME_APP" "$ZIP"
+          UNPACK="$RUNNER_TEMP/endlume-effect-studio-unpack"
+          rm -rf "$UNPACK"; mkdir -p "$UNPACK"
+          /usr/bin/ditto -x -k "$ZIP" "$UNPACK"
+          APP="$(find "$UNPACK" -maxdepth 2 -type d -name '*.app' -print -quit)"
+          test -n "$APP"
+          /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP"
+          /usr/sbin/spctl -a -vv "$APP"
+          /usr/bin/xcrun stapler validate "$APP"
+          MARKER="$RUNNER_TEMP/effect-studio-launch-marker.json"
+          rm -f "$MARKER"
+          /bin/launchctl setenv ENDLUME_LAUNCH_SMOKE_MARKER "$MARKER"
+          /usr/bin/open -n "$APP"
+          for I in $(seq 1 80); do test -s "$MARKER" && break; sleep 0.25; done
+          /bin/launchctl unsetenv ENDLUME_LAUNCH_SMOKE_MARKER || true
+          test -s "$MARKER"
+          cat "$MARKER"
+          PID="$(python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));assert d["label"]=="main";assert d["frontendLoaded"] is True;print(d["pid"])' "$MARKER")"
+          kill -0 "$PID"
+          kill "$PID" || true
+          /usr/bin/shasum -a 256 "$ZIP" > "$ZIP.sha256"
+          echo "ENDLUME_EFFECT_STUDIO_EXACT_ZIP_LAUNCH_GREEN"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ENDLUME-10.0.5-Effect-Studio-Phase1-macOS-ARM64-SIGNED
+          path: effect-studio-launch/
+          if-no-files-found: error
+          retention-days: 7

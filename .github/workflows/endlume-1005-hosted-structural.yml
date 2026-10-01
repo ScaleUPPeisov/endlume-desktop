@@ -122,6 +122,18 @@ jobs:
           grep -q ENDLUME_MACOS_FFMPEG_RUNTIME_PASS hosted-candidate/runtime.log
           echo ENDLUME_1005_HOSTED_RUNTIME_GREEN
 
+      - name: Exact ZIP normal render smoke
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/qa-endlume-1005-normal-render-smoke.py \
+            "$E1005_APP" \
+            "$E1005_APP/Contents/MacOS/ffmpeg" \
+            "$E1005_APP/Contents/MacOS/ffprobe" \
+            hosted-candidate/normal-render.json
+          grep -q 'ENDLUME_1005_EXACT_ZIP_NORMAL_RENDER_PASS' hosted-candidate/normal-render.json
+          echo ENDLUME_1005_HOSTED_NORMAL_RENDER_GREEN
+
       - name: Upload private structural evidence
         if: always()
         uses: actions/upload-artifact@v4

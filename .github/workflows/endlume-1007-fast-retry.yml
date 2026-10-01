@@ -59,13 +59,19 @@ jobs:
           p=Path("src/pages/App.tsx")
           s=p.read_text()
           s=s.replace("import React, { useEffect, useRef, useState } from 'react';",
-                      "import React, { useEffect, useRef, useState } from 'react';\nimport { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';")
+                      "import React, { useEffect, useRef, useState } from 'react';\nimport { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';\nimport { LogicalPosition, LogicalSize } from '@tauri-apps/api/dpi';")
           anchor="  useEffect(()=>{const timer=window.setTimeout(()=>setStartupMinElapsed(true),1150);return()=>window.clearTimeout(timer)},[]);"
           qa=r'''  useEffect(()=>{
             if(!license?.valid)return;
             const fx:any={id:'qa-fx',name:'QA Effect',source:'',enabled:true,mode:'chromakey',keyColor:'#00ff00',similarity:.1,blend:.06,despill:.35,lumaThreshold:.03,lumaTolerance:.08,saturation:1,x:.5,y:.5,scale:.34,fullscreen:false,previewFrameTime:0,startSec:0,endSec:null,usageMode:'interval',intervalSec:240,usageDurationSec:30,target:'CUSTOM',offsetX:0,offsetY:0,opacity:1};
             const sub:any={...fx,id:'qa-sub',name:'QA Subscribe',usageMode:'interval',firstAtSec:240,secondAtSec:480,repeatEverySec:240,firstAppearance:'after-interval',customFirstAtSec:240,showDurationSec:8};
             const win=getCurrentWebviewWindow();
+            void win.setSize(new LogicalSize(1100,700));
+            void win.setPosition(new LogicalPosition(80,80));
+            void win.setFocus();
+            const report=(label:string,payload:Record<string,unknown>)=>{
+              void fetch('http://127.0.0.1:18777/qa',{method:'POST',headers:{'Content-Type':'text/plain'},body:JSON.stringify({label,...payload})}).catch(()=>{});
+            };
             const mark=(label:string)=>{
               window.setTimeout(()=>{
                 const el=document.querySelector('.editorControls') as HTMLElement|null;
@@ -76,14 +82,14 @@ jobs:
                   const del=buttons.find(b=>b.textContent?.includes('УДАЛИТЬ'));
                   const r=del?.getBoundingClientRect();
                   const visible=!!r&&r.top>=68&&r.bottom<=window.innerHeight;
-                  const intervals=el.textContent?.includes('ПО ИНТЕРВАЛУ')&&el.textContent?.includes('Показывать каждые');
-                  void win.setTitle(label+'|sh='+el.scrollHeight+'|ch='+el.clientHeight+'|st='+Math.round(el.scrollTop)+'|delete='+(visible?'1':'0')+'|intervals='+(intervals?'1':'0'));
+                  const intervals=!!(el.textContent?.includes('ПО ИНТЕРВАЛУ')&&el.textContent?.includes('Показывать каждые'));
+                  report(label,{scrollHeight:el.scrollHeight,clientHeight:el.clientHeight,scrollTop:Math.round(el.scrollTop),deleteVisible:visible,intervalsVisible:intervals});
                 },250);
               },400);
             };
             const t1=window.setTimeout(()=>{useApp.setState({effects:[fx],subscribes:[sub],ambient:'/tmp/qa-background.mp3'} as any);useApp.getState().openEditor({kind:'effects'});mark('QA_EFFECTS_BOTTOM_GREEN')},1400);
             const t2=window.setTimeout(()=>{useApp.getState().openEditor({kind:'subscribe'});mark('QA_SUBSCRIBE_BOTTOM_GREEN')},6000);
-            const t3=window.setTimeout(()=>{useApp.getState().openEditor(null);useApp.getState().setPage('project');window.setTimeout(()=>{const titles=[...document.querySelectorAll('.sectionTitle')] as HTMLElement[];const bg=titles.find(x=>x.textContent?.includes('BACKGROUND MUSIC'));bg?.scrollIntoView({block:'center'});window.setTimeout(()=>{const r=bg?.getBoundingClientRect();const visible=!!r&&r.top>=68&&r.bottom<=window.innerHeight;void win.setTitle('QA_BACKGROUND_MUSIC_GREEN|visible='+(visible?'1':'0'))},250)},450)},10500);
+            const t3=window.setTimeout(()=>{useApp.getState().openEditor(null);useApp.getState().setPage('project');window.setTimeout(()=>{const titles=[...document.querySelectorAll('.sectionTitle')] as HTMLElement[];const bg=titles.find(x=>x.textContent?.includes('BACKGROUND MUSIC'));bg?.scrollIntoView({block:'center'});window.setTimeout(()=>{const r=bg?.getBoundingClientRect();const visible=!!r&&r.top>=68&&r.bottom<=window.innerHeight;report('QA_BACKGROUND_MUSIC_GREEN',{visible})},250)},450)},10500);
             return()=>{window.clearTimeout(t1);window.clearTimeout(t2);window.clearTimeout(t3)};
           },[license?.valid]);'''
           assert anchor in s
@@ -132,7 +138,29 @@ jobs:
           APP="$(cat "$RUNNER_TEMP/e1007-fast-app.txt")"
           EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
           BIN="$APP/Contents/MacOS/$EXE"
+          EVENTS="$RUNNER_TEMP/ui-events.ndjson"
+          : > "$EVENTS"
           mkdir -p "$RUNNER_TEMP/ui-qa"
+          cat > "$RUNNER_TEMP/ui-qa-server.py" <<'PY'
+          from http.server import BaseHTTPRequestHandler,HTTPServer
+          import pathlib,sys
+          out=pathlib.Path(sys.argv[1])
+          class H(BaseHTTPRequestHandler):
+            def do_POST(self):
+              n=int(self.headers.get("Content-Length","0"))
+              body=self.rfile.read(n).decode("utf-8","replace").strip()
+              with out.open("a",encoding="utf-8") as f: f.write(body+"\n")
+              self.send_response(204)
+              self.send_header("Access-Control-Allow-Origin","*")
+              self.end_headers()
+            def log_message(self,*args): pass
+          HTTPServer(("127.0.0.1",18777),H).serve_forever()
+          PY
+          python3 "$RUNNER_TEMP/ui-qa-server.py" "$EVENTS" &
+          SERVER_PID=$!
+          cleanup(){ kill "$SERVER_PID" >/dev/null 2>&1 || true; [[ -n "${PID:-}" ]] && kill "$PID" >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+
           /usr/bin/open -n "$APP"
           PID=""
           for i in $(seq 1 80); do
@@ -141,45 +169,37 @@ jobs:
             sleep .25
           done
           test -n "$PID"
-          /usr/bin/osascript <<OSA || true
-          tell application "System Events"
-            set p to first application process whose unix id is $PID
-            set frontmost of p to true
-            if (count of windows of p) > 0 then set position of window 1 of p to {80,80}
-            if (count of windows of p) > 0 then set size of window 1 of p to {1100,700}
-          end tell
-          OSA
-          capture(){
-            label="$1"; file="$2"; ok=0; title=""
-            for i in $(seq 1 80); do
-              title="$(/usr/bin/osascript <<OSA 2>/dev/null || true
-          tell application "System Events"
-            set p to first application process whose unix id is $PID
-            if (count of windows of p) > 0 then return name of window 1 of p
-          end tell
-          OSA
-          )"
-              if [[ "$title" == "$label"* ]]; then ok=1; break; fi
+
+          wait_and_capture(){
+            label="$1"; file="$2"; line=""
+            for i in $(seq 1 120); do
+              line="$(grep -F "\"label\":\"$label\"" "$EVENTS" | tail -1 || true)"
+              [[ -n "$line" ]] && break
               sleep .25
             done
-            echo "UI_TITLE=$title"
-            test "$ok" = 1
-            if [[ "$label" == "QA_BACKGROUND_MUSIC_GREEN" ]]; then
-              [[ "$title" == *"visible=1"* ]]
-            else
-              [[ "$title" == *"delete=1"* ]]
-              [[ "$title" == *"intervals=1"* ]]
-              st="$(printf '%s' "$title" | sed -n 's/.*|st=\([0-9][0-9]*\).*/\1/p')"
-              test -n "$st" && test "$st" -gt 0
-            fi
+            test -n "$line"
+            printf '%s\n' "$line" | tee "$file.json"
+            python3 - "$label" "$file.json" <<'PY'
+          import json,sys
+          label=sys.argv[1]
+          d=json.load(open(sys.argv[2],encoding="utf-8"))
+          assert d["label"]==label,d
+          if label=="QA_BACKGROUND_MUSIC_GREEN":
+            assert d.get("visible") is True,d
+          else:
+            assert d.get("deleteVisible") is True,d
+            assert d.get("intervalsVisible") is True,d
+            assert int(d.get("scrollTop",0))>0,d
+            assert int(d.get("scrollHeight",0))>int(d.get("clientHeight",0)),d
+          print(label,d)
+          PY
             /usr/sbin/screencapture -x "$file"
             test "$(stat -f '%z' "$file")" -gt 10000
-            printf '%s\n' "$title" > "$file.txt"
           }
-          capture QA_EFFECTS_BOTTOM_GREEN "$RUNNER_TEMP/ui-qa/effects-bottom.png"
-          capture QA_SUBSCRIBE_BOTTOM_GREEN "$RUNNER_TEMP/ui-qa/subscribe-bottom.png"
-          capture QA_BACKGROUND_MUSIC_GREEN "$RUNNER_TEMP/ui-qa/background-music.png"
-          kill "$PID" >/dev/null 2>&1 || true
+
+          wait_and_capture QA_EFFECTS_BOTTOM_GREEN "$RUNNER_TEMP/ui-qa/effects-bottom.png"
+          wait_and_capture QA_SUBSCRIBE_BOTTOM_GREEN "$RUNNER_TEMP/ui-qa/subscribe-bottom.png"
+          wait_and_capture QA_BACKGROUND_MUSIC_GREEN "$RUNNER_TEMP/ui-qa/background-music.png"
           echo ENDLUME_1007_VISUAL_SCROLL_GREEN
 
       - uses: actions/upload-artifact@v4

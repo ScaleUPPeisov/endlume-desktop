@@ -67,6 +67,14 @@ jobs:
           assert "<span>Версия <b>{appVersion||'…'}</b></span>" in settings
           history=Path('src/components/ReleaseHistory.tsx').read_text()
           assert "release.version===currentVersion" in history
+          assert "{version:'10.0.6',date:'01.10.2026'" in history
+          store=Path('src/store.ts').read_text()
+          assert "p.settings={...initialSettings,...(p.settings||{})}" in store
+          assert "normalizeEffectPreset(e,false)" in store
+          assert "normalizeEffectPreset(e,true)" in store
+          editors=Path('src/pages/Editors.tsx').read_text()
+          assert "Удалить эффект?" in editors
+          assert "Исходный видеофайл останется на диске." in editors
           render_page=Path('src/pages/RenderPage.tsx').read_text()
           queue=Path('src-tauri/src/queue.rs').read_text()
           assert "Рендер завершён с ошибкой" in render_page

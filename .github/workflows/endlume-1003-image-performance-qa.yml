@@ -2,9 +2,13 @@ name: ENDLUME 10.0.3 Image Performance QA
 
 on:
   push:
-    branches: [hotfix/endlume-10.0.3-performance]
+    branches: [hotfix/endlume-10.0.3-macos-ffmpeg-runtime]
     paths:
       - '.github/workflows/endlume-1003-image-performance-qa.yml'
+      - 'package.json'
+      - 'scripts/tauri-cli.mjs'
+      - 'scripts/prepare-macos-ffmpeg-runtime.mjs'
+      - 'scripts/verify-macos-ffmpeg-bundle.mjs'
       - 'src-tauri/src/render.rs'
       - 'src-tauri/Cargo.toml'
       - 'src-tauri/Cargo.lock'

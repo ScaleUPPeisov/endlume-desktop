@@ -42,14 +42,41 @@ const cleanEnv={...process.env,PATH:'/usr/bin:/bin:/usr/sbin:/sbin'};delete clea
 for(const[bin,args]of[[ffmpeg,['-version']],[ffprobe,['-version']]]){const p=spawnSync(bin,args,{env:cleanEnv,encoding:'utf8'});if(p.status!==0)throw new Error(`Bundled ${path.basename(bin)} failed without Homebrew env: ${p.stderr||p.stdout}`)}
 
 const tmp=fs.mkdtempSync(path.join(os.tmpdir(),'endlume-ffmpeg-smoke-'));
+const spawn=(bin,args)=>spawnSync(bin,args,{env:cleanEnv,encoding:'utf8'});
+const encodeWithPreviewFallback=(prefix,out)=>{
+  let p=spawn(ffmpeg,[...prefix,'-c:v','h264_videotoolbox','-realtime','1','-q:v','72','-pix_fmt','yuv420p','-movflags','+faststart','-y',out]);
+  if(p.status!==0)p=spawn(ffmpeg,[...prefix,'-c:v','libx264','-preset','ultrafast','-crf','18','-pix_fmt','yuv420p','-movflags','+faststart','-y',out]);
+  if(p.status!==0||!fs.existsSync(out))throw new Error(`Live Preview encode failed: ${p.stderr||p.stdout}`);
+};
+const validateProxy=(out,label)=>{
+  const probe=spawn(ffprobe,['-v','error','-select_streams','v:0','-show_entries','stream=codec_type,width,height:format=duration','-of','json',out]);
+  if(probe.status!==0)throw new Error(`${label} FFprobe failed: ${probe.stderr||probe.stdout}`);
+  const data=JSON.parse(probe.stdout),s=data.streams?.[0];
+  if(!s||s.codec_type!=='video'||Number(s.width)<=0||Number(s.height)<=0||Number(data.format?.duration)<=0)throw new Error(`${label} proxy validation failed: ${probe.stdout}`);
+  const decode=spawn(ffmpeg,['-hide_banner','-loglevel','error','-ss','0','-i',out,'-map','0:v:0','-frames:v','1','-f','null','-']);
+  if(decode.status!==0)throw new Error(`${label} proxy decode failed: ${decode.stderr||decode.stdout}`);
+};
 try{
-  const out=path.join(tmp,'preview-smoke.mp4'),base=['-hide_banner','-loglevel','error','-f','lavfi','-i','color=c=black:s=320x180:r=30','-t','0.35','-an'];
-  let enc=spawnSync(ffmpeg,[...base,'-c:v','h264_videotoolbox','-pix_fmt','yuv420p','-y',out],{env:cleanEnv,encoding:'utf8'});
-  if(enc.status!==0)enc=spawnSync(ffmpeg,[...base,'-c:v','libx264','-pix_fmt','yuv420p','-y',out],{env:cleanEnv,encoding:'utf8'});
-  if(enc.status!==0||!fs.existsSync(out))throw new Error(`Bundled FFmpeg preview smoke failed: ${enc.stderr||enc.stdout}`);
-  const probe=spawnSync(ffprobe,['-v','error','-select_streams','v:0','-show_entries','stream=codec_name,width,height:format=duration','-of','json',out],{env:cleanEnv,encoding:'utf8'});
-  if(probe.status!==0)throw new Error(`Bundled FFprobe preview smoke failed: ${probe.stderr||probe.stdout}`);
-  const data=JSON.parse(probe.stdout);if(!data.streams?.[0]||Number(data.streams[0].width)!==320||Number(data.streams[0].height)!==180||Number(data.format?.duration)<=0)throw new Error(`Invalid preview smoke probe: ${probe.stdout}`);
+  const source=path.join(tmp,'live-preview-source.mp4');
+  const seed=['-hide_banner','-loglevel','error','-f','lavfi','-i','testsrc2=s=640x360:r=30','-t','1.2','-an'];
+  let seedRun=spawn(ffmpeg,[...seed,'-c:v','h264_videotoolbox','-realtime','1','-q:v','72','-pix_fmt','yuv420p','-y',source]);
+  if(seedRun.status!==0)seedRun=spawn(ffmpeg,[...seed,'-c:v','libx264','-preset','ultrafast','-crf','18','-pix_fmt','yuv420p','-y',source]);
+  if(seedRun.status!==0||!fs.existsSync(source))throw new Error(`Live Preview fixture creation failed: ${seedRun.stderr||seedRun.stdout}`);
+
+  // Mirrors live_preview.rs::make_base for a video project.
+  const baseOut=path.join(tmp,'base-preview.mp4');
+  encodeWithPreviewFallback(['-hide_banner','-loglevel','error','-stream_loop','-1','-ss','0','-i',source,'-t','0.6','-an','-vf','scale=960:540:force_original_aspect_ratio=decrease,pad=960:540:(ow-iw)/2:(oh-ih)/2,fps=30'],baseOut);
+  validateProxy(baseOut,'Base Live Preview');
+
+  // Effects and Subscribe call the same prepare_live_preview backend, but execute
+  // both labels independently so a future divergence is visible in CI output.
+  for(const label of['Effects','Subscribe']){
+    const out=path.join(tmp,`${label.toLowerCase()}-overlay-preview.mp4`);
+    const prefix=['-hide_banner','-loglevel','error','-stream_loop','-1','-ss','0','-i',source,'-t','0.7','-an','-vf','scale=640:-2:flags=fast_bilinear,minterpolate=fps=60:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1'];
+    encodeWithPreviewFallback(prefix,out);
+    validateProxy(out,`${label} Live Preview`);
+    console.log(`[ENDLUME ffmpeg-runtime] ${label.toUpperCase()}_LIVE_PREVIEW_RUNTIME_PASS`);
+  }
 }finally{fs.rmSync(tmp,{recursive:true,force:true})}
 
 const sign=spawnSync('/usr/bin/codesign',['--verify','--deep','--strict','--verbose=2',app],{encoding:'utf8'});

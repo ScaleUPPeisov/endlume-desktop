@@ -1,0 +1,424 @@
+name: ENDLUME 10.0.6 Production Publish
+
+on:
+  push:
+    branches:
+      - release-prep/endlume-10.0.6
+    paths:
+      - "release/endlume-10.0.6-production.json"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: endlume-1006-production-publish
+  cancel-in-progress: false
+
+env:
+  VERSION: "10.0.6"
+  STABLE_REPO: ScaleUPPeisov/scaleup-site
+  STABLE_TAG: endlume-stable
+  MAC_MANUAL_ASSET: ENDLUME-YT-Studio-PEISOV-10.0.6-macOS-ARM64.zip
+  MAC_UPDATER_ASSET: ENDLUME-macos-aarch64.app.tar.gz
+  WIN_MANUAL_ASSET: ENDLUME-YT-Studio-PEISOV-Setup-10.0.6-x64.exe
+  WIN_UPDATER_ASSET: ENDLUME-windows-x86_64-setup.exe
+
+jobs:
+  gate:
+    name: Approval + exact QA lineage
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 15
+    outputs:
+      source_sha: ${{ steps.manifest.outputs.source_sha }}
+      mac_run: ${{ steps.manifest.outputs.mac_run }}
+      mac_sha: ${{ steps.manifest.outputs.mac_sha }}
+      win_run: ${{ steps.manifest.outputs.win_run }}
+      win_sha: ${{ steps.manifest.outputs.win_sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 0
+          persist-credentials: false
+
+      - id: manifest
+        name: Require explicit release approval
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('release/endlume-10.0.6-production.json')
+          d=json.loads(p.read_text())
+          assert d['enabled'] is True, 'production publish is disabled'
+          assert d['user_release_approval'] is True, 'explicit user release approval is absent'
+          assert d['version']=='10.0.6',d
+          assert d['source_branch']=='candidate/endlume-10.0.6-production-freeze',d
+          assert isinstance(d['source_sha'],str) and len(d['source_sha'])==40,d
+          for key in ('macos','windows'):
+              q=d[key]
+              assert isinstance(q['qa_run_id'],int) and q['qa_run_id']>0,q
+              assert isinstance(q['qa_head_sha'],str) and len(q['qa_head_sha'])==40,q
+          print('ENDLUME_1006_RELEASE_APPROVAL_GREEN')
+          PY
+          SOURCE_SHA="$(python3 -c "import json;print(json.load(open('release/endlume-10.0.6-production.json'))['source_sha'])")"
+          MAC_RUN="$(python3 -c "import json;print(json.load(open('release/endlume-10.0.6-production.json'))['macos']['qa_run_id'])")"
+          MAC_SHA="$(python3 -c "import json;print(json.load(open('release/endlume-10.0.6-production.json'))['macos']['qa_head_sha'])")"
+          WIN_RUN="$(python3 -c "import json;print(json.load(open('release/endlume-10.0.6-production.json'))['windows']['qa_run_id'])")"
+          WIN_SHA="$(python3 -c "import json;print(json.load(open('release/endlume-10.0.6-production.json'))['windows']['qa_head_sha'])")"
+          {
+            echo "source_sha=$SOURCE_SHA"
+            echo "mac_run=$MAC_RUN"
+            echo "mac_sha=$MAC_SHA"
+            echo "win_run=$WIN_RUN"
+            echo "win_sha=$WIN_SHA"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Verify exact QA runs are GREEN
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          for SPEC in "mac:${{ steps.manifest.outputs.mac_run }}:${{ steps.manifest.outputs.mac_sha }}" "win:${{ steps.manifest.outputs.win_run }}:${{ steps.manifest.outputs.win_sha }}"; do
+            IFS=: read -r LABEL RUN SHA <<<"$SPEC"
+            ACTUAL_CONCLUSION="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN" --jq .conclusion)"
+            ACTUAL_SHA="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN" --jq .head_sha)"
+            test "$ACTUAL_CONCLUSION" = "success"
+            test "$ACTUAL_SHA" = "$SHA"
+            echo "ENDLUME_1006_QA_LINEAGE_GREEN $LABEL run=$RUN sha=$SHA"
+          done
+          git fetch origin "${{ steps.manifest.outputs.source_sha }}" --depth=1
+          git merge-base --is-ancestor "${{ steps.manifest.outputs.mac_sha }}" "${{ steps.manifest.outputs.source_sha }}" || {
+            echo "Mac QA SHA is not an ancestor of release source" >&2; exit 31;
+          }
+          git merge-base --is-ancestor "${{ steps.manifest.outputs.win_sha }}" "${{ steps.manifest.outputs.source_sha }}" || {
+            echo "Windows QA SHA is not an ancestor of release source" >&2; exit 32;
+          }
+
+  macos:
+    name: macOS ARM64 • Developer ID • notarized • updater
+    needs: gate
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.gate.outputs.source_sha }}
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify exact source + keys
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(node -p "require('./package.json').version")" = "$VERSION"
+          test -s "$HOME/.endlume-updater/endlume.key"
+          test -s "$HOME/.endlume-updater/endlume.key.pub"
+          python3 - <<'PY'
+          import json
+          d=json.load(open('src-tauri/tauri.conf.json'))
+          assert d['version']=='10.0.6'
+          assert d['identifier']=='studio.endlume.desktop'
+          assert d['app']['windows'] and any(x.get('label')=='main' for x in d['app']['windows'])
+          print('ENDLUME_1006_MAC_SOURCE_GREEN')
+          PY
+
+      - name: Stage Apple Silicon FFmpeg
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          command -v ffmpeg >/dev/null || brew install ffmpeg
+          mkdir -p src-tauri/binaries
+          cp -L "$(command -v ffmpeg)" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp -L "$(command -v ffprobe)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          chmod 755 src-tauri/binaries/*
+          /usr/bin/file src-tauri/binaries/ffmpeg-aarch64-apple-darwin | grep -q arm64
+
+      - name: Resolve Developer ID
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          IDENTITIES="$(/usr/bin/security find-identity -v -p codesigning 2>&1 || true)"
+          IDENTITY="$(printf '%s\n' "$IDENTITIES" | grep 'Developer ID Application:' | head -1 | sed -E 's/.*"([^"]+)".*/\1/' || true)"
+          test -n "$IDENTITY"
+          echo "APPLE_SIGNING_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+
+      - name: Build exact app
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          npm ci
+          npm run check
+          npm run build
+          cargo test --manifest-path src-tauri/Cargo.toml --lib -- --nocapture
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('src-tauri/tauri.conf.json')
+          d=json.loads(p.read_text())
+          d['bundle']['createUpdaterArtifacts']=False
+          p.write_text(json.dumps(d,ensure_ascii=False,indent=2)+'\n')
+          PY
+          export CARGO_TARGET_DIR="$RUNNER_TEMP/e1006-release-mac"
+          npm run tauri build -- --target aarch64-apple-darwin --bundles app
+          APP="$(find "$CARGO_TARGET_DIR" -type d -path '*/release/bundle/macos/*.app' -print -quit)"
+          test -n "$APP" -a -d "$APP"
+          test "$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist")" = "$VERSION"
+          test "$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$APP/Contents/Info.plist")" = "studio.endlume.desktop"
+          /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP"
+          /usr/bin/codesign -dv --verbose=4 "$APP" 2>&1 | grep -q 'Authority=Developer ID Application:'
+          echo "RELEASE_APP=$APP" >> "$GITHUB_ENV"
+
+      - name: Notarize and staple
+        shell: bash
+        env:
+          SECRET_APPLE_ID: ${{ secrets.APPLE_ID }}
+          SECRET_APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          SECRET_APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          SECRET_API_KEY_PATH: ${{ secrets.APPLE_API_KEY_PATH }}
+          SECRET_API_KEY_ID: ${{ secrets.APPLE_API_KEY }}
+          SECRET_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          set -Eeuo pipefail
+          if ! /usr/bin/xcrun stapler validate "$RELEASE_APP" >/dev/null 2>&1; then
+            ZIP="$RUNNER_TEMP/e1006-notary.zip"
+            /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$RELEASE_APP" "$ZIP"
+            APPLE_ID_VALUE="${APPLE_ID:-$SECRET_APPLE_ID}"
+            APPLE_PASSWORD_VALUE="${APPLE_PASSWORD:-$SECRET_APPLE_PASSWORD}"
+            APPLE_TEAM_VALUE="${APPLE_TEAM_ID:-$SECRET_APPLE_TEAM_ID}"
+            API_KEY_PATH_VALUE="${APPLE_API_KEY_PATH:-$SECRET_API_KEY_PATH}"
+            API_KEY_ID_VALUE="${APPLE_API_KEY:-$SECRET_API_KEY_ID}"
+            API_ISSUER_VALUE="${APPLE_API_ISSUER:-$SECRET_API_ISSUER}"
+            if test -n "$APPLE_ID_VALUE" && test -n "$APPLE_PASSWORD_VALUE" && test -n "$APPLE_TEAM_VALUE"; then
+              /usr/bin/xcrun notarytool submit "$ZIP" --apple-id "$APPLE_ID_VALUE" --password "$APPLE_PASSWORD_VALUE" --team-id "$APPLE_TEAM_VALUE" --wait
+            elif test -n "$API_KEY_PATH_VALUE" && test -n "$API_KEY_ID_VALUE" && test -n "$API_ISSUER_VALUE"; then
+              /usr/bin/xcrun notarytool submit "$ZIP" --key "$API_KEY_PATH_VALUE" --key-id "$API_KEY_ID_VALUE" --issuer "$API_ISSUER_VALUE" --wait
+            else
+              echo "Apple notarization credentials are unavailable" >&2
+              exit 41
+            fi
+            /usr/bin/xcrun stapler staple "$RELEASE_APP"
+          fi
+          /usr/bin/xcrun stapler validate "$RELEASE_APP"
+          /usr/sbin/spctl -a -vv "$RELEASE_APP"
+          echo ENDLUME_1006_MAC_NOTARY_GREEN
+
+      - name: Package manual ZIP and signed updater tarball
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          STAGE="$RUNNER_TEMP/e1006-mac-stage"
+          rm -rf "$STAGE"; mkdir -p "$STAGE"
+          /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$RELEASE_APP" "$STAGE/$MAC_MANUAL_ASSET"
+          /usr/bin/shasum -a 256 "$STAGE/$MAC_MANUAL_ASSET" > "$STAGE/$MAC_MANUAL_ASSET.sha256"
+          /usr/bin/tar -czf "$STAGE/$MAC_UPDATER_ASSET" -C "$(dirname "$RELEASE_APP")" "$(basename "$RELEASE_APP")"
+          export TAURI_SIGNING_PRIVATE_KEY_PATH="$HOME/.endlume-updater/endlume.key"
+          export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
+          npx --yes @tauri-apps/cli@2.10.1 signer sign "$STAGE/$MAC_UPDATER_ASSET"
+          test -s "$STAGE/$MAC_UPDATER_ASSET.sig"
+          /usr/bin/shasum -a 256 "$STAGE/$MAC_UPDATER_ASSET" > "$STAGE/$MAC_UPDATER_ASSET.sha256"
+          echo "MAC_STAGE=$STAGE" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ENDLUME-10.0.6-production-macos
+          path: ${{ env.MAC_STAGE }}/
+          if-no-files-found: error
+          retention-days: 3
+
+  windows:
+    name: Windows x64 • exact NSIS
+    needs: gate
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.gate.outputs.source_sha }}
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Stage production Windows FFmpeg
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $url='https://github.com/ScaleUPPeisov/scaleup-site/releases/download/endlume-stable/ENDLUME-YT-Studio-PEISOV-Setup-10.0.3-x64.exe'
+          $old=Join-Path $env:RUNNER_TEMP 'endlume-1003.exe'
+          $extract=Join-Path $env:RUNNER_TEMP 'endlume-1003-extract'
+          Invoke-WebRequest -Uri $url -OutFile $old -UseBasicParsing
+          $seven='C:\Program Files\7-Zip\7z.exe'
+          if(!(Test-Path $seven)){choco install 7zip -y --no-progress}
+          Remove-Item $extract -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force $extract | Out-Null
+          & $seven x $old "-o$extract" -y | Out-Host
+          if($LASTEXITCODE -ne 0){throw 'Cannot extract published production runtime'}
+          $ffmpeg=Get-ChildItem $extract -Recurse -Filter ffmpeg.exe -File | Select-Object -First 1
+          $ffprobe=Get-ChildItem $extract -Recurse -Filter ffprobe.exe -File | Select-Object -First 1
+          if(!$ffmpeg -or !$ffprobe){throw 'Production FFmpeg sidecars missing'}
+          New-Item -ItemType Directory -Force src-tauri/binaries | Out-Null
+          Copy-Item $ffmpeg.FullName src-tauri/binaries/ffmpeg-x86_64-pc-windows-msvc.exe
+          Copy-Item $ffprobe.FullName src-tauri/binaries/ffprobe-x86_64-pc-windows-msvc.exe
+
+      - name: Build exact NSIS
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          npm ci
+          npm run check
+          npm run build
+          cargo test --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-msvc --lib -- --nocapture
+          python -c "import json,pathlib;p=pathlib.Path('src-tauri/tauri.conf.json');d=json.loads(p.read_text());assert d['version']=='10.0.6';d['bundle']['createUpdaterArtifacts']=False;p.write_text(json.dumps(d,ensure_ascii=False,indent=2)+'\n')"
+          $env:CARGO_TARGET_DIR=Join-Path $env:RUNNER_TEMP 'e1006-release-win'
+          npm run tauri build -- --target x86_64-pc-windows-msvc --bundles nsis --config src-tauri/tauri.windows.conf.json
+          $installer=Get-ChildItem "$env:CARGO_TARGET_DIR\x86_64-pc-windows-msvc\release\bundle\nsis" -Filter '*.exe' -File | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+          if(!$installer){throw 'NSIS missing'}
+          $stage=Join-Path $env:RUNNER_TEMP 'e1006-win-stage'
+          Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force $stage | Out-Null
+          Copy-Item $installer.FullName (Join-Path $stage $env:WIN_MANUAL_ASSET)
+          (Get-FileHash (Join-Path $stage $env:WIN_MANUAL_ASSET) -Algorithm SHA256).Hash.ToLower() + "  " + $env:WIN_MANUAL_ASSET | Out-File (Join-Path $stage "$env:WIN_MANUAL_ASSET.sha256") -Encoding ascii
+          "WIN_STAGE=$stage" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ENDLUME-10.0.6-production-windows
+          path: ${{ env.WIN_STAGE }}\
+          if-no-files-found: error
+          retention-days: 3
+
+  promote:
+    name: Sign Windows updater • publish packages • latest.json LAST
+    needs: [gate,macos,windows]
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 60
+    env:
+      RELEASE_TOKEN: ${{ secrets.ENDLUME_RELEASE_TOKEN }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: ENDLUME-10.0.6-production-macos
+          path: stage/mac
+      - uses: actions/download-artifact@v4
+        with:
+          name: ENDLUME-10.0.6-production-windows
+          path: stage/win
+
+      - name: Normalize and sign Windows updater
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "${RELEASE_TOKEN:-}"
+          KEY="$HOME/.endlume-updater/endlume.key"
+          test -s "$KEY"
+          MAC_ZIP="$(find stage/mac -type f -name "$MAC_MANUAL_ASSET" -print -quit)"
+          MAC_TAR="$(find stage/mac -type f -name "$MAC_UPDATER_ASSET" -print -quit)"
+          MAC_SIG="$(find stage/mac -type f -name "$MAC_UPDATER_ASSET.sig" -print -quit)"
+          WIN_VERSIONED="$(find stage/win -type f -name "$WIN_MANUAL_ASSET" -print -quit)"
+          test -s "$MAC_ZIP" -a -s "$MAC_TAR" -a -s "$MAC_SIG" -a -s "$WIN_VERSIONED"
+          cp "$WIN_VERSIONED" "stage/$WIN_UPDATER_ASSET"
+          export TAURI_SIGNING_PRIVATE_KEY_PATH="$KEY"
+          export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
+          npx --yes @tauri-apps/cli@2.10.1 signer sign "stage/$WIN_UPDATER_ASSET"
+          test -s "stage/$WIN_UPDATER_ASSET.sig"
+          echo "MAC_ZIP=$MAC_ZIP" >> "$GITHUB_ENV"
+          echo "MAC_TAR=$MAC_TAR" >> "$GITHUB_ENV"
+          echo "MAC_SIG=$MAC_SIG" >> "$GITHUB_ENV"
+          echo "WIN_VERSIONED=$WIN_VERSIONED" >> "$GITHUB_ENV"
+
+      - name: Build dual-platform latest.json with mandatory SHA-256
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          MAC_SIGNATURE="$(tr -d '\r\n' < "$MAC_SIG")"
+          WIN_SIGNATURE="$(tr -d '\r\n' < "stage/$WIN_UPDATER_ASSET.sig")"
+          MAC_SHA="$(shasum -a 256 "$MAC_TAR" | awk '{print $1}')"
+          WIN_SHA="$(shasum -a 256 "stage/$WIN_UPDATER_ASSET" | awk '{print $1}')"
+          MAC_URL="https://github.com/$STABLE_REPO/releases/download/$STABLE_TAG/$MAC_UPDATER_ASSET"
+          WIN_URL="https://github.com/$STABLE_REPO/releases/download/$STABLE_TAG/$WIN_UPDATER_ASSET"
+          python3 - "$MAC_URL" "$WIN_URL" "$MAC_SIGNATURE" "$WIN_SIGNATURE" "$MAC_SHA" "$WIN_SHA" <<'PY'
+          import datetime,json,sys
+          mac_url,win_url,mac_sig,win_sig,mac_sha,win_sha=sys.argv[1:]
+          d={
+            "version":"10.0.6",
+            "notes":"ENDLUME 10.0.6: Effect Studio Phase 1, semantic anchors/opacity, render and audio reliability fixes, production QA fixes.",
+            "pub_date":datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00","Z"),
+            "platforms":{
+              "darwin-aarch64":{"url":mac_url,"signature":mac_sig,"sha256":mac_sha},
+              "windows-x86_64":{"url":win_url,"signature":win_sig,"sha256":win_sha}
+            }
+          }
+          json.dump(d,open('stage/latest.json','w'),ensure_ascii=False,indent=2)
+          PY
+          python3 - <<'PY'
+          import json
+          d=json.load(open('stage/latest.json'))
+          assert d['version']=='10.0.6'
+          assert set(d['platforms'])=={'darwin-aarch64','windows-x86_64'}
+          for v in d['platforms'].values():
+              assert v['url'] and v['signature'] and len(v['sha256'])==64
+          print('ENDLUME_1006_MANIFEST_GREEN')
+          PY
+
+      - name: Publish versioned manual assets and generic updater packages
+        env:
+          GH_TOKEN: ${{ secrets.ENDLUME_RELEASE_TOKEN }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          gh release view "$STABLE_TAG" --repo "$STABLE_REPO" >/dev/null
+          MAC_ZIP_SHA="$(find stage/mac -type f -name "$MAC_MANUAL_ASSET.sha256" -print -quit)"
+          WIN_SHA_FILE="$(find stage/win -type f -name "$WIN_MANUAL_ASSET.sha256" -print -quit)"
+          gh release upload "$STABLE_TAG"             "$MAC_ZIP" "$MAC_ZIP_SHA"             "$WIN_VERSIONED" "$WIN_SHA_FILE"             "$MAC_TAR" "$MAC_SIG"             "stage/$WIN_UPDATER_ASSET" "stage/$WIN_UPDATER_ASSET.sig"             --clobber --repo "$STABLE_REPO"
+          echo ENDLUME_1006_PACKAGES_PUBLISHED
+
+      - name: Publish latest.json LAST
+        env:
+          GH_TOKEN: ${{ secrets.ENDLUME_RELEASE_TOKEN }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          gh release upload "$STABLE_TAG" stage/latest.json --clobber --repo "$STABLE_REPO"
+          echo ENDLUME_1006_LATEST_JSON_PUBLISHED_LAST
+
+      - name: Verify public production updater
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          BASE="https://github.com/$STABLE_REPO/releases/download/$STABLE_TAG"
+          PUBLIC="$RUNNER_TEMP/e1006-public-latest.json"
+          OK=0
+          for i in {1..30}; do
+            if curl -fsSL --connect-timeout 10 --max-time 30 "$BASE/latest.json?run=$GITHUB_RUN_ID-$i" -o "$PUBLIC"; then
+              if python3 - "$PUBLIC" <<'PY'
+          import json,sys
+          d=json.load(open(sys.argv[1]))
+          assert d['version']=='10.0.6',d
+          for k in ('darwin-aarch64','windows-x86_64'):
+              p=d['platforms'][k]
+              assert p['url'] and p['signature'] and len(p['sha256'])==64
+          PY
+              then OK=1; break; fi
+            fi
+            sleep 5
+          done
+          test "$OK" = 1
+          curl -fsIL "$BASE/$MAC_UPDATER_ASSET" >/dev/null
+          curl -fsIL "$BASE/$WIN_UPDATER_ASSET" >/dev/null
+          echo ENDLUME_1006_PUBLIC_UPDATER_GREEN

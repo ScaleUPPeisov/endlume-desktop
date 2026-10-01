@@ -16,7 +16,6 @@ concurrency:
 
 env:
   VERSION: "10.0.8"
-  CARGO_TARGET_DIR: "${{ runner.home }}/.endlume-build-cache/target-1006-updater-repair"
 
 jobs:
   benchmark:
@@ -35,6 +34,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
+          export CARGO_TARGET_DIR="$HOME/.endlume-build-cache/target-1006-updater-repair"
           TMP="$(mktemp -d)"
           curl -fL --retry 4 "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffmpeg.zip" -o "$TMP/ffmpeg.zip"
           curl -fL --retry 4 "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffprobe.zip" -o "$TMP/ffprobe.zip"

@@ -1,7 +1,7 @@
 import React,{useEffect,useRef,useState} from 'react';
 import type {AnchorPoint,EffectPreset} from '../types';
 
-export type LivePreviewAssets={basePath:string;baseKind:'image'|'video';overlayPath:string};
+export type LivePreviewAssets={basePath:string;baseKind:'image'|'video';overlayPath:string;compositePath?:string};
 
 type Props={
   assets?:LivePreviewAssets;
@@ -63,7 +63,8 @@ export function LiveCompositePreview({assets,effect,active=true,busy,overlayRef,
 
   useEffect(()=>()=>{if(brushRaf.current!=null)cancelAnimationFrame(brushRaf.current)},[]);
   if(!assets)return <div className="livePreviewEmpty"><span>{busy?'Подготавливаю Live Preview…':'Выберите проект на основном экране'}</span></div>;
-  const base=assets.baseKind==='video'?<video className="livePreviewBase" src={assets.basePath} autoPlay loop muted playsInline/>:<img className="livePreviewBase" src={assets.basePath} draggable={false}/>;
+  const exactComposite=Boolean(assets.compositePath)&&!picker;
+  const base=exactComposite?<video className="livePreviewBase exactCompositePreview" src={assets.compositePath} autoPlay loop muted playsInline/>:assets.baseKind==='video'?<video className="livePreviewBase" src={assets.basePath} autoPlay loop muted playsInline/>:<img className="livePreviewBase" src={assets.basePath} draggable={false}/>;
   const exactOverlayStyle:React.CSSProperties=effect.fullscreen?overlayStyle:{...overlayStyle,aspectRatio:String(Math.max(.05,overlayAspect)),height:'auto'};
   return <div className={`liveComposite ${picker?'chromaPicking':''} ${anchorMode?'anchorPicking':''}`} onPointerDownCapture={pickAnchor}>
     {base}
@@ -75,7 +76,7 @@ export function LiveCompositePreview({assets,effect,active=true,busy,overlayRef,
       onPointerUp={e=>{if(picker){e.preventDefault();e.stopPropagation();brushDown.current=false;sampleAt(e.clientX,e.clientY)}}}
       onPointerCancel={()=>{brushDown.current=false}}>
       <video ref={videoRef} className="liveOverlaySource" src={assets.overlayPath} autoPlay loop muted playsInline/>
-      <canvas ref={canvasRef} className="liveOverlayCanvas" style={{mixBlendMode:effect.mode==='screen'?'screen':'normal',opacity:Math.max(0,Math.min(1,effect.opacity??1))}}/>
+      <canvas ref={canvasRef} className="liveOverlayCanvas" style={{mixBlendMode:effect.mode==='screen'?'screen':'normal',opacity:exactComposite?0:Math.max(0,Math.min(1,effect.opacity??1))}}/>
       {!effect.fullscreen&&!picker&&<><i className="corner nw"/><i className="corner ne"/><i className="corner sw"/><i className="corner se" onPointerDown={onResizeStart}/></>}
     </div>}
     {!active&&<div className="livePreviewDisabled">OFF • overlay скрыт</div>}

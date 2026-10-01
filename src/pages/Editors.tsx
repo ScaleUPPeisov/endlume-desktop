@@ -96,6 +96,7 @@ function EffectsEditor() {
   const [anchorMode, setAnchorMode] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState(false);
   const persistTimer = useRef<number | undefined>(undefined);
+  const previewRequest = useRef(0);
   const current = effects.find((e) => e.id === selected);
   const projectPath = scenePath || sceneCandidates[0]?.path;
   const target = (current?.target || 'CUSTOM').trim().toUpperCase() || 'CUSTOM';
@@ -174,29 +175,47 @@ function EffectsEditor() {
   const loadLive = async () => {
     const latest = useApp.getState().effects.find((e) => e.id === selected);
     if (!projectPath || !latest) return;
+    const request = ++previewRequest.current;
+    const renderEffect = sceneAnchor ? {
+      ...latest,
+      x: clamp01(sceneAnchor.x + (latest.offsetX ?? 0)),
+      y: clamp01(sceneAnchor.y + (latest.offsetY ?? 0)),
+    } : latest;
     setPreviewBusy(true);
     try {
-      const result = await api.prepareLivePreview(projectPath, latest.source, latest.previewFrameTime);
+      const [result, exactPath] = await Promise.all([
+        api.prepareLivePreview(projectPath, latest.source, latest.previewFrameTime),
+        api.generatePreview(projectPath, latest.previewFrameTime, [renderEffect], []),
+      ]);
+      if (request !== previewRequest.current) return;
       setAssets({
         basePath: api.previewUrl(result.basePath),
         baseKind: result.baseKind,
         overlayPath: api.previewUrl(result.overlayPath),
+        compositePath: api.previewUrl(exactPath),
       });
     } catch (error) {
-      await api.showError(`Не удалось подготовить Live Preview эффекта.\n${String(error)}`);
+      if (request === previewRequest.current) await api.showError(`Не удалось подготовить Live Preview эффекта.\n${String(error)}`);
     } finally {
-      setPreviewBusy(false);
+      if (request === previewRequest.current) setPreviewBusy(false);
     }
   };
 
   useEffect(() => {
     if (!current || !projectPath) return;
-    const timer = window.setTimeout(() => void loadLive(), 120);
+    const timer = window.setTimeout(() => void loadLive(), 180);
     return () => window.clearTimeout(timer);
-  }, [selected, current?.source, current?.previewFrameTime, projectPath]);
+  }, [
+    selected, projectPath, sceneAnchor?.x, sceneAnchor?.y,
+    current?.source, current?.previewFrameTime, current?.enabled, current?.mode,
+    current?.keyColor, current?.similarity, current?.blend, current?.despill,
+    current?.lumaThreshold, current?.lumaTolerance, current?.x, current?.y,
+    current?.scale, current?.fullscreen, current?.opacity, current?.offsetX,
+    current?.offsetY, current?.target,
+  ]);
 
   return <div className="editorPage">
-    <EditorHeader title="Эффекты" subtitle="GPU Live Preview • chromakey / luma / screen • исходные цвета без искажений" onBack={() => openEditor(null)} />
+    <EditorHeader title="Эффекты" subtitle="FFmpeg Exact Preview • chromakey / luma / screen • Preview = Final" onBack={() => openEditor(null)} />
     <div className="editorLayout">
       <aside className="assetList">
         <button className="addAsset" onClick={add}>+ ДОБАВИТЬ</button>
@@ -280,6 +299,7 @@ function SubscribeEditor() {
   const [previewBusy, setPreviewBusy] = useState(false);
   const [saved, setSaved] = useState(false);
   const persistTimer = useRef<number | undefined>(undefined);
+  const previewRequest = useRef(0);
   const current = subscribes.find((e) => e.id === selected);
 
   const saveLibrary = (next: SubscribePreset[], immediate = false) => {
@@ -323,29 +343,40 @@ function SubscribeEditor() {
   const loadLive = async () => {
     const latest = useApp.getState().subscribes.find((item) => item.id === selected);
     if (!projectPath || !latest) return;
+    const request = ++previewRequest.current;
     setPreviewBusy(true);
     try {
-      const result = await api.prepareLivePreview(projectPath, latest.source, latest.previewFrameTime);
+      const [result, exactPath] = await Promise.all([
+        api.prepareLivePreview(projectPath, latest.source, latest.previewFrameTime),
+        api.generatePreview(projectPath, latest.previewFrameTime, [], [latest]),
+      ]);
+      if (request !== previewRequest.current) return;
       setAssets({
         basePath: api.previewUrl(result.basePath),
         baseKind: result.baseKind,
         overlayPath: api.previewUrl(result.overlayPath),
+        compositePath: api.previewUrl(exactPath),
       });
     } catch (error) {
-      await api.showError(`Не удалось подготовить Live Preview Subscribe.\n${String(error)}`);
+      if (request === previewRequest.current) await api.showError(`Не удалось подготовить Live Preview Subscribe.\n${String(error)}`);
     } finally {
-      setPreviewBusy(false);
+      if (request === previewRequest.current) setPreviewBusy(false);
     }
   };
 
   useEffect(() => {
     if (!current || !projectPath) return;
-    const timer = window.setTimeout(() => void loadLive(), 120);
+    const timer = window.setTimeout(() => void loadLive(), 180);
     return () => window.clearTimeout(timer);
-  }, [selected, current?.source, current?.previewFrameTime, projectPath]);
+  }, [
+    selected, projectPath, current?.source, current?.previewFrameTime, current?.enabled,
+    current?.mode, current?.keyColor, current?.similarity, current?.blend, current?.despill,
+    current?.lumaThreshold, current?.lumaTolerance, current?.x, current?.y,
+    current?.scale, current?.fullscreen, current?.opacity,
+  ]);
 
   return <div className="editorPage">
-    <EditorHeader title="Кнопка Subscribe" subtitle="GPU Live Preview • chromakey • позиция • расписание" onBack={() => openEditor(null)} />
+    <EditorHeader title="Кнопка Subscribe" subtitle="FFmpeg Exact Preview • chromakey • позиция • расписание" onBack={() => openEditor(null)} />
     <div className="editorLayout">
       <aside className="assetList">
         <button className="addAsset" onClick={add}>+ ДОБАВИТЬ</button>

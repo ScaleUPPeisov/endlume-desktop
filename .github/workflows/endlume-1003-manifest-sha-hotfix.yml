@@ -1,0 +1,105 @@
+name: ENDLUME 10.0.3 Manifest SHA Hotfix
+
+on:
+  push:
+    branches:
+      - hotfix/endlume-10.0.3-performance
+    paths:
+      - ".github/workflows/endlume-1003-manifest-sha-hotfix.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-1003-manifest-sha-hotfix
+  cancel-in-progress: true
+
+jobs:
+  patch:
+    name: Patch public latest.json with mandatory SHA-256
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      HOST_REPO: ScaleUPPeisov/scaleup-site
+      TAG: endlume-stable
+      MAC_ASSET: ENDLUME-macos-aarch64.app.tar.gz
+      RELEASE_TOKEN: ${{ secrets.ENDLUME_RELEASE_TOKEN }}
+    steps:
+      - name: Verify token
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "${RELEASE_TOKEN:-}"
+
+      - name: Download current manifest and macOS updater package
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.ENDLUME_RELEASE_TOKEN }}
+        run: |
+          set -Eeuo pipefail
+          mkdir -p "$RUNNER_TEMP/endlume-manifest-hotfix"
+          cd "$RUNNER_TEMP/endlume-manifest-hotfix"
+          gh release download "$TAG" --repo "$HOST_REPO" --pattern latest.json --clobber
+          gh release download "$TAG" --repo "$HOST_REPO" --pattern "$MAC_ASSET" --clobber
+          test -s latest.json
+          test -s "$MAC_ASSET"
+
+      - name: Patch SHA-256 and validate 10.0.3 manifest
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cd "$RUNNER_TEMP/endlume-manifest-hotfix"
+          MAC_SHA="$(sha256sum "$MAC_ASSET" | awk '{print $1}')"
+          python3 - "$MAC_SHA" <<'PY'
+          import json,sys
+          from pathlib import Path
+          sha=sys.argv[1]
+          p=Path('latest.json')
+          d=json.loads(p.read_text())
+          assert d.get('version')=='10.0.3',d.get('version')
+          platforms=d.setdefault('platforms',{})
+          mac=platforms.get('darwin-aarch64')
+          assert isinstance(mac,dict) and mac.get('url') and mac.get('signature'),mac
+          assert len(sha)==64
+          mac['sha256']=sha
+          win=platforms.get('windows-x86_64')
+          if isinstance(win,dict):
+              assert win.get('url') and win.get('signature'),win
+          p.write_text(json.dumps(d,ensure_ascii=False,indent=2)+'\n')
+          print('ENDLUME_1003_MANIFEST_MAC_SHA_GREEN',sha)
+          PY
+
+      - name: Publish latest.json only
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.ENDLUME_RELEASE_TOKEN }}
+        run: |
+          set -Eeuo pipefail
+          cd "$RUNNER_TEMP/endlume-manifest-hotfix"
+          gh release upload "$TAG" latest.json --clobber --repo "$HOST_REPO"
+
+      - name: Verify release asset was replaced
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.ENDLUME_RELEASE_TOKEN }}
+        run: |
+          set -Eeuo pipefail
+          cd "$RUNNER_TEMP/endlume-manifest-hotfix"
+          rm -f public-latest.json
+          for i in {1..12}; do
+            gh release download "$TAG" --repo "$HOST_REPO" --pattern latest.json --output public-latest.json --clobber >/dev/null 2>&1 || true
+            if python3 - public-latest.json <<'PY'
+          import json,sys,os
+          try:d=json.load(open(sys.argv[1]))
+          except:raise SystemExit(1)
+          assert d.get('version')=='10.0.3'
+          mac=d.get('platforms',{}).get('darwin-aarch64',{})
+          assert mac.get('url') and mac.get('signature') and len(mac.get('sha256',''))==64
+          print('ENDLUME_1003_PUBLIC_MANIFEST_SHA_GREEN',mac['sha256'])
+          PY
+            then exit 0; fi
+            rm -f public-latest.json
+            sleep 3
+          done
+          exit 1

@@ -1,0 +1,227 @@
+name: ENDLUME 10.0.7 Production QA
+
+on:
+  push:
+    branches: [hotfix/endlume-10.0.7-production]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-1007-production-qa
+  cancel-in-progress: true
+
+env:
+  VERSION: "10.0.7"
+  BASE_SHA: "bd81d86152cb2f20fe02e33849aec255ea013634"
+  CARGO_TARGET_DIR: "${{ github.workspace }}/.target-1007"
+
+jobs:
+  qa:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          clean: true
+          persist-credentials: false
+
+      - name: Source / version / hotfix contracts
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git merge-base --is-ancestor "$BASE_SHA" "$GITHUB_SHA"
+          python3 - <<'PY'
+          import json,re
+          from pathlib import Path
+          v="10.0.7"
+          assert json.loads(Path("package.json").read_text())["version"]==v
+          assert json.loads(Path("package-lock.json").read_text())["version"]==v
+          assert json.loads(Path("src-tauri/tauri.conf.json").read_text())["version"]==v
+          assert re.search(r'^version\s*=\s*"10\.0\.7"$',Path("src-tauri/Cargo.toml").read_text(),re.M)
+          lock=Path("src-tauri/Cargo.lock").read_text()
+          assert 'name = "endlume"\nversion = "10.0.7"' in lock
+          ed=Path("src/pages/Editors.tsx").read_text()
+          assert "toggleEffectEnabled" in ed and "toggleSubscribeEnabled" in ed
+          assert "active={previewEnabled(current)}" in ed
+          pv=Path("src/components/LiveCompositePreview.tsx").read_text()
+          assert "active&&<div ref={overlayRef}" in pv and "!active&&<div className=\"livePreviewDisabled\"" in pv
+          pp=Path("src/pages/ProjectPage.tsx").read_text()
+          assert "saveAmbient" in pp and "BACKGROUND MUSIC" in pp and "api.saveLibrary" in pp
+          css=Path("src/styles.css").read_text()
+          for token in ["grid-template-rows:auto minmax(0,1fr)","overflow-y:auto","scrollbar-gutter:stable","height:calc(100vh - 68px)"]:
+            assert token in css,token
+          rs=Path("src-tauri/src/persistence.rs").read_text()
+          assert 'enabled&&usage=="off"' in rs
+          print("ENDLUME_1007_SOURCE_CONTRACT_GREEN")
+          PY
+
+      - name: Stage portable FFmpeg
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
+          rustup target add aarch64-apple-darwin
+          TMP="$(mktemp -d)"
+          curl -fL --retry 4 "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffmpeg.zip" -o "$TMP/ffmpeg.zip"
+          curl -fL --retry 4 "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffprobe.zip" -o "$TMP/ffprobe.zip"
+          mkdir -p "$TMP/fm" "$TMP/fp" src-tauri/binaries
+          ditto -x -k "$TMP/ffmpeg.zip" "$TMP/fm"; ditto -x -k "$TMP/ffprobe.zip" "$TMP/fp"
+          FFMPEG="$(find "$TMP/fm" -type f -name ffmpeg -print -quit)"
+          FFPROBE="$(find "$TMP/fp" -type f -name ffprobe -print -quit)"
+          chmod 755 "$FFMPEG" "$FFPROBE"
+          FILTERS="$("$FFMPEG" -hide_banner -filters 2>&1)"; printf '%s\n' "$FILTERS" | grep acrossfade
+          cp "$FFMPEG" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp "$FFPROBE" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          chmod 755 src-tauri/binaries/ffmpeg-aarch64-apple-darwin src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          echo ENDLUME_1007_PORTABLE_FFMPEG_GREEN
+
+      - name: Frontend + Rust QA
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
+          npm ci
+          npm run check
+          npm run build
+          cargo check --manifest-path src-tauri/Cargo.toml --target aarch64-apple-darwin
+          cargo test --manifest-path src-tauri/Cargo.toml --lib -- --nocapture
+          echo ENDLUME_1007_COMPILE_TESTS_GREEN
+
+      - name: Inject QA-only visual navigation
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path("src/pages/App.tsx")
+          s=p.read_text()
+          s=s.replace("import React, { useEffect, useRef, useState } from 'react';",
+                      "import React, { useEffect, useRef, useState } from 'react';\nimport { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';")
+          anchor="  useEffect(()=>{const timer=window.setTimeout(()=>setStartupMinElapsed(true),1150);return()=>window.clearTimeout(timer)},[]);"
+          qa=r'''  useEffect(()=>{
+            if(!license?.valid)return;
+            const fx:any={id:'qa-fx',name:'QA Effect',source:'',enabled:true,mode:'chromakey',keyColor:'#00ff00',similarity:.1,blend:.06,despill:.35,lumaThreshold:.03,lumaTolerance:.08,saturation:1,x:.5,y:.5,scale:.34,fullscreen:false,previewFrameTime:0,startSec:0,endSec:null,usageMode:'interval',intervalSec:240,usageDurationSec:30,target:'CUSTOM',offsetX:0,offsetY:0,opacity:1};
+            const sub:any={...fx,id:'qa-sub',name:'QA Subscribe',usageMode:'interval',firstAtSec:240,secondAtSec:480,repeatEverySec:240,firstAppearance:'after-interval',customFirstAtSec:240,showDurationSec:8};
+            const win=getCurrentWebviewWindow();
+            const mark=(label:string)=>{
+              window.setTimeout(()=>{
+                const el=document.querySelector('.editorControls') as HTMLElement|null;
+                if(!el)return;
+                el.scrollTop=el.scrollHeight;
+                window.setTimeout(()=>{
+                  const buttons=[...el.querySelectorAll('button')] as HTMLButtonElement[];
+                  const del=buttons.find(b=>b.textContent?.includes('УДАЛИТЬ'));
+                  const r=del?.getBoundingClientRect();
+                  const visible=!!r&&r.top>=68&&r.bottom<=window.innerHeight;
+                  const intervals=el.textContent?.includes('ПО ИНТЕРВАЛУ')&&el.textContent?.includes('Показывать каждые');
+                  void win.setTitle(label+'|sh='+el.scrollHeight+'|ch='+el.clientHeight+'|st='+Math.round(el.scrollTop)+'|delete='+(visible?'1':'0')+'|intervals='+(intervals?'1':'0'));
+                },250);
+              },400);
+            };
+            const t1=window.setTimeout(()=>{useApp.setState({effects:[fx],subscribes:[sub],ambient:'/tmp/qa-background.mp3'} as any);useApp.getState().openEditor({kind:'effects'});mark('QA_EFFECTS_BOTTOM_GREEN')},1400);
+            const t2=window.setTimeout(()=>{useApp.getState().openEditor({kind:'subscribe'});mark('QA_SUBSCRIBE_BOTTOM_GREEN')},6500);
+            const t3=window.setTimeout(()=>{useApp.getState().openEditor(null);useApp.getState().setPage('project');window.setTimeout(()=>{const titles=[...document.querySelectorAll('.sectionTitle')] as HTMLElement[];const bg=titles.find(x=>x.textContent?.includes('BACKGROUND MUSIC'));bg?.scrollIntoView({block:'center'});window.setTimeout(()=>{const r=bg?.getBoundingClientRect();const visible=!!r&&r.top>=68&&r.bottom<=window.innerHeight;void win.setTitle('QA_BACKGROUND_MUSIC_GREEN|visible='+(visible?'1':'0'))},250)},450)},11500);
+            return()=>{window.clearTimeout(t1);window.clearTimeout(t2);window.clearTimeout(t3)};
+          },[license?.valid]);'''
+          assert anchor in s
+          s=s.replace(anchor,anchor+"\n"+qa)
+          p.write_text(s)
+          PY
+          npm run check
+          npm run build
+          echo ENDLUME_1007_QA_INSTRUMENTATION_GREEN
+
+      - name: Build packaged QA app
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path("src-tauri/tauri.conf.json"); d=json.loads(p.read_text()); d["bundle"]["createUpdaterArtifacts"]=False
+          p.write_text(json.dumps(d,ensure_ascii=False,indent=2)+"\n")
+          PY
+          ENDLUME_TAURI_TARGET=aarch64-apple-darwin node scripts/prepare-macos-ffmpeg-runtime.mjs
+          npx tauri build --target aarch64-apple-darwin --bundles app --features e2e-render
+          APP="$(find "$CARGO_TARGET_DIR/aarch64-apple-darwin/release/bundle/macos" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          test -n "$APP" -a -d "$APP"
+          test "$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist")" = "$VERSION"
+          /usr/bin/codesign --force --deep --sign - --timestamp=none "$APP"
+          /usr/bin/codesign --verify --deep --strict "$APP"
+          echo "$APP" > "$RUNNER_TEMP/app-path.txt"
+          echo ENDLUME_1007_PACKAGED_APP_GREEN
+
+      - name: Real final-render production smoke
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          APP="$(cat "$RUNNER_TEMP/app-path.txt")"
+          python3 scripts/qa-endlume-1007-production-smoke.py "$APP" "$APP/Contents/MacOS/ffmpeg" "$APP/Contents/MacOS/ffprobe" "$RUNNER_TEMP/render-smoke.json"
+          grep -q ENDLUME_1007_PRODUCTION_RENDER_GREEN "$RUNNER_TEMP/render-smoke.json"
+          echo ENDLUME_1007_FINAL_RENDER_GREEN
+
+      - name: Compact-window visual scroll QA
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          APP="$(cat "$RUNNER_TEMP/app-path.txt")"
+          EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
+          BIN="$APP/Contents/MacOS/$EXE"
+          mkdir -p "$RUNNER_TEMP/ui-qa"
+          /usr/bin/open -n "$APP"
+          PID=""
+          for i in $(seq 1 80); do
+            PID="$(pgrep -f "$BIN" | tail -1 || true)"
+            [[ -n "$PID" ]] && break
+            sleep .25
+          done
+          test -n "$PID"
+          /usr/bin/osascript <<OSA || true
+          tell application "System Events"
+            set p to first application process whose unix id is $PID
+            set frontmost of p to true
+            if (count of windows of p) > 0 then set position of window 1 of p to {80,80}
+            if (count of windows of p) > 0 then set size of window 1 of p to {1100,700}
+          end tell
+          OSA
+          capture(){
+            label="$1"; file="$2"; ok=0
+            for i in $(seq 1 80); do
+              title="$(/usr/bin/osascript <<OSA 2>/dev/null || true
+          tell application "System Events"
+            set p to first application process whose unix id is $PID
+            if (count of windows of p) > 0 then return name of window 1 of p
+          end tell
+          OSA
+          )"
+              echo "UI_TITLE=$title"
+              if [[ "$title" == "$label"* ]]; then ok=1; break; fi
+              sleep .25
+            done
+            test "$ok" = 1
+            [[ "$title" == *"delete=1"* || "$label" == "QA_BACKGROUND_MUSIC_GREEN" ]]
+            if [[ "$label" != "QA_BACKGROUND_MUSIC_GREEN" ]]; then [[ "$title" == *"intervals=1"* ]]; else [[ "$title" == *"visible=1"* ]]; fi
+            /usr/sbin/screencapture -x "$file"
+            test "$(stat -f '%z' "$file")" -gt 10000
+            printf '%s\n' "$title" > "$file.txt"
+          }
+          capture QA_EFFECTS_BOTTOM_GREEN "$RUNNER_TEMP/ui-qa/effects-bottom.png"
+          capture QA_SUBSCRIBE_BOTTOM_GREEN "$RUNNER_TEMP/ui-qa/subscribe-bottom.png"
+          capture QA_BACKGROUND_MUSIC_GREEN "$RUNNER_TEMP/ui-qa/background-music.png"
+          kill "$PID" >/dev/null 2>&1 || true
+          echo ENDLUME_1007_VISUAL_SCROLL_GREEN
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ENDLUME-10.0.7-PRODUCTION-QA
+          path: |
+            ${{ runner.temp }}/render-smoke.json
+            ${{ runner.temp }}/ui-qa/*
+          if-no-files-found: warn
+          retention-days: 7

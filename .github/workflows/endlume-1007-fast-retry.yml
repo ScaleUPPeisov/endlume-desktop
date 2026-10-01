@@ -59,10 +59,10 @@ jobs:
           p=Path("src/pages/App.tsx")
           s=p.read_text()
           s=s.replace("import React, { useEffect, useRef, useState } from 'react';",
-                      "import React, { useEffect, useRef, useState } from 'react';\nimport { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';\nimport { LogicalPosition, LogicalSize } from '@tauri-apps/api/dpi';")
+                      "import React, { useEffect, useRef, useState } from 'react';\nimport { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';\nimport { LogicalPosition, LogicalSize } from '@tauri-apps/api/dpi';\nimport { invoke } from '@tauri-apps/api/core';")
           anchor="  useEffect(()=>{const timer=window.setTimeout(()=>setStartupMinElapsed(true),1150);return()=>window.clearTimeout(timer)},[]);"
           qa=r'''  useEffect(()=>{
-            if(!license?.valid)return;
+            if(!license)return;
             const fx:any={id:'qa-fx',name:'QA Effect',source:'',enabled:true,mode:'chromakey',keyColor:'#00ff00',similarity:.1,blend:.06,despill:.35,lumaThreshold:.03,lumaTolerance:.08,saturation:1,x:.5,y:.5,scale:.34,fullscreen:false,previewFrameTime:0,startSec:0,endSec:null,usageMode:'interval',intervalSec:240,usageDurationSec:30,target:'CUSTOM',offsetX:0,offsetY:0,opacity:1};
             const sub:any={...fx,id:'qa-sub',name:'QA Subscribe',usageMode:'interval',firstAtSec:240,secondAtSec:480,repeatEverySec:240,firstAppearance:'after-interval',customFirstAtSec:240,showDurationSec:8};
             const win=getCurrentWebviewWindow();
@@ -70,7 +70,7 @@ jobs:
             void win.setPosition(new LogicalPosition(80,80));
             void win.setFocus();
             const report=(label:string,payload:Record<string,unknown>)=>{
-              void fetch('http://127.0.0.1:18777/qa',{method:'POST',headers:{'Content-Type':'text/plain'},body:JSON.stringify({label,...payload})}).catch(()=>{});
+              void invoke('qa_write_marker',{name:label,payload:JSON.stringify({label,...payload})}).catch(()=>{});
             };
             const mark=(label:string)=>{
               window.setTimeout(()=>{
@@ -94,7 +94,27 @@ jobs:
           },[license?.valid]);'''
           assert anchor in s
           s=s.replace(anchor,anchor+"\n"+qa)
+          s=s.replace("  if(!license.valid)return <ActivationScreen onActivated={setLicense}/>;","  // QA-only visual build: bypass activation screen; production source is untouched.")
           p.write_text(s)
+
+          rp=Path("src-tauri/src/lib.rs")
+          rs=rp.read_text()
+          qa_fn=r'''
+#[tauri::command]
+fn qa_write_marker(name:String,payload:String)->Result<(),String>{
+  let root=std::env::var("ENDLUME_QA_MARKER_DIR").map_err(|_|"ENDLUME_QA_MARKER_DIR missing".to_string())?;
+  std::fs::create_dir_all(&root).map_err(|e|e.to_string())?;
+  let safe=name.chars().filter(|c|c.is_ascii_alphanumeric()||*c=='_'||*c=='-').collect::<String>();
+  std::fs::write(std::path::Path::new(&root).join(format!("{safe}.json")),payload).map_err(|e|e.to_string())
+}
+'''
+          anchor_rs="#[cfg_attr(mobile, tauri::mobile_entry_point)]\npub fn run(){"
+          assert anchor_rs in rs
+          rs=rs.replace(anchor_rs,qa_fn+"\n"+anchor_rs)
+          handler="    .invoke_handler(tauri::generate_handler!["
+          assert handler in rs
+          rs=rs.replace(handler,handler+"\n      qa_write_marker,")
+          rp.write_text(rs)
           PY
           npm run check
           npm run build
@@ -138,27 +158,10 @@ jobs:
           APP="$(cat "$RUNNER_TEMP/e1007-fast-app.txt")"
           EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
           BIN="$APP/Contents/MacOS/$EXE"
-          EVENTS="$RUNNER_TEMP/ui-events.ndjson"
-          : > "$EVENTS"
-          mkdir -p "$RUNNER_TEMP/ui-qa"
-          cat > "$RUNNER_TEMP/ui-qa-server.py" <<'PY'
-          from http.server import BaseHTTPRequestHandler,HTTPServer
-          import pathlib,sys
-          out=pathlib.Path(sys.argv[1])
-          class H(BaseHTTPRequestHandler):
-            def do_POST(self):
-              n=int(self.headers.get("Content-Length","0"))
-              body=self.rfile.read(n).decode("utf-8","replace").strip()
-              with out.open("a",encoding="utf-8") as f: f.write(body+"\n")
-              self.send_response(204)
-              self.send_header("Access-Control-Allow-Origin","*")
-              self.end_headers()
-            def log_message(self,*args): pass
-          HTTPServer(("127.0.0.1",18777),H).serve_forever()
-          PY
-          python3 "$RUNNER_TEMP/ui-qa-server.py" "$EVENTS" &
-          SERVER_PID=$!
-          cleanup(){ kill "$SERVER_PID" >/dev/null 2>&1 || true; [[ -n "${PID:-}" ]] && kill "$PID" >/dev/null 2>&1 || true; }
+          MARKERS="$RUNNER_TEMP/ui-markers"
+          rm -rf "$MARKERS"; mkdir -p "$MARKERS" "$RUNNER_TEMP/ui-qa"
+          /bin/launchctl setenv ENDLUME_QA_MARKER_DIR "$MARKERS"
+          cleanup(){ /bin/launchctl unsetenv ENDLUME_QA_MARKER_DIR >/dev/null 2>&1 || true; [[ -n "${PID:-}" ]] && kill "$PID" >/dev/null 2>&1 || true; }
           trap cleanup EXIT
 
           /usr/bin/open -n "$APP"
@@ -171,15 +174,14 @@ jobs:
           test -n "$PID"
 
           wait_and_capture(){
-            label="$1"; file="$2"; line=""
-            for i in $(seq 1 120); do
-              line="$(grep -F "\"label\":\"$label\"" "$EVENTS" | tail -1 || true)"
-              [[ -n "$line" ]] && break
+            label="$1"; file="$2"; marker="$MARKERS/$label.json"
+            for i in $(seq 1 160); do
+              [[ -s "$marker" ]] && break
               sleep .25
             done
-            test -n "$line"
-            printf '%s\n' "$line" | tee "$file.json"
-            python3 - "$label" "$file.json" <<'PY'
+            test -s "$marker"
+            cat "$marker" | tee "$file.json"
+            python3 - "$label" "$marker" <<'PY'
           import json,sys
           label=sys.argv[1]
           d=json.load(open(sys.argv[2],encoding="utf-8"))

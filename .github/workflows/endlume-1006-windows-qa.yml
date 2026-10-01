@@ -17,7 +17,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: endlume-1006-windows-qa
+  group: endlume-1006-windows-freeze-qa
   cancel-in-progress: true
 
 jobs:

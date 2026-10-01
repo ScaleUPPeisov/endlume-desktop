@@ -6,6 +6,7 @@ export type LivePreviewAssets={basePath:string;baseKind:'image'|'video';overlayP
 type Props={
   assets?:LivePreviewAssets;
   effect:EffectPreset;
+  active?:boolean;
   busy?:boolean;
   overlayRef:React.RefObject<HTMLDivElement|null>;
   overlayStyle:React.CSSProperties;
@@ -20,7 +21,7 @@ type Props={
 function hexRgb(hex:string){const raw=hex.replace('#','').trim();const v=Number.parseInt(raw.length===3?raw.split('').map(x=>x+x).join(''):raw,16);return [((v>>16)&255)/255,((v>>8)&255)/255,(v&255)/255] as const}
 function rgbHex(r:number,g:number,b:number){return `#${[r,g,b].map(v=>Math.max(0,Math.min(255,Math.round(v))).toString(16).padStart(2,'0')).join('')}`}
 
-export function LiveCompositePreview({assets,effect,busy,overlayRef,overlayStyle,onDragStart,onResizeStart,onPickColor,anchor,anchorMode,onAnchorPick}:Props){
+export function LiveCompositePreview({assets,effect,active=true,busy,overlayRef,overlayStyle,onDragStart,onResizeStart,onPickColor,anchor,anchorMode,onAnchorPick}:Props){
   const canvasRef=useRef<HTMLCanvasElement>(null),videoRef=useRef<HTMLVideoElement>(null),rafRef=useRef<number|undefined>(undefined),effectRef=useRef(effect),brushRaf=useRef<number|undefined>(undefined),lastBrushPoint=useRef<{x:number;y:number}|undefined>(undefined),brushDown=useRef(false);
   const [picker,setPicker]=useState(false),[overlayAspect,setOverlayAspect]=useState<number>(1);
   effectRef.current=effect;
@@ -42,6 +43,7 @@ export function LiveCompositePreview({assets,effect,busy,overlayRef,overlayStyle
   };
 
   useEffect(()=>{
+    if(!active)return;
     const canvas=canvasRef.current,video=videoRef.current;if(!canvas||!video||!assets?.overlayPath)return;
     const gl=canvas.getContext('webgl',{alpha:true,premultipliedAlpha:false,antialias:false,preserveDrawingBuffer:false});if(!gl)return;
     const vs=gl.createShader(gl.VERTEX_SHADER)!,fs=gl.createShader(gl.FRAGMENT_SHADER)!;
@@ -57,7 +59,7 @@ export function LiveCompositePreview({assets,effect,busy,overlayRef,overlayStyle
     const draw=()=>{rafRef.current=requestAnimationFrame(draw);if(video.readyState<2||video.videoWidth<2)return;syncAspect();const w=Math.min(640,video.videoWidth),h=Math.max(2,Math.round(w*video.videoHeight/video.videoWidth));if(canvas.width!==w||canvas.height!==h){canvas.width=w;canvas.height=h;gl.viewport(0,0,w,h)}const e=effectRef.current,[r,g,b]=hexRgb(e.keyColor);gl.uniform3f(uKey,r,g,b);gl.uniform1f(uSim,Math.max(.001,Math.min(.6,e.similarity)));gl.uniform1f(uBlend,Math.max(.001,Math.min(.35,e.blend)));gl.uniform1f(uDsp,Math.max(0,Math.min(1,e.despill||0)));gl.uniform1f(uMode,e.mode==='luma'?1:e.mode==='screen'?2:0);gl.uniform1f(uLthr,e.lumaThreshold);gl.uniform1f(uLtol,e.lumaTolerance);gl.bindTexture(gl.TEXTURE_2D,texture);try{gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,video);gl.drawArrays(gl.TRIANGLES,0,6)}catch{}};
     const start=()=>{syncAspect();video.play().catch(()=>{});if(rafRef.current==null)rafRef.current=requestAnimationFrame(draw)};video.addEventListener('loadedmetadata',syncAspect);video.addEventListener('loadeddata',start);if(video.readyState>=1)syncAspect();if(video.readyState>=2)start();
     return()=>{video.removeEventListener('loadedmetadata',syncAspect);video.removeEventListener('loadeddata',start);if(rafRef.current!=null)cancelAnimationFrame(rafRef.current);rafRef.current=undefined;gl.deleteTexture(texture);gl.deleteBuffer(pos);gl.deleteBuffer(tc);gl.deleteProgram(program);gl.deleteShader(vs);gl.deleteShader(fs)};
-  },[assets?.overlayPath]);
+  },[assets?.overlayPath,active]);
 
   useEffect(()=>()=>{if(brushRaf.current!=null)cancelAnimationFrame(brushRaf.current)},[]);
   if(!assets)return <div className="livePreviewEmpty"><span>{busy?'Подготавливаю Live Preview…':'Выберите проект на основном экране'}</span></div>;
@@ -66,8 +68,8 @@ export function LiveCompositePreview({assets,effect,busy,overlayRef,overlayStyle
   return <div className={`liveComposite ${picker?'chromaPicking':''} ${anchorMode?'anchorPicking':''}`} onPointerDownCapture={pickAnchor}>
     {base}
     {anchor&&<div aria-hidden="true" style={{position:'absolute',left:`${anchor.x*100}%`,top:`${anchor.y*100}%`,width:18,height:18,border:'2px solid currentColor',borderRadius:'50%',transform:'translate(-50%,-50%)',boxShadow:'0 0 0 1px rgba(0,0,0,.75)',zIndex:12,pointerEvents:'none'}}><i style={{position:'absolute',left:'50%',top:-7,bottom:-7,width:1,background:'currentColor',transform:'translateX(-50%)'}}/><i style={{position:'absolute',top:'50%',left:-7,right:-7,height:1,background:'currentColor',transform:'translateY(-50%)'}}/></div>}
-    {effect.mode==='chromakey'&&<button type="button" className={`chromaPickerButton ${picker?'active':''}`} onClick={e=>{e.preventDefault();e.stopPropagation();setPicker(v=>!v)}}>{picker?'✓ ВЫБЕРИ/ПРОВЕДИ ПО ФОНУ':'⌾ ПИПЕТКА / КИСТЬ'}</button>}
-    <div ref={overlayRef} className={`liveGpuOverlay ${effect.fullscreen?'fullscreen':''}`} style={exactOverlayStyle}
+    {active&&effect.mode==='chromakey'&&<button type="button" className={`chromaPickerButton ${picker?'active':''}`} onClick={e=>{e.preventDefault();e.stopPropagation();setPicker(v=>!v)}}>{picker?'✓ ВЫБЕРИ/ПРОВЕДИ ПО ФОНУ':'⌾ ПИПЕТКА / КИСТЬ'}</button>}
+    {active&&<div ref={overlayRef} className={`liveGpuOverlay ${effect.fullscreen?'fullscreen':''}`} style={exactOverlayStyle}
       onPointerDown={e=>{if(picker){e.preventDefault();e.stopPropagation();brushDown.current=true;scheduleSample(e.clientX,e.clientY);return}onDragStart(e)}}
       onPointerMove={e=>{if(picker&&brushDown.current){e.preventDefault();e.stopPropagation();scheduleSample(e.clientX,e.clientY)}}}
       onPointerUp={e=>{if(picker){e.preventDefault();e.stopPropagation();brushDown.current=false;sampleAt(e.clientX,e.clientY)}}}
@@ -75,7 +77,8 @@ export function LiveCompositePreview({assets,effect,busy,overlayRef,overlayStyle
       <video ref={videoRef} className="liveOverlaySource" src={assets.overlayPath} autoPlay loop muted playsInline/>
       <canvas ref={canvasRef} className="liveOverlayCanvas" style={{mixBlendMode:effect.mode==='screen'?'screen':'normal',opacity:Math.max(0,Math.min(1,effect.opacity??1))}}/>
       {!effect.fullscreen&&!picker&&<><i className="corner nw"/><i className="corner ne"/><i className="corner sw"/><i className="corner se" onPointerDown={onResizeStart}/></>}
-    </div>
+    </div>}
+    {!active&&<div className="livePreviewDisabled">OFF • overlay скрыт</div>}
     {busy&&<div className="livePreviewPreparing">Обновляю proxy…</div>}
   </div>
 }

@@ -18,6 +18,7 @@ static FFMPEG_LAUNCHES:AtomicU64=AtomicU64::new(0);
 static FFPROBE_LAUNCHES:AtomicU64=AtomicU64::new(0);
 static ETA_STAGE_HISTORY:OnceLock<parking_lot::Mutex<HashMap<String,f64>>>=OnceLock::new();
 static ETA_JOB_SMOOTH:OnceLock<parking_lot::Mutex<HashMap<String,f64>>>=OnceLock::new();
+static ETA_CHECKPOINTS:OnceLock<parking_lot::Mutex<HashMap<String,u8>>>=OnceLock::new();
 
 #[derive(Clone,Debug)]
 struct AudioProbe{codec:String,sample_rate:u32,channels:u32,duration:f64}
@@ -79,6 +80,7 @@ fn emit_timing(app:&AppHandle,id:&str,key:&str,sec:f64){
     h.insert(key.to_string(),next);
   }
   let _=app.emit("engine-timing",json!({"id":id,"key":key,"seconds":sec}));
+  diag_line(json!({"kind":"engine-timing","projectId":id,"key":key,"seconds":sec}));
 }
 fn eta_stage_value(key:&str,default:f64)->f64{
   ETA_STAGE_HISTORY.get_or_init(||parking_lot::Mutex::new(HashMap::new())).lock().get(key).copied().unwrap_or(default)
@@ -946,6 +948,18 @@ fn emit_progress(app:&AppHandle,job:&QueueJob,started:i64,timer:&Instant,progres
   let elapsed=timer.elapsed().as_secs_f64();
   let eta=smooth_eta(job,stage,elapsed,progress);
   let (cpu,ram,total,available)=metrics.unwrap_or((0.0,0,0,0));
+  {
+    let checkpoints=[10.0,25.0,50.0,75.0,90.0];
+    let mut state=ETA_CHECKPOINTS.get_or_init(||parking_lot::Mutex::new(HashMap::new())).lock();
+    let bits=state.entry(job.project.id.clone()).or_insert(0);
+    for (idx,threshold) in checkpoints.iter().enumerate(){
+      let bit=1u8<<idx;
+      if progress>=*threshold&&(*bits&bit)==0{
+        *bits|=bit;
+        diag_line(json!({"kind":"eta-checkpoint","projectId":job.project.id,"checkpoint":threshold,"actualProgress":progress,"elapsedSec":elapsed,"etaSec":eta,"stage":stage}));
+      }
+    }
+  }
   let _=app.emit("render-progress",Progress{id:job.project.id.clone(),status:"rendering".into(),progress:progress.clamp(0.0,99.9),stage:stage.into(),started_at:Some(started),elapsed_sec:elapsed,eta_sec:eta,result_path:None,result_bytes:None,actual_video_bitrate:None,cpu_pct:metrics.map(|_|cpu),ram_bytes:metrics.map(|_|ram),ram_total_bytes:metrics.map(|_|total),ram_available_bytes:metrics.map(|_|available),gpu_pct:None,encoder:Some(encoder.into()),attempt:Some(attempt)});
   crate::license::telemetry_render_progress(job,progress.clamp(0.0,99.9),eta,stage,encoder);
 }
@@ -2158,6 +2172,7 @@ pub async fn render_job(app:&AppHandle,job:&QueueJob,cancel:Arc<AtomicBool>)->Re
         if fast_pingpong_project(job){diag_line(json!({"kind":"p0c-cleanup","projectId":job.project.id,"tempBeforeCleanup":temp_before_cleanup,"tempAfterCleanup":temp_after_cleanup,"diskFreeAfter":p0c_disk_free_bytes(&out_dir)}));}
         cleanup_runtime_caches_1003(app);
         if let Some(map)=ETA_JOB_SMOOTH.get(){map.lock().remove(&job.project.id);}
+        if let Some(map)=ETA_CHECKPOINTS.get(){map.lock().remove(&job.project.id);}
         return Ok(outcome)
       },
       Err(e)=>{last_error=e;if smart_repeat&&attempt==1{invalidate_hybrid_encoder_cache(app);}emit_warning(app,&job.project.id,&format!("Попытка {attempt} не прошла: {last_error}"));let temp_before=p0c_recursive_bytes(&work);let _=std::fs::remove_dir_all(&work);cleanup_destination_partial(&out);let _=std::fs::remove_file(&out);if fast_pingpong_project(job){diag_line(json!({"kind":"p0c-error-cleanup","projectId":job.project.id,"tempBeforeCleanup":temp_before,"tempAfterCleanup":p0c_recursive_bytes(&work)}));}cleanup_runtime_caches_1003(app);if last_error==CANCELLED{return Err(last_error)}if attempt<max_attempts{emit_progress(app,job,started,&timer,2.0,"Повторяю безопасную попытку",&encoder,attempt+1,None);}}

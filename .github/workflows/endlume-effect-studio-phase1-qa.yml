@@ -57,13 +57,6 @@ jobs:
           npm run check
           npm run build
 
-      - name: Rust check and tests
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          cargo check --manifest-path src-tauri/Cargo.toml
-          cargo test --manifest-path src-tauri/Cargo.toml --lib -- --nocapture
-
       - name: Stage FFmpeg sidecars
         shell: bash
         run: |
@@ -74,6 +67,13 @@ jobs:
           cp -L "$(command -v ffmpeg)" "src-tauri/binaries/ffmpeg-$host"
           cp -L "$(command -v ffprobe)" "src-tauri/binaries/ffprobe-$host"
           chmod +x src-tauri/binaries/*
+
+      - name: Rust check and tests
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cargo check --manifest-path src-tauri/Cargo.toml
+          cargo test --manifest-path src-tauri/Cargo.toml --lib -- --nocapture
 
       - name: Build non-release candidate app
         env:

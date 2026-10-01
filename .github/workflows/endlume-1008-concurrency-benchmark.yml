@@ -52,7 +52,11 @@ jobs:
           AMB="$(cat "$ROOT/ambient.txt")"
           test -f "$SRC"
 
-          mapfile -t TRACKS < <(find "/Volumes/TOSHIBA EXT" -type f -iname '*.mp3' -size +500k 2>/dev/null | head -12)
+          TRACKS=()
+          while IFS= read -r p; do
+            TRACKS+=("$p")
+            [ "${#TRACKS[@]}" -ge 12 ] && break
+          done < <(find "/Volumes/TOSHIBA EXT" -type f -iname '*.mp3' -size +500k 2>/dev/null)
           test "${#TRACKS[@]}" -ge 12
           if [ ! -f "$AMB" ]; then AMB="${TRACKS[0]}"; fi
 

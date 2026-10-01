@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useApp } from '../store';
 import { api } from '../tauri';
-import type { EffectPreset, EffectUsageMode, SubscribeFirstAppearance, SubscribePreset } from '../types';
+import type { AnchorPoint, EffectPreset, EffectUsageMode, SubscribeFirstAppearance, SubscribePreset } from '../types';
 import { Icon, Range } from '../components/ui';
 import { LiveCompositePreview, type LivePreviewAssets } from '../components/LiveCompositePreview';
 
@@ -35,6 +35,10 @@ const emptyEffect = (source = ''): EffectPreset => ({
   usageMode: 'always',
   intervalSec: 240,
   usageDurationSec: 30,
+  target: 'CUSTOM',
+  offsetX: 0,
+  offsetY: 0,
+  opacity: 1,
 });
 
 const emptySubscribe = (source = ''): SubscribePreset => ({
@@ -70,13 +74,36 @@ function EffectsEditor() {
   const setEffects = useApp((s) => s.setEffects);
   const openEditor = useApp((s) => s.openEditor);
   const editor = useApp((s) => s.editor);
-  const projectPath = useProjectPath();
+  const draftProjects = useApp((s) => s.draftProjects);
+  const projects = useApp((s) => s.projects);
+  const sceneAnchorsByPath = useApp((s) => s.sceneAnchorsByPath);
+  const setSceneAnchor = useApp((s) => s.setSceneAnchor);
+  const sceneCandidates = useMemo(() => draftProjects.length ? draftProjects : projects, [draftProjects, projects]);
+  const [scenePath, setScenePath] = useState('');
   const [selected, setSelected] = useState(editor?.id || effects[0]?.id);
   const [saved, setSaved] = useState(false);
   const [assets, setAssets] = useState<LivePreviewAssets>();
   const [previewBusy, setPreviewBusy] = useState(false);
+  const [anchorMode, setAnchorMode] = useState(false);
   const persistTimer = useRef<number | undefined>(undefined);
   const current = effects.find((e) => e.id === selected);
+  const projectPath = scenePath || sceneCandidates[0]?.path;
+  const target = (current?.target || 'CUSTOM').trim().toUpperCase() || 'CUSTOM';
+  const sceneAnchor = projectPath ? sceneAnchorsByPath[projectPath]?.[target] : undefined;
+  const resolvedCurrent = current ? {
+    ...current,
+    target,
+    opacity: current.opacity ?? 1,
+    x: sceneAnchor ? clamp01(sceneAnchor.x + (current.offsetX ?? 0)) : current.x,
+    y: sceneAnchor ? clamp01(sceneAnchor.y + (current.offsetY ?? 0)) : current.y,
+  } : undefined;
+
+  useEffect(() => {
+    if (!sceneCandidates.length) { if (scenePath) setScenePath(''); return; }
+    if (!scenePath || !sceneCandidates.some((item) => item.path === scenePath)) setScenePath(sceneCandidates[0].path);
+  }, [sceneCandidates, scenePath]);
+
+  useEffect(() => { setAnchorMode(false); }, [scenePath, target]);
 
   const saveLibrary = (next: EffectPreset[], immediate = false) => {
     setEffects(next);
@@ -106,6 +133,23 @@ function EffectsEditor() {
   const patch = (value: Partial<EffectPreset>) => {
     if (!current) return;
     void saveLibrary(effects.map((e) => e.id === current.id ? { ...e, ...value } : e));
+  };
+
+  const moveEffect = (x: number, y: number) => {
+    if (!current) return;
+    if (sceneAnchor) {
+      patch({ offsetX: x - sceneAnchor.x, offsetY: y - sceneAnchor.y });
+    } else {
+      patch({ x, y });
+    }
+  };
+
+  const pickAnchor = (x: number, y: number) => {
+    if (!current || !projectPath) return;
+    const key = (current.target || 'CUSTOM').trim().toUpperCase() || 'CUSTOM';
+    setSceneAnchor(projectPath, key, { x, y, source: 'manual' });
+    patch({ target: key, offsetX: 0, offsetY: 0 });
+    setAnchorMode(false);
   };
 
   const remove = async () => {
@@ -156,13 +200,17 @@ function EffectsEditor() {
       </aside>
 
       <main className="visualEditor">
-        {current ? <>
+        {current && resolvedCurrent ? <>
+          {sceneCandidates.length > 0 && <div className="previewTime"><span>СЦЕНА / ИЗОБРАЖЕНИЕ</span><select value={projectPath || ''} onChange={(event) => setScenePath(event.target.value)}>{sceneCandidates.map((scene) => <option key={scene.path} value={scene.path}>{scene.name}</option>)}</select><b>{sceneAnchor ? `${target} ✓` : `${target}: anchor не задан`}</b></div>}
           <PreviewStage
-            title="LIVE PREVIEW"
+            title={anchorMode ? `ПОКАЖИ НА ИЗОБРАЖЕНИИ: ${target}` : "LIVE PREVIEW"}
             assets={assets}
             busy={previewBusy}
-            current={current}
-            onMove={(x, y) => patch({ x, y })}
+            current={resolvedCurrent}
+            anchor={sceneAnchor}
+            anchorMode={anchorMode}
+            onAnchorPick={pickAnchor}
+            onMove={moveEffect}
             onScale={(scale) => patch({ scale })}
             onPickColor={(hex) => patch({ keyColor: hex, similarity: 0.10, blend: 0.06 })}
           />
@@ -175,6 +223,11 @@ function EffectsEditor() {
       <aside className="editorControls">
         {current && <>
           <label>Название<input value={current.name} onChange={(event) => patch({ name: event.target.value })} /></label>
+          <label>Target / anchor<input list="endlume-effect-targets" value={current.target || 'CUSTOM'} onChange={(event) => patch({ target: event.target.value.toUpperCase() })} /></label>
+          <datalist id="endlume-effect-targets"><option value="FIREPLACE"/><option value="CUP"/><option value="CANDLE"/><option value="WINDOW"/><option value="LAMP"/><option value="SCREEN"/><option value="TV"/><option value="FIRE"/><option value="SKY"/><option value="GROUND"/><option value="BACKGROUND"/><option value="FOREGROUND"/><option value="FULL_FRAME"/><option value="CUSTOM"/></datalist>
+          {!current.fullscreen && projectPath && <button className="savePreset" onClick={() => setAnchorMode((value) => !value)}>{anchorMode ? `ОТМЕНИТЬ УСТАНОВКУ ${target}` : sceneAnchor ? `ИЗМЕНИТЬ ANCHOR: ${target}` : `ПОКАЗАТЬ ГДЕ ${target}`}</button>}
+          {sceneAnchor && !current.fullscreen && <button className="savePreset" onClick={() => patch({ offsetX: 0, offsetY: 0 })}>ПРИВЯЗАТЬ ЭФФЕКТ К ЦЕНТРУ ANCHOR</button>}
+          <SmallRange label="Opacity" value={current.opacity ?? 1} min={0} max={1} step={0.01} onChange={(value) => patch({ opacity: value })} />
           <UsageModeControl value={effectiveUsageMode(current)} onChange={(usageMode) => patch({ usageMode, enabled: usageMode !== 'off', startSec: usageMode === 'always' ? 0 : current.startSec, endSec: usageMode === 'always' ? null : current.endSec })} />
           {effectiveUsageMode(current) === 'interval' && <div className="usageSliders">
             <SmallRange label="Показывать каждые, мин" value={(current.intervalSec ?? 240) / 60} min={1} max={30} step={1} onChange={(value) => patch({ intervalSec: value * 60 })} />
@@ -335,11 +388,14 @@ function EditorHeader({ title, subtitle, onBack }: { title: string; subtitle: st
   return <div className="editorHeader"><div><small>ENDLUME</small><h1>{title}</h1><p>{subtitle}</p></div><button onClick={onBack}>← ВЕРНУТЬСЯ К ПРОЕКТУ</button></div>;
 }
 
-function PreviewStage({ title, assets, busy, current, onMove, onScale, onPickColor }: {
+function PreviewStage({ title, assets, busy, current, anchor, anchorMode, onAnchorPick, onMove, onScale, onPickColor }: {
   title: string;
   assets?: LivePreviewAssets;
   busy: boolean;
   current: EffectPreset;
+  anchor?: AnchorPoint;
+  anchorMode?: boolean;
+  onAnchorPick?: (x: number, y: number) => void;
   onMove: (x: number, y: number) => void;
   onScale: (value: number) => void;
   onPickColor: (hex: string) => void;
@@ -547,7 +603,7 @@ function PreviewStage({ title, assets, busy, current, onMove, onScale, onPickCol
 
   return <div className="previewStage livePreviewStage smartAlignStage" ref={stageRef} tabIndex={0} onKeyDown={keyMove}>
     <div className="previewLabel">{title}</div>
-    <LiveCompositePreview assets={assets} effect={current} busy={busy} overlayRef={overlayRef} overlayStyle={overlayStyle} onDragStart={(event) => begin('drag', event)} onResizeStart={(event) => begin('resize', event)} onPickColor={onPickColor} />
+    <LiveCompositePreview assets={assets} effect={current} busy={busy} overlayRef={overlayRef} overlayStyle={overlayStyle} anchor={anchor} anchorMode={anchorMode} onAnchorPick={onAnchorPick} onDragStart={(event) => begin('drag', event)} onResizeStart={(event) => begin('resize', event)} onPickColor={onPickColor} />
     <div className={`smartGuideLayer ${guidesEnabled ? 'visible' : ''}`} aria-hidden="true">
       <i className="smartGuideStatic vertical" /><i className="smartGuideStatic horizontal" />
       {safeEnabled && <i className="smartSafeArea" />}
@@ -569,7 +625,7 @@ function PreviewStage({ title, assets, busy, current, onMove, onScale, onPickCol
         <label className="smartMetricInput"><span>SIZE</span><input type="number" min="5" max="150" step="1" value={(current.scale * 100).toFixed(0)} onChange={(event) => onScale(Math.max(0.05, Math.min(1.5, Number(event.target.value) / 100)))} /><em>%</em></label>
       </div>
     </>}
-    <div className="smartAlignHint">Shift + drag — без магнита • стрелки — точная подгонка • ⌘0 — центр</div>
+    <div className="smartAlignHint">{anchorMode ? 'Кликни по объекту на изображении — anchor сохранится для этой сцены' : 'Shift + drag — без магнита • стрелки — точная подгонка • ⌘0 — центр'}</div>
   </div>;
 }
 

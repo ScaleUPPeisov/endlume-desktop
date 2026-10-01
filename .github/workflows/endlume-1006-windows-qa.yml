@@ -170,11 +170,11 @@ jobs:
         run: |
           $ErrorActionPreference='Stop'
           $target=Join-Path $env:RUNNER_TEMP 'e1006-windows\x86_64-pc-windows-msvc\release'
-          $exe=Get-ChildItem $target -Filter '*.exe' -File | Where-Object {$_.Name -notmatch 'build-script'} | Sort-Object Length -Descending | Select-Object -First 1
+          $exe=Get-ChildItem $target -Filter '*.exe' -File | Where-Object {$_.Name -match 'ENDLUME|endlume'} | Sort-Object Length -Descending | Select-Object -First 1
           if(!$exe){throw 'Built ENDLUME runtime exe missing'}
           $ffmpeg=Resolve-Path 'src-tauri\binaries\ffmpeg-x86_64-pc-windows-msvc.exe'
           $ffprobe=Resolve-Path 'src-tauri\binaries\ffprobe-x86_64-pc-windows-msvc.exe'
-          python scripts\qa-endlume-1005-normal-render-smoke.py $target $ffmpeg $ffprobe windows-qa\normal-render.json
+          python scripts\qa-endlume-1006-windows-render-smoke.py $exe.FullName $ffmpeg $ffprobe windows-qa\normal-render.json
           if($LASTEXITCODE -ne 0){throw 'Windows normal render smoke failed'}
           Write-Host ENDLUME_1006_WINDOWS_RENDER_GREEN
 

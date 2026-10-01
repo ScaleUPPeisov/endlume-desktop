@@ -1960,16 +1960,19 @@ pub async fn render_job(app:&AppHandle,job:&QueueJob,cancel:Arc<AtomicBool>)->Re
   ensure_license_allowed()?;
   let mut resolved_job=job.clone();refresh_project_paths(&mut resolved_job);
   let decision=fast_path_decision(&resolved_job);
-  let _=app.emit("render-diagnostics",json!({"id":resolved_job.project.id,"fastPathEligible":decision.eligible,"fastPathReason":decision.reason,"mediaCount":resolved_job.project.media.len(),"imageCount":resolved_job.project.media.iter().filter(|m|is_image(m)).count(),"videoCount":resolved_job.project.media.iter().filter(|m|!is_image(m)).count(),"audioProcessingRequested":audio_processing_requested(&resolved_job)}));
+  let requested_audio_processing=audio_processing_requested(&resolved_job);
+  let _=app.emit("render-diagnostics",json!({"id":resolved_job.project.id,"fastPathEligible":decision.eligible,"fastPathReason":decision.reason,"mediaCount":resolved_job.project.media.len(),"imageCount":resolved_job.project.media.iter().filter(|m|is_image(m)).count(),"videoCount":resolved_job.project.media.iter().filter(|m|!is_image(m)).count(),"audioProcessingRequested":requested_audio_processing}));
   if smart_repeat_project(&resolved_job){
     if resolved_job.settings.width!=1920||resolved_job.settings.height!=1080{emit_warning(app,&resolved_job.project.id,"Fidelity Lock: fast static проект выводится строго 1920x1080 для компактного HEVC sample-table pipeline.");}
     resolved_job.settings.width=1920;
     resolved_job.settings.height=1080;
     resolved_job.settings.fps=60;
     resolved_job.settings.codec="h265".into();
-    resolved_job.settings.duration_mode="whole-track".into();
+    // Preserve the user's duration/audio-processing mode when Crossfade, Normalize or Ambient
+    // is enabled. Whole-track lock is only for untouched original-audio fidelity.
+    if !requested_audio_processing{resolved_job.settings.duration_mode="whole-track".into();}
   }
-  let job=&resolved_job;let requested_audio_processing=audio_processing_requested(job);let scan_mark=Instant::now();
+  let job=&resolved_job;let scan_mark=Instant::now();
   for p in &job.project.media{if !Path::new(p).is_file(){return Err(format!("Не найден файл изображения/видео: {}",Path::new(p).file_name().and_then(|x|x.to_str()).unwrap_or(p)));}}
   for p in &job.project.audio{if !Path::new(p).is_file(){return Err(format!("Не найден аудиофайл: {}",Path::new(p).file_name().and_then(|x|x.to_str()).unwrap_or(p)));}}
   if job.project.media.is_empty(){return Err("В проекте нет изображения или видео".into())}

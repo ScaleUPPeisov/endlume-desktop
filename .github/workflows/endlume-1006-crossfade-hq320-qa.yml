@@ -1,4 +1,5 @@
 name: ENDLUME 10.0.6 Crossfade HQ320 QA
+# Production-code rerun after Effect delete-state fix
 
 on:
   push:

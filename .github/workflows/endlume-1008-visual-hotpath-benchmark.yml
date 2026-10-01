@@ -1,0 +1,109 @@
+name: ENDLUME 10.0.8 Visual Hotpath Benchmark
+
+on:
+  push:
+    branches: [hotfix/endlume-10.0.8-performance-visual]
+    paths:
+      - ".github/workflows/endlume-1008-visual-hotpath-benchmark.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-1008-visual-hotpath-benchmark
+  cancel-in-progress: true
+
+jobs:
+  bench:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 40
+    steps:
+      - name: Benchmark current vs direct Round Equalizer visual master
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+          FFMPEG="$(command -v ffmpeg)"; FFPROBE="$(command -v ffprobe)"
+          ROOT="$RUNNER_TEMP/e1008-visual-bench"; rm -rf "$ROOT"; mkdir -p "$ROOT"
+
+          LIB=""
+          while IFS= read -r p; do
+            if python3 - "$p" <<'PY'
+          import json,sys
+          try:d=json.load(open(sys.argv[1]))
+          except:raise SystemExit(1)
+          rows=d.get("effects") or []
+          ok=any("эквалайзер круглый" in str(x.get("name","")).lower() or x.get("id")=="825dd7a4-f0cf-4032-a3c9-64290cb5756d" for x in rows if isinstance(x,dict))
+          raise SystemExit(0 if ok else 1)
+          PY
+            then LIB="$p"; break; fi
+          done < <(find "$HOME/Library/Application Support" "$HOME/Library/Containers" -type f -name library.json 2>/dev/null)
+          test -n "$LIB"
+
+          python3 - "$LIB" "$ROOT/effect.json" <<'PY'
+          import json,sys
+          d=json.load(open(sys.argv[1]))
+          for x in d.get("effects") or []:
+            if not isinstance(x,dict):continue
+            if "эквалайзер круглый" in str(x.get("name","")).lower() or x.get("id")=="825dd7a4-f0cf-4032-a3c9-64290cb5756d":
+              json.dump(x,open(sys.argv[2],"w"),ensure_ascii=False,indent=2);break
+          PY
+          SRC="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["source"])' "$ROOT/effect.json")"
+          test -f "$SRC"
+          DUR="$("$FFPROBE" -v error -show_entries format=duration -of default=nw=1:nk=1 "$SRC")"
+
+          read SCALE X Y OPACITY MODE KEY DESPILL <<<"$(python3 - "$ROOT/effect.json" <<'PY'
+          import json,sys
+          e=json.load(open(sys.argv[1]))
+          print(e.get("scale",1),e.get("x",.5),e.get("y",.5),e.get("opacity",1),e.get("mode","chromakey"),e.get("keyColor","#00ff00"),e.get("despill",.35))
+          PY
+          )"
+          SIM="0.18"; BLEND="0.03"
+          TARGET="$(python3 - <<PY
+          x=round(1920*float("$SCALE"));print(x if x%2==0 else x+1)
+          PY
+          )"
+          PX="max(0,min(W-w,W*$X-w/2))"; PY="max(0,min(H-h,H*$Y-h/2))"
+
+          "$FFMPEG" -hide_banner -loglevel error -f lavfi -i "gradients=s=1920x1080:r=1:c0=0x101828:c1=0x334466" -frames:v 1 -y "$ROOT/base.png"
+
+          echo "MODE=$MODE SCALE=$SCALE TARGET=$TARGET X=$X Y=$Y OPACITY=$OPACITY DESPILL=$DESPILL DURATION=$DUR"
+
+          /usr/bin/time -p "$FFMPEG" -hide_banner -loglevel error -i "$SRC"             -vf "fps=30,format=rgba,colorkey=0x${KEY#\#}:$SIM:$BLEND,scale=$TARGET:-2:flags=lanczos,format=argb"             -an -c:v qtrle -pix_fmt argb -y "$ROOT/current-cache.mov" 2>"$ROOT/time-cache.txt"
+
+          /usr/bin/time -p "$FFMPEG" -hide_banner -loglevel error -filter_complex_threads 8             -loop 1 -framerate 30 -i "$ROOT/base.png" -stream_loop -1 -i "$ROOT/current-cache.mov"             -filter_complex "[0:v]fps=30,setsar=1[b0];[1:v]fps=30,setpts=PTS-STARTPTS,format=argb,colorchannelmixer=aa=$OPACITY[fx];[b0][fx]overlay=x='$PX':y='$PY':shortest=0:repeatlast=1:eof_action=repeat:format=auto[b1];[b1]fps=60,format=yuv420p[outv]"             -map "[outv]" -t "$DUR" -an -c:v hevc_videotoolbox -realtime 1 -prio_speed 1 -power_efficient 0 -constant_bit_rate 1 -b:v 80M -g 1800 -tag:v hvc1 -pix_fmt yuv420p -y "$ROOT/current-master.mp4" 2>"$ROOT/time-current-master.txt"
+
+          /usr/bin/time -p "$FFMPEG" -hide_banner -loglevel error -filter_complex_threads 8             -loop 1 -framerate 30 -i "$ROOT/base.png" -stream_loop -1 -i "$SRC"             -filter_complex "[0:v]fps=30,format=rgba,setsar=1[b0];[1:v]fps=30,setpts=PTS-STARTPTS,format=rgba,colorkey=0x${KEY#\#}:$SIM:$BLEND,scale=$TARGET:-2:flags=lanczos,colorchannelmixer=aa=$OPACITY[fx];[b0][fx]overlay=x='$PX':y='$PY':shortest=0:repeatlast=1:eof_action=repeat:format=auto[b1];[b1]fps=60,format=yuv420p[outv]"             -map "[outv]" -t "$DUR" -an -c:v hevc_videotoolbox -realtime 1 -prio_speed 1 -power_efficient 0 -constant_bit_rate 1 -b:v 80M -g 1800 -tag:v hvc1 -pix_fmt yuv420p -y "$ROOT/direct-cbr.mp4" 2>"$ROOT/time-direct-cbr.txt"
+
+          /usr/bin/time -p "$FFMPEG" -hide_banner -loglevel error -filter_complex_threads 8             -loop 1 -framerate 30 -i "$ROOT/base.png" -stream_loop -1 -i "$SRC"             -filter_complex "[0:v]fps=30,format=rgba,setsar=1[b0];[1:v]fps=30,setpts=PTS-STARTPTS,format=rgba,colorkey=0x${KEY#\#}:$SIM:$BLEND,scale=$TARGET:-2:flags=lanczos,colorchannelmixer=aa=$OPACITY[fx];[b0][fx]overlay=x='$PX':y='$PY':shortest=0:repeatlast=1:eof_action=repeat:format=auto[b1];[b1]fps=60,format=yuv420p[outv]"             -map "[outv]" -t "$DUR" -an -c:v hevc_videotoolbox -realtime 1 -prio_speed 1 -power_efficient 0 -q:v 85 -maxrate 60M -bufsize 120M -g 1800 -tag:v hvc1 -pix_fmt yuv420p -y "$ROOT/direct-vbr.mp4" 2>"$ROOT/time-direct-vbr.txt"
+
+          python3 - "$ROOT" "$FFMPEG" <<'PY'
+          import os,re,subprocess,sys,json
+          root,ff=sys.argv[1:]
+          def sec(name):
+            t=open(os.path.join(root,name)).read()
+            m=re.search(r"real\s+([0-9.]+)",t);return float(m.group(1)) if m else None
+          def size(name):return os.path.getsize(os.path.join(root,name))
+          def ssim(a,b):
+            p=subprocess.run([ff,"-hide_banner","-nostats","-loglevel","info","-i",os.path.join(root,a),"-i",os.path.join(root,b),"-lavfi","[0:v][1:v]ssim","-f","null","-"],text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+            m=re.findall(r"All:([0-9.]+)",p.stderr);return float(m[-1]) if m else 0.0
+          def psnr(a,b):
+            p=subprocess.run([ff,"-hide_banner","-nostats","-loglevel","info","-i",os.path.join(root,a),"-i",os.path.join(root,b),"-lavfi","[0:v][1:v]psnr","-f","null","-"],text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+            m=re.findall(r"average:([0-9.]+)",p.stderr);return float(m[-1]) if m else 0.0
+          d={
+            "cacheSec":sec("time-cache.txt"),
+            "currentMasterSec":sec("time-current-master.txt"),
+            "directCbrSec":sec("time-direct-cbr.txt"),
+            "directVbrSec":sec("time-direct-vbr.txt"),
+            "currentBytes":size("current-master.mp4"),
+            "directCbrBytes":size("direct-cbr.mp4"),
+            "directVbrBytes":size("direct-vbr.mp4"),
+            "directCbrSsimVsCurrent":ssim("current-master.mp4","direct-cbr.mp4"),
+            "directVbrSsimVsCurrent":ssim("current-master.mp4","direct-vbr.mp4"),
+            "directCbrPsnrVsCurrent":psnr("current-master.mp4","direct-cbr.mp4"),
+            "directVbrPsnrVsCurrent":psnr("current-master.mp4","direct-vbr.mp4")
+          }
+          d["currentColdVisualSec"]=d["cacheSec"]+d["currentMasterSec"]
+          print("VISUAL_BENCH="+json.dumps(d,separators=(",",":")))
+          PY

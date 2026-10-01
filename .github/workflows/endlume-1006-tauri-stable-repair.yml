@@ -142,109 +142,65 @@ jobs:
           shasum -a 256 "$MAC" | awk '{print $1}' > "$MAC.sha256"
           echo ENDLUME_1006_MAC_UPDATER_GREEN
 
-      - name: Stage Windows cross-build toolchain and FFmpeg
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
-          brew list nsis >/dev/null 2>&1 || brew install nsis
-          brew list llvm >/dev/null 2>&1 || brew install llvm
-          export PATH="$(brew --prefix llvm)/bin:$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
-          command -v cargo-xwin >/dev/null 2>&1 || cargo install --locked cargo-xwin
-          TAG='autobuild-2026-09-14-13-17'
-          ARCHIVE='ffmpeg-N-126549-ga51bb69b09-win64-gpl.zip'
-          ZIP="$HOME/.endlume-build-cache/$ARCHIVE"
-          EXTRACT="$HOME/.endlume-build-cache/ffmpeg-1006-win"
-          mkdir -p "$HOME/.endlume-build-cache"
-          [ -s "$ZIP" ] || curl -fL --retry 4 -o "$ZIP" "https://github.com/BtbN/FFmpeg-Builds/releases/download/$TAG/$ARCHIVE"
-          rm -rf "$EXTRACT"; mkdir -p "$EXTRACT"
-          ditto -x -k "$ZIP" "$EXTRACT"
-          FFMPEG="$(find "$EXTRACT" -type f -name ffmpeg.exe -print -quit)"
-          FFPROBE="$(find "$EXTRACT" -type f -name ffprobe.exe -print -quit)"
-          test -n "$FFMPEG" -a -n "$FFPROBE"
-          cp "$FFMPEG" "src-tauri/binaries/ffmpeg-$WINDOWS_TARGET.exe"
-          cp "$FFPROBE" "src-tauri/binaries/ffprobe-$WINDOWS_TARGET.exe"
-          file "src-tauri/binaries/ffmpeg-$WINDOWS_TARGET.exe" | grep -E 'PE32|MS Windows'
-          echo ENDLUME_1006_WINDOWS_TOOLCHAIN_GREEN
-
-      - name: Build and sign Windows 10.0.6 updater package
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          export PATH="$(brew --prefix llvm)/bin:$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
-          export CARGO_TARGET_DIR="$HOME/.endlume-build-cache/target-1006-updater-repair"
-          npm run tauri build -- --runner cargo-xwin --target "$WINDOWS_TARGET" --bundles nsis --config src-tauri/tauri.windows.conf.json
-          NSIS="$CARGO_TARGET_DIR/$WINDOWS_TARGET/release/bundle/nsis"
-          CAND="$(find "$NSIS" -maxdepth 1 -type f -name '*.exe' -print -quit)"
-          test -n "$CAND" -a -s "$CAND"
-          WIN="$GITHUB_WORKSPACE/release-1006/$WIN_ASSET"
-          cp "$CAND" "$WIN"
-          export TAURI_SIGNING_PRIVATE_KEY_PATH="$HOME/.endlume-updater/endlume.key"
-          export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
-          unset TAURI_SIGNING_PRIVATE_KEY || true
-          npx --yes @tauri-apps/cli@2.10.1 signer sign "$WIN"
-          test -s "$WIN" -a -s "$WIN.sig"
-          shasum -a 256 "$WIN" | awk '{print $1}' > "$WIN.sha256"
-          echo ENDLUME_1006_WINDOWS_UPDATER_GREEN
-
-      - name: Build dual-platform latest.json
+      - name: Build macOS-only latest.json
         shell: bash
         run: |
           set -Eeuo pipefail
           MAC="$GITHUB_WORKSPACE/release-1006/$MAC_ASSET"
-          WIN="$GITHUB_WORKSPACE/release-1006/$WIN_ASSET"
+          test -s "$MAC" -a -s "$MAC.sig" -a -s "$MAC.sha256"
           MAC_SHA="$(cat "$MAC.sha256" | tr -d '\r\n')"
-          WIN_SHA="$(cat "$WIN.sha256" | tr -d '\r\n')"
+          test "$(shasum -a 256 "$MAC" | awk '{print $1}')" = "$MAC_SHA"
           MAC_SIG="$(tr -d '\r\n' < "$MAC.sig")"
-          WIN_SIG="$(tr -d '\r\n' < "$WIN.sig")"
-          python3 - "$MAC_SIG" "$WIN_SIG" "$MAC_SHA" "$WIN_SHA" <<'PY'
+          python3 - "$MAC_SIG" "$MAC_SHA" <<'PY'
           import datetime,json,os,sys
-          msig,wsig,msha,wsha=sys.argv[1:]
+          sig,sha=sys.argv[1:]
           base=f"https://github.com/{os.environ['STABLE_REPO']}/releases/download/{os.environ['STABLE_TAG']}"
           d={
-            'version':'10.0.6',
-            'notes':'ENDLUME 10.0.6 production: FFmpeg Operation not permitted fix, finite concat audio, Crossfade, AAC 320 kbps / 48 kHz / stereo, duration-aware validation, Effects/Subscribe Preview, Delete Effect and correct failed queue state.',
-            'pub_date':datetime.datetime.now(datetime.timezone.utc).isoformat().replace('+00:00','Z'),
-            'platforms':{
-              'darwin-aarch64':{'url':f"{base}/{os.environ['MAC_ASSET']}",'signature':msig,'sha256':msha},
-              'windows-x86_64':{'url':f"{base}/{os.environ['WIN_ASSET']}",'signature':wsig,'sha256':wsha},
+            "version":"10.0.6",
+            "notes":"ENDLUME 10.0.6 production macOS update.",
+            "pub_date":datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00","Z"),
+            "platforms":{
+              "darwin-aarch64":{
+                "url":f"{base}/{os.environ['MAC_ASSET']}",
+                "signature":sig,
+                "sha256":sha
+              }
             }
           }
-          json.dump(d,open('release-1006/latest.json','w'),ensure_ascii=False,indent=2)
-          print('ENDLUME_1006_TAURI_MANIFEST_GREEN')
+          json.dump(d,open("release-1006/latest.json","w"),ensure_ascii=False,indent=2)
+          print("ENDLUME_1006_MAC_ONLY_MANIFEST_GREEN")
           PY
 
-      - name: Publish assets first, latest.json LAST
+      - name: Publish macOS asset first, latest.json LAST
         shell: bash
         run: |
           set -Eeuo pipefail
           export GH_TOKEN="$RELEASE_TOKEN"
           DIR="$GITHUB_WORKSPACE/release-1006"
           gh release view "$STABLE_TAG" --repo "$STABLE_REPO" >/dev/null
-          gh release upload "$STABLE_TAG"             "$DIR/$MAC_ASSET" "$DIR/$MAC_ASSET.sig"             "$DIR/$WIN_ASSET" "$DIR/$WIN_ASSET.sig"             --clobber --repo "$STABLE_REPO"
+
+          gh release upload "$STABLE_TAG"             "$DIR/$MAC_ASSET" "$DIR/$MAC_ASSET.sig"             --clobber --repo "$STABLE_REPO"
 
           BASE="https://github.com/$STABLE_REPO/releases/download/$STABLE_TAG"
           curl -fL --retry 5 "$BASE/$MAC_ASSET?run=$GITHUB_RUN_ID" -o "$RUNNER_TEMP/mac-public"
-          curl -fL --retry 5 "$BASE/$WIN_ASSET?run=$GITHUB_RUN_ID" -o "$RUNNER_TEMP/win-public"
           test "$(shasum -a 256 "$RUNNER_TEMP/mac-public" | awk '{print $1}')" = "$(cat "$DIR/$MAC_ASSET.sha256")"
-          test "$(shasum -a 256 "$RUNNER_TEMP/win-public" | awk '{print $1}')" = "$(cat "$DIR/$WIN_ASSET.sha256")"
-          echo ENDLUME_1006_PUBLIC_REDOWNLOAD_GREEN
+          echo ENDLUME_1006_PUBLIC_MAC_REDOWNLOAD_GREEN
 
           gh release upload "$STABLE_TAG" "$DIR/latest.json" --clobber --repo "$STABLE_REPO"
+
           for i in 1 2 3 4 5 6 7 8; do
             if curl -fsSL --retry 2 "$BASE/latest.json?run=$GITHUB_RUN_ID-$i" -o "$RUNNER_TEMP/latest-public.json"; then
               if python3 - "$RUNNER_TEMP/latest-public.json" <<'PY'
           import json,sys
-          d=json.load(open(sys.argv[1],encoding='utf-8'))
-          assert d['version']=='10.0.6',d
-          p=d['platforms']
-          assert p['darwin-aarch64']['url'].endswith('/ENDLUME-macos-aarch64.app.tar.gz')
-          assert p['darwin-aarch64']['signature'].strip()
-          assert len(p['darwin-aarch64']['sha256'])==64
-          assert p['windows-x86_64']['url'].endswith('/ENDLUME-windows-x86_64-setup.exe')
-          assert p['windows-x86_64']['signature'].strip()
-          assert len(p['windows-x86_64']['sha256'])==64
-          print('PUBLIC_UPDATER_10_0_6_GREEN')
+          d=json.load(open(sys.argv[1],encoding="utf-8"))
+          assert d["version"]=="10.0.6",d
+          p=d["platforms"]
+          assert set(p.keys())=={"darwin-aarch64"},p
+          m=p["darwin-aarch64"]
+          assert m["url"].endswith("/ENDLUME-macos-aarch64.app.tar.gz")
+          assert m["signature"].strip()
+          assert len(m["sha256"])==64
+          print("PUBLIC_MAC_UPDATER_10_0_6_GREEN")
           PY
               then exit 0; fi
             fi
@@ -258,7 +214,7 @@ jobs:
           echo "HOTFIX=$HOTFIX_SHA"
           echo "SOURCE=$SOURCE_SHA"
           echo "MAC=GREEN"
-          echo "WINDOWS=GREEN"
+          echo "WINDOWS=NOT_PROMOTED"
           echo "UPDATER_SIGN=GREEN"
-          echo "PUBLIC_ASSETS=GREEN"
-          echo "latest.json=10.0.6"
+          echo "PUBLIC_MAC_ASSET=GREEN"
+          echo "latest.json=10.0.6 macOS-only"

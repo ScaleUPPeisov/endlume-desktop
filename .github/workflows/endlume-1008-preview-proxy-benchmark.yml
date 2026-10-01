@@ -73,15 +73,17 @@ jobs:
           make_proxy hq640 "scale=640:-2:flags=lanczos,fps=60" 6
           make_proxy hq960 "scale=960:-2:flags=lanczos,fps=60" 6
           make_proxy native "fps=60" 6
+          ffmpeg -hide_banner -loglevel error -stream_loop -1 -ss "$SEEK" -i "$SRC" -t 1 -an             -vf "scale=640:-2:flags=lanczos:out_range=full,fps=60,format=yuv420p"             -c:v libx264 -preset ultrafast -crf 6 -color_range pc -colorspace bt709 -color_primaries bt709 -color_trc bt709             -y "$ROOT/full640.mp4"
+          ffmpeg -hide_banner -loglevel error -ss "$SEEK" -i "$SRC" -frames:v 1 -an -c:v ffv1 -pix_fmt bgra -y "$ROOT/direct.mkv"
 
           cat > "$ROOT/render_preview.py" <<'PY'
           import math,subprocess,sys,os
           root,name,key,sim,blend,dsp,opacity,scale,x,y=sys.argv[1:]
           sim=float(sim);blend=float(blend);dsp=float(dsp);opacity=float(opacity);scale=float(scale);x=float(x);y=float(y)
-          mp4=os.path.join(root,name+".mp4")
-          wh=subprocess.check_output(["ffprobe","-v","error","-select_streams","v:0","-show_entries","stream=width,height","-of","csv=p=0",mp4],text=True).strip().split(",")
+          media=os.path.join(root,name+(".mkv" if name=="direct" else ".mp4"))
+          wh=subprocess.check_output(["ffprobe","-v","error","-select_streams","v:0","-show_entries","stream=width,height","-of","csv=p=0",media],text=True).strip().split(",")
           w,h=map(int,wh)
-          inp=subprocess.check_output(["ffmpeg","-hide_banner","-loglevel","error","-i",mp4,"-frames:v","1","-f","rawvideo","-pix_fmt","rgb24","-"])
+          inp=subprocess.check_output(["ffmpeg","-hide_banner","-loglevel","error","-i",media,"-frames:v","1","-f","rawvideo","-pix_fmt","rgb24","-"])
           kv=int(key.lstrip("#"),16);kr,kg,kb=((kv>>16&255)/255,(kv>>8&255)/255,(kv&255)/255)
           buf=bytearray(w*h*4); factor=(1-dsp)*.8
           for i in range(w*h):
@@ -101,14 +103,14 @@ jobs:
           px=max(0,min(960-target,round(960*x-target/2)));py=max(0,min(540-th,round(540*y-th/2)))
           out=os.path.join(root,name+".png")
           subprocess.run(["ffmpeg","-hide_banner","-loglevel","error","-i",os.path.join(root,"base.png"),"-i",fx,"-filter_complex",f"[0:v]format=rgba[b];[b][1:v]overlay=x={px}:y={py}:format=auto,format=rgb24[out]","-map","[out]","-frames:v","1","-y",out],check=True)
-          print(f"{name.upper()}_PROXY_BYTES={os.path.getsize(mp4)}")
+          print(f"{name.upper()}_PROXY_BYTES={os.path.getsize(media)}")
           PY
 
-          for n in current hq640 hq960 native; do
+          for n in current hq640 hq960 native full640 direct; do
             python3 "$ROOT/render_preview.py" "$ROOT" "$n" "$KEY" "$SIM" "$BLEND" "$DESPILL" "$OPACITY" "$SCALE" "$X" "$Y"
           done
 
-          for n in base final current hq640 hq960 native; do
+          for n in base final current hq640 hq960 native full640 direct; do
             ffmpeg -hide_banner -loglevel error -i "$ROOT/$n.png" -frames:v 1 -f rawvideo -pix_fmt rgb24 "$ROOT/$n.rgb"
           done
 
@@ -120,7 +122,7 @@ jobs:
           fm=[i for i in range(N) if max(abs(fin[i*3+j]-base[i*3+j]) for j in range(3))>=8]
           def lum(img,i):
             r,g,b=img[i*3:i*3+3];return .2126*r+.7152*g+.0722*b
-          for name in ["current","hq640","hq960","native"]:
+          for name in ["current","hq640","hq960","native","full640","direct"]:
             img=raw(name); pm=[i for i in range(N) if max(abs(img[i*3+j]-base[i*3+j]) for j in range(3))>=8]
             union=sorted(set(pm)|set(fm))
             pl=sum(lum(img,i) for i in union)/max(1,len(union));fl=sum(lum(fin,i) for i in union)/max(1,len(union))

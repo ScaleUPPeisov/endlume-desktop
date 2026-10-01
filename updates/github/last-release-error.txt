@@ -2,8 +2,20 @@ ENDLUME_RELEASE_FAILURE
 version=10.0.6
 builder=BUILD_ENDLUME_1006_MAC_UPDATER.command
 exit_code=1
-timestamp=2026-10-01T11:08:58Z
+timestamp=2026-10-01T11:19:15Z
 
+
+vite v7.3.6 building client environment for production...
+transforming...
+✓ 69 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                           0.40 kB │ gzip:   0.29 kB
+dist/assets/endlume-homer-CwkCiCH0.png    9.61 kB
+dist/assets/index-72ZbfOxk.css           64.59 kB │ gzip:  15.13 kB
+dist/assets/index-BfzFI22u.js           378.68 kB │ gzip: 116.09 kB
+✓ built in 3.29s
+   Compiling endlume v10.0.6 (/private/tmp/endlume-1006-updater.Qtckfv/source/src-tauri)
 warning: unused import: `process::Command`
  --> src/render.rs:4:62
   |
@@ -106,21 +118,9 @@ warning: function `report_if_registered` is never used
 178 | pub fn report_if_registered(project_path:&str,render_status:&str,output_file:Option<String>,duration:Option<f64>,file_size:Option<u...
     |        ^^^^^^^^^^^^^^^^^^^^
 
-warning: `endlume` (lib) generated 16 warnings (run `cargo fix --lib -p endlume` to apply 2 suggestions)
-    Finished `release` profile [optimized] target(s) in 6m 14s
-       Built application at: ~/.endlume-build-cache/target-1006-local-updater/aarch64-apple-darwin/release/endlume
-    Bundling ENDLUME YT Studio PEISOV.app (~/.endlume-build-cache/target-1006-local-updater/aarch64-apple-darwin/release/bundle/macos/ENDLUME YT Studio PEISOV.app)
-    Finished 1 bundle at:
-        ~/.endlume-build-cache/target-1006-local-updater/aarch64-apple-darwin/release/bundle/macos/ENDLUME YT Studio PEISOV.app
+error: failed to create encoded metadata from file: No such file or directory (os error 2)
 
-file:///private/tmp/endlume-1006-updater.rClgdi/source/scripts/verify-macos-ffmpeg-bundle.mjs:30
-if(!dylibs.length)throw new Error('No bundled FFmpeg dylibs found in Contents/Frameworks');
-                        ^
-
-Error: No bundled FFmpeg dylibs found in Contents/Frameworks
-    at file:///private/tmp/endlume-1006-updater.rClgdi/source/scripts/verify-macos-ffmpeg-bundle.mjs:30:25
-    at ModuleJob.run (node:internal/modules/esm/module_job:343:25)
-    at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:681:26)
-    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:117:5)
-
-Node.js v22.23.2
+warning: `endlume` (lib) generated 16 warnings
+error: could not compile `endlume` (lib) due to 1 previous error; 16 warnings emitted
+failed to build app: failed to build app
+       Error failed to build app: failed to build app

@@ -153,7 +153,7 @@ export function UpdateExperience({update,onLater}:{update:any;onLater:()=>void})
 export function PostUpdateNotice({version,onClose}:{version:string;onClose:()=>void}){
   return <div className="endlumePostUpdate" role="status" aria-live="polite">
     <div className="endlumePostUpdateMascot"><img src={HOMER_URL} alt="ENDLUME Homer mascot"/></div>
-    <div><b>ENDLUME обновлён до {version}</b><strong>Гомер сделал свою работу.</strong><span>FAST_ONE_IMAGE • Original MP3 packet-copy • result state fix • Windows + macOS</span></div>
+    <div><b>ENDLUME обновлён до {version}</b><strong>Гомер сделал свою работу.</strong><span>Effect Studio • Semantic Anchors • Fast Engine • Windows + macOS</span></div>
     <button onClick={onClose} aria-label="Закрыть">×</button>
   </div>;
 }

@@ -99,6 +99,7 @@ fn useful_detail(raw:&str)->String{
 fn friendly_error(raw:&str)->String{
   if raw==LICENSE_BLOCKED{return "Production render остановлен: лицензия ENDLUME приостановлена, отозвана или устройство заблокировано.".into()}
   let low=raw.to_lowercase();
+  if low.contains("operation not permitted")||low.contains("os error 1")||low.contains("permission denied"){return "Не удалось запустить внутренний видео-движок FFmpeg.".into()}
   if low.contains("no such file")||low.contains("не найден файл")||low.contains("папка проекта не найдена"){return "Один из файлов проекта не найден. ENDLUME повторно сканирует выбранную папку, но файл всё ещё недоступен.".into()}
   if low.contains("moov atom not found")||low.contains("invalid data found")||low.contains("error opening input"){return "Один из медиафайлов повреждён или имеет неподдерживаемый формат.".into()}
   if low.contains("videotoolbox")||low.contains("hardware")||low.contains("device")&&low.contains("failed")||low.contains("encoder")&&low.contains("not found"){return "Аппаратный кодировщик не прошёл рендер. ENDLUME автоматически повторяет проект на software fallback.".into()}

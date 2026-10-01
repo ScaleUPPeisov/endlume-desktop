@@ -75,6 +75,8 @@ jobs:
           cargo test --manifest-path src-tauri/Cargo.toml --target aarch64-apple-darwin -- --nocapture
 
       - name: Build audit-only packaged app
+        env:
+          APPLE_SIGNING_IDENTITY: "-"
         shell: bash
         run: |
           set -Eeuo pipefail

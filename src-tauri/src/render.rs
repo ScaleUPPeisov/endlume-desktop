@@ -97,17 +97,31 @@ fn stage_eta_prior(stage:&str)->Option<f64>{
   if x.contains("финальная проверка")||x.contains("ffprobe"){return Some(validation+side)}
   if x.contains("zero-copy")||x.contains("manifest"){return Some(validation+side+0.8)}
   if x.contains("aac")||x.contains("mux")||x.contains("итоговое видео")||x.contains("destination"){return Some(mux+validation+side)}
+  if x.contains("sample-table")||x.contains("zero-copy"){return Some(validation+side+0.8)}
   if x.contains("subscribe"){return Some(eta_stage_value("subscribe-cache",2.5)+mux+validation+side)}
-  if x.contains("base_visual_master")||x.contains("короткий master")||x.contains("визуаль"){return Some(visual+mux+validation+side)}
-  if x.contains("музык")||x.contains("audio")||x.contains("аудио"){return Some(audio+visual+mux+validation+side)}
-  if x.contains("кэш effects")&&x.contains("готов"){return Some(visual+audio+mux+validation+side)}
-  if x.contains("кэш effects")||x.contains("lossless effects"){return Some(effects+visual+audio+mux+validation+side)}
-  if x.contains("анализ")||x.contains("движок")||x.contains("медиа"){return Some(effects+visual+audio+mux+validation+side)}
+  if x.contains("physical video-cycle")||x.contains("физический video-cycle")||x.contains("base_visual_master")||x.contains("короткий master")||x.contains("визуаль"){return Some(visual+eta_stage_value("subscribe-cache",2.5)+mux+validation+side)}
+  if x.contains("кроссфейд")||x.contains("crossfade")||x.contains("processed")||x.contains("непрерывную аудиодорожку"){return Some(visual.max(audio)+eta_stage_value("subscribe-cache",2.5)+mux+validation+side)}
+  if x.contains("музык")||x.contains("audio")||x.contains("аудио"){return Some(visual.max(audio)+eta_stage_value("subscribe-cache",2.5)+mux+validation+side)}
+  if x.contains("кэш effects")&&x.contains("готов"){return Some(visual.max(audio)+eta_stage_value("subscribe-cache",2.5)+mux+validation+side)}
+  if x.contains("кэш effects")||x.contains("lossless effects"){return Some(effects+visual.max(audio)+eta_stage_value("subscribe-cache",2.5)+mux+validation+side)}
+  if x.contains("анализ")||x.contains("движок")||x.contains("медиа"){return Some(effects+visual.max(audio)+eta_stage_value("subscribe-cache",2.5)+mux+validation+side)}
   None
 }
+fn progress_eta_prior(progress:f64)->f64{
+  let visual=eta_stage_value("base-visual-master",12.5).max(eta_stage_value("visual-master",12.5));
+  let audio=eta_stage_value("processed-audio-cycle",8.0).max(eta_stage_value("audio-track-cache",4.2));
+  let sub=eta_stage_value("subscribe-cache",2.9);
+  let mux=eta_stage_value("final-mux",3.5);
+  let validation=eta_stage_value("validation",1.0);
+  if progress<32.0{visual.max(audio)+sub+mux+validation}
+  else if progress<55.0{visual+sub+mux+validation}
+  else if progress<78.0{sub+mux+validation}
+  else if progress<97.0{validation+0.8}
+  else{0.6}
+}
 fn smooth_eta(job:&QueueJob,stage:&str,elapsed:f64,progress:f64)->Option<f64>{
-  if elapsed<1.2&&progress<5.0{return None}
-  let prior=stage_eta_prior(stage)?;
+  if elapsed<1.2{return None}
+  let prior=stage_eta_prior(stage).unwrap_or_else(||progress_eta_prior(progress));
   if prior<=0.25{return Some(0.0)}
   let pct_eta=if progress>2.0{Some(elapsed*(100.0-progress)/progress)}else{None};
   let mut candidate=match pct_eta{
@@ -284,7 +298,7 @@ fn cached_master_fidelity_args_1000(s:&RenderSettings,encoder:&str,duration:f64)
   let mbps=(2000.0/duration).clamp(80.0,220.0).round() as u32;
   let rate=format!("{mbps}M");let buf=format!("{}M",mbps.saturating_mul(2));let kbps=mbps.saturating_mul(1000);
   match encoder{
-    "hevc_videotoolbox"=>vec!["-c:v","hevc_videotoolbox","-realtime","1","-prio_speed","1","-power_efficient","0","-q:v","85","-maxrate","60M","-bufsize","120M","-g",&g,"-tag:v","hvc1","-pix_fmt","yuv420p"].into_iter().map(String::from).collect(),
+    "hevc_videotoolbox"=>vec!["-c:v","hevc_videotoolbox","-realtime","1","-prio_speed","1","-power_efficient","0","-constant_bit_rate","1","-b:v","28M","-g",&g,"-tag:v","hvc1","-pix_fmt","yuv420p"].into_iter().map(String::from).collect(),
     "hevc_nvenc"=>vec!["-c:v","hevc_nvenc","-preset","p4","-rc","cbr","-b:v",&rate,"-maxrate",&rate,"-bufsize",&buf,"-g",&g,"-tag:v","hvc1","-pix_fmt","yuv420p"].into_iter().map(String::from).collect(),
     "hevc_qsv"=>vec!["-c:v","hevc_qsv","-b:v",&rate,"-maxrate",&rate,"-bufsize",&buf,"-g",&g,"-tag:v","hvc1","-pix_fmt","nv12"].into_iter().map(String::from).collect(),
     "hevc_amf"=>vec!["-c:v","hevc_amf","-quality","speed","-rc","cbr","-b:v",&rate,"-maxrate",&rate,"-bufsize",&buf,"-g",&g,"-tag:v","hvc1","-pix_fmt","yuv420p"].into_iter().map(String::from).collect(),
@@ -1579,7 +1593,7 @@ fn visual_master_key_1000(job:&QueueJob,effects:&[EffectPreset],master_frames:us
   let mut h=Sha256::new();h.update(b"ENDLUME-10.0.8-BASE-VISUAL-v4-DIRECT-VBR");
   h.update(profile.as_bytes());h.update(encoder.as_bytes());h.update(master_frames.to_le_bytes());
   h.update(job.settings.width.to_le_bytes());h.update(job.settings.height.to_le_bytes());h.update(job.settings.fps.to_le_bytes());
-  h.update(b"yuv420p|hevc|visual-cache-v10");
+  h.update(b"yuv420p|hevc|visual-cache-v11-cbr28m");
   let image=Path::new(job.project.media.first().ok_or("10.0 visual cache: image missing")?);
   hash_file_into_1000(&mut h,image)?;
   for e in effects.iter().filter(|e|effect_usage_mode(e)!="off"){
@@ -2092,6 +2106,16 @@ pub async fn render_job(app:&AppHandle,job:&QueueJob,cancel:Arc<AtomicBool>)->Re
       let (fx,subs)=prepare_overlays(app,job,started,&timer,&encoder,attempt).await?;
       let visual_master_duration=if smart_repeat{smart_repeat_visual_seconds(app,master_duration,&fx).await}else{master_duration};
       let target=job.settings.duration_hours*3600.0;
+      let visual_prewarm_started=Instant::now();
+      let visual_prewarm=if smart_repeat&&fx.iter().all(|e|matches!(effect_usage_mode(e),"always"|"off")){
+        interval_1000_plan(job,&fx,&subs,target.max(60.0),visual_master_duration).map(|plan|{
+          let app_bg=app.clone();let mut job_bg=(*job).clone();job_bg.project.id=format!("{}::visual-prewarm",job.project.id);
+          let fx_bg=fx.clone();let work_bg=work.clone();let encoder_bg=encoder.clone();let cancel_bg=cancel.clone();let timer_bg=timer.clone();
+          tauri::async_runtime::spawn(async move{
+            build_cached_visual_master_1000(&app_bg,&job_bg,&fx_bg,plan.master_frames,&work_bg,&encoder_bg,true,attempt,cancel_bg.as_ref(),started,&timer_bg).await
+          })
+        })
+      }else{None};
       let (audio,durations,final_duration,original_audio)=if smart_repeat{
         let prefer_original=job.settings.duration_mode=="whole-track"&&job.ambient.as_ref().map(|x|x.trim().is_empty()).unwrap_or(true);
         if prefer_original{
@@ -2129,6 +2153,13 @@ pub async fn render_job(app:&AppHandle,job:&QueueJob,cancel:Arc<AtomicBool>)->Re
         let audio=build_long_audio(app,job,started,&timer,&work,&cycle,cycle_duration,final_duration,&encoder,attempt,&cancel).await?;
         (audio,durations,final_duration,false)
       };
+      if let Some(task)=visual_prewarm{
+        match task.await{
+          Ok(Ok(_))=>emit_timing(app,&job.project.id,"visual-prewarm-parallel",visual_prewarm_started.elapsed().as_secs_f64()),
+          Ok(Err(e))=>emit_warning(app,&job.project.id,&format!("10.0.8 visual prewarm fallback: {e}")),
+          Err(e)=>emit_warning(app,&job.project.id,&format!("10.0.8 visual prewarm join fallback: {e}")),
+        }
+      }
       let zero_copy=if smart_repeat{
         if render_pingpong_zero_copy_1002(app,job,&source_master,&fx,&subs,&audio,final_duration,&work,&out,&encoder,attempt,&cancel,started,&timer).await?{true}
         else if render_multi_still_zero_copy_863(app,job,&audio,final_duration,&work,&out,&encoder,attempt,&cancel,started,&timer).await?{true}

@@ -158,6 +158,7 @@ function EffectsEditor() {
     await saveLibrary(next, true);
     setSelected(next[0]?.id);
     setAssets(undefined);
+    setDeleteConfirm(false);
   };
 
   const loadLive = async () => {
@@ -250,7 +251,7 @@ function EffectsEditor() {
           <p className="editorHint">Preview и Render используют одинаковые X / Y / SIZE. Пропорции исходного эффекта сохраняются.</p>
           <button className="savePreset" onClick={async () => { await saveLibrary([...effects], true); setSaved(true); window.setTimeout(() => setSaved(false), 1200); }}><Icon name="save" /> {saved ? 'СОХРАНЕНО ✓' : 'СОХРАНИТЬ PRESET'}</button>
           <button className="savePreset" onClick={() => void saveLibrary(effects.map((e) => e.id === current.id ? { ...e, enabled: !e.enabled, usageMode: !e.enabled && e.usageMode === 'off' ? 'always' : e.usageMode } : e), true)}>{current.enabled ? 'ВЫКЛЮЧИТЬ ЭФФЕКТ' : 'ВКЛЮЧИТЬ ЭФФЕКТ'}</button>
-          <button className="deletePreset" onClick={remove}><Icon name="trash" /> УДАЛИТЬ</button>
+          {deleteConfirm ? <div className="deleteConfirm" role="dialog" aria-label="Удалить эффект?"><b>Удалить эффект?</b><small>Удалится только эффект из проекта. Исходный видеофайл останется на диске.</small><div><button className="savePreset" onClick={() => setDeleteConfirm(false)}>ОТМЕНА</button><button className="deletePreset" onClick={() => void remove()}><Icon name="trash" /> УДАЛИТЬ</button></div></div> : <button className="deletePreset" onClick={() => setDeleteConfirm(true)}><Icon name="trash" /> УДАЛИТЬ ЭФФЕКТ</button>}
         </>}
       </aside>
     </div>
@@ -267,6 +268,7 @@ function SubscribeEditor() {
   const [assets, setAssets] = useState<LivePreviewAssets>();
   const [previewBusy, setPreviewBusy] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [deleteConfirm, setDeleteConfirm] = useState(false);
   const persistTimer = useRef<number | undefined>(undefined);
   const current = subscribes.find((e) => e.id === selected);
 

@@ -7,6 +7,7 @@ on:
     paths:
       - ".github/workflows/endlume-1005-macos-launch-candidate.yml"
       - "scripts/qa-endlume-1005-macos-candidate.sh"
+      - "scripts/qa-endlume-1005-normal-render-smoke.py"
       - "scripts/assert-production-main-window.mjs"
       - "scripts/verify-macos-ffmpeg-bundle.mjs"
       - "scripts/prepare-macos-ffmpeg-runtime.mjs"

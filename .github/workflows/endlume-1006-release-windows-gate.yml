@@ -1,4 +1,5 @@
 name: ENDLUME 10.0.6 Release Windows Gate
+# rerun after finite-concat work-dir compile fix
 
 on:
   push:

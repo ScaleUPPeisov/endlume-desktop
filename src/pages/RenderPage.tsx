@@ -42,7 +42,8 @@ function LiveTelemetry({id,status,startedAt,elapsedSec,etaSec}:{id?:string;statu
   },[status,id]);
   const liveElapsed=status==='rendering'&&startedAt?Math.max(elapsedSec||0,(now-startedAt)/1000):elapsedSec;
   const liveEta=status==='rendering'&&etaRef.current.id===id&&etaRef.current.eta!=null?Math.max(0,etaRef.current.eta-(now-etaRef.current.at)/1000):etaSec;
-  return <div className="renderTelemetry"><div><small>НАЧАЛО</small><b>{startedAt?new Date(startedAt).toLocaleTimeString():'—'}</b></div><div><small>ПРОШЛО</small><b className="liveClock">{status==='rendering'?fmtLiveSeconds(liveElapsed):fmtSeconds(elapsedSec)}</b></div><div><small>ОСТАЛОСЬ</small><b className="liveClock">{status==='rendering'?fmtLiveSeconds(liveEta):fmtSeconds(etaSec)}</b></div><div><small>≈ ЗАВЕРШЕНИЕ</small><b>{finishAt(liveEta)}</b></div></div>;
+  const estimating=status==='rendering'&&(liveEta==null||!Number.isFinite(liveEta));
+  return <div className="renderTelemetry"><div><small>НАЧАЛО</small><b>{startedAt?new Date(startedAt).toLocaleTimeString():'—'}</b></div><div><small>ПРОШЛО</small><b className="liveClock">{status==='rendering'?fmtLiveSeconds(liveElapsed):fmtSeconds(elapsedSec)}</b></div><div><small>ОСТАЛОСЬ</small><b className="liveClock">{estimating?'Рассчитываю…':status==='rendering'?fmtLiveSeconds(liveEta):fmtSeconds(etaSec)}</b></div><div><small>≈ ЗАВЕРШЕНИЕ</small><b>{estimating?'Рассчитываю…':finishAt(liveEta)}</b></div></div>;
 }
 
 function useDiskStatus(path:string,status?:string){

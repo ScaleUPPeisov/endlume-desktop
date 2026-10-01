@@ -1,0 +1,54 @@
+name: ENDLUME 10.0.5 Exact ZIP Render Diagnostic
+
+on:
+  push:
+    branches:
+      - candidate/endlume-10.0.5-macos-launch-hotfix
+    paths:
+      - ".github/workflows/endlume-1005-exact-zip-render-diagnostic.yml"
+  workflow_dispatch: {}
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  render-diagnostic:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: ENDLUME-10.0.5-hosted-structural
+          path: prior
+          github-token: ${{ github.token }}
+          run-id: 36820831039
+
+      - name: Exact ZIP normal render diagnostic
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ZIP="$(find prior -type f -name 'ENDLUME-10.0.5-hosted-candidate.zip' -print -quit)"
+          ROOT="$RUNNER_TEMP/e1005-render-diagnostic"
+          mkdir -p "$ROOT" render-diagnostic
+          ditto -x -k "$ZIP" "$ROOT"
+          APP="$(find "$ROOT" -maxdepth 2 -type d -name '*.app' -print -quit)"
+          test -n "$APP"
+          python3 scripts/qa-endlume-1005-normal-render-smoke.py \
+            "$APP" "$APP/Contents/MacOS/ffmpeg" "$APP/Contents/MacOS/ffprobe" \
+            render-diagnostic/normal-render.json
+
+      - name: Upload diagnostic
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ENDLUME-10.0.5-render-diagnostic
+          path: render-diagnostic/
+          retention-days: 7

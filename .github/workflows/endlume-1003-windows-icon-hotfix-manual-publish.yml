@@ -1,0 +1,172 @@
+name: ENDLUME 10.0.3 Windows Icon Hotfix Manual Publish
+
+on:
+  push:
+    branches:
+      - release-prep/endlume-10.0.3-windows-icon-hotfix
+    paths:
+      - ".github/workflows/endlume-1003-windows-icon-hotfix-manual-publish.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: endlume-1003-windows-icon-hotfix-manual-publish
+  cancel-in-progress: true
+
+env:
+  VERSION: "10.0.3"
+  SOURCE_SHA: "ea238f44f5058fe65faeb0efc2b58999a646b232"
+  TESTED_QA_RUN: "36816881342"
+  TESTED_QA_SHA: "e9fa9f6cbc1d9cd5e8acf3a1aef64ed4f84f0b25"
+  WINDOWS_TARGET: x86_64-pc-windows-msvc
+  STABLE_REPO: ScaleUPPeisov/scaleup-site
+  STABLE_TAG: endlume-stable
+  WINDOWS_ASSET: ENDLUME-YT-Studio-PEISOV-Setup-10.0.3-x64.exe
+
+jobs:
+  publish:
+    name: Windows x64 • Hosted Build • Publish 10.0.3 Icon Hotfix
+    runs-on: macos-15
+    timeout-minutes: 120
+    env:
+      RELEASE_TOKEN: ${{ secrets.ENDLUME_RELEASE_TOKEN }}
+
+    steps:
+      - name: Checkout exact clean hotfix source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify exact tested source
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test -n "${RELEASE_TOKEN:-}"
+          test "$(git hash-object src-tauri/icons/icon.ico)" = "14ea1d71a3dfb69f8ba6f2859bc40935c67e7c24"
+          test "$(git hash-object src-tauri/tauri.windows.conf.json)" = "e57ac068504ec9a0010dfc72154d6e32b88b7370"
+          test "$(git hash-object src-tauri/src/lib.rs)" = "7d8eee1d1e476368fe09e1ac82f2c19b77f30b9a"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$TESTED_QA_RUN" --jq '.conclusion' | grep -qx success
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$TESTED_QA_RUN" --jq '.head_sha' | grep -qx "$TESTED_QA_SHA"
+          python3 - <<'PY'
+          import json,re
+          from pathlib import Path
+          assert json.loads(Path('package.json').read_text())['version']=='10.0.3'
+          assert json.loads(Path('package-lock.json').read_text())['version']=='10.0.3'
+          assert json.loads(Path('src-tauri/tauri.conf.json').read_text())['version']=='10.0.3'
+          w=json.loads(Path('src-tauri/tauri.windows.conf.json').read_text())
+          assert w['bundle']['icon']==['icons/icon.ico']
+          assert w['bundle']['windows']['nsis']['installerIcon']=='icons/icon.ico'
+          assert w['bundle']['windows']['nsis']['uninstallerIcon']=='icons/icon.ico'
+          lib=Path('src-tauri/src/lib.rs').read_text()
+          assert all(x in lib for x in ('ICON_SMALL','ICON_BIG','WM_SETICON','TAURI_WINDOWS_APP_ICON_RESOURCE_ID:usize=32512'))
+          assert re.search(r'^version = "10\.0\.3"$',Path('src-tauri/Cargo.toml').read_text(),re.M)
+          print('ENDLUME_1003_ICON_MANUAL_SOURCE_GREEN')
+          PY
+
+      - name: Install cross-build toolchain
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          brew list nsis >/dev/null 2>&1 || brew install nsis
+          brew list llvm >/dev/null 2>&1 || brew install llvm
+          export PATH="$(brew --prefix llvm)/bin:$HOME/.cargo/bin:$PATH"
+          rustup target add "$WINDOWS_TARGET"
+          command -v cargo-xwin >/dev/null 2>&1 || cargo install --locked cargo-xwin
+          echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Stage Windows FFmpeg sidecars
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p src-tauri/binaries "$RUNNER_TEMP/ffmpeg-win"
+          ARCHIVE="$RUNNER_TEMP/ffmpeg-win/ffmpeg.zip"
+          curl -fL --retry 4 --connect-timeout 20 -o "$ARCHIVE"             "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
+          ditto -x -k "$ARCHIVE" "$RUNNER_TEMP/ffmpeg-win/extract"
+          FFMPEG="$(find "$RUNNER_TEMP/ffmpeg-win/extract" -type f -name ffmpeg.exe -print -quit)"
+          FFPROBE="$(find "$RUNNER_TEMP/ffmpeg-win/extract" -type f -name ffprobe.exe -print -quit)"
+          test -n "$FFMPEG" -a -s "$FFMPEG"
+          test -n "$FFPROBE" -a -s "$FFPROBE"
+          cp "$FFMPEG" "src-tauri/binaries/ffmpeg-$WINDOWS_TARGET.exe"
+          cp "$FFPROBE" "src-tauri/binaries/ffprobe-$WINDOWS_TARGET.exe"
+          file "src-tauri/binaries/ffmpeg-$WINDOWS_TARGET.exe" | grep -E 'PE32|MS Windows'
+
+      - name: Build Windows 10.0.3 icon hotfix
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          npm ci
+          npm run check
+          npm run build
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('src-tauri/tauri.conf.json')
+          d=json.loads(p.read_text())
+          assert d['version']=='10.0.3'
+          d['bundle']['createUpdaterArtifacts']=False
+          p.write_text(json.dumps(d,ensure_ascii=False,indent=2)+'\n')
+          PY
+          npm run tauri build -- --runner cargo-xwin --target "$WINDOWS_TARGET" --bundles nsis --config src-tauri/tauri.windows.conf.json
+
+      - name: Stage installer and SHA-256
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          CAND="$(find src-tauri/target/$WINDOWS_TARGET/release/bundle/nsis -maxdepth 1 -type f -name '*10.0.3*x64-setup.exe' -print -quit)"
+          test -n "$CAND" -a -s "$CAND"
+          python3 - "$CAND" <<'PY'
+          import sys
+          from pathlib import Path
+          p=Path(sys.argv[1])
+          assert p.stat().st_size>1_000_000,p.stat().st_size
+          assert p.read_bytes()[:2]==b'MZ'
+          print('ENDLUME_1003_ICON_MANUAL_PE_GREEN',p.stat().st_size)
+          PY
+          STAGE="$RUNNER_TEMP/endlume-1003-icon-manual"
+          mkdir -p "$STAGE"
+          cp "$CAND" "$STAGE/$WINDOWS_ASSET"
+          shasum -a 256 "$STAGE/$WINDOWS_ASSET" > "$STAGE/$WINDOWS_ASSET.sha256"
+          echo "ENDLUME_STAGE=$STAGE" >> "$GITHUB_ENV"
+          echo "WINDOWS_SHA=$(shasum -a 256 "$STAGE/$WINDOWS_ASSET"|awk '{print $1}')" >> "$GITHUB_ENV"
+
+      - name: Publish manual Stable Windows package
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.ENDLUME_RELEASE_TOKEN }}
+        run: |
+          set -Eeuo pipefail
+          gh release view "$STABLE_TAG" --repo "$STABLE_REPO" >/dev/null
+          gh release upload "$STABLE_TAG"             "$ENDLUME_STAGE/$WINDOWS_ASSET"             "$ENDLUME_STAGE/$WINDOWS_ASSET.sha256"             --clobber --repo "$STABLE_REPO"
+          echo ENDLUME_1003_ICON_MANUAL_UPLOAD_GREEN
+
+      - name: Verify public package byte-for-byte
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.ENDLUME_RELEASE_TOKEN }}
+        run: |
+          set -Eeuo pipefail
+          VERIFY="$RUNNER_TEMP/endlume-1003-icon-manual-public"
+          rm -rf "$VERIFY"; mkdir -p "$VERIFY"
+          gh release download "$STABLE_TAG" --repo "$STABLE_REPO" --dir "$VERIFY" --pattern "$WINDOWS_ASSET" --clobber
+          gh release download "$STABLE_TAG" --repo "$STABLE_REPO" --dir "$VERIFY" --pattern "$WINDOWS_ASSET.sha256" --clobber
+          test "$(shasum -a 256 "$VERIFY/$WINDOWS_ASSET"|awk '{print $1}')" = "$WINDOWS_SHA"
+          grep -q "$WINDOWS_SHA" "$VERIFY/$WINDOWS_ASSET.sha256"
+          python3 - "$VERIFY/$WINDOWS_ASSET" <<'PY'
+          import sys
+          from pathlib import Path
+          p=Path(sys.argv[1])
+          assert p.read_bytes()[:2]==b'MZ'
+          print('ENDLUME_1003_ICON_PUBLIC_PE_GREEN',p.stat().st_size)
+          PY
+          curl -fsIL "https://github.com/$STABLE_REPO/releases/download/$STABLE_TAG/$WINDOWS_ASSET" >/dev/null
+          echo ENDLUME_1003_WINDOWS_ICON_HOTFIX_MANUAL_RELEASE_GREEN

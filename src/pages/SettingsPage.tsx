@@ -23,7 +23,10 @@ export function SettingsPage(){
     if(busy||IS_WINDOWS)return;setBusy(true);try{const result=await api.cleanupDuplicateApps(true);setAppGuard(result);if(result.failed?.length)await api.showError(`Не удалось удалить ${result.failed.length} коп. ENDLUME.\n${result.failed.map(x=>`${x.path}: ${x.error}`).join('\n')}`)}catch(e){await api.showError(String(e))}finally{setBusy(false)}
   };
   const normalizeName=async()=>{
-    if(busy||IS_WINDOWS)return;setBusy(true);try{await api.normalizeAppName()}catch(e){setBusy(false);await api.showError(`Не удалось закрепить ENDLUME Studio в /Applications.\n${String(e)}`)}
+    if(busy||IS_WINDOWS)return;setBusy(true);
+    try{await api.normalizeAppName();setAppGuard(await api.cleanupDuplicateApps(false))}
+    catch(e){await api.showError(`Не удалось закрепить ENDLUME Studio в /Applications.\n${String(e)}`)}
+    finally{setBusy(false)}
   };
   const appHealthy=appGuard?.singleApp&&appGuard?.canonicalInstall!==false;
   return <div className="simplePage settingsPage"><div className="simpleHeader"><div><small>{PRODUCT_KICKER}</small><h1>Настройки</h1><p>Обновления, лицензия, Fast Engine и информация о программе.</p></div></div><div className="settingsTabs">{(['general','engine','updates','about'] as Tab[]).map(t=><button className={tab===t?'active':''} onClick={()=>setTab(t)} key={t}>{t==='general'?'ОБЩИЕ':t==='engine'?'FAST ENGINE':t==='updates'?'ОБНОВЛЕНИЯ':'О ПРОГРАММЕ'}</button>)}</div>

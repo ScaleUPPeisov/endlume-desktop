@@ -1,11 +1,11 @@
 {
   "enabled": true,
-  "generation": 42,
+  "generation": 43,
   "app": "endlume",
   "channel": "stable",
   "version": "10.0.3",
   "builder": "BUILD_ENDLUME_1003_PROMOTE.command",
-  "notes": "ENDLUME 10.0.3 signed updater promotion. Reuses the already-published macOS 10.0.3 app and Windows 10.0.3 installer, signs updater artifacts with the existing local ENDLUME Tauri updater key, preserves studio.endlume.desktop identity, and publishes a dual-platform latest.json without rebuilding or rerendering.",
+  "notes": "ENDLUME 10.0.3 signed updater promotion retry with mandatory SHA-256 in macOS manifest. Reuses already-published packages and existing updater key; no rebuild or rerender.",
   "platforms": [
     "darwin-aarch64",
     "windows-x86_64"

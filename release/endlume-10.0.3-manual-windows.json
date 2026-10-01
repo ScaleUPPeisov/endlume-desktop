@@ -1,0 +1,9 @@
+{
+  "enabled": true,
+  "user_release_approval": true,
+  "version": "10.0.3",
+  "platform": "windows-x86_64",
+  "qa_run_id": 36749164733,
+  "qa_head_sha": "463b16c1f503eb66f2b04ac00fea88824751af5c",
+  "notes": "User requested immediate ENDLUME 10.0.3 publication for Windows x64. Manual package only; updater latest.json remains untouched until original updater signing key runner is online."
+}

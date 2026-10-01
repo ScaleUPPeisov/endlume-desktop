@@ -1,0 +1,134 @@
+name: ENDLUME 10.0.3 macOS Manual Publish
+
+on:
+  push:
+    branches:
+      - hotfix/endlume-10.0.3-performance
+    paths:
+      - "release/endlume-10.0.3-manual-macos.json"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-1003-macos-manual-publish
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    name: macOS ARM64 • Hosted Build • Publish Manual 10.0.3
+    runs-on: macos-15
+    timeout-minutes: 90
+    env:
+      RELEASE_TOKEN: ${{ secrets.ENDLUME_RELEASE_TOKEN }}
+    steps:
+      - name: Checkout exact commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify approved 10.0.3 source lineage
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          test "$(uname -s)" = "Darwin"
+          test "$(uname -m)" = "arm64"
+          test -n "${RELEASE_TOKEN:-}"
+          python3 - <<'PY'
+          import json,re
+          from pathlib import Path
+          v='10.0.3'
+          m=json.loads(Path('release/endlume-10.0.3-manual-macos.json').read_text())
+          assert m['enabled'] is True and m['user_release_approval'] is True,m
+          assert m['version']==v and m['platform']=='darwin-aarch64',m
+          assert json.loads(Path('package.json').read_text())['version']==v
+          assert json.loads(Path('package-lock.json').read_text())['version']==v
+          assert json.loads(Path('src-tauri/tauri.conf.json').read_text())['version']==v
+          assert re.search(r'^version = "10\.0\.3"$',Path('src-tauri/Cargo.toml').read_text(),re.M)
+          print(m['qa_run_id'],m['qa_head_sha'])
+          PY
+          QA_RUN="$(python3 -c "import json;print(json.load(open('release/endlume-10.0.3-manual-macos.json'))['qa_run_id'])")"
+          QA_SHA="$(python3 -c "import json;print(json.load(open('release/endlume-10.0.3-manual-macos.json'))['qa_head_sha'])")"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$QA_RUN" --jq '.conclusion' | grep -qx success
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$QA_RUN" --jq '.head_sha' | grep -qx "$QA_SHA"
+          git merge-base --is-ancestor "$QA_SHA" "$GITHUB_SHA"
+          echo "ENDLUME_1003_MANUAL_SOURCE_GREEN run=$QA_RUN sha=$QA_SHA"
+
+      - name: Stage Apple Silicon FFmpeg
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          brew list ffmpeg >/dev/null 2>&1 || brew install ffmpeg
+          mkdir -p src-tauri/binaries
+          cp "$(command -v ffmpeg)" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp "$(command -v ffprobe)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          chmod +x src-tauri/binaries/ffmpeg-aarch64-apple-darwin src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          file src-tauri/binaries/ffmpeg-aarch64-apple-darwin | grep -i arm64
+          file src-tauri/binaries/ffprobe-aarch64-apple-darwin | grep -i arm64
+
+      - name: Build macOS 10.0.3 app
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          npm ci
+          npm run check
+          npm run build
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('src-tauri/tauri.conf.json')
+          d=json.loads(p.read_text())
+          d['bundle']['createUpdaterArtifacts']=False
+          d['bundle']['targets']=['app']
+          p.write_text(json.dumps(d,ensure_ascii=False,indent=2)+'\n')
+          PY
+          npm run tauri build -- --bundles app
+
+      - name: Verify and package manual app
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          APP="$(find src-tauri/target/release/bundle/macos -maxdepth 1 -type d -name '*.app' -print -quit)"
+          test -n "$APP" -a -d "$APP"
+          BID="$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$APP/Contents/Info.plist")"
+          VER="$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist")"
+          EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
+          test "$BID" = "studio.endlume.desktop"
+          test "$VER" = "10.0.3"
+          /usr/bin/lipo -archs "$APP/Contents/MacOS/$EXE" | grep -qw arm64
+          /usr/bin/codesign --force --deep --sign - "$APP"
+          /usr/bin/codesign --verify --deep --strict "$APP"
+          STAGE="$RUNNER_TEMP/endlume-1003-manual"
+          mkdir -p "$STAGE"
+          cp -R "$APP" "$STAGE/ENDLUME YT Studio PEISOV.app"
+          ditto -c -k --sequesterRsrc --keepParent "$STAGE/ENDLUME YT Studio PEISOV.app" "$STAGE/ENDLUME-YT-Studio-PEISOV-10.0.3-macOS-ARM64.zip"
+          shasum -a 256 "$STAGE/ENDLUME-YT-Studio-PEISOV-10.0.3-macOS-ARM64.zip" > "$STAGE/ENDLUME-YT-Studio-PEISOV-10.0.3-macOS-ARM64.zip.sha256"
+          echo "ENDLUME_STAGE=$STAGE" >> "$GITHUB_ENV"
+          cat "$STAGE/ENDLUME-YT-Studio-PEISOV-10.0.3-macOS-ARM64.zip.sha256"
+
+      - name: Publish manual 10.0.3 to stable release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.ENDLUME_RELEASE_TOKEN }}
+        run: |
+          set -Eeuo pipefail
+          HOST_REPO="ScaleUPPeisov/scaleup-site"
+          TAG="endlume-stable"
+          gh release view "$TAG" --repo "$HOST_REPO" >/dev/null
+          gh release upload "$TAG"             "$ENDLUME_STAGE/ENDLUME-YT-Studio-PEISOV-10.0.3-macOS-ARM64.zip"             "$ENDLUME_STAGE/ENDLUME-YT-Studio-PEISOV-10.0.3-macOS-ARM64.zip.sha256"             --clobber --repo "$HOST_REPO"
+
+      - name: Verify public manual package
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          BASE="https://github.com/ScaleUPPeisov/scaleup-site/releases/download/endlume-stable"
+          curl -fsIL "$BASE/ENDLUME-YT-Studio-PEISOV-10.0.3-macOS-ARM64.zip" >/dev/null
+          curl -fsSL "$BASE/ENDLUME-YT-Studio-PEISOV-10.0.3-macOS-ARM64.zip.sha256" -o "$RUNNER_TEMP/public.sha256"
+          grep -Eq '^[0-9a-f]{64}[[:space:]]' "$RUNNER_TEMP/public.sha256"
+          echo ENDLUME_1003_MAC_MANUAL_PUBLIC_GREEN

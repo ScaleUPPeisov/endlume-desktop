@@ -1,0 +1,60 @@
+name: ENDLUME 10.0.5 Exact ZIP Render-Only QA
+
+on:
+  push:
+    branches:
+      - candidate/endlume-10.0.5-macos-launch-hotfix
+    paths:
+      - ".github/workflows/endlume-1005-exact-zip-render-only.yml"
+  workflow_dispatch: {}
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  render:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Download already-green exact ZIP evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: ENDLUME-10.0.5-hosted-structural
+          path: prior
+          github-token: ${{ github.token }}
+          run-id: 36820831039
+
+      - name: Run normal render from exact candidate ZIP
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ZIP="$(find prior -type f -name 'ENDLUME-10.0.5-hosted-candidate.zip' -print -quit)"
+          test -n "$ZIP" -a -s "$ZIP"
+          ROOT="$RUNNER_TEMP/e1005-render-only"
+          mkdir -p "$ROOT"
+          ditto -x -k "$ZIP" "$ROOT"
+          APP="$(find "$ROOT" -maxdepth 2 -type d -name '*.app' -print -quit)"
+          test -n "$APP" -a -d "$APP"
+          test "$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist")" = "10.0.5"
+          mkdir -p render-only
+          python3 scripts/qa-endlume-1005-normal-render-smoke.py \
+            "$APP" "$APP/Contents/MacOS/ffmpeg" "$APP/Contents/MacOS/ffprobe" \
+            render-only/normal-render.json
+          grep -q 'ENDLUME_1005_EXACT_ZIP_NORMAL_RENDER_PASS' render-only/normal-render.json
+          echo ENDLUME_1005_EXACT_ZIP_NORMAL_RENDER_GREEN
+
+      - name: Upload render evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ENDLUME-10.0.5-exact-zip-render
+          path: render-only/
+          retention-days: 7

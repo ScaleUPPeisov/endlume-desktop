@@ -1,0 +1,59 @@
+name: ENDLUME 10.0.6 FFmpeg Exit Probe
+
+on:
+  push:
+    branches:
+      - qa/endlume-10.0.6-full-production
+    paths:
+      - ".github/workflows/endlume-1006-ffmpeg-exit-probe.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  probe:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download exact failed-QA app artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p "$RUNNER_TEMP/e1006-art"
+          gh run download 36831526504 --repo "$GITHUB_REPOSITORY" -n ENDLUME-10.0.6-hosted-full-qa -D "$RUNNER_TEMP/e1006-art"
+          ZIP="$(find "$RUNNER_TEMP/e1006-art" -type f -name 'ENDLUME-10.0.6-hosted-candidate.zip' -print -quit)"
+          test -n "$ZIP" -a -s "$ZIP"
+          mkdir -p "$RUNNER_TEMP/e1006-app"
+          /usr/bin/ditto -x -k "$ZIP" "$RUNNER_TEMP/e1006-app"
+          APP="$(find "$RUNNER_TEMP/e1006-app" -maxdepth 2 -type d -name '*.app' -print -quit)"
+          test -n "$APP"
+          test -x "$APP/Contents/MacOS/ffmpeg"
+          echo "PROBE_APP=$APP" >> "$GITHUB_ENV"
+
+      - name: Reproduce AAC 320k command directly
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          FFM="$PROBE_APP/Contents/MacOS/ffmpeg"
+          FFP="$PROBE_APP/Contents/MacOS/ffprobe"
+          W="$RUNNER_TEMP/e1006-direct-probe"
+          mkdir -p "$W"
+          "$FFM" -hide_banner -loglevel error -f lavfi -i color=c=black:s=1920x1080:r=60 -frames:v 30 -an -c:v hevc_videotoolbox -pix_fmt yuv420p -y "$W/seed.mp4"
+          "$FFM" -hide_banner -loglevel error -f lavfi -i sine=frequency=440:sample_rate=48000:duration=12 -ac 2 -c:a libmp3lame -b:a 320k -y "$W/audio.mp3"
+          printf "file '%s'\n" "$W/audio.mp3" > "$W/audio-direct-list.txt"
+          set +e
+          "$FFM" -hide_banner -loglevel error -i "$W/seed.mp4" -stream_loop -1 -f concat -safe 0 -fflags +genpts -i "$W/audio-direct-list.txt" -t 12 -map 0:v:0 -map 1:a:0 -c:v copy -c:a aac_at -b:a 320k -aac_at_mode cvbr -aac_at_quality 2 -ar 48000 -ac 2 -tag:a mp4a -disposition:a:0 default -metadata:s:a:0 language=und -progress pipe:1 -y "$W/out.mp4" >"$W/stdout.log" 2>"$W/stderr.log"
+          RC=$?
+          set -e
+          echo "DIRECT_EXIT_CODE=$RC"
+          echo "DIRECT_STDOUT_BEGIN"; cat "$W/stdout.log"; echo "DIRECT_STDOUT_END"
+          echo "DIRECT_STDERR_BEGIN"; cat "$W/stderr.log"; echo "DIRECT_STDERR_END"
+          test -s "$W/out.mp4"
+          "$FFP" -v error -show_entries stream=codec_type,codec_name:format=duration -of json "$W/out.mp4"
+          if [ "$RC" -eq 0 ]; then echo "ENDLUME_1006_DIRECT_AAC320_EXIT_GREEN"; else exit "$RC"; fi

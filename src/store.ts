@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import type { EffectPreset, LibraryPayload, Page, RenderProject, RenderSettings, SubscribePreset } from './types';
+import type { AnchorPoint, EffectPreset, LibraryPayload, Page, RenderProject, RenderSettings, SceneAnchors, SubscribePreset } from './types';
 import { applyProjectPatch } from './queue-state';
 
 type Editor = null | {kind:'effects'|'subscribe'; id?:string};
@@ -16,6 +16,7 @@ interface State {
   settings: RenderSettings;
   lastRoot?: string;
   libraryLoaded: boolean;
+  sceneAnchorsByPath: Record<string, SceneAnchors>;
   setPage:(p:Page)=>void;
   openEditor:(editor:Editor)=>void;
   setProjects:(p:RenderProject[])=>void;
@@ -31,6 +32,7 @@ interface State {
   setAmbient:(v?:string)=>void;
   setLibrary:(v:LibraryPayload)=>void;
   setLibraryLoaded:(v:boolean)=>void;
+  setSceneAnchor:(projectPath:string,target:string,anchor:AnchorPoint)=>void;
   patchSettings:(p:Partial<RenderSettings>)=>void;
   setLastRoot:(v?:string)=>void;
 }
@@ -42,7 +44,7 @@ const initialSettings:RenderSettings={
 };
 
 export const useApp=create<State>()(persist((set)=>({
-  page:'project',editor:null,projects:[],draftProjects:[],invalidProjects:[],effects:[],subscribes:[],settings:initialSettings,libraryLoaded:false,
+  page:'project',editor:null,projects:[],draftProjects:[],invalidProjects:[],effects:[],subscribes:[],settings:initialSettings,libraryLoaded:false,sceneAnchorsByPath:{},
   setPage:(page)=>set({page,editor:null}),
   openEditor:(editor)=>set({editor}),
   setProjects:(projects)=>set({projects}),
@@ -64,6 +66,14 @@ export const useApp=create<State>()(persist((set)=>({
   setAmbient:(ambient)=>set({ambient}),
   setLibrary:(v)=>set({effects:(v.effects||[]).map(e=>({...e,despill:e.despill>0?e.despill:0.35})),subscribes:(v.subscribes||[]).map(e=>({...e,despill:e.despill>0?e.despill:0.35})),ambient:v.ambient,libraryLoaded:true}),
   setLibraryLoaded:(libraryLoaded)=>set({libraryLoaded}),
+  setSceneAnchor:(projectPath,target,anchor)=>set(s=>{
+    const key=target.trim().toUpperCase()||'CUSTOM';
+    const anchors={...(s.sceneAnchorsByPath[projectPath]||{}),[key]:anchor};
+    return {
+      sceneAnchorsByPath:{...s.sceneAnchorsByPath,[projectPath]:anchors},
+      draftProjects:s.draftProjects.map(p=>p.path===projectPath?{...p,anchors}:p)
+    };
+  }),
   patchSettings:(patch)=>set(s=>({settings:{...s.settings,...patch}})),
   setLastRoot:(lastRoot)=>set({lastRoot})
-}),{name:'endlume-1-ui',version:6,migrate:(persisted:any)=>{const p:any=persisted||{};if(p.settings){p.settings={...p.settings,width:1920,height:1080,fps:60,crossfadeSec:3,normalizeLufs:false,codec:'h265'};}p.projects=[];return p;},partialize:(s)=>({settings:s.settings,lastRoot:s.lastRoot})}));
+}),{name:'endlume-1-ui',version:7,migrate:(persisted:any)=>{const p:any=persisted||{};if(p.settings){p.settings={...p.settings,width:1920,height:1080,fps:60,crossfadeSec:3,normalizeLufs:false,codec:'h265'};}p.projects=[];p.sceneAnchorsByPath=p.sceneAnchorsByPath||{};return p;},partialize:(s)=>({settings:s.settings,lastRoot:s.lastRoot,sceneAnchorsByPath:s.sceneAnchorsByPath})}));

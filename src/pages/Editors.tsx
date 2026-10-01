@@ -6,7 +6,7 @@ import { Icon, Range } from '../components/ui';
 import { LiveCompositePreview, type LivePreviewAssets } from '../components/LiveCompositePreview';
 
 const clamp01 = (value: number) => Math.max(0, Math.min(1, value));
-const effectiveUsageMode = (item: EffectPreset): EffectUsageMode => item.usageMode ?? (item.enabled ? 'always' : 'off');
+const effectiveUsageMode = (item: EffectPreset): EffectUsageMode => item.enabled ? (item.usageMode ?? 'always') : 'off';
 const usageLabel = (item: EffectPreset) => { const mode=effectiveUsageMode(item); return mode==='off'?'ВЫКЛ':mode==='always'?'ВСЕГДА':'ПО ИНТЕРВАЛУ'; };
 const subscribeFirst = (item: SubscribePreset): SubscribeFirstAppearance => item.firstAppearance ?? 'after-interval';
 const subscribeInterval = (item: SubscribePreset) => Math.max(60, item.intervalSec ?? item.repeatEverySec ?? 240);
@@ -196,7 +196,7 @@ function EffectsEditor() {
           <span><b>{effect.name}</b><small>{effect.enabled ? 'Включён' : 'Выключен'} • {effect.mode} • {effect.cacheReady ? 'render-cache готов' : 'render-cache при первом рендере'}</small></span>
           <i className={effect.enabled ? 'enabled' : 'disabled'} title={effect.enabled ? 'Выключить' : 'Включить'} onClick={(event) => {
             event.stopPropagation();
-            void saveLibrary(effects.map((item) => item.id === effect.id ? { ...item, enabled: !item.enabled } : item), true);
+            void saveLibrary(effects.map((item) => item.id === effect.id ? { ...item, enabled: !item.enabled, usageMode: !item.enabled && item.usageMode === 'off' ? 'always' : item.usageMode } : item), true);
           }} />
         </button>)}
       </aside>
@@ -345,7 +345,7 @@ function SubscribeEditor() {
           <span><b>{item.name}</b><small>{usageLabel(item)}{effectiveUsageMode(item) === 'interval' ? ` • каждые ${Math.round(subscribeInterval(item) / 60)} мин` : ''}</small></span>
           <i className={item.enabled ? 'enabled' : 'disabled'} title={item.enabled ? 'Выключить' : 'Включить'} onClick={(event) => {
             event.stopPropagation();
-            void saveLibrary(subscribes.map((entry) => entry.id === item.id ? { ...entry, enabled: !entry.enabled, usageMode: !entry.enabled && entry.usageMode === 'off' ? 'always' : entry.usageMode } : entry), true);
+            void saveLibrary(subscribes.map((entry) => entry.id === item.id ? { ...entry, enabled: !entry.enabled, usageMode: !entry.enabled && entry.usageMode === 'off' ? 'interval' : entry.usageMode } : entry), true);
           }} />
         </button>)}
       </aside>

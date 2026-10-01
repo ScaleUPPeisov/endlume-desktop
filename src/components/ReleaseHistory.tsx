@@ -3,7 +3,15 @@ import React from 'react';
 type Release={version:string;date:string;current?:boolean;title:string;items:string[]};
 
 const releases:Release[]=[
-  {version:'10.0.3',date:'30.09.2026',current:true,title:'Performance Hotfix • Parallel AAC • 400–600 MB',items:[
+  {version:'10.0.6',date:'01.10.2026',current:true,title:'Effect Studio • Semantic Anchors • Render / Audio Reliability',items:[
+    'Effect Studio Phase 1: semantic anchors FIREPLACE / CUP / CANDLE / WINDOW и пользовательские target-точки сохраняются отдельно для каждой сцены.',
+    'Drag, scale и opacity работают через realtime preview; привязанный эффект хранит offset относительно anchor, а финальный renderer использует ту же геометрию.',
+    'Исправлен macOS FFmpeg concat-loop сбой Operation not permitted: повтор длинной музыки строится конечным manifest без бесконечного concat-demuxer loop.',
+    'Effects / Subscribe получили согласованное состояние ВЫКЛ / ВСЕГДА / ПО ИНТЕРВАЛУ; удаление Effect требует подтверждения и не удаляет исходный медиафайл.',
+    'Settings показывает реальную runtime-версию приложения и корректно отмечает текущий release вместо hardcoded 10.0.3.',
+    'Сохранён быстрый short visual master + sample-table / zero-copy pipeline; full-duration physical rendering не добавлялся.'
+  ]},
+  {version:'10.0.3',date:'30.09.2026',current:false,title:'Performance Hotfix • Parallel AAC • 400–600 MB',items:[
     '1-image fast-path: 10 MP3 больше не перекодируются последовательно внутри final mux; Apple-compatible AAC 320k/48k/stereo кэшируется по каждой песне и строится параллельно.',
     'AAC playlist собирается packet-copy и переиспользуется между рендерами; warm render не выполняет повторное двухчасовое AAC-кодирование.',
     'Visual master и AAC cache готовятся параллельно, а final mux получает уже готовую AAC дорожку packet-copy.',

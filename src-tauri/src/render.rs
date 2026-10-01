@@ -1756,7 +1756,7 @@ async fn build_interval_half_master_1008(app:&AppHandle,job:&QueueJob,effects:&[
   let vf=base_filter(&ws,"0:v").trim_start_matches("[0:v]").to_string();
   let prep=vec!["-hide_banner","-loglevel","error","-i",job.project.media[0].as_str(),"-vf",vf.as_str(),"-frames:v","1","-compression_level","1","-y",base_still.to_string_lossy().as_ref()].into_iter().map(String::from).collect();
   output(app,"ffmpeg",prep).await.map_err(|e|format!("10.0.8 half base preprocess: {e}"))?;emit_timing(app,&job.project.id,"image-preprocess",prep_mark.elapsed().as_secs_f64());
-  let tmp=root.join(format!(".{key}-{}.tmp.mp4",uuid::Uuid::new_v4()));let mut args:Vec<String>=vec!["-hide_banner","-loglevel","error","-filter_complex_threads","8","-loop","1","-framerate","30","-i",base_still.to_string_lossy().as_ref()].into_iter().map(String::from).collect();
+  let tmp=root.join(format!(".{key}-{}.tmp.mp4",uuid::Uuid::new_v4()));let mut args:Vec<String>=vec!["-hide_banner","-loglevel","error","-filter_complex_threads","4","-loop","1","-framerate","30","-i",base_still.to_string_lossy().as_ref()].into_iter().map(String::from).collect();
   for e in effects.iter().filter(|x|effect_usage_mode(x)!="off"&&!x.source.trim().is_empty()){args.extend(vec!["-stream_loop","-1","-i",e.source.as_str()].into_iter().map(String::from));}
   let base="[0:v]fps=30,setsar=1[b0]".to_string();let (graph,last)=apply_effects_filter(base,"b0".into(),effects,&ws,1);let graph=format!("{graph};[{last}]format=yuv420p[outv]");
   args.extend(vec!["-filter_complex",&graph,"-map","[outv]","-frames:v",&physical_frames.to_string(),"-an"].into_iter().map(String::from));
@@ -1777,7 +1777,7 @@ async fn render_interval_half_sub_1008(app:&AppHandle,job:&QueueJob,master:&Path
     let sec=lookup.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"subscribe-cache",sec);return Ok((out,physical_frames))
   }
   let _=std::fs::remove_file(&out);let tmp=root.join(format!(".{key}-{}.tmp.mp4",uuid::Uuid::new_v4()));let mut ws=job.settings.clone();ws.fps=30;
-  let mut args:Vec<String>=vec!["-hide_banner","-loglevel","error","-filter_complex_threads","8","-stream_loop","-1","-ss",&phase.to_string(),"-i",master.to_string_lossy().as_ref(),"-i",sub.effect.source.as_str()].into_iter().map(String::from).collect();
+  let mut args:Vec<String>=vec!["-hide_banner","-loglevel","error","-filter_complex_threads","4","-stream_loop","-1","-ss",&phase.to_string(),"-i",master.to_string_lossy().as_ref(),"-i",sub.effect.source.as_str()].into_iter().map(String::from).collect();
   let one=vec![sub.effect.clone()];let (graph,last)=apply_effects_filter("[0:v]fps=30,setpts=PTS-STARTPTS[b0]".into(),"b0".into(),&one,&ws,1);let graph=graph.replace(":shortest=1:eof_action=repeat",":shortest=0:eof_action=pass");let graph=format!("{graph};[{last}]format=yuv420p[outv]");
   let duration=logical_frames as f64/60.0;args.extend(vec!["-filter_complex",&graph,"-map","[outv]","-frames:v",&physical_frames.to_string(),"-an"].into_iter().map(String::from));args.extend(interval_half_fidelity_args_1008(encoder));args.extend(vec!["-fps_mode","cfr","-r","30","-video_track_timescale","60000","-progress","pipe:1","-y",tmp.to_string_lossy().as_ref()].into_iter().map(String::from));
   let mark=Instant::now();run_ffmpeg(app,job,started,timer,args,&format!("10.0.8: HALF_RATE_SUBSCRIBE {label}"),69.0,4.0,duration,encoder,attempt,cancel).await?;

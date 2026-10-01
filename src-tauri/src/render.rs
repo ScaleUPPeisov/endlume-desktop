@@ -1718,6 +1718,83 @@ async fn build_cached_visual_master_1000(app:&AppHandle,job:&QueueJob,effects:&[
   if out.exists(){let _=std::fs::remove_file(&tmp);}else{std::fs::rename(&tmp,&out).map_err(|e|format!("10.0 visual cache commit: {e}"))?}
   let sec=mark.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"base-visual-cache",sec);emit_timing(app,&job.project.id,"visual-preparation",sec);prune_cache_1000(&root,&out);Ok(out)
 }
+
+fn interval_half_fidelity_args_1008(encoder:&str)->Vec<String>{
+  match encoder{
+    "hevc_videotoolbox"=>vec!["-c:v","hevc_videotoolbox","-realtime","1","-prio_speed","1","-power_efficient","0","-constant_bit_rate","1","-b:v","22M","-g","1","-bf","0","-tag:v","hvc1","-pix_fmt","yuv420p"].into_iter().map(String::from).collect(),
+    "hevc_nvenc"=>vec!["-c:v","hevc_nvenc","-preset","p4","-rc","cbr","-b:v","22M","-maxrate","22M","-bufsize","44M","-g","1","-bf","0","-tag:v","hvc1","-pix_fmt","yuv420p"].into_iter().map(String::from).collect(),
+    "hevc_qsv"=>vec!["-c:v","hevc_qsv","-b:v","22M","-maxrate","22M","-bufsize","44M","-g","1","-bf","0","-tag:v","hvc1","-pix_fmt","nv12"].into_iter().map(String::from).collect(),
+    "hevc_amf"=>vec!["-c:v","hevc_amf","-quality","speed","-rc","cbr","-b:v","22M","-maxrate","22M","-g","1","-bf","0","-tag:v","hvc1","-pix_fmt","yuv420p"].into_iter().map(String::from).collect(),
+    _=>vec!["-c:v","libx265","-preset","ultrafast","-x265-params","keyint=1:min-keyint=1:scenecut=0:bframes=0","-b:v","22M","-maxrate","22M","-bufsize","44M","-tag:v","hvc1","-pix_fmt","yuv420p"].into_iter().map(String::from).collect(),
+  }
+}
+
+async fn probe_all_video_packets_key_1008(app:&AppHandle,path:&Path,expected:usize)->Result<(),String>{
+  let args=vec!["-v","error","-select_streams","v:0","-show_entries","packet=flags","-of","csv=p=0",path.to_string_lossy().as_ref()].into_iter().map(String::from).collect();
+  let (raw,_)=output(app,"ffprobe",args).await?;
+  let rows=String::from_utf8_lossy(&raw).lines().map(str::trim).filter(|x|!x.is_empty()).collect::<Vec<_>>();
+  if rows.len()!=expected{return Err(format!("10.0.8 all-intra packet count {}/{}",rows.len(),expected))}
+  if rows.iter().any(|x|!x.contains('K')){return Err("10.0.8 half-rate source contains non-key HEVC packets".into())}
+  Ok(())
+}
+
+async fn build_interval_half_master_1008(app:&AppHandle,job:&QueueJob,effects:&[EffectPreset],logical_frames:usize,work:&Path,encoder:&str,attempt:u32,cancel:&AtomicBool,started:i64,timer:&Instant)->Result<(PathBuf,usize),String>{
+  let logical_fps=job.settings.fps.max(1);
+  if logical_fps!=60||logical_frames%2!=0{return Err("10.0.8 half-rate master requires even 60 FPS logical frame count".into())}
+  let physical_fps=30u32;let physical_frames=logical_frames/2;let duration=logical_frames as f64/logical_fps as f64;
+  let profile="interval-half30-allintra-v1";let key=visual_master_key_1000(job,effects,logical_frames,encoder,profile)?;
+  let root=cache_root_1000(app,"visual-master-v10")?;let out=root.join(format!("{key}.mp4"));let lookup=Instant::now();
+  if out.is_file()&&probe_video_packets_857(app,&out).await.ok()==Some(physical_frames)&&probe_all_video_packets_key_1008(app,&out,physical_frames).await.is_ok(){
+    let sec=lookup.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"cache-lookup",sec);emit_timing(app,&job.project.id,"base-visual-cache",sec);
+    let _=app.emit("engine-profile",json!({"id":job.project.id,"visualCache":"HIT","visualCacheKey":key,"physicalFps":physical_fps,"logicalFps":logical_fps}));
+    return Ok((out,physical_frames))
+  }
+  let _=std::fs::remove_file(&out);emit_timing(app,&job.project.id,"cache-lookup",lookup.elapsed().as_secs_f64());
+  let mut ws=job.settings.clone();ws.fps=physical_fps;
+  let base_still=work.join(format!("base-half-{key}.png"));let prep_mark=Instant::now();
+  let vf=base_filter(&ws,"0:v").trim_start_matches("[0:v]").to_string();
+  let prep=vec!["-hide_banner","-loglevel","error","-i",job.project.media[0].as_str(),"-vf",vf.as_str(),"-frames:v","1","-compression_level","1","-y",base_still.to_string_lossy().as_ref()].into_iter().map(String::from).collect();
+  output(app,"ffmpeg",prep).await.map_err(|e|format!("10.0.8 half base preprocess: {e}"))?;emit_timing(app,&job.project.id,"image-preprocess",prep_mark.elapsed().as_secs_f64());
+  let tmp=root.join(format!(".{key}-{}.tmp.mp4",uuid::Uuid::new_v4()));let mut args:Vec<String>=vec!["-hide_banner","-loglevel","error","-filter_complex_threads","2","-loop","1","-framerate","30","-i",base_still.to_string_lossy().as_ref()].into_iter().map(String::from).collect();
+  for e in effects.iter().filter(|x|effect_usage_mode(x)!="off"&&!x.source.trim().is_empty()){args.extend(vec!["-stream_loop","-1","-i",e.source.as_str()].into_iter().map(String::from));}
+  let base="[0:v]fps=30,setsar=1[b0]".to_string();let (graph,last)=apply_effects_filter(base,"b0".into(),effects,&ws,1);let graph=format!("{graph};[{last}]format=yuv420p[outv]");
+  args.extend(vec!["-filter_complex",&graph,"-map","[outv]","-frames:v",&physical_frames.to_string(),"-an"].into_iter().map(String::from));
+  args.extend(interval_half_fidelity_args_1008(encoder));
+  args.extend(vec!["-fps_mode","cfr","-r","30","-video_track_timescale","60000","-progress","pipe:1","-y",tmp.to_string_lossy().as_ref()].into_iter().map(String::from));
+  let mark=Instant::now();run_ffmpeg(app,job,started,timer,args,"10.0.8: HALF_RATE_BASE_MASTER",55.0,18.0,duration,encoder,attempt,cancel).await?;
+  let packets=probe_video_packets_857(app,&tmp).await?;if packets!=physical_frames{let _=std::fs::remove_file(&tmp);return Err(format!("10.0.8 half master packets={packets}/{physical_frames}"))}
+  probe_all_video_packets_key_1008(app,&tmp,physical_frames).await?;
+  if out.exists(){let _=std::fs::remove_file(&tmp);}else{std::fs::rename(&tmp,&out).map_err(|e|format!("10.0.8 half visual cache commit: {e}"))?}
+  let sec=mark.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"base-visual-cache",sec);emit_timing(app,&job.project.id,"visual-preparation",sec);prune_cache_1000(&root,&out);Ok((out,physical_frames))
+}
+
+async fn render_interval_half_sub_1008(app:&AppHandle,job:&QueueJob,master:&Path,sub:&SubscribePreset,start_logical_frame:usize,logical_frames:usize,work:&Path,label:&str,encoder:&str,attempt:u32,cancel:&AtomicBool,started:i64,timer:&Instant)->Result<(PathBuf,usize),String>{
+  if job.settings.fps!=60||logical_frames%2!=0{return Err("10.0.8 half-rate Subscribe requires even 60 FPS logical frame count".into())}
+  let physical_frames=logical_frames/2;let phase=start_logical_frame as f64/60.0;let key=format!("{}-half30",subscribe_master_key_1000(master,sub,start_logical_frame,logical_frames,encoder)?);
+  let root=cache_root_1000(app,"subscribe-master-v10")?;let out=root.join(format!("{key}.mp4"));let lookup=Instant::now();
+  if out.is_file()&&probe_video_packets_857(app,&out).await.ok()==Some(physical_frames)&&probe_all_video_packets_key_1008(app,&out,physical_frames).await.is_ok(){
+    let sec=lookup.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"subscribe-cache",sec);return Ok((out,physical_frames))
+  }
+  let _=std::fs::remove_file(&out);let tmp=root.join(format!(".{key}-{}.tmp.mp4",uuid::Uuid::new_v4()));let mut ws=job.settings.clone();ws.fps=30;
+  let mut args:Vec<String>=vec!["-hide_banner","-loglevel","error","-filter_complex_threads","2","-stream_loop","-1","-ss",&phase.to_string(),"-i",master.to_string_lossy().as_ref(),"-i",sub.effect.source.as_str()].into_iter().map(String::from).collect();
+  let one=vec![sub.effect.clone()];let (graph,last)=apply_effects_filter("[0:v]fps=30,setpts=PTS-STARTPTS[b0]".into(),"b0".into(),&one,&ws,1);let graph=graph.replace(":shortest=1:eof_action=repeat",":shortest=0:eof_action=pass");let graph=format!("{graph};[{last}]format=yuv420p[outv]");
+  let duration=logical_frames as f64/60.0;args.extend(vec!["-filter_complex",&graph,"-map","[outv]","-frames:v",&physical_frames.to_string(),"-an"].into_iter().map(String::from));args.extend(interval_half_fidelity_args_1008(encoder));args.extend(vec!["-fps_mode","cfr","-r","30","-video_track_timescale","60000","-progress","pipe:1","-y",tmp.to_string_lossy().as_ref()].into_iter().map(String::from));
+  let mark=Instant::now();run_ffmpeg(app,job,started,timer,args,&format!("10.0.8: HALF_RATE_SUBSCRIBE {label}"),69.0,4.0,duration,encoder,attempt,cancel).await?;
+  let packets=probe_video_packets_857(app,&tmp).await?;if packets!=physical_frames{let _=std::fs::remove_file(&tmp);return Err(format!("10.0.8 half Subscribe packets={packets}/{physical_frames}"))}
+  probe_all_video_packets_key_1008(app,&tmp,physical_frames).await?;
+  if out.exists(){let _=std::fs::remove_file(&tmp);}else{std::fs::rename(&tmp,&out).map_err(|e|format!("10.0.8 half Subscribe cache commit: {e}"))?}
+  let sec=mark.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"subscribe-cache",sec);prune_cache_1000(&root,&out);let _=work;Ok((out,physical_frames))
+}
+
+async fn concat_interval_half_pool_1008(app:&AppHandle,job:&QueueJob,parts:&[PathBuf],out:&Path,expected_frames:usize,work:&Path,encoder:&str,attempt:u32,cancel:&AtomicBool,started:i64,timer:&Instant)->Result<(),String>{
+  let list=work.join("interval-half-video-list.txt");let body=parts.iter().map(|x|format!("file '{}'
+",ffconcat_escape(x))).collect::<String>();std::fs::write(&list,body).map_err(|e|e.to_string())?;
+  let args=vec!["-hide_banner","-loglevel","error","-f","concat","-safe","0","-i",list.to_string_lossy().as_ref(),"-map","0:v:0","-an","-c:v","copy","-avoid_negative_ts","make_zero","-progress","pipe:1","-y",out.to_string_lossy().as_ref()].into_iter().map(String::from).collect();
+  run_ffmpeg(app,job,started,timer,args,"10.0.8: HALF_RATE physical video pool",74.0,3.0,expected_frames as f64/30.0,encoder,attempt,cancel).await?;
+  let packets=probe_video_packets_857(app,out).await?;if packets!=expected_frames{return Err(format!("10.0.8 half pool packets={packets}/{expected_frames}"))}
+  probe_all_video_packets_key_1008(app,out,expected_frames).await
+}
+
 fn subscribe_master_key_1000(master:&Path,sub:&SubscribePreset,start_frame:usize,frames:usize,encoder:&str)->Result<String,String>{
   let mut h=Sha256::new();h.update(b"ENDLUME-10-SUBSCRIBE-v1");h.update(file_stamp_1000(master).as_bytes());h.update(serde_json::to_vec(sub).map_err(|e|e.to_string())?);h.update(start_frame.to_le_bytes());h.update(frames.to_le_bytes());h.update(encoder.as_bytes());Ok(hex::encode(h.finalize()))
 }
@@ -1844,19 +1921,31 @@ fn interval_1000_plan(job:&QueueJob,effects:&[EffectPreset],subs:&[SubscribePres
 async fn render_interval_zero_copy_1000(app:&AppHandle,job:&QueueJob,effects:&[EffectPreset],subs:&[SubscribePreset],audio:&AudioSource,final_duration:f64,min_visual_seconds:f64,work:&Path,out:&Path,encoder:&str,attempt:u32,cancel:&AtomicBool,started:i64,timer:&Instant)->Result<bool,String>{
   let Some(plan)=interval_1000_plan(job,effects,subs,final_duration,min_visual_seconds) else{return Ok(false)};
   if !strict_856_encoder_allowed(encoder){return Err(format!("10.0.1 interval zero-copy: HEVC encoder {encoder} unavailable"))}
-  let fps=job.settings.fps.max(1) as usize;let master_mark=Instant::now();
+  let fps=job.settings.fps.max(1) as usize;let half_rate=fps==60&&plan.master_frames%2==0&&plan.duration_frames%2==0;let master_mark=Instant::now();
   let final_audio_encoder=choose_audio_encoder(app).await;
-  let visual_future=build_cached_visual_master_1000(app,job,effects,plan.master_frames,work,encoder,true,attempt,cancel,started,timer);
   let audio_future=prepare_fast_aac_audio_1003(app,job,audio,&final_audio_encoder,cancel);
-  let (master_result,fast_audio_path)=tokio::join!(visual_future,audio_future);
-  let master=master_result?;
+  let (master,master_physical,fast_audio_path)=if half_rate{
+    let visual_future=build_interval_half_master_1008(app,job,effects,plan.master_frames,work,encoder,attempt,cancel,started,timer);
+    let (master_result,audio_result)=tokio::join!(visual_future,audio_future);
+    let (master,physical)=master_result?;(master,physical,audio_result)
+  }else{
+    let visual_future=build_cached_visual_master_1000(app,job,effects,plan.master_frames,work,encoder,true,attempt,cancel,started,timer);
+    let (master_result,audio_result)=tokio::join!(visual_future,audio_future);
+    (master_result?,plan.master_frames,audio_result)
+  };
   emit_timing(app,&job.project.id,"base-visual-master",master_mark.elapsed().as_secs_f64());
   let fast_audio_source=fast_audio_path.map(AudioSource::Loop);
   let mux_audio=fast_audio_source.as_ref().unwrap_or(audio);
-  let sub_mark=Instant::now();let sub_master=render_periodic_sub_852(app,job,&master,&plan.sub,plan.phase_frames,plan.duration_frames,work,"interval-v10",encoder,attempt,cancel,started,timer).await?;
+  let sub_mark=Instant::now();let (sub_master,sub_physical)=if half_rate{
+    render_interval_half_sub_1008(app,job,&master,&plan.sub,plan.phase_frames,plan.duration_frames,work,"interval-v1008",encoder,attempt,cancel,started,timer).await?
+  }else{
+    let p=render_periodic_sub_852(app,job,&master,&plan.sub,plan.phase_frames,plan.duration_frames,work,"interval-v10",encoder,attempt,cancel,started,timer).await?;
+    (p,plan.duration_frames)
+  };
   emit_timing(app,&job.project.id,"subscribe-master",sub_mark.elapsed().as_secs_f64());
-  let pool=work.join("interval-1000-video-pool.mp4");let pool_frames=plan.master_frames+plan.duration_frames;
-  concat_video_parts_852(app,job,&[master.clone(),sub_master],&pool,pool_frames,work,encoder,attempt,cancel,started,timer).await?;
+  let pool=work.join("interval-1000-video-pool.mp4");let pool_frames=master_physical+sub_physical;
+  if half_rate{concat_interval_half_pool_1008(app,job,&[master.clone(),sub_master],&pool,pool_frames,work,encoder,attempt,cancel,started,timer).await?}
+  else{concat_video_parts_852(app,job,&[master.clone(),sub_master],&pool,pool_frames,work,encoder,attempt,cancel,started,timer).await?};
   let seed=destination_partial_path(out)?;let _=std::fs::remove_file(&seed);let mut args:Vec<String>=vec!["-hide_banner","-loglevel","error","-i",pool.to_string_lossy().as_ref()].into_iter().map(String::from).collect();
   extend_audio_input_args(&mut args,mux_audio,final_duration,work)?;
   args.extend(vec!["-t",&final_duration.to_string(),"-map","0:v:0","-map","1:a:0","-c:v","copy"].into_iter().map(String::from));
@@ -1868,12 +1957,21 @@ async fn render_interval_zero_copy_1000(app:&AppHandle,job:&QueueJob,effects:&[E
   for frame in 0..total_frames{
     if frame>=plan.first_frames{
       let offset=(frame-plan.first_frames)%plan.repeat_frames;
-      if offset<plan.duration_frames{if offset==0{appearances+=1}selected.push(plan.master_frames+offset);continue}
+      if offset<plan.duration_frames{
+        if offset==0{appearances+=1}
+        selected.push(if half_rate{master_physical+(offset/2)}else{plan.master_frames+offset});
+        continue
+      }
     }
-    selected.push(frame%plan.master_frames);
+    selected.push(if half_rate{(frame%plan.master_frames)/2}else{frame%plan.master_frames});
   }
-  let map_mark=Instant::now();ensure_license_allowed()?;crate::mp4_manifest::remap_video_samples(&seed,&seed,&selected)?;ensure_license_allowed()?;let map_sec=map_mark.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"sample-table",map_sec);emit_timing(app,&job.project.id,"zero-copy-manifest",map_sec);
-  let _=app.emit("engine-profile",json!({"id":job.project.id,"physicalEncodedFrames":pool_frames,"logicalFrames":total_frames,"numberOfSubscribeAppearances":appearances,"subscribeIntervalSec":plan.repeat_frames as f64/fps as f64,"subscribeDurationSec":plan.duration_frames as f64/fps as f64}));
+  let map_mark=Instant::now();ensure_license_allowed()?;
+  if half_rate{
+    let delta=(60_000u32/job.settings.fps.max(1)).max(1);
+    crate::mp4_manifest::remap_video_samples_fixed_delta(&seed,&seed,&selected,delta)?
+  }else{crate::mp4_manifest::remap_video_samples(&seed,&seed,&selected)?}
+  ensure_license_allowed()?;let map_sec=map_mark.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"sample-table",map_sec);emit_timing(app,&job.project.id,"zero-copy-manifest",map_sec);
+  let _=app.emit("engine-profile",json!({"id":job.project.id,"physicalEncodedFrames":pool_frames,"logicalFrames":total_frames,"physicalFps":if half_rate{30}else{fps},"logicalFps":fps,"halfRateAllIntra":half_rate,"numberOfSubscribeAppearances":appearances,"subscribeIntervalSec":plan.repeat_frames as f64/fps as f64,"subscribeDurationSec":plan.duration_frames as f64/fps as f64}));
   strict_856_validate_natural_size(&seed,final_duration)?;
   let (fsync_sec,rename_sec)=commit_destination_partial(&seed,out)?;emit_timing(app,&job.project.id,"fsync",fsync_sec);emit_timing(app,&job.project.id,"atomic-rename",rename_sec);
   emit_progress(app,job,started,timer,96.0,"10.0.1 interval sample-table готов",encoder,attempt,None);Ok(true)
@@ -2112,9 +2210,15 @@ pub async fn render_job(app:&AppHandle,job:&QueueJob,cancel:Arc<AtomicBool>)->Re
           let app_bg=app.clone();let mut job_bg=(*job).clone();job_bg.project.id=format!("{}::visual-prewarm",job.project.id);
           let fx_bg=fx.clone();let work_bg=work.clone();let encoder_bg=encoder.clone();let cancel_bg=cancel.clone();let timer_bg=timer.clone();
           tauri::async_runtime::spawn(async move{
-            let master=build_cached_visual_master_1000(&app_bg,&job_bg,&fx_bg,plan.master_frames,&work_bg,&encoder_bg,true,attempt,cancel_bg.as_ref(),started,&timer_bg).await?;
-            let _=render_periodic_sub_852(&app_bg,&job_bg,&master,&plan.sub,plan.phase_frames,plan.duration_frames,&work_bg,"prewarm-v1008",&encoder_bg,attempt,cancel_bg.as_ref(),started,&timer_bg).await?;
-            Ok::<PathBuf,String>(master)
+            if job_bg.settings.fps==60&&plan.master_frames%2==0&&plan.duration_frames%2==0{
+              let (master,_)=build_interval_half_master_1008(&app_bg,&job_bg,&fx_bg,plan.master_frames,&work_bg,&encoder_bg,attempt,cancel_bg.as_ref(),started,&timer_bg).await?;
+              let _=render_interval_half_sub_1008(&app_bg,&job_bg,&master,&plan.sub,plan.phase_frames,plan.duration_frames,&work_bg,"prewarm-v1008",&encoder_bg,attempt,cancel_bg.as_ref(),started,&timer_bg).await?;
+              Ok::<PathBuf,String>(master)
+            }else{
+              let master=build_cached_visual_master_1000(&app_bg,&job_bg,&fx_bg,plan.master_frames,&work_bg,&encoder_bg,true,attempt,cancel_bg.as_ref(),started,&timer_bg).await?;
+              let _=render_periodic_sub_852(&app_bg,&job_bg,&master,&plan.sub,plan.phase_frames,plan.duration_frames,&work_bg,"prewarm-v1008",&encoder_bg,attempt,cancel_bg.as_ref(),started,&timer_bg).await?;
+              Ok::<PathBuf,String>(master)
+            }
           })
         })
       }else{None};

@@ -43,6 +43,11 @@ const initialSettings:RenderSettings={
   outputDir:'',preset:'fast',encoderPreference:'auto'
 };
 
+function normalizeEffectPreset<T extends EffectPreset>(item:T,subscribe=false):T{
+  const usageMode=item.usageMode??(item.enabled?(subscribe?'interval':'always'):'off');
+  return {...item,usageMode,enabled:item.enabled!==false&&usageMode!=='off',despill:item.despill>0?item.despill:0.35};
+}
+
 export const useApp=create<State>()(persist((set)=>({
   page:'project',editor:null,projects:[],draftProjects:[],invalidProjects:[],effects:[],subscribes:[],settings:initialSettings,libraryLoaded:false,sceneAnchorsByPath:{},
   setPage:(page)=>set({page,editor:null}),
@@ -64,7 +69,7 @@ export const useApp=create<State>()(persist((set)=>({
   setEffects:(effects)=>set({effects}),
   setSubscribes:(subscribes)=>set({subscribes}),
   setAmbient:(ambient)=>set({ambient}),
-  setLibrary:(v)=>set({effects:(v.effects||[]).map(e=>({...e,despill:e.despill>0?e.despill:0.35})),subscribes:(v.subscribes||[]).map(e=>({...e,despill:e.despill>0?e.despill:0.35})),ambient:v.ambient,libraryLoaded:true}),
+  setLibrary:(v)=>set({effects:(v.effects||[]).map(e=>normalizeEffectPreset(e,false)),subscribes:(v.subscribes||[]).map(e=>normalizeEffectPreset(e,true)),ambient:v.ambient,libraryLoaded:true}),
   setLibraryLoaded:(libraryLoaded)=>set({libraryLoaded}),
   setSceneAnchor:(projectPath,target,anchor)=>set(s=>{
     const key=target.trim().toUpperCase()||'CUSTOM';

@@ -125,13 +125,9 @@ test -x "$APP/Contents/MacOS/ffprobe"
 echo "5/8 Seal app"
 IDENTITIES="$(/usr/bin/security find-identity -v -p codesigning 2>&1 || true)"
 IDENTITY="$(printf '%s\n' "$IDENTITIES" | grep 'Developer ID Application:' | head -1 | sed -E 's/.*"([^"]+)".*/\1/' || true)"
-if [[ -n "$IDENTITY" ]]; then
-  /usr/bin/codesign --force --deep --options runtime --timestamp --sign "$IDENTITY" "$APP"
-  echo "ENDLUME_1006_DEVELOPER_ID_SIGNED=$IDENTITY"
-else
-  /usr/bin/codesign --force --deep --sign - "$APP"
-  echo "ENDLUME_1006_ADHOC_SIGNED"
-fi
+[[ -n "$IDENTITY" ]] || { echo "Developer ID Application identity not found" >&2; exit 41; }
+/usr/bin/codesign --force --deep --options runtime --timestamp --sign "$IDENTITY" "$APP"
+echo "ENDLUME_1006_DEVELOPER_ID_SIGNED=$IDENTITY"
 /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP"
 test -s "$APP/Contents/_CodeSignature/CodeResources"
 

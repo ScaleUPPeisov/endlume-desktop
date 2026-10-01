@@ -282,7 +282,7 @@ fn cached_master_fidelity_args_1000(s:&RenderSettings,encoder:&str,duration:f64)
   let mbps=(2000.0/duration).clamp(80.0,220.0).round() as u32;
   let rate=format!("{mbps}M");let buf=format!("{}M",mbps.saturating_mul(2));let kbps=mbps.saturating_mul(1000);
   match encoder{
-    "hevc_videotoolbox"=>vec!["-c:v","hevc_videotoolbox","-realtime","1","-prio_speed","1","-power_efficient","0","-constant_bit_rate","1","-b:v",&rate,"-g",&g,"-tag:v","hvc1","-pix_fmt","yuv420p"].into_iter().map(String::from).collect(),
+    "hevc_videotoolbox"=>vec!["-c:v","hevc_videotoolbox","-realtime","1","-prio_speed","1","-power_efficient","0","-q:v","85","-maxrate","60M","-bufsize","120M","-g",&g,"-tag:v","hvc1","-pix_fmt","yuv420p"].into_iter().map(String::from).collect(),
     "hevc_nvenc"=>vec!["-c:v","hevc_nvenc","-preset","p4","-rc","cbr","-b:v",&rate,"-maxrate",&rate,"-bufsize",&buf,"-g",&g,"-tag:v","hvc1","-pix_fmt","yuv420p"].into_iter().map(String::from).collect(),
     "hevc_qsv"=>vec!["-c:v","hevc_qsv","-b:v",&rate,"-maxrate",&rate,"-bufsize",&buf,"-g",&g,"-tag:v","hvc1","-pix_fmt","nv12"].into_iter().map(String::from).collect(),
     "hevc_amf"=>vec!["-c:v","hevc_amf","-quality","speed","-rc","cbr","-b:v",&rate,"-maxrate",&rate,"-bufsize",&buf,"-g",&g,"-tag:v","hvc1","-pix_fmt","yuv420p"].into_iter().map(String::from).collect(),
@@ -1175,19 +1175,28 @@ fn apply_effects_filter(mut graph:String,mut base:String,effects:&[EffectPreset]
     let x=if e.fullscreen{"0".into()}else{format!("max(0,min(W-w,W*{}-w/2))",e.x.clamp(0.0,1.0))};
     let y=if e.fullscreen{"0".into()}else{format!("max(0,min(H-h,H*{}-h/2))",e.y.clamp(0.0,1.0))};
     if e.mode=="strict-prealpha"{
-      graph.push_str(&format!(";[{idx}:v]fps={},setpts=PTS-STARTPTS,format=argb,colorchannelmixer=aa={opacity}[{fx}];[{base}][{fx}]overlay=x='{x}':y='{y}':shortest=0:repeatlast=1:eof_action=repeat:format=auto[{next}]",s.fps));base=next;continue
+      graph.push_str(&format!(";[{idx}:v]fps={},setpts=PTS-STARTPTS,format=rgba,colorchannelmixer=aa={opacity}[{fx}];[{base}]format=rgba[base{n}];[base{n}][{fx}]overlay=x='{x}':y='{y}':shortest=0:repeatlast=1:eof_action=repeat:format=auto[{next}]",s.fps));base=next;continue
     }
     if e.mode=="strict-screen-cache"{
       let px=if e.fullscreen{"0".into()}else{format!("max(0,min(ow-iw,ow*{}-iw/2))",e.x.clamp(0.0,1.0))};let py=if e.fullscreen{"0".into()}else{format!("max(0,min(oh-ih,oh*{}-ih/2))",e.y.clamp(0.0,1.0))};
-      graph.push_str(&format!(";[{idx}:v]fps={},format=rgb24,pad={}:{}:'{px}':'{py}':color=black[{fx}];[{base}][{fx}]blend=all_mode=screen:all_opacity={opacity}[{next}]",s.fps,s.width,s.height));base=next;continue
+      graph.push_str(&format!(";[{base}]format=gbrp[base{n}];[{idx}:v]fps={},format=gbrp,pad={}:{}:'{px}':'{py}':color=black[{fx}];[base{n}][{fx}]blend=all_mode=screen:all_opacity={opacity}[{next}]",s.fps,s.width,s.height));base=next;continue
     }
     if e.mode=="screen"||e.mode=="screen-cache"{
       let px=if e.fullscreen{"0".into()}else{format!("max(0,min(ow-iw,ow*{}-iw/2))",e.x.clamp(0.0,1.0))};
       let py=if e.fullscreen{"0".into()}else{format!("max(0,min(oh-ih,oh*{}-ih/2))",e.y.clamp(0.0,1.0))};
-      graph.push_str(&format!(";[{idx}:v]fps={},format=rgba,{scale},pad={}:{}:'{px}':'{py}':color=black@0,setsar=1[{fx}];[{base}][{fx}]blend=all_mode=screen:all_opacity={opacity}[{next}]",s.fps,s.width,s.height));
+      graph.push_str(&format!(";[{base}]format=gbrp[base{n}];[{idx}:v]fps={},format=gbrp,{scale},pad={}:{}:'{px}':'{py}':color=black,setsar=1[{fx}];[base{n}][{fx}]blend=all_mode=screen:all_opacity={opacity}[{next}]",s.fps,s.width,s.height));
     }else{
-      let prep=if e.mode=="prealpha"{format!("[{idx}:v]fps={},format=argb",s.fps)}else if e.mode=="luma"{format!("[{idx}:v]fps={},format=rgba,lumakey=threshold={}:tolerance={}:softness=0.08",s.fps,e.luma_threshold,e.luma_tolerance)}else{format!("[{idx}:v]fps={},format=rgba,colorkey={}:{}:{}",s.fps,color_ffmpeg(&e.key_color),e.similarity.clamp(0.001,0.60),e.blend.clamp(0.001,0.35))};
-      graph.push_str(&format!(";{prep},{scale},colorchannelmixer=aa={opacity}[{fx}];[{base}][{fx}]overlay=x='{x}':y='{y}':shortest=1:eof_action=repeat:format=auto[{next}]"));
+      let prep=if e.mode=="prealpha"{
+        format!("[{idx}:v]fps={},format=rgba",s.fps)
+      }else if e.mode=="luma"{
+        format!("[{idx}:v]fps={},format=rgba,lumakey=threshold={}:tolerance={}:softness=0.08",s.fps,e.luma_threshold,e.luma_tolerance)
+      }else{
+        let (similarity,blend)=cache::chromakey_params_859(e);
+        let kind=cache::despill_type(&e.key_color);
+        let mix=e.despill.clamp(0.0,1.0);
+        format!("[{idx}:v]fps={},format=rgba,colorkey={}:{}:{},despill=type={kind}:mix={mix}:expand=0.20",s.fps,color_ffmpeg(&e.key_color),similarity,blend)
+      };
+      graph.push_str(&format!(";{prep},{scale},colorchannelmixer=aa={opacity}[{fx}];[{base}]format=rgba[base{n}];[base{n}][{fx}]overlay=x='{x}':y='{y}':shortest=1:eof_action=repeat:format=auto[{next}]"));
     }
     base=next;
   }
@@ -1252,9 +1261,17 @@ fn subscribe_first_sec(s:&SubscribePreset)->f64{
 
 async fn prepare_overlays(app:&AppHandle,job:&QueueJob,started:i64,timer:&Instant,encoder:&str,attempt:u32)->Result<(Vec<EffectPreset>,Vec<SubscribePreset>),String>{
   if smart_repeat_project(job){
-    emit_progress(app,job,started,timer,26.0,"Strict 8.56: проверяю быстрый lossless Effects cache",encoder,attempt,None);let mark=Instant::now();let mut fx=Vec::new();
-    for e in job.effects.iter().filter(|e|effect_usage_mode(e)!="off"){match cache::prepare_strict_856(app,e,30,1920,1080).await{Ok(p)=>fx.push(resolve_effect_for_project(&job.project,&p)),Err(err)=>return Err(format!("Strict 8.56 Effects cache: {err}"))}}
-    let effects_sec=mark.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"effects-cache",effects_sec);emit_timing(app,&job.project.id,"effects",effects_sec);emit_timing(app,&job.project.id,"subscribe",0.0);emit_progress(app,job,started,timer,31.0,"Strict 8.56: lossless Effects cache готов",encoder,attempt,None);let subs=job.subscribes.iter().cloned().map(|mut s|{s.effect=resolve_effect_for_project(&job.project,&s.effect);s}).collect();return Ok((fx,subs))
+    emit_progress(app,job,started,timer,26.0,"10.0.8: Effects встроены в visual master",encoder,attempt,None);
+    let mark=Instant::now();
+    let fx=job.effects.iter().filter(|e|effect_usage_mode(e)!="off"&&!e.source.trim().is_empty()).map(|e|resolve_effect_for_project(&job.project,e)).collect::<Vec<_>>();
+    let subs=job.subscribes.iter().filter(|s|subscribe_usage_mode(s)!="off").cloned().map(|mut s|{s.effect=resolve_effect_for_project(&job.project,&s.effect);s}).collect::<Vec<_>>();
+    let effects_sec=mark.elapsed().as_secs_f64();
+    emit_timing(app,&job.project.id,"effects-cache",effects_sec);
+    emit_timing(app,&job.project.id,"effects",effects_sec);
+    emit_timing(app,&job.project.id,"subscribe",0.0);
+    let _=app.emit("engine-profile",json!({"id":job.project.id,"effectsCache":"FUSED_DIRECT","effectsCacheSeconds":effects_sec}));
+    emit_progress(app,job,started,timer,31.0,"10.0.8: direct Effects готовы",encoder,attempt,None);
+    return Ok((fx,subs))
   }
   emit_progress(app,job,started,timer,26.0,"Проверяю кэш Effects и Subscribe",encoder,attempt,None);let mark=Instant::now();let effects_mark=Instant::now();let mut fx=Vec::new();let mut subs=Vec::new();
   for e in &job.effects{
@@ -1545,7 +1562,7 @@ fn file_stamp_1000(path:&Path)->String{
   format!("{}|{}|{}",path.to_string_lossy(),size,mtime)
 }
 fn visual_master_key_1000(job:&QueueJob,effects:&[EffectPreset],master_frames:usize,encoder:&str,profile:&str)->Result<String,String>{
-  let mut h=Sha256::new();h.update(b"ENDLUME-10.0.3-BASE-VISUAL-v3-DYNAMIC-HQ");
+  let mut h=Sha256::new();h.update(b"ENDLUME-10.0.8-BASE-VISUAL-v4-DIRECT-VBR");
   h.update(profile.as_bytes());h.update(encoder.as_bytes());h.update(master_frames.to_le_bytes());
   h.update(job.settings.width.to_le_bytes());h.update(job.settings.height.to_le_bytes());h.update(job.settings.fps.to_le_bytes());
   h.update(b"yuv420p|hevc|visual-cache-v10");

@@ -1,0 +1,67 @@
+name: ENDLUME Production Source Probe
+
+on:
+  push:
+    branches:
+      - qa/endlume-10.0.6-full-production
+    paths:
+      - ".github/workflows/endlume-1006-production-source-probe.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Probe live stable updater manifest
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p source-probe
+          URL='https://github.com/ScaleUPPeisov/scaleup-site/releases/download/endlume-stable/latest.json'
+          curl -fL --retry 5 --retry-delay 2 "$URL" -o source-probe/latest.json
+          python3 - <<'PY'
+          import json
+          d=json.load(open('source-probe/latest.json'))
+          print('LIVE_VERSION=',d.get('version'))
+          print('LIVE_PUB_DATE=',d.get('pub_date'))
+          print('LIVE_NOTES=',d.get('notes'))
+          for platform,obj in sorted((d.get('platforms') or {}).items()):
+              print('PLATFORM',platform)
+              print(' URL',obj.get('url'))
+              print(' SHA256',obj.get('sha256'))
+              print(' SIGNATURE_PRESENT',bool(obj.get('signature')))
+          assert d.get('version'),d
+          assert isinstance(d.get('platforms'),dict) and d['platforms'],d
+          PY
+
+      - name: Snapshot stable release assets
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          curl -fL --retry 5             'https://api.github.com/repos/ScaleUPPeisov/scaleup-site/releases/tags/endlume-stable'             -o source-probe/release.json
+          python3 - <<'PY'
+          import json
+          r=json.load(open('source-probe/release.json'))
+          print('STABLE_TAG',r.get('tag_name'))
+          for a in r.get('assets',[]):
+              if a['name'] in {'latest.json','ENDLUME-macos-aarch64.app.tar.gz','ENDLUME-windows-x86_64-setup.exe'} or '10.0.' in a['name']:
+                  print(a['name'],a.get('size'),a.get('digest'),a.get('updated_at'))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ENDLUME-production-source-probe
+          path: source-probe/
+          if-no-files-found: error
+          retention-days: 7

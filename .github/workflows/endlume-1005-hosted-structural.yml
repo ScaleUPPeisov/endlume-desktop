@@ -75,11 +75,18 @@ jobs:
           test -n "$APP"
           mkdir -p hosted-candidate
           ditto -c -k --sequesterRsrc --keepParent "$APP" hosted-candidate/ENDLUME-10.0.5-hosted-candidate.zip
-          mkdir -p "$RUNNER_TEMP/e1005-unpack"
-          ditto -x -k hosted-candidate/ENDLUME-10.0.5-hosted-candidate.zip "$RUNNER_TEMP/e1005-unpack"
-          UNPACKED="$(find "$RUNNER_TEMP/e1005-unpack" -maxdepth 2 -type d -name '*.app' -print -quit)"
-          test -n "$UNPACKED"
-          echo "E1005_APP=$UNPACKED" >> "$GITHUB_ENV"
+          LAUNCH_UNPACK="$GITHUB_WORKSPACE/.qa-1005-hosted-launch"
+          RUNTIME_UNPACK="$GITHUB_WORKSPACE/.qa-1005-hosted-runtime"
+          rm -rf "$LAUNCH_UNPACK" "$RUNTIME_UNPACK"
+          mkdir -p "$LAUNCH_UNPACK" "$RUNTIME_UNPACK"
+          ditto -x -k hosted-candidate/ENDLUME-10.0.5-hosted-candidate.zip "$LAUNCH_UNPACK"
+          ditto -x -k hosted-candidate/ENDLUME-10.0.5-hosted-candidate.zip "$RUNTIME_UNPACK"
+          LAUNCH_APP="$(find "$LAUNCH_UNPACK" -maxdepth 2 -type d -name '*.app' -print -quit)"
+          RUNTIME_APP="$(find "$RUNTIME_UNPACK" -maxdepth 2 -type d -name '*.app' -print -quit)"
+          test -n "$LAUNCH_APP" -a -d "$LAUNCH_APP"
+          test -n "$RUNTIME_APP" -a -d "$RUNTIME_APP"
+          echo "E1005_LAUNCH_APP=$LAUNCH_APP" >> "$GITHUB_ENV"
+          echo "E1005_APP=$RUNTIME_APP" >> "$GITHUB_ENV"
 
       - name: Exact ZIP real launch marker
         shell: bash
@@ -87,7 +94,7 @@ jobs:
           set -Eeuo pipefail
           MARKER="$RUNNER_TEMP/e1005-hosted-launch.json"
           launchctl setenv ENDLUME_LAUNCH_SMOKE_MARKER "$MARKER"
-          open -n "$E1005_APP"
+          open -n "$E1005_LAUNCH_APP"
           for i in {1..60}; do test -s "$MARKER" && break; sleep 0.25; done
           launchctl unsetenv ENDLUME_LAUNCH_SMOKE_MARKER || true
           test -s "$MARKER"
@@ -116,6 +123,7 @@ jobs:
           echo ENDLUME_1005_HOSTED_RUNTIME_GREEN
 
       - name: Upload private structural evidence
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: ENDLUME-10.0.5-hosted-structural

@@ -118,9 +118,17 @@ jobs:
           cargo check --manifest-path src-tauri/Cargo.toml --target aarch64-apple-darwin
           cargo test --manifest-path src-tauri/Cargo.toml --target aarch64-apple-darwin --lib -- --nocapture
 
+      - name: Resolve production Apple signing identity
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          IDENTITIES="$(/usr/bin/security find-identity -v -p codesigning 2>&1 || true)"
+          IDENTITY="$(printf '%s\n' "$IDENTITIES" | grep 'Developer ID Application:' | head -1 | sed -E 's/.*"([^"]+)".*/\1/' || true)"
+          test -n "$IDENTITY" || { echo "Developer ID Application identity not found" >&2; exit 41; }
+          printf 'APPLE_SIGNING_IDENTITY=%s\n' "$IDENTITY" >> "$GITHUB_ENV"
+          echo "ENDLUME_1006_DEVELOPER_ID_GREEN"
+
       - name: Build exact app candidate
-        env:
-          APPLE_SIGNING_IDENTITY: "-"
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -140,6 +148,31 @@ jobs:
           test "$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist")" = "10.0.6"
           test "$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$APP/Contents/Info.plist")" = "studio.endlume.desktop"
           echo "E1006_APP=$APP" >> "$GITHUB_ENV"
+
+      - name: Production codesign + notarization + Gatekeeper
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p e1006-qa
+          /usr/bin/codesign --verify --deep --strict --verbose=2 "$E1006_APP"
+          /usr/bin/codesign -dv --verbose=4 "$E1006_APP" 2>e1006-qa/codesign.txt || true
+          grep -q 'Authority=Developer ID Application:' e1006-qa/codesign.txt
+          if ! /usr/bin/xcrun stapler validate "$E1006_APP" >e1006-qa/stapler-before.txt 2>&1; then
+            NOTARY_ZIP="$RUNNER_TEMP/endlume-1006-notary.zip"
+            /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$E1006_APP" "$NOTARY_ZIP"
+            if test -n "${APPLE_ID:-}" && test -n "${APPLE_PASSWORD:-}" && test -n "${APPLE_TEAM_ID:-}"; then
+              /usr/bin/xcrun notarytool submit "$NOTARY_ZIP" --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait
+            elif test -n "${APPLE_API_KEY_PATH:-}" && test -n "${APPLE_API_KEY:-}" && test -n "${APPLE_API_ISSUER:-}"; then
+              /usr/bin/xcrun notarytool submit "$NOTARY_ZIP" --key "$APPLE_API_KEY_PATH" --key-id "$APPLE_API_KEY" --issuer "$APPLE_API_ISSUER" --wait
+            else
+              echo "Notarization credentials are not available on the production QA runner" >&2
+              exit 42
+            fi
+            /usr/bin/xcrun stapler staple "$E1006_APP"
+          fi
+          /usr/bin/xcrun stapler validate "$E1006_APP" | tee e1006-qa/stapler.txt
+          /usr/sbin/spctl -a -vv "$E1006_APP" 2>&1 | tee e1006-qa/gatekeeper.txt
+          echo "ENDLUME_1006_SIGNING_NOTARY_GATEKEEPER_GREEN"
 
       - name: Real packaged launch
         shell: bash

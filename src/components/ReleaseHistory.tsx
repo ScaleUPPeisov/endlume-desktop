@@ -340,7 +340,7 @@ const releases:Release[]=[
   ]}
 ];
 
-export function ReleaseHistory(){
+export function ReleaseHistory({currentVersion}:{currentVersion?:string}){
   return <section style={{marginTop:28,borderTop:'1px solid #262c3d',paddingTop:20}}>
     <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:12,marginBottom:12}}>
       <div><h4 style={{margin:'0 0 5px',fontSize:13,letterSpacing:'.25px'}}>ИСТОРИЯ ОБНОВЛЕНИЙ</h4><p className="settingsNote" style={{margin:0}}>Все сохранённые релизы ENDLUME Studio. Нажмите на версию, чтобы посмотреть изменения.</p></div>
@@ -348,7 +348,7 @@ export function ReleaseHistory(){
     </div>
     <div style={{display:'grid',gap:8}}>{releases.map((release,index)=><details key={release.version} open={index===0} style={{border:'1px solid #292f42',borderRadius:10,background:'#0d111c',overflow:'hidden'}}>
       <summary style={{cursor:'pointer',listStyle:'none',display:'flex',alignItems:'center',justifyContent:'space-between',gap:12,padding:'12px 14px',userSelect:'none'}}>
-        <span style={{display:'flex',alignItems:'center',gap:9,minWidth:0}}><strong style={{fontSize:11,color:'#eef1fa'}}>{release.version}</strong>{release.current&&<em style={{fontStyle:'normal',fontSize:8,color:'#43d5a0',border:'1px solid #285c4b',borderRadius:999,padding:'3px 6px'}}>ТЕКУЩАЯ</em>}<span style={{fontSize:9,color:'#77819e',whiteSpace:'nowrap'}}>{release.date}</span></span>
+        <span style={{display:'flex',alignItems:'center',gap:9,minWidth:0}}><strong style={{fontSize:11,color:'#eef1fa'}}>{release.version}</strong>{release.version===currentVersion&&<em style={{fontStyle:'normal',fontSize:8,color:'#43d5a0',border:'1px solid #285c4b',borderRadius:999,padding:'3px 6px'}}>ТЕКУЩАЯ</em>}<span style={{fontSize:9,color:'#77819e',whiteSpace:'nowrap'}}>{release.date}</span></span>
         <span style={{fontSize:10,color:'#8b85ff'}}>ПОКАЗАТЬ ▾</span>
       </summary>
       <div style={{padding:'0 14px 13px',borderTop:'1px solid #202638'}}><b style={{display:'block',fontSize:11,marginTop:12,color:'#dfe4f2'}}>{release.title}</b><ul style={{margin:'9px 0 0',paddingLeft:19,color:'#818ba8',fontSize:10,lineHeight:1.55}}>{release.items.map(item=><li key={item} style={{margin:'5px 0'}}>{item}</li>)}</ul></div>

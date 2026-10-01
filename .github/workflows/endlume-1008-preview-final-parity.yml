@@ -66,7 +66,7 @@ jobs:
           test -f "$SRC"
           KEY_RAW="$(printf '%s' "$KEY" | sed 's/^#//')"
 
-          "$FFMPEG" -hide_banner -loglevel error -f lavfi -i "gradients=s=960x540:r=1:c0=0x0f1728:c1=0x3c526d" -frames:v 1 -y "$ROOT/base.png"
+          "$FFMPEG" -hide_banner -loglevel error -f lavfi -i "gradients=s=1920x1080:r=1:c0=0x0f1728:c1=0x3c526d" -frames:v 1 -y "$ROOT/base.png"
 
           "$FFMPEG" -hide_banner -loglevel error -stream_loop -1 -ss "$SEEK" -i "$SRC" -t 1             -an -vf "scale=640:-2:flags=fast_bilinear,fps=60"             -c:v libx264 -preset ultrafast -crf 18 -pix_fmt yuv420p -y "$ROOT/proxy.mp4"
 
@@ -94,11 +94,11 @@ jobs:
           open(out,"wb").write(buf)
           PY
 
-          TARGET="$(python3 -c 'import sys; x=round(960*float(sys.argv[1])); print(max(2,x if x%2==0 else x+1))' "$SCALE")"
-          PX="$(python3 -c 'import sys; print(max(0,min(960-int(sys.argv[1]),round(960*float(sys.argv[2])-int(sys.argv[1])/2))))' "$TARGET" "$X")"
+          TARGET="$(python3 -c 'import sys; x=round(1920*float(sys.argv[1])); print(max(2,x if x%2==0 else x+1))' "$SCALE")"
+          PX="$(python3 -c 'import sys; print(max(0,min(1920-int(sys.argv[1]),round(1920*float(sys.argv[2])-int(sys.argv[1])/2))))' "$TARGET" "$X")"
           "$FFMPEG" -hide_banner -loglevel error -f rawvideo -pix_fmt rgba -s "$PW"x"$PH" -i "$ROOT/preview-fx.rgba"             -frames:v 1 -vf "scale=$TARGET:-2:flags=bilinear" -y "$ROOT/preview-fx.png"
           TH="$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of default=nw=1:nk=1 "$ROOT/preview-fx.png")"
-          PY="$(python3 -c 'import sys; print(max(0,min(540-int(sys.argv[1]),round(540*float(sys.argv[2])-int(sys.argv[1])/2))))' "$TH" "$Y")"
+          PY="$(python3 -c 'import sys; print(max(0,min(1080-int(sys.argv[1]),round(1080*float(sys.argv[2])-int(sys.argv[1])/2))))' "$TH" "$Y")"
           "$FFMPEG" -hide_banner -loglevel error -i "$ROOT/base.png" -i "$ROOT/preview-fx.png"             -filter_complex "[0:v]format=rgba[b];[b][1:v]overlay=x=$PX:y=$PY:format=auto,format=rgb24[out]"             -map "[out]" -frames:v 1 -y "$ROOT/preview.png"
 
           "$FFMPEG" -hide_banner -loglevel error -i "$ROOT/base.png" -ss "$SEEK" -i "$SRC"             -filter_complex "[0:v]format=rgba[b];[1:v]format=rgba,colorkey=0x$KEY_RAW:$SIM:$BLEND,despill=type=green:mix=$DESPILL:expand=0.20,scale=$TARGET:-2:flags=lanczos,colorchannelmixer=aa=$OPACITY[fx];[b][fx]overlay=x='max(0,min(W-w,W*$X-w/2))':y='max(0,min(H-h,H*$Y-h/2))':shortest=1:eof_action=repeat:format=auto,format=rgb24[out]"             -map "[out]" -frames:v 1 -y "$ROOT/final.png"

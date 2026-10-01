@@ -52,8 +52,9 @@ import json,sys
 d=json.load(open(sys.argv[1]))
 assert d.get('version')=='10.0.3',d
 p=d.get('platforms',{}).get('darwin-aarch64')
-assert p and p.get('url') and p.get('signature'),d
-print('ENDLUME_1003_MAC_STABLE_PRESENT')
+assert p and p.get('url') and p.get('signature') and p.get('sha256'),d
+assert len(p['sha256'])==64,d
+print('ENDLUME_1003_MAC_STABLE_PRESENT',p['sha256'])
 PY
 
 npm ci
@@ -162,6 +163,8 @@ d=json.load(open(sys.argv[1]))
 assert d.get('version')=='10.0.3',d
 assert {'darwin-aarch64','windows-x86_64'} <= set(d.get('platforms',{})),d
 for k in ('darwin-aarch64','windows-x86_64'):
-    assert d['platforms'][k].get('url') and d['platforms'][k].get('signature'),d[k] if k in d else d
-print('ENDLUME_1003_DUAL_STABLE_PUBLIC_GREEN')
+    p=d['platforms'][k]
+    assert p.get('url') and p.get('signature') and p.get('sha256'),d
+    assert len(p['sha256'])==64,d
+print('ENDLUME_1003_DUAL_STABLE_PUBLIC_GREEN', {k:d['platforms'][k]['sha256'] for k in ('darwin-aarch64','windows-x86_64')})
 PY

@@ -55,9 +55,30 @@ jobs:
           if($win.mainBinaryName -ne 'ENDLUME YT Studio PEISOV'){throw 'binary name drift'}
           Write-Host ENDLUME_1006_WINDOWS_CONTRACT_GREEN
 
-      - name: Stage pinned Windows FFmpeg
+      - name: Stage production Windows FFmpeg from published 10.0.3
         shell: pwsh
-        run: ./scripts/prepare-windows-sidecars.ps1
+        run: |
+          $ErrorActionPreference='Stop'
+          $url='https://github.com/ScaleUPPeisov/scaleup-site/releases/download/endlume-stable/ENDLUME-YT-Studio-PEISOV-Setup-10.0.3-x64.exe'
+          $installer=Join-Path $env:RUNNER_TEMP 'endlume-1003-stable.exe'
+          $extract=Join-Path $env:RUNNER_TEMP 'endlume-1003-extract'
+          Invoke-WebRequest -Uri $url -OutFile $installer -UseBasicParsing
+          if((Get-Item $installer).Length -lt 50000000){throw 'Published 10.0.3 installer download invalid'}
+          Remove-Item $extract -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force $extract | Out-Null
+          $seven='C:\Program Files\7-Zip\7z.exe'
+          if(!(Test-Path $seven)){throw '7-Zip missing on hosted runner'}
+          & $seven x $installer "-o$extract" -y | Out-Host
+          if($LASTEXITCODE -ne 0){throw 'Could not extract published 10.0.3 installer'}
+          $ffmpeg=Get-ChildItem $extract -Recurse -Filter 'ffmpeg.exe' -File | Select-Object -First 1
+          $ffprobe=Get-ChildItem $extract -Recurse -Filter 'ffprobe.exe' -File | Select-Object -First 1
+          if(!$ffmpeg -or !$ffprobe){throw 'Published installer does not contain FFmpeg sidecars'}
+          New-Item -ItemType Directory -Force 'src-tauri\binaries' | Out-Null
+          Copy-Item $ffmpeg.FullName 'src-tauri\binaries\ffmpeg-x86_64-pc-windows-msvc.exe' -Force
+          Copy-Item $ffprobe.FullName 'src-tauri\binaries\ffprobe-x86_64-pc-windows-msvc.exe' -Force
+          & 'src-tauri\binaries\ffmpeg-x86_64-pc-windows-msvc.exe' -hide_banner -version | Select-Object -First 1
+          & 'src-tauri\binaries\ffprobe-x86_64-pc-windows-msvc.exe' -hide_banner -version | Select-Object -First 1
+          Write-Host ENDLUME_1006_WINDOWS_PRODUCTION_FFMPEG_GREEN
 
       - name: Frontend and Rust regression
         shell: pwsh

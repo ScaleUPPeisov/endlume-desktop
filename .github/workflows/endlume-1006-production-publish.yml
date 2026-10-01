@@ -92,7 +92,10 @@ jobs:
             test "$ACTUAL_SHA" = "$SHA"
             echo "ENDLUME_1006_QA_LINEAGE_GREEN $LABEL run=$RUN sha=$SHA"
           done
-          git fetch origin "${{ steps.manifest.outputs.source_sha }}" "${{ steps.manifest.outputs.mac_sha }}" "${{ steps.manifest.outputs.win_sha }}" --depth=100
+          git fetch origin candidate/endlume-10.0.6-production-freeze --depth=250
+          git cat-file -e "${{ steps.manifest.outputs.source_sha }}^{commit}"
+          git cat-file -e "${{ steps.manifest.outputs.mac_sha }}^{commit}"
+          git cat-file -e "${{ steps.manifest.outputs.win_sha }}^{commit}"
           git merge-base --is-ancestor "${{ steps.manifest.outputs.mac_sha }}" "${{ steps.manifest.outputs.source_sha }}" || {
             echo "Mac QA SHA is not an ancestor of release source" >&2; exit 31;
           }
@@ -112,6 +115,15 @@ jobs:
           clean: true
           fetch-depth: 1
           persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
 
       - name: Verify exact source + keys
         shell: bash
@@ -253,6 +265,10 @@ jobs:
         with:
           targets: x86_64-pc-windows-msvc
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
       - name: Stage production Windows FFmpeg
         shell: pwsh
         run: |
@@ -295,7 +311,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: ENDLUME-10.0.6-production-windows
-          path: release-stage\win\
+          path: release-stage/win/
           if-no-files-found: error
           retention-days: 3
 
@@ -307,6 +323,10 @@ jobs:
     env:
       RELEASE_TOKEN: ${{ secrets.ENDLUME_RELEASE_TOKEN }}
     steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
       - uses: actions/download-artifact@v4
         with:
           name: ENDLUME-10.0.6-production-macos

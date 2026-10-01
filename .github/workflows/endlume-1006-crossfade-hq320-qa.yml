@@ -3,7 +3,7 @@ name: ENDLUME 10.0.6 Crossfade HQ320 QA
 on:
   push:
     branches:
-      - qa/endlume-10.0.6-full-production
+      - candidate/endlume-10.0.6-production-freeze
     paths:
       - ".github/workflows/endlume-1006-crossfade-hq320-qa.yml"
   workflow_dispatch: {}
@@ -11,9 +11,13 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: endlume-1006-crossfade-freeze-qa
+  cancel-in-progress: true
+
 jobs:
   macos:
-    runs-on: macos-15
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4

@@ -96,7 +96,7 @@ jobs:
 
           TARGET="$(python3 -c 'import sys; x=round(1920*float(sys.argv[1])); print(max(2,x if x%2==0 else x+1))' "$SCALE")"
           PX="$(python3 -c 'import sys; print(max(0,min(1920-int(sys.argv[1]),round(1920*float(sys.argv[2])-int(sys.argv[1])/2))))' "$TARGET" "$X")"
-          "$FFMPEG" -hide_banner -loglevel error -f rawvideo -pix_fmt rgba -s "$PW"x"$PH" -i "$ROOT/preview-fx.rgba"             -frames:v 1 -vf "scale=$TARGET:-2:flags=bilinear" -y "$ROOT/preview-fx.png"
+          "$FFMPEG" -hide_banner -loglevel error -f rawvideo -pix_fmt rgba -s "$PW"x"$PH" -i "$ROOT/preview-fx.rgba"             -frames:v 1 -vf "scale=$TARGET:-2:flags=lanczos" -y "$ROOT/preview-fx.png"
           TH="$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of default=nw=1:nk=1 "$ROOT/preview-fx.png")"
           PY="$(python3 -c 'import sys; print(max(0,min(1080-int(sys.argv[1]),round(1080*float(sys.argv[2])-int(sys.argv[1])/2))))' "$TH" "$Y")"
           "$FFMPEG" -hide_banner -loglevel error -i "$ROOT/base.png" -i "$ROOT/preview-fx.png"             -filter_complex "[0:v]format=rgba[b];[b][1:v]overlay=x=$PX:y=$PY:format=auto,format=rgb24[out]"             -map "[out]" -frames:v 1 -y "$ROOT/preview.png"

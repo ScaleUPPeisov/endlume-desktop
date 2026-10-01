@@ -28,7 +28,7 @@ jobs:
         with:
           ref: ${{ github.sha }}
           clean: true
-          fetch-depth: 1
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Verify approved 10.0.3 source lineage

@@ -69,24 +69,37 @@ assert re.search(r'^version\s*=\s*"10[.]0[.]6"$',cargo,re.M)
 print('ENDLUME_1006_EXACT_SOURCE_GREEN')
 PY
 
-echo "2/8 Restore proven portable macOS FFmpeg sidecars"
-cd "$LEGACY"
-gh release download "$TAG" --repo "$HOST_REPO" --pattern "$LEGACY_MAC_ZIP" --clobber
-test -s "$LEGACY/$LEGACY_MAC_ZIP"
-/usr/bin/ditto -x -k "$LEGACY/$LEGACY_MAC_ZIP" "$LEGACY/unpack"
-OLD_APP="$(find "$LEGACY/unpack" -maxdepth 3 -type d -name '*.app' -print -quit)"
-test -n "$OLD_APP" -a -d "$OLD_APP"
-test -x "$OLD_APP/Contents/MacOS/ffmpeg"
-test -x "$OLD_APP/Contents/MacOS/ffprobe"
+echo "2/8 Stage full Apple Silicon FFmpeg/FFprobe with acrossfade"
+export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+
+if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v ffprobe >/dev/null 2>&1; then
+  command -v brew >/dev/null 2>&1 || { echo "Homebrew missing and full FFmpeg is not installed" >&2; exit 22; }
+  brew install ffmpeg
+fi
+
+FFMPEG_BIN="$(command -v ffmpeg)"
+FFPROBE_BIN="$(command -v ffprobe)"
+
+test -x "$FFMPEG_BIN"
+test -x "$FFPROBE_BIN"
+
+FF_FILTERS="$("$FFMPEG_BIN" -hide_banner -filters 2>/dev/null || true)"
+grep -q acrossfade <<<"$FF_FILTERS" || {
+  echo "Installed FFmpeg does not provide acrossfade" >&2
+  "$FFMPEG_BIN" -version | head -1 >&2 || true
+  exit 23
+}
+
+file "$FFMPEG_BIN" | grep -E 'arm64|Mach-O'
+file "$FFPROBE_BIN" | grep -E 'arm64|Mach-O'
+
 mkdir -p "$WORK/src-tauri/binaries"
-cp "$OLD_APP/Contents/MacOS/ffmpeg" "$WORK/src-tauri/binaries/ffmpeg-aarch64-apple-darwin"
-cp "$OLD_APP/Contents/MacOS/ffprobe" "$WORK/src-tauri/binaries/ffprobe-aarch64-apple-darwin"
+cp -L "$FFMPEG_BIN" "$WORK/src-tauri/binaries/ffmpeg-aarch64-apple-darwin"
+cp -L "$FFPROBE_BIN" "$WORK/src-tauri/binaries/ffprobe-aarch64-apple-darwin"
 chmod 755 "$WORK/src-tauri/binaries/ffmpeg-aarch64-apple-darwin" "$WORK/src-tauri/binaries/ffprobe-aarch64-apple-darwin"
-file "$WORK/src-tauri/binaries/ffmpeg-aarch64-apple-darwin" | grep -E 'arm64|Mach-O'
-file "$WORK/src-tauri/binaries/ffprobe-aarch64-apple-darwin" | grep -E 'arm64|Mach-O'
-FF_FILTERS="$("$WORK/src-tauri/binaries/ffmpeg-aarch64-apple-darwin" -hide_banner -filters 2>/dev/null || true)"
-grep -q acrossfade <<<"$FF_FILTERS"
-"$WORK/src-tauri/binaries/ffprobe-aarch64-apple-darwin" -version >/dev/null
+
+"$WORK/src-tauri/binaries/ffmpeg-aarch64-apple-darwin" -hide_banner -filters 2>/dev/null | grep acrossfade | head -1
+"$WORK/src-tauri/binaries/ffprobe-aarch64-apple-darwin" -version | head -1
 echo ENDLUME_1006_PORTABLE_FFMPEG_GREEN
 
 echo "3/8 Compile release"

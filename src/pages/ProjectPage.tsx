@@ -31,12 +31,13 @@ export function ProjectPage(){
     if(busy||!roots.length)return;setBusy(true);setScanNote('');setInvalidProjects([]);
     try{
       const all:any[]=[];const bad:any[]=[];
+      const savedAnchors=useApp.getState().sceneAnchorsByPath;
       for(const root of roots){
         setLastRoot(root);
         try{
           const items=await api.scanRoot(root);
           for(const x of items){
-            if(x.valid)all.push({...x,status:'queued',progress:0,stage:'Ожидает добавления в очередь',elapsedSec:0} as RenderProject);
+            if(x.valid)all.push({...x,anchors:savedAnchors[x.path]||x.anchors,status:'queued',progress:0,stage:'Ожидает добавления в очередь',elapsedSec:0} as RenderProject);
             else bad.push({name:x.name,path:x.path,error:x.error||'Ошибка проекта'});
           }
         }catch(e){bad.push({name:root.split(/[\\/]/).pop()||root,path:root,error:String(e)});}

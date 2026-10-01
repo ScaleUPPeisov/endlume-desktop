@@ -1,4 +1,16 @@
 use serde::{Deserialize,Serialize};
+use std::collections::HashMap;
+
+#[derive(Debug,Clone,Serialize,Deserialize)]
+#[serde(rename_all="camelCase")]
+pub struct AnchorPoint{
+  pub x:f64,
+  pub y:f64,
+  #[serde(default)] pub width:Option<f64>,
+  #[serde(default)] pub height:Option<f64>,
+  #[serde(default)] pub source:Option<String>,
+  #[serde(default)] pub confidence:Option<f64>,
+}
 
 #[derive(Debug,Clone,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]
@@ -9,7 +21,8 @@ pub struct ProjectScanItem{
   pub media:Vec<String>,
   pub audio:Vec<String>,
   pub valid:bool,
-  pub error:Option<String>
+  pub error:Option<String>,
+  #[serde(default)] pub anchors:Option<HashMap<String,AnchorPoint>>
 }
 
 #[derive(Debug,Clone,Serialize,Deserialize)]
@@ -58,6 +71,10 @@ pub struct EffectPreset{
   #[serde(default)] pub usage_mode:Option<String>,
   #[serde(default)] pub interval_sec:Option<f64>,
   #[serde(default)] pub usage_duration_sec:Option<f64>,
+  #[serde(default)] pub target:Option<String>,
+  #[serde(default)] pub offset_x:Option<f64>,
+  #[serde(default)] pub offset_y:Option<f64>,
+  #[serde(default)] pub opacity:Option<f64>,
 }
 
 #[derive(Debug,Clone,Serialize,Deserialize)]

@@ -1,0 +1,126 @@
+ENDLUME_RELEASE_FAILURE
+version=10.0.6
+builder=BUILD_ENDLUME_1006_MAC_UPDATER.command
+exit_code=1
+timestamp=2026-10-01T10:21:39Z
+
+warning: unused import: `process::Command`
+ --> src/render.rs:4:62
+  |
+4 | use std::{collections::HashMap,io::Read,path::{Path,PathBuf},process::Command,sync::{Arc,OnceLock,atomic::{AtomicBool,AtomicU64,Order...
+  |                                                              ^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `event`
+   --> src/lib.rs:162:24
+    |
+162 |   app.run(|_app_handle,event|{
+    |                        ^^^^^ help: if this is intentional, prefix it with an underscore: `_event`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `clear_queue_state` is never used
+   --> src/persistence.rs:103:8
+    |
+103 | pub fn clear_queue_state(app:&AppHandle)->anyhow::Result<()> {
+    |        ^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `unique_output_ext` is never used
+  --> src/render.rs:70:4
+   |
+70 | fn unique_output_ext(dir:&Path,name:&str,ext:&str)->PathBuf{let safe=safe_name(name);let ext=ext.trim_start_matches('.');let mut p=d...
+   |    ^^^^^^^^^^^^^^^^^
+
+warning: function `choose_fidelity_encoder` is never used
+   --> src/render.rs:150:10
+    |
+150 | async fn choose_fidelity_encoder(app:&AppHandle,attempt:u32)->String{
+    |          ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `hybrid_video_kbps` is never used
+   --> src/render.rs:190:4
+    |
+190 | fn hybrid_video_kbps(_s:&RenderSettings)->u64{500}
+    |    ^^^^^^^^^^^^^^^^^
+
+warning: function `parse_max_volume_db_1000` is never used
+   --> src/render.rs:354:4
+    |
+354 | fn parse_max_volume_db_1000(stderr:&[u8])->Option<f64>{
+    |    ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `probe_audio_peak_db_1000` is never used
+   --> src/render.rs:364:10
+    |
+364 | async fn probe_audio_peak_db_1000(app:&AppHandle,path:&Path,pos:f64)->Result<f64,String>{
+    |          ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `build_lossless_audio_cycle` is never used
+   --> src/render.rs:514:10
+    |
+514 | async fn build_lossless_audio_cycle(app:&AppHandle,job:&QueueJob,started:i64,timer:&Instant,work:&Path,encoder:&str,attempt:u32,can...
+    |          ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `probe_has_audio` is never used
+   --> src/render.rs:654:10
+    |
+654 | async fn probe_has_audio(app:&AppHandle,path:&Path)->bool{
+    |          ^^^^^^^^^^^^^^^
+
+warning: function `static_smart_encoder_args` is never used
+   --> src/render.rs:691:4
+    |
+691 | fn static_smart_encoder_args(s:&RenderSettings)->Vec<String>{
+    |    ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `queue_safe_name` is never used
+  --> src/queue.rs:33:4
+   |
+33 | fn queue_safe_name(name:&str)->String{name.chars().map(|c|if ['/', '\\', ':', '*', '?', '"', '<', '>', '|'].contains(&c){'_'}else{c}...
+   |    ^^^^^^^^^^^^^^^
+
+warning: function `latest_result_for_job` is never used
+  --> src/queue.rs:35:4
+   |
+35 | fn latest_result_for_job(job:&QueueJob)->(Option<String>,Option<u64>){
+   |    ^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `done_fallback_payload` is never used
+  --> src/queue.rs:50:4
+   |
+50 | fn done_fallback_payload(job:&QueueJob)->Value{
+   |    ^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `canonical_string` is never used
+  --> src/vyron_bridge.rs:19:4
+   |
+19 | fn canonical_string(path:&str)->Result<String,String>{Ok(PathBuf::from(path).canonicalize().map_err(|_|format!("Путь не найден: {pat...
+   |    ^^^^^^^^^^^^^^^^
+
+warning: function `report_if_registered` is never used
+   --> src/vyron_bridge.rs:178:8
+    |
+178 | pub fn report_if_registered(project_path:&str,render_status:&str,output_file:Option<String>,duration:Option<f64>,file_size:Option<u...
+    |        ^^^^^^^^^^^^^^^^^^^^
+
+warning: `endlume` (lib) generated 16 warnings (run `cargo fix --lib -p endlume` to apply 2 suggestions)
+    Finished `release` profile [optimized] target(s) in 6m 40s
+       Built application at: ~/.endlume-build-cache/target-1006-local-updater/aarch64-apple-darwin/release/endlume
+    Bundling ENDLUME YT Studio PEISOV.app (~/.endlume-build-cache/target-1006-local-updater/aarch64-apple-darwin/release/bundle/macos/ENDLUME YT Studio PEISOV.app)
+    Finished 1 bundle at:
+        ~/.endlume-build-cache/target-1006-local-updater/aarch64-apple-darwin/release/bundle/macos/ENDLUME YT Studio PEISOV.app
+
+file:///private/tmp/endlume-1006-updater.BaQZl5/source/scripts/verify-macos-ffmpeg-bundle.mjs:30
+if(!dylibs.length)throw new Error('No bundled FFmpeg dylibs found in Contents/Frameworks');
+                        ^
+
+Error: No bundled FFmpeg dylibs found in Contents/Frameworks
+    at file:///private/tmp/endlume-1006-updater.BaQZl5/source/scripts/verify-macos-ffmpeg-bundle.mjs:30:25
+    at ModuleJob.run (node:internal/modules/esm/module_job:343:25)
+    at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:681:26)
+    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:117:5)
+
+Node.js v22.23.2

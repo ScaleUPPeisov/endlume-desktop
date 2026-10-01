@@ -99,8 +99,6 @@ jobs:
           cargo test --manifest-path src-tauri/Cargo.toml --target aarch64-apple-darwin -- --nocapture
 
       - name: Build packaged macOS 10.0.4
-        env:
-          APPLE_SIGNING_IDENTITY: "-"
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -111,9 +109,9 @@ jobs:
           p=Path("src-tauri/tauri.conf.json")
           d=json.loads(p.read_text())
           d["bundle"]["createUpdaterArtifacts"]=False
-          d["app"]["windows"]=[]
           p.write_text(json.dumps(d,ensure_ascii=False,indent=2)+"\n")
           PY
+          node scripts/assert-production-main-window.mjs
           npm run tauri build -- --target aarch64-apple-darwin --bundles app
 
       - name: Verify and package stable app

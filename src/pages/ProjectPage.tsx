@@ -26,6 +26,11 @@ export function ProjectPage(){
   }=useApp();
   const [busy,setBusy]=useState(false),[scanNote,setScanNote]=useState(''),[features,setFeatures]=useState<FeatureFlags>(loadFeatures);
   const setFeature=(key:keyof FeatureFlags,value:boolean)=>setFeatures(prev=>{const next={...prev,[key]:value};localStorage.setItem(featureKey,JSON.stringify(next));return next});
+  const saveAmbient=async(next?:string)=>{
+    setAmbient(next);
+    const state=useApp.getState();
+    await api.saveLibrary({effects:state.effects,subscribes:state.subscribes,ambient:next});
+  };
 
   const scanRoots=useCallback(async(roots:string[])=>{
     if(busy||!roots.length)return;setBusy(true);setScanNote('');setInvalidProjects([]);
@@ -133,8 +138,8 @@ export function ProjectPage(){
       <div className="featureRow"><span className="featureIcon blue"><Icon name="effects"/></span><div><b>Набор эффектов поверх видео</b><small>{!features.effects?'Отключено для текущих рендеров':effects.filter(e=>e.enabled).length?`Активно: ${effects.filter(e=>e.enabled).length} • сохранено: ${effects.length}`:'Эффекты не выбраны'}</small></div><div className="rowButtons"><button onClick={()=>setFeature('effects',!features.effects)}>{features.effects?'ВЫКЛЮЧИТЬ':'ВКЛЮЧИТЬ'}</button><button onClick={()=>openEditor({kind:'effects'})}>НАСТРОИТЬ →</button></div></div>
     </section>
     <section className="sectionBlock">
-      <div className="sectionTitle">ФОНОВЫЙ ЗВУК</div>
-      <div className="featureRow"><span className="featureIcon"><Icon name="ambient"/></span><div><b>Добавить ambient-звук</b><small>{!features.ambient?'Отключено для текущих рендеров':ambient||'Не выбран'}</small></div><div className="rowButtons"><button onClick={()=>setFeature('ambient',!features.ambient)}>{features.ambient?'ВЫКЛЮЧИТЬ':'ВКЛЮЧИТЬ'}</button><button onClick={async()=>{const p=await api.chooseAmbient();if(p)setAmbient(p)}}>ВЫБРАТЬ</button>{ambient&&<button className="dangerText" onClick={()=>setAmbient(undefined)}>УДАЛИТЬ</button>}</div></div>
+      <div className="sectionTitle">BACKGROUND MUSIC</div>
+      <div className="featureRow"><span className="featureIcon"><Icon name="ambient"/></span><div><b>Фоновая музыка</b><small>{!features.ambient?'Отключено для текущих рендеров':ambient||'Не выбрана'}</small></div><div className="rowButtons"><button onClick={()=>setFeature('ambient',!features.ambient)}>{features.ambient?'ВЫКЛЮЧИТЬ':'ВКЛЮЧИТЬ'}</button><button onClick={async()=>{const p=await api.chooseAmbient();if(p)await saveAmbient(p)}}>ВЫБРАТЬ</button>{ambient&&<button className="dangerText" onClick={()=>void saveAmbient(undefined)}>УДАЛИТЬ</button>}</div></div>
     </section>
 
     <section className="sectionBlock outputSection">

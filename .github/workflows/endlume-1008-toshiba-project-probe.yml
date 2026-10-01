@@ -78,4 +78,28 @@ jobs:
             print(f"BEST_PROJECT_PATH={best[3]}")
             print(f"BEST_PROJECT_AUDIO={best[0]}")
             print(f"BEST_PROJECT_MEDIA={best[1]}")
+
+          videos=[]
+          for root,dirs,files in os.walk(vol):
+            p=Path(root)
+            depth=len(p.parts)-root_depth
+            dirs[:]=[d for d in dirs if not d.startswith(".") and d not in {"System Volume Information","$RECYCLE.BIN"}]
+            if depth>=5: dirs[:]=[]
+            for name in files:
+              if not name.lower().endswith((".mp4",".mov")): continue
+              fp=p/name
+              try:
+                st=fp.stat()
+              except: continue
+              mb=st.st_size/1_000_000
+              if 550<=mb<=800:
+                videos.append((st.st_mtime,mb,str(fp)))
+          videos.sort(reverse=True)
+          print("RECENT_550_800MB_OUTPUTS="+str(len(videos)))
+          for mt,mb,p in videos[:12]:
+            print(f"OUTPUT|mb={mb:.1f}|mtime={mt:.0f}|path={p}")
+            parent=Path(p).parent; stem=Path(p).stem
+            for side in parent.iterdir():
+              if side.is_file() and (stem in side.stem or side.suffix.lower() in {".json",".txt",".m3u",".csv"}) and side.stat().st_size<2_000_000:
+                print(f"SIDEFILE|{side}")
           PY

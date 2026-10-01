@@ -46,6 +46,8 @@ SIG_FILE="$ASSET.sig"
 [[ -s "$SIG_FILE" ]] || { echo "Signature missing: $SIG_FILE" >&2; exit 1; }
 SIG="$(tr -d '\r\n' < "$SIG_FILE")"
 [[ -n "$SIG" ]] || { echo 'Updater signature is empty' >&2; exit 1; }
+MAC_SHA="$(shasum -a 256 "$ASSET" | awk '{print $1}')"
+[[ "$MAC_SHA" =~ ^[0-9a-f]{64}$ ]] || { echo 'Updater SHA-256 invalid' >&2; exit 1; }
 
 FIXED="$ART/ENDLUME-macos-aarch64.app.tar.gz"
 FIXED_SIG="$FIXED.sig"
@@ -57,13 +59,13 @@ LATEST="$ART/latest.json"
 OLD="$ART/old-latest.json"
 if gh release download "$TAG" --repo "$HOST_REPO" --pattern latest.json --output "$OLD" >/dev/null 2>&1; then :; else printf '{}\n' > "$OLD"; fi
 WINDOWS_META="$ART/windows-platform.json"
-python3 - "$OLD" "$LATEST" "$VERSION" "$NOTES" "$ASSET_URL" "$SIG" "$WINDOWS_META" <<'PY'
+python3 - "$OLD" "$LATEST" "$VERSION" "$NOTES" "$ASSET_URL" "$SIG" "$MAC_SHA" "$WINDOWS_META" <<'PY'
 import json,sys,datetime,pathlib
-old,out,version,notes,url,sig,windows_meta=sys.argv[1:]
+old,out,version,notes,url,sig,mac_sha,windows_meta=sys.argv[1:]
 try: d=json.load(open(old))
 except: d={}
 platforms=d.get('platforms') if isinstance(d.get('platforms'),dict) else {}
-platforms['darwin-aarch64']={'url':url,'signature':sig}
+platforms['darwin-aarch64']={'url':url,'signature':sig,'sha256':mac_sha}
 wm=pathlib.Path(windows_meta)
 if wm.is_file():
     w=json.loads(wm.read_text())
@@ -83,6 +85,7 @@ p=d.get('platforms',{}).get('darwin-aarch64')
 assert isinstance(p,dict),'darwin-aarch64 platform missing'
 assert p.get('url')==url,(p.get('url'),url)
 assert isinstance(p.get('signature'),str) and p['signature'].strip(),'signature empty'
+assert isinstance(p.get('sha256'),str) and len(p['sha256'])==64,'sha256 missing/invalid'
 print('PASS: latest.json static updater contract valid')
 PY
 
@@ -119,6 +122,7 @@ assert d.get('version')==version,(d.get('version'),version)
 p=d.get('platforms',{}).get('darwin-aarch64')
 assert isinstance(p,dict) and p.get('url','').startswith('https://github.com/'),'public updater URL invalid'
 assert isinstance(p.get('signature'),str) and p['signature'].strip(),'public signature empty'
+assert isinstance(p.get('sha256'),str) and len(p['sha256'])==64,'public sha256 missing/invalid'
 print('PASS: public latest.json is downloadable and valid')
 PY
 

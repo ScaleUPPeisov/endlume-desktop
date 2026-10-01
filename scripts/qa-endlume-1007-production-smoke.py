@@ -13,13 +13,13 @@ if not exe.exists():
     exe=c[0]
 
 root=Path(tempfile.mkdtemp(prefix="endlume-1007-prod-"))
-img=root/"base.png"; main_audio=root/"main.mp3"; ambient=root/"ambient.mp3"
+base_video=root/"base.mp4"; main_audio=root/"main.mp3"; ambient=root/"ambient.mp3"
 fx_on=root/"fx-on.mp4"; fx_off=root/"fx-off.mp4"; sub=root/"subscribe.mp4"; out=root/"out"; out.mkdir()
 
 def run(args, text=True):
     return subprocess.run([str(x) for x in args],check=True,text=text,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
 
-run([ffmpeg,"-hide_banner","-loglevel","error","-f","lavfi","-i","color=c=0x18233a:s=1920x1080:r=60","-frames:v","1","-y",img])
+run([ffmpeg,"-hide_banner","-loglevel","error","-f","lavfi","-i","color=c=0x18233a:s=1920x1080:r=60:d=9","-an","-c:v","libx264","-preset","ultrafast","-crf","12","-pix_fmt","yuv420p","-y",base_video])
 run([ffmpeg,"-hide_banner","-loglevel","error","-f","lavfi","-i","sine=frequency=440:sample_rate=48000:duration=9","-ac","2","-c:a","libmp3lame","-b:a","192k","-y",main_audio])
 run([ffmpeg,"-hide_banner","-loglevel","error","-f","lavfi","-i","sine=frequency=880:sample_rate=48000:duration=9","-ac","2","-c:a","libmp3lame","-b:a","128k","-y",ambient])
 
@@ -46,9 +46,9 @@ subscribe={**sub_effect,"firstAtSec":60.0,"secondAtSec":120.0,"repeatEverySec":6
            "firstAppearance":"immediate","customFirstAtSec":0.0,"showDurationSec":5.0}
 
 job={
- "project":{"id":"e1007-prod","name":"ENDLUME 10.0.7 Production Smoke","path":str(root),"media":[str(img)],"audio":[str(main_audio)],"valid":True,"error":None,"anchors":{}},
+ "project":{"id":"e1007-prod","name":"ENDLUME 10.0.7 Production Smoke","path":str(root),"media":[str(base_video)],"audio":[str(main_audio)],"valid":True,"error":None,"anchors":{}},
  "settings":{"width":1920,"height":1080,"fps":60,"codec":"h265","bitrateMbps":4.0,"durationHours":0.002,
-             "durationMode":"exact","loopMode":"image","crossfadeSec":0.0,"normalizeLufs":False,"outputDir":str(out),
+             "durationMode":"exact","loopMode":"original","crossfadeSec":0.0,"normalizeLufs":False,"outputDir":str(out),
              "preset":"fast","encoderPreference":"auto"},
  "effects":[fx1,fx2],"subscribes":[subscribe],"ambient":str(ambient)
 }

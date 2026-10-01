@@ -104,6 +104,53 @@ fn maybe_start_render_e2e(app:tauri::AppHandle){
   });
 }
 
+#[cfg(target_os="windows")]
+fn apply_windows_system_icons<R:tauri::Runtime>(window:&tauri::WebviewWindow<R>)->std::io::Result<()>{
+  #[link(name="kernel32")]
+  extern "system"{
+    fn GetModuleHandleW(module_name:*const u16)->isize;
+  }
+  #[link(name="user32")]
+  extern "system"{
+    fn GetSystemMetrics(index:i32)->i32;
+    fn LoadImageW(instance:isize,name:*const u16,image_type:u32,cx:i32,cy:i32,flags:u32)->isize;
+    fn SendMessageW(hwnd:isize,message:u32,wparam:usize,lparam:isize)->isize;
+  }
+
+  const IMAGE_ICON:u32=1;
+  const LR_SHARED:u32=0x00008000;
+  const WM_SETICON:u32=0x0080;
+  const ICON_SMALL:usize=0;
+  const ICON_BIG:usize=1;
+  const SM_CXICON:i32=11;
+  const SM_CYICON:i32=12;
+  const SM_CXSMICON:i32=49;
+  const SM_CYSMICON:i32=50;
+
+  let hwnd=window.hwnd().map_err(|error|std::io::Error::other(error.to_string()))?.0 as isize;
+  let module=unsafe{GetModuleHandleW(std::ptr::null())};
+  if module==0{return Err(std::io::Error::last_os_error())}
+
+  // tauri-build 2.6.3 embeds the Windows application icon as resource ID 32512.
+  const TAURI_WINDOWS_APP_ICON_RESOURCE_ID:usize=32512;
+  let resource=TAURI_WINDOWS_APP_ICON_RESOURCE_ID as *const u16;
+  let big_width=unsafe{GetSystemMetrics(SM_CXICON)}.max(32);
+  let big_height=unsafe{GetSystemMetrics(SM_CYICON)}.max(32);
+  let small_width=unsafe{GetSystemMetrics(SM_CXSMICON)}.max(16);
+  let small_height=unsafe{GetSystemMetrics(SM_CYSMICON)}.max(16);
+
+  let big_icon=unsafe{LoadImageW(module,resource,IMAGE_ICON,big_width,big_height,LR_SHARED)};
+  if big_icon==0{return Err(std::io::Error::last_os_error())}
+  let small_icon=unsafe{LoadImageW(module,resource,IMAGE_ICON,small_width,small_height,LR_SHARED)};
+  if small_icon==0{return Err(std::io::Error::last_os_error())}
+
+  unsafe{
+    SendMessageW(hwnd,WM_SETICON,ICON_SMALL,small_icon);
+    SendMessageW(hwnd,WM_SETICON,ICON_BIG,big_icon);
+  }
+  Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run(){
   let app=tauri::Builder::default()
@@ -127,6 +174,10 @@ pub fn run(){
       vyron_bridge::consume_vyron_batch_request,vyron_bridge::load_vyron_batch_manifest,vyron_bridge::report_vyron_render
     ])
     .setup(|app|{
+      #[cfg(target_os="windows")]
+      if let Some(window)=app.get_webview_window("main"){
+        apply_windows_system_icons(&window)?;
+      }
       persistence::mark_session_open(&app.handle().clone())?;
       render::cleanup_runtime_caches_1003(&app.handle().clone());
       #[cfg(feature="e2e-render")]

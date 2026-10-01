@@ -22,7 +22,9 @@
     ]
   },
   "bundle": {
-    "targets": ["nsis"],
+    "targets": [
+      "nsis"
+    ],
     "publisher": "PEISOV",
     "shortDescription": "ENDLUME YT Studio PEISOV",
     "longDescription": "ENDLUME YT Studio PEISOV",
@@ -30,11 +32,17 @@
       "nsis": {
         "installMode": "currentUser",
         "displayLanguageSelector": true,
-        "languages": ["Russian", "English"],
+        "languages": [
+          "Russian",
+          "English"
+        ],
         "installerIcon": "icons/icon.ico",
         "uninstallerIcon": "icons/icon.ico",
         "startMenuFolder": "ENDLUME YT Studio PEISOV"
       }
-    }
+    },
+    "icon": [
+      "icons/icon.ico"
+    ]
   }
 }

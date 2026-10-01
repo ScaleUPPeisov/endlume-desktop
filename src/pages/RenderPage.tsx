@@ -81,7 +81,7 @@ export function RenderPage(){
   const openResult=async(path?:string)=>{if(!path)return;try{await api.openPath(path)}catch(e){await api.showError(`Не удалось открыть видео.\n${String(e)}`)}};
   const revealResult=async(path?:string)=>{if(!path)return;try{await api.reveal(path)}catch(e){await api.showError(`Не удалось открыть папку результата.\n${String(e)}`)}};
   return <div className="renderPage">
-    <div className="renderHeader"><div><small>РЕНДЕР ОЧЕРЕДИ · {done+errors} ИЗ {projects.length}</small><h1>{projects.length>0&&done+errors===projects.length?'Все рендеры завершены':'Рендер очереди'}</h1></div><button className="backProject endlumeAction ghostAction" onClick={()=>setPage('project')}>← ВЕРНУТЬСЯ К ПРОЕКТУ</button></div>
+    <div className="renderHeader"><div><small>РЕНДЕР ОЧЕРЕДИ · {done+errors} ИЗ {projects.length}</small><h1>{projects.length>0&&done+errors===projects.length?(errors>0?`Рендер завершён с ошибкой · ${errors} ошибок`:'Все рендеры завершены'):'Рендер очереди'}</h1></div><button className="backProject endlumeAction ghostAction" onClick={()=>setPage('project')}>← ВЕРНУТЬСЯ К ПРОЕКТУ</button></div>
     <div className="renderWorkspace">
       <aside className="queuePanel">
         <div className="queueTitle">ОЧЕРЕДЬ · {projects.length}</div>
@@ -92,7 +92,7 @@ export function RenderPage(){
       </aside>
 
       <section className="renderDetails">{active?<>
-        <div className="selectedRenderHead"><div><small>{active.status==='done'?'ГОТОВЫЙ ПРОЕКТ':'СЕЙЧАС РЕНДЕРИТСЯ'}</small><h2>{active.name}</h2><p>{active.media.length} медиа • {active.audio.length} аудиотреков{active.encoder?` • ${active.encoder}`:''}</p></div><div className="progressNumber"><SmoothPercent target={active.progress}/></div></div>
+        <div className="selectedRenderHead"><div><small>{active.status==='done'?'ГОТОВЫЙ ПРОЕКТ':active.status==='error'?'ОШИБКА РЕНДЕРА':'СЕЙЧАС РЕНДЕРИТСЯ'}</small><h2>{active.name}</h2><p>{active.media.length} медиа • {active.audio.length} аудиотреков{active.encoder?` • ${active.encoder}`:''}</p></div><div className="progressNumber"><SmoothPercent target={active.progress}/></div></div>
         <div className="mainProgress"><SmoothBar target={active.progress}/></div>
         <LiveTelemetry id={active.id} status={active.status} startedAt={active.startedAt} elapsedSec={active.elapsedSec} etaSec={active.etaSec}/>
         <div className="renderBodyGrid">

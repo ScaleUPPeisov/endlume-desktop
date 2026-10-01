@@ -174,32 +174,69 @@ jobs:
           /usr/sbin/spctl -a -vv "$E1006_APP" 2>&1 | tee e1006-qa/gatekeeper.txt
           echo "ENDLUME_1006_SIGNING_NOTARY_GATEKEEPER_GREEN"
 
-      - name: Real packaged launch
+      - name: Exact ZIP • real UI launch • crash • signing
         shell: bash
         run: |
           set -Eeuo pipefail
           OUT="$GITHUB_WORKSPACE/e1006-qa"
           mkdir -p "$OUT"
-          ZIP="$OUT/ENDLUME-10.0.6-hosted-candidate.zip"
+          ZIP="$OUT/ENDLUME-10.0.6-production-candidate.zip"
           /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$E1006_APP" "$ZIP"
+          /usr/bin/shasum -a 256 "$ZIP" | tee "$OUT/ENDLUME-10.0.6-production-candidate.zip.sha256"
           UNPACK="$RUNNER_TEMP/e1006-unpack"
           rm -rf "$UNPACK"; mkdir -p "$UNPACK"
           /usr/bin/ditto -x -k "$ZIP" "$UNPACK"
           APP="$(find "$UNPACK" -maxdepth 2 -type d -name '*.app' -print -quit)"
-          test -n "$APP"
+          test -n "$APP" -a -d "$APP"
+          test "$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist")" = "10.0.6"
+          test "$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$APP/Contents/Info.plist")" = "studio.endlume.desktop"
+          EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
+          test -x "$APP/Contents/MacOS/$EXE"
+          test -x "$APP/Contents/MacOS/ffmpeg"
+          test -x "$APP/Contents/MacOS/ffprobe"
+          /usr/bin/lipo -archs "$APP/Contents/MacOS/$EXE" | grep -qw arm64
+          /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP"
+          /usr/bin/xcrun stapler validate "$APP"
+          /usr/sbin/spctl -a -vv "$APP" 2>&1 | tee "$OUT/exact-zip-gatekeeper.txt"
+
           MARKER="$RUNNER_TEMP/e1006-launch.json"
-          rm -f "$MARKER"
+          STAMP="$RUNNER_TEMP/e1006-launch-start.stamp"
+          SHOT="$OUT/ENDLUME-10.0.6-main-ui-smoke.png"
+          rm -f "$MARKER" "$SHOT"; touch "$STAMP"
           /bin/launchctl setenv ENDLUME_LAUNCH_SMOKE_MARKER "$MARKER"
+          cleanup_env(){ /bin/launchctl unsetenv ENDLUME_LAUNCH_SMOKE_MARKER >/dev/null 2>&1 || true; }
+          trap cleanup_env EXIT
           /usr/bin/open -n "$APP"
           for I in $(seq 1 80); do test -s "$MARKER" && break; sleep 0.25; done
-          /bin/launchctl unsetenv ENDLUME_LAUNCH_SMOKE_MARKER || true
+          cleanup_env
           test -s "$MARKER"
-          cat "$MARKER"
+          cat "$MARKER" | tee "$OUT/frontend-main.json"
           PID="$(python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));assert d["label"]=="main";assert d["frontendLoaded"] is True;print(d["pid"])' "$MARKER")"
           kill -0 "$PID"
-          kill "$PID" || true
+          sleep 2
+          kill -0 "$PID"
+          WINDOW_COUNT="$(/usr/bin/osascript <<OSA
+          tell application "System Events"
+            set p to first application process whose unix id is $PID
+            set frontmost of p to true
+            return count of windows of p
+          end tell
+          OSA
+          )"
+          test "$WINDOW_COUNT" -ge 1
+          /usr/sbin/screencapture -x "$SHOT"
+          test -s "$SHOT"
+          test "$(stat -f '%z' "$SHOT")" -gt 10000
+          if test -d "$HOME/Library/Logs/DiagnosticReports"; then
+            if find "$HOME/Library/Logs/DiagnosticReports" -type f -newer "$STAMP" -iname '*endlume*' -print | grep -q .; then
+              echo "ENDLUME crash report detected after exact ZIP launch" >&2
+              exit 43
+            fi
+          fi
+          kill "$PID" >/dev/null 2>&1 || true
           echo "E1006_UNPACKED_APP=$APP" >> "$GITHUB_ENV"
-          echo "ENDLUME_1006_LAUNCH_GREEN"
+          echo "E1006_APP_BIN=$APP/Contents/MacOS/$EXE" >> "$GITHUB_ENV"
+          echo "ENDLUME_1006_EXACT_ZIP_UI_LAUNCH_GREEN windows=$WINDOW_COUNT"
 
       - name: FFmpeg Live Preview runtime
         shell: bash

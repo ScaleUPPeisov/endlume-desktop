@@ -879,7 +879,7 @@ async fn run_ffmpeg(app:&AppHandle,job:&QueueJob,started:i64,timer:&Instant,args
   let (mut rx,child)=app.shell().sidecar("ffmpeg").map_err(|e|format!("{stage}: FFmpeg недоступен: {e}"))?.args(args).spawn().map_err(|e|format!("{stage}: не удалось запустить FFmpeg: {e}"))?;
   let spawn_seconds=spawn_mark.elapsed().as_secs_f64();
   let pid=child.pid();let mut child=Some(child);let mut last=base;let mut stderr_tail=String::new();let mut sys=System::new_all();let mut metric_tick=Instant::now();
-  let output_candidate=argv.last().map(PathBuf::from);let mut last_guard_bytes=0u64;let mut guard_tick=Instant::now();
+  let output_candidate=argv.last().map(PathBuf::from);let mut last_guard_bytes=0u64;let mut guard_tick=Instant::now();let mut saw_progress_end=false;
   if fast_pingpong_project(job){diag_line(json!({"kind":"p0c-ffmpeg-start","projectId":job.project.id,"stage":stage,"expectedSeconds":expected_sec,"activeOutputPath":output_candidate,"args":argv}));}
   let mut startup_seconds:Option<f64>=None;let mut last_progress_at:Option<Instant>=None;let mut last_fps:Option<f64>=None;let mut last_speed:Option<f64>=None;
   loop{
@@ -915,6 +915,7 @@ async fn run_ffmpeg(app:&AppHandle,job:&QueueJob,started:i64,timer:&Instant,args
         for line in text.lines(){
           if let Some(raw)=line.strip_prefix("fps=").and_then(|x|x.trim().parse::<f64>().ok()){last_fps=Some(raw);}
           if let Some(raw)=line.strip_prefix("speed=").map(|x|x.trim().trim_end_matches('x')).and_then(|x|x.parse::<f64>().ok()){last_speed=Some(raw);}
+          if line.trim()=="progress=end"{saw_progress_end=true;}
           if line.starts_with("progress=")||line.starts_with("out_time_"){if startup_seconds.is_none(){startup_seconds=Some(process_mark.elapsed().as_secs_f64());}last_progress_at=Some(Instant::now());}
           let raw=line.strip_prefix("out_time_us=").or_else(||line.strip_prefix("out_time_ms="));
           if let Some(raw)=raw.and_then(|x|x.parse::<f64>().ok()){
@@ -927,9 +928,9 @@ async fn run_ffmpeg(app:&AppHandle,job:&QueueJob,started:i64,timer:&Instant,args
       CommandEvent::Terminated(t)=>{
         child.take();
         let process_seconds=process_mark.elapsed().as_secs_f64();let wait_seconds=last_progress_at.map(|x|x.elapsed().as_secs_f64()).unwrap_or(process_seconds);
-        diag_line(json!({"kind":"ffmpeg-process","projectId":job.project.id,"launch":launch,"stage":stage,"encoder":encoder,"encoderClass":encoder_class(encoder),"spawnSeconds":spawn_seconds,"startupSeconds":startup_seconds,"processSeconds":process_seconds,"postProgressWaitSeconds":wait_seconds,"encodeFps":last_fps,"realtimeSpeed":last_speed,"expectedSeconds":expected_sec,"args":argv}));
+        diag_line(json!({"kind":"ffmpeg-process","projectId":job.project.id,"launch":launch,"stage":stage,"encoder":encoder,"encoderClass":encoder_class(encoder),"spawnSeconds":spawn_seconds,"startupSeconds":startup_seconds,"processSeconds":process_seconds,"postProgressWaitSeconds":wait_seconds,"encodeFps":last_fps,"realtimeSpeed":last_speed,"expectedSeconds":expected_sec,"terminationCode":t.code,"terminationSignal":t.signal,"sawProgressEnd":saw_progress_end,"args":argv}));
         let key=format!("ffmpeg-{:02}",launch);emit_timing(app,&job.project.id,&key,process_seconds);
-        if t.code.unwrap_or(1)!=0{return Err(if stderr_tail.trim().is_empty(){format!("{stage}: FFmpeg завершился с кодом {:?}",t.code)}else{format!("{stage}: {}",stderr_tail.lines().rev().take(12).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n"))})}
+        if t.code.unwrap_or(1)!=0{return Err(if stderr_tail.trim().is_empty(){format!("{stage}: FFmpeg завершился code={:?} signal={:?} progressEnd={}",t.code,t.signal,saw_progress_end)}else{format!("{stage}: code={:?} signal={:?} progressEnd={}\n{}",t.code,t.signal,saw_progress_end,stderr_tail.lines().rev().take(12).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n"))})}
         break
       },
       _=>{}

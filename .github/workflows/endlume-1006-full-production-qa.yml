@@ -1,0 +1,201 @@
+name: ENDLUME 10.0.6 Full Production QA
+
+on:
+  push:
+    branches:
+      - qa/endlume-10.0.6-full-production
+    paths:
+      - ".github/workflows/endlume-1006-full-production-qa.yml"
+      - "package.json"
+      - "package-lock.json"
+      - "src/**"
+      - "src-tauri/**"
+      - "scripts/**"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-1006-full-production-qa
+  cancel-in-progress: true
+
+jobs:
+  hosted-macos:
+    name: macOS ARM64 • Source • UI • Effects • Launch • Render
+    runs-on: macos-15
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Version and production surface contract
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import json,re
+          from pathlib import Path
+          v='10.0.6'
+          assert json.loads(Path('package.json').read_text())['version']==v
+          assert json.loads(Path('package-lock.json').read_text())['version']==v
+          t=json.loads(Path('src-tauri/tauri.conf.json').read_text())
+          assert t['version']==v
+          assert t['app']['windows'] and any(w.get('label')=='main' for w in t['app']['windows'])
+          cargo=Path('src-tauri/Cargo.toml').read_text()
+          assert re.search(r'^version\s*=\s*"10[.]0[.]6"$',cargo,re.M)
+          lock=Path('src-tauri/Cargo.lock').read_text()
+          assert 'name = "endlume"\nversion = "10.0.6"' in lock
+          settings=Path('src/pages/SettingsPage.tsx').read_text()
+          assert "api.appVersion().then(setAppVersion)" in settings
+          assert "{PRODUCT_NAME} {appVersion||'…'}" in settings
+          assert "update.current||appVersion||'…'" in settings
+          assert "<ReleaseHistory currentVersion={appVersion}/>" in settings
+          assert "<span>Версия <b>{appVersion||'…'}</b></span>" in settings
+          history=Path('src/components/ReleaseHistory.tsx').read_text()
+          assert "release.version===currentVersion" in history
+          print('ENDLUME_1006_VERSION_UI_GREEN')
+          PY
+
+      - name: Effect Studio contract
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          types=Path('src/types.ts').read_text()
+          store=Path('src/store.ts').read_text()
+          editors=Path('src/pages/Editors.tsx').read_text()
+          live=Path('src/components/LiveCompositePreview.tsx').read_text()
+          model=Path('src-tauri/src/model.rs').read_text()
+          render=Path('src-tauri/src/render.rs').read_text()
+          for token in ['AnchorPoint','SceneAnchors','opacity?: number','offsetX?: number','offsetY?: number']:
+            assert token in types,token
+          assert 'sceneAnchorsByPath' in store and 'setSceneAnchor' in store
+          for token in ['anchorMode','onAnchorPick','Target / anchor','Opacity','offsetX','offsetY']:
+            assert token in editors,token
+          assert 'requestAnimationFrame(draw)' in live
+          assert 'effect.opacity??1' in live
+          assert 'prepare_live_preview' in live
+          assert 'offset_x' in model and 'offset_y' in model and 'opacity' in model
+          assert 'resolve_effect_for_project' in render
+          assert 'effect_opacity' in render
+          assert 'all_opacity={opacity}' in render
+          assert 'colorchannelmixer=aa={opacity}' in render
+          print('ENDLUME_1006_EFFECT_STUDIO_GREEN')
+          PY
+
+      - name: Frontend and Rust regression
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          brew list ffmpeg >/dev/null 2>&1 || brew install ffmpeg
+          mkdir -p src-tauri/binaries
+          cp -L "$(command -v ffmpeg)" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp -L "$(command -v ffprobe)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          chmod +x src-tauri/binaries/*
+          npm ci
+          npm run check
+          npm run build
+          cargo check --manifest-path src-tauri/Cargo.toml --target aarch64-apple-darwin
+          cargo test --manifest-path src-tauri/Cargo.toml --target aarch64-apple-darwin --lib -- --nocapture
+
+      - name: Build exact app candidate
+        env:
+          APPLE_SIGNING_IDENTITY: "-"
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('src-tauri/tauri.conf.json')
+          d=json.loads(p.read_text())
+          d['bundle']['createUpdaterArtifacts']=False
+          assert d['app']['windows'] and any(w.get('label')=='main' for w in d['app']['windows'])
+          p.write_text(json.dumps(d,ensure_ascii=False,indent=2)+'\n')
+          PY
+          export CARGO_TARGET_DIR="$RUNNER_TEMP/e1006-hosted"
+          npm run tauri build -- --target aarch64-apple-darwin --bundles app --features e2e-render
+          APP="$(find "$CARGO_TARGET_DIR" -type d -path '*/release/bundle/macos/*.app' -print -quit)"
+          test -n "$APP" -a -d "$APP"
+          test "$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist")" = "10.0.6"
+          test "$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$APP/Contents/Info.plist")" = "studio.endlume.desktop"
+          echo "E1006_APP=$APP" >> "$GITHUB_ENV"
+
+      - name: Real packaged launch
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          OUT="$GITHUB_WORKSPACE/e1006-qa"
+          mkdir -p "$OUT"
+          ZIP="$OUT/ENDLUME-10.0.6-hosted-candidate.zip"
+          /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$E1006_APP" "$ZIP"
+          UNPACK="$RUNNER_TEMP/e1006-unpack"
+          rm -rf "$UNPACK"; mkdir -p "$UNPACK"
+          /usr/bin/ditto -x -k "$ZIP" "$UNPACK"
+          APP="$(find "$UNPACK" -maxdepth 2 -type d -name '*.app' -print -quit)"
+          test -n "$APP"
+          MARKER="$RUNNER_TEMP/e1006-launch.json"
+          rm -f "$MARKER"
+          /bin/launchctl setenv ENDLUME_LAUNCH_SMOKE_MARKER "$MARKER"
+          /usr/bin/open -n "$APP"
+          for I in $(seq 1 80); do test -s "$MARKER" && break; sleep 0.25; done
+          /bin/launchctl unsetenv ENDLUME_LAUNCH_SMOKE_MARKER || true
+          test -s "$MARKER"
+          cat "$MARKER"
+          PID="$(python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));assert d["label"]=="main";assert d["frontendLoaded"] is True;print(d["pid"])' "$MARKER")"
+          kill -0 "$PID"
+          kill "$PID" || true
+          echo "E1006_UNPACKED_APP=$APP" >> "$GITHUB_ENV"
+          echo "ENDLUME_1006_LAUNCH_GREEN"
+
+      - name: FFmpeg Live Preview runtime
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ENDLUME_APP_PATH="$E1006_UNPACKED_APP" node scripts/verify-macos-ffmpeg-bundle.mjs | tee e1006-qa/runtime.log
+          grep -q EFFECTS_LIVE_PREVIEW_RUNTIME_PASS e1006-qa/runtime.log
+          grep -q SUBSCRIBE_LIVE_PREVIEW_RUNTIME_PASS e1006-qa/runtime.log
+          grep -q ENDLUME_MACOS_FFMPEG_RUNTIME_PASS e1006-qa/runtime.log
+
+      - name: Normal render smoke and output validation
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/qa-endlume-1005-normal-render-smoke.py             "$E1006_UNPACKED_APP"             "$E1006_UNPACKED_APP/Contents/MacOS/ffmpeg"             "$E1006_UNPACKED_APP/Contents/MacOS/ffprobe"             e1006-qa/normal-render.json
+          grep -q 'ENDLUME_1005_EXACT_ZIP_NORMAL_RENDER_PASS' e1006-qa/normal-render.json
+          python3 - <<'PY'
+          import json
+          d=json.load(open('e1006-qa/normal-render.json'))
+          assert d, d
+          print('ENDLUME_1006_NORMAL_RENDER_GREEN',d)
+          PY
+
+      - name: Verdict
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          echo "ENDLUME_1006_HOSTED_FULL_QA_GREEN"
+          echo "HEAD=$GITHUB_SHA"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ENDLUME-10.0.6-hosted-full-qa
+          path: e1006-qa/
+          if-no-files-found: warn
+          retention-days: 7

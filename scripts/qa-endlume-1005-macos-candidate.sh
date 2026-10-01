@@ -145,19 +145,19 @@ cp -R "$BUILD_APP" "$STAGE/ENDLUME YT Studio PEISOV.app"
 /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$STAGE/ENDLUME YT Studio PEISOV.app" "$FINAL/$ZIP_NAME"
 /usr/bin/shasum -a 256 "$FINAL/$ZIP_NAME" | tee "$FINAL/$ZIP_NAME.sha256"
 
-echo "=== UNPACK THE EXACT ZIP THAT WOULD BE SHIPPED ==="
-UNPACK="$STAGE/unpacked"
-rm -rf "$UNPACK"
-mkdir -p "$UNPACK"
-/usr/bin/ditto -x -k "$FINAL/$ZIP_NAME" "$UNPACK"
-APP="$(find "$UNPACK" -maxdepth 2 -type d -name '*.app' -print -quit)"
-test -n "$APP" -a -d "$APP"
-EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
-APP_BIN="$APP/Contents/MacOS/$EXE"
-test -x "$APP_BIN"
-test "$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist")" = "$VERSION"
-test "$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$APP/Contents/Info.plist")" = "studio.endlume.desktop"
-/usr/bin/lipo -archs "$APP_BIN" | grep -qw arm64
+echo "=== UNPACK EXACT ZIP COPY #1 FOR REAL LAUNCH ==="
+LAUNCH_UNPACK="$GITHUB_WORKSPACE/.qa-1005-launch-unpack"
+rm -rf "$LAUNCH_UNPACK"
+mkdir -p "$LAUNCH_UNPACK"
+/usr/bin/ditto -x -k "$FINAL/$ZIP_NAME" "$LAUNCH_UNPACK"
+LAUNCH_APP="$(find "$LAUNCH_UNPACK" -maxdepth 2 -type d -name '*.app' -print -quit)"
+test -n "$LAUNCH_APP" -a -d "$LAUNCH_APP"
+LAUNCH_EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$LAUNCH_APP/Contents/Info.plist")"
+LAUNCH_BIN="$LAUNCH_APP/Contents/MacOS/$LAUNCH_EXE"
+test -x "$LAUNCH_BIN"
+test "$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$LAUNCH_APP/Contents/Info.plist")" = "$VERSION"
+test "$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$LAUNCH_APP/Contents/Info.plist")" = "studio.endlume.desktop"
+/usr/bin/lipo -archs "$LAUNCH_BIN" | grep -qw arm64
 
 echo "=== REAL PACKAGED APP LAUNCH + MAIN UI SMOKE ==="
 MARKER="$STAGE/frontend-main.json"
@@ -168,7 +168,7 @@ touch "$STAMP"
 /bin/launchctl setenv ENDLUME_LAUNCH_SMOKE_MARKER "$MARKER"
 cleanup_launch_env(){ /bin/launchctl unsetenv ENDLUME_LAUNCH_SMOKE_MARKER >/dev/null 2>&1 || true; }
 trap cleanup_launch_env EXIT
-/usr/bin/open -n "$APP"
+/usr/bin/open -n "$LAUNCH_APP"
 for I in $(seq 1 60); do
   test -s "$MARKER" && break
   sleep 0.25
@@ -206,14 +206,28 @@ echo "ENDLUME_1005_REAL_LAUNCH_GREEN pid=$PID label=main windows=$WINDOW_COUNT"
 kill "$PID" >/dev/null 2>&1 || true
 sleep 1
 
-echo "=== EXACT UNPACKED APP: FFMPEG + EFFECTS + SUBSCRIBE ==="
+echo "=== UNPACK EXACT SAME ZIP COPY #2 FOR RUNTIME / RENDER / SIGNING ==="
+RUNTIME_UNPACK="$GITHUB_WORKSPACE/.qa-1005-runtime-unpack"
+rm -rf "$RUNTIME_UNPACK"
+mkdir -p "$RUNTIME_UNPACK"
+/usr/bin/ditto -x -k "$FINAL/$ZIP_NAME" "$RUNTIME_UNPACK"
+APP="$(find "$RUNTIME_UNPACK" -maxdepth 2 -type d -name '*.app' -print -quit)"
+test -n "$APP" -a -d "$APP"
+EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
+APP_BIN="$APP/Contents/MacOS/$EXE"
+test -x "$APP_BIN"
+test "$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist")" = "$VERSION"
+test "$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$APP/Contents/Info.plist")" = "studio.endlume.desktop"
+/usr/bin/lipo -archs "$APP_BIN" | grep -qw arm64
+
+echo "=== EXACT UNPACKED APP COPY #2: FFMPEG + EFFECTS + SUBSCRIBE ==="
 ENDLUME_APP_PATH="$APP" node scripts/verify-macos-ffmpeg-bundle.mjs | tee "$FINAL/ffmpeg-live-preview.log"
 grep -q 'EFFECTS_LIVE_PREVIEW_RUNTIME_PASS' "$FINAL/ffmpeg-live-preview.log"
 grep -q 'SUBSCRIBE_LIVE_PREVIEW_RUNTIME_PASS' "$FINAL/ffmpeg-live-preview.log"
 grep -q 'ENDLUME_MACOS_FFMPEG_RUNTIME_PASS' "$FINAL/ffmpeg-live-preview.log"
 echo "ENDLUME_1005_EFFECTS_SUBSCRIBE_FFMPEG_GREEN"
 
-echo "=== EXACT UNPACKED APP: REAL NORMAL RENDER ==="
+echo "=== EXACT UNPACKED APP COPY #2: REAL NORMAL RENDER ==="
 python3 scripts/find-endlume-real-subscribe.py "$STAGE/subscribe.json"
 FIXTURE_DIR="$(mktemp -d /tmp/e1005fixture.XXXXXX)"
 python3 scripts/find-endlume-real-fixture.py "$FIXTURE_DIR/env"
@@ -240,7 +254,7 @@ print("ENDLUME_1005_NORMAL_RENDER_GREEN",d)
 PY
 rm -rf "$OUT"
 
-echo "=== EXACT UNPACKED APP: CODESIGN / GATEKEEPER / STAPLER ==="
+echo "=== EXACT UNPACKED APP COPY #2: CODESIGN / GATEKEEPER / STAPLER ==="
 /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP"
 CODESIGN_STATUS="PASS"
 if /usr/bin/codesign -dv --verbose=4 "$APP" 2>&1 | grep -q 'Authority=Developer ID Application:'; then

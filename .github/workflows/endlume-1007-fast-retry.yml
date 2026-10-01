@@ -1,0 +1,193 @@
+name: ENDLUME 10.0.7 Fast Final QA
+
+on:
+  push:
+    branches: [hotfix/endlume-10.0.7-production]
+    paths:
+      - ".github/workflows/endlume-1007-fast-retry.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-1007-production-qa
+  cancel-in-progress: true
+
+env:
+  VERSION: "10.0.7"
+  CARGO_TARGET_DIR: "${{ runner.home }}/.endlume-build-cache/target-1006-updater-repair"
+
+jobs:
+  fast-final:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          clean: true
+          persist-credentials: false
+
+      - name: Stage portable FFmpeg
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
+          TMP="$(mktemp -d)"
+          curl -fL --retry 4 "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffmpeg.zip" -o "$TMP/ffmpeg.zip"
+          curl -fL --retry 4 "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffprobe.zip" -o "$TMP/ffprobe.zip"
+          mkdir -p "$TMP/fm" "$TMP/fp" src-tauri/binaries
+          ditto -x -k "$TMP/ffmpeg.zip" "$TMP/fm"; ditto -x -k "$TMP/ffprobe.zip" "$TMP/fp"
+          FFMPEG="$(find "$TMP/fm" -type f -name ffmpeg -print -quit)"
+          FFPROBE="$(find "$TMP/fp" -type f -name ffprobe -print -quit)"
+          test -n "$FFMPEG" -a -n "$FFPROBE"
+          chmod 755 "$FFMPEG" "$FFPROBE"
+          cp "$FFMPEG" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp "$FFPROBE" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          chmod 755 src-tauri/binaries/ffmpeg-aarch64-apple-darwin src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          echo ENDLUME_1007_FAST_FFMPEG_GREEN
+
+      - name: Inject QA-only visual navigation and build frontend
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
+          npm ci
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path("src/pages/App.tsx")
+          s=p.read_text()
+          s=s.replace("import React, { useEffect, useRef, useState } from 'react';",
+                      "import React, { useEffect, useRef, useState } from 'react';\nimport { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';")
+          anchor="  useEffect(()=>{const timer=window.setTimeout(()=>setStartupMinElapsed(true),1150);return()=>window.clearTimeout(timer)},[]);"
+          qa=r'''  useEffect(()=>{
+            if(!license?.valid)return;
+            const fx:any={id:'qa-fx',name:'QA Effect',source:'',enabled:true,mode:'chromakey',keyColor:'#00ff00',similarity:.1,blend:.06,despill:.35,lumaThreshold:.03,lumaTolerance:.08,saturation:1,x:.5,y:.5,scale:.34,fullscreen:false,previewFrameTime:0,startSec:0,endSec:null,usageMode:'interval',intervalSec:240,usageDurationSec:30,target:'CUSTOM',offsetX:0,offsetY:0,opacity:1};
+            const sub:any={...fx,id:'qa-sub',name:'QA Subscribe',usageMode:'interval',firstAtSec:240,secondAtSec:480,repeatEverySec:240,firstAppearance:'after-interval',customFirstAtSec:240,showDurationSec:8};
+            const win=getCurrentWebviewWindow();
+            const mark=(label:string)=>{
+              window.setTimeout(()=>{
+                const el=document.querySelector('.editorControls') as HTMLElement|null;
+                if(!el)return;
+                el.scrollTop=el.scrollHeight;
+                window.setTimeout(()=>{
+                  const buttons=[...el.querySelectorAll('button')] as HTMLButtonElement[];
+                  const del=buttons.find(b=>b.textContent?.includes('УДАЛИТЬ'));
+                  const r=del?.getBoundingClientRect();
+                  const visible=!!r&&r.top>=68&&r.bottom<=window.innerHeight;
+                  const intervals=el.textContent?.includes('ПО ИНТЕРВАЛУ')&&el.textContent?.includes('Показывать каждые');
+                  void win.setTitle(label+'|sh='+el.scrollHeight+'|ch='+el.clientHeight+'|st='+Math.round(el.scrollTop)+'|delete='+(visible?'1':'0')+'|intervals='+(intervals?'1':'0'));
+                },250);
+              },400);
+            };
+            const t1=window.setTimeout(()=>{useApp.setState({effects:[fx],subscribes:[sub],ambient:'/tmp/qa-background.mp3'} as any);useApp.getState().openEditor({kind:'effects'});mark('QA_EFFECTS_BOTTOM_GREEN')},1400);
+            const t2=window.setTimeout(()=>{useApp.getState().openEditor({kind:'subscribe'});mark('QA_SUBSCRIBE_BOTTOM_GREEN')},6000);
+            const t3=window.setTimeout(()=>{useApp.getState().openEditor(null);useApp.getState().setPage('project');window.setTimeout(()=>{const titles=[...document.querySelectorAll('.sectionTitle')] as HTMLElement[];const bg=titles.find(x=>x.textContent?.includes('BACKGROUND MUSIC'));bg?.scrollIntoView({block:'center'});window.setTimeout(()=>{const r=bg?.getBoundingClientRect();const visible=!!r&&r.top>=68&&r.bottom<=window.innerHeight;void win.setTitle('QA_BACKGROUND_MUSIC_GREEN|visible='+(visible?'1':'0'))},250)},450)},10500);
+            return()=>{window.clearTimeout(t1);window.clearTimeout(t2);window.clearTimeout(t3)};
+          },[license?.valid]);'''
+          assert anchor in s
+          s=s.replace(anchor,anchor+"\n"+qa)
+          p.write_text(s)
+          PY
+          npm run check
+          npm run build
+          echo ENDLUME_1007_FAST_FRONTEND_GREEN
+
+      - name: Build packaged QA app from hot cache
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path("src-tauri/tauri.conf.json"); d=json.loads(p.read_text()); d["bundle"]["createUpdaterArtifacts"]=False
+          p.write_text(json.dumps(d,ensure_ascii=False,indent=2)+"\n")
+          PY
+          ENDLUME_TAURI_TARGET=aarch64-apple-darwin node scripts/prepare-macos-ffmpeg-runtime.mjs
+          npx tauri build --target aarch64-apple-darwin --bundles app --features e2e-render
+          APP="$(find "$CARGO_TARGET_DIR/aarch64-apple-darwin/release/bundle/macos" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          test -n "$APP" -a -d "$APP"
+          test "$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist")" = "$VERSION"
+          /usr/bin/codesign --force --deep --sign - --timestamp=none "$APP"
+          /usr/bin/codesign --verify --deep --strict "$APP"
+          printf '%s' "$APP" > "$RUNNER_TEMP/e1007-fast-app.txt"
+          echo ENDLUME_1007_FAST_PACKAGED_APP_GREEN
+
+      - name: Real final render with Effects Subscribe Background Music
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          APP="$(cat "$RUNNER_TEMP/e1007-fast-app.txt")"
+          python3 scripts/qa-endlume-1007-production-smoke.py "$APP" "$APP/Contents/MacOS/ffmpeg" "$APP/Contents/MacOS/ffprobe" "$RUNNER_TEMP/render-smoke.json"
+          grep -q ENDLUME_1007_PRODUCTION_RENDER_GREEN "$RUNNER_TEMP/render-smoke.json"
+          cat "$RUNNER_TEMP/render-smoke.json"
+          echo ENDLUME_1007_FINAL_RENDER_GREEN
+
+      - name: Compact-window visual scroll QA
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          APP="$(cat "$RUNNER_TEMP/e1007-fast-app.txt")"
+          EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
+          BIN="$APP/Contents/MacOS/$EXE"
+          mkdir -p "$RUNNER_TEMP/ui-qa"
+          /usr/bin/open -n "$APP"
+          PID=""
+          for i in $(seq 1 80); do
+            PID="$(pgrep -f "$BIN" | tail -1 || true)"
+            [[ -n "$PID" ]] && break
+            sleep .25
+          done
+          test -n "$PID"
+          /usr/bin/osascript <<OSA || true
+          tell application "System Events"
+            set p to first application process whose unix id is $PID
+            set frontmost of p to true
+            if (count of windows of p) > 0 then set position of window 1 of p to {80,80}
+            if (count of windows of p) > 0 then set size of window 1 of p to {1100,700}
+          end tell
+          OSA
+          capture(){
+            label="$1"; file="$2"; ok=0; title=""
+            for i in $(seq 1 80); do
+              title="$(/usr/bin/osascript <<OSA 2>/dev/null || true
+          tell application "System Events"
+            set p to first application process whose unix id is $PID
+            if (count of windows of p) > 0 then return name of window 1 of p
+          end tell
+          OSA
+          )"
+              if [[ "$title" == "$label"* ]]; then ok=1; break; fi
+              sleep .25
+            done
+            echo "UI_TITLE=$title"
+            test "$ok" = 1
+            if [[ "$label" == "QA_BACKGROUND_MUSIC_GREEN" ]]; then
+              [[ "$title" == *"visible=1"* ]]
+            else
+              [[ "$title" == *"delete=1"* ]]
+              [[ "$title" == *"intervals=1"* ]]
+              st="$(printf '%s' "$title" | sed -n 's/.*|st=\([0-9][0-9]*\).*/\1/p')"
+              test -n "$st" && test "$st" -gt 0
+            fi
+            /usr/sbin/screencapture -x "$file"
+            test "$(stat -f '%z' "$file")" -gt 10000
+            printf '%s\n' "$title" > "$file.txt"
+          }
+          capture QA_EFFECTS_BOTTOM_GREEN "$RUNNER_TEMP/ui-qa/effects-bottom.png"
+          capture QA_SUBSCRIBE_BOTTOM_GREEN "$RUNNER_TEMP/ui-qa/subscribe-bottom.png"
+          capture QA_BACKGROUND_MUSIC_GREEN "$RUNNER_TEMP/ui-qa/background-music.png"
+          kill "$PID" >/dev/null 2>&1 || true
+          echo ENDLUME_1007_VISUAL_SCROLL_GREEN
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ENDLUME-10.0.7-FAST-FINAL-QA
+          path: |
+            ${{ runner.temp }}/render-smoke.json
+            ${{ runner.temp }}/ui-qa/*
+          if-no-files-found: warn
+          retention-days: 7

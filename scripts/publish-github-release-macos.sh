@@ -65,6 +65,8 @@ old,out,version,notes,url,sig,mac_sha,windows_meta=sys.argv[1:]
 try: d=json.load(open(old))
 except: d={}
 platforms=d.get('platforms') if isinstance(d.get('platforms'),dict) else {}
+req=json.load(open('updates/github/build-request.json'))
+if 'windows-x86_64' not in (req.get('platforms') or []): platforms.pop('windows-x86_64',None)
 platforms['darwin-aarch64']={'url':url,'signature':sig,'sha256':mac_sha}
 wm=pathlib.Path(windows_meta)
 if wm.is_file():

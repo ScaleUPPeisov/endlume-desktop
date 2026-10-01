@@ -3,7 +3,7 @@ name: ENDLUME 10.0.6 Windows QA
 on:
   push:
     branches:
-      - qa/endlume-10.0.6-full-production
+      - candidate/endlume-10.0.6-production-freeze
     paths:
       - ".github/workflows/endlume-1006-windows-qa.yml"
       - "package.json"

@@ -1,0 +1,20 @@
+name: ENDLUME 10.0.6 Private Ubuntu Allocation Probe
+
+on:
+  push:
+    branches:
+      - release-cloud-endlume-10.0.6
+    paths:
+      - ".github/workflows/endlume-1006-private-ubuntu-probe.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Private hosted runner
+        run: |
+          uname -a
+          echo PRIVATE_UBUNTU_GREEN

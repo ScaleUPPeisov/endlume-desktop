@@ -36,15 +36,15 @@ fn effect_opacity(e:&EffectPreset)->f64{e.opacity.unwrap_or(1.0).clamp(0.0,1.0)}
 fn overlay_effect(graph:&mut String,base:&mut String,input:usize,e:&EffectPreset,w:u32,h:u32){
   let fx=format!("fx{input}");let next=format!("b{input}");let (scale,x,y)=overlay_geometry(e,w,h);let opacity=effect_opacity(e);
   if e.mode=="screen"||e.mode=="screen-cache"{
-    graph.push_str(&format!(";[{base}]format=gbrp[base{input}];[{input}:v]fps=60,format=gbrp,{scale},pad={w}:{h}:'{x}':'{y}':color=black,setsar=1[{fx}];[base{input}][{fx}]blend=all_mode=screen:all_opacity={opacity}[{next}]"));
+    graph.push_str(&format!(";[{base}]format=gbrp[base{input}];[{input}:v]fps=30,format=gbrp,{scale},pad={w}:{h}:'{x}':'{y}':color=black,setsar=1[{fx}];[base{input}][{fx}]blend=all_mode=screen:all_opacity={opacity}[{next}]"));
   }else{
     let prep=if e.mode=="luma"{
-      format!("[{input}:v]fps=60,format=rgba,lumakey=threshold={}:tolerance={}:softness=0.08",e.luma_threshold,e.luma_tolerance)
+      format!("[{input}:v]fps=30,format=rgba,lumakey=threshold={}:tolerance={}:softness=0.08",e.luma_threshold,e.luma_tolerance)
     }else{
       let (similarity,blend)=cache::chromakey_params_859(e);
       let kind=cache::despill_type(&e.key_color);
       let mix=e.despill.clamp(0.0,1.0);
-      format!("[{input}:v]fps=60,format=rgba,colorkey={}:{}:{},despill=type={kind}:mix={mix}:expand=0.20",color(&e.key_color),similarity,blend)
+      format!("[{input}:v]fps=30,format=rgba,colorkey={}:{}:{},despill=type={kind}:mix={mix}:expand=0.20",color(&e.key_color),similarity,blend)
     };
     graph.push_str(&format!(";{prep},{scale},colorchannelmixer=aa={opacity}[{fx}];[{base}]format=rgba[base{input}];[base{input}][{fx}]overlay=x='{x}':y='{y}':shortest=1:eof_action=repeat:format=auto[{next}]"));
   }
@@ -71,10 +71,10 @@ pub async fn generate_preview(app:AppHandle,project_path:String,time_sec:f64,eff
   let enabled_sub:Vec<SubscribePreset>=subscribes.into_iter().filter(|s|ready_overlay(&s.effect)).collect();
   for e in &enabled_fx{args.extend(vec!["-stream_loop","-1","-ss",&e.preview_frame_time.max(0.0).to_string(),"-i",e.source.as_str()].into_iter().map(String::from));}
   for s in &enabled_sub{args.extend(vec!["-stream_loop","-1","-ss",&s.effect.preview_frame_time.max(0.0).to_string(),"-i",s.effect.source.as_str()].into_iter().map(String::from));}
-  let (w,h)=(1920u32,1080u32);let mut graph=format!("[0:v]scale={w}:{h}:force_original_aspect_ratio=increase:flags=lanczos+accurate_rnd,crop={w}:{h}:(iw-ow)/2:(ih-oh)/2,fps=60,setsar=1[b0]");let mut base="b0".to_string();let mut idx=1usize;
+  let (w,h)=(1920u32,1080u32);let mut graph=format!("[0:v]scale={w}:{h}:force_original_aspect_ratio=increase:flags=lanczos+accurate_rnd,crop={w}:{h}:(iw-ow)/2:(ih-oh)/2,fps=30,setsar=1[b0]");let mut base="b0".to_string();let mut idx=1usize;
   for e in &enabled_fx{overlay_effect(&mut graph,&mut base,idx,e,w,h);idx+=1;}
   for s in &enabled_sub{overlay_effect(&mut graph,&mut base,idx,&s.effect,w,h);idx+=1;}
-  graph.push_str(&format!(";[{base}]format=yuv420p[outv]"));
+  graph.push_str(&format!(";[{base}]fps=60,format=yuv420p[outv]"));
   args.extend(vec!["-filter_complex",&graph,"-map","[outv]","-t","3.0","-an"].into_iter().map(String::from));
   #[cfg(target_os="macos")]
   args.extend(vec!["-c:v","h264_videotoolbox","-realtime","1","-q:v","100","-b:v","35M","-maxrate","50M","-pix_fmt","yuv420p"].into_iter().map(String::from));

@@ -1732,7 +1732,8 @@ fn interval_half_fidelity_args_1008(encoder:&str)->Vec<String>{
 async fn probe_all_video_packets_key_1008(app:&AppHandle,path:&Path,expected:usize)->Result<(),String>{
   let args=vec!["-v","error","-select_streams","v:0","-show_entries","packet=flags","-of","csv=p=0",path.to_string_lossy().as_ref()].into_iter().map(String::from).collect();
   let (raw,_)=output(app,"ffprobe",args).await?;
-  let rows=String::from_utf8_lossy(&raw).lines().map(str::trim).filter(|x|!x.is_empty()).collect::<Vec<_>>();
+  let decoded=String::from_utf8_lossy(&raw);
+  let rows=decoded.lines().map(str::trim).filter(|x|!x.is_empty()).collect::<Vec<_>>();
   if rows.len()!=expected{return Err(format!("10.0.8 all-intra packet count {}/{}",rows.len(),expected))}
   if rows.iter().any(|x|!x.contains('K')){return Err("10.0.8 half-rate source contains non-key HEVC packets".into())}
   Ok(())

@@ -72,7 +72,10 @@ jobs:
           Remove-Item $extract -Recurse -Force -ErrorAction SilentlyContinue
           New-Item -ItemType Directory -Force $extract | Out-Null
           $seven='C:\Program Files\7-Zip\7z.exe'
-          if(!(Test-Path $seven)){throw '7-Zip missing on hosted runner'}
+          if(!(Test-Path $seven)){
+            choco install 7zip -y --no-progress
+          }
+          if(!(Test-Path $seven)){throw '7-Zip is required to extract the published production runtime'}
           & $seven x $installer "-o$extract" -y | Out-Host
           if($LASTEXITCODE -ne 0){throw 'Could not extract published 10.0.3 installer'}
           $ffmpeg=Get-ChildItem $extract -Recurse -Filter 'ffmpeg.exe' -File | Select-Object -First 1
@@ -101,7 +104,7 @@ jobs:
         run: |
           $ErrorActionPreference='Stop'
           $env:CARGO_TARGET_DIR=Join-Path $env:RUNNER_TEMP 'e1006-windows'
-          npm run tauri build -- --target x86_64-pc-windows-msvc --bundles nsis --features e2e-render
+          npm run tauri build -- --target x86_64-pc-windows-msvc --bundles nsis --config src-tauri/tauri.windows.conf.json --features e2e-render
           $installer=Get-ChildItem "$env:CARGO_TARGET_DIR\x86_64-pc-windows-msvc\release\bundle\nsis" -Filter '*.exe' -File | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
           if(!$installer){throw 'NSIS installer not produced'}
           if($installer.Length -lt 50000000){throw "Installer unexpectedly small: $($installer.Length)"}
@@ -111,42 +114,64 @@ jobs:
           @{installer=$installer.FullName;bytes=$installer.Length;sha256=$sha} | ConvertTo-Json | Out-File windows-qa\installer.json -Encoding utf8
           Write-Host "ENDLUME_1006_WINDOWS_NSIS_GREEN $($installer.FullName) $sha"
 
-      - name: Silent install exact candidate
+      - name: Silent clean install • Start Menu • uninstaller
         shell: pwsh
         run: |
           $ErrorActionPreference='Stop'
+          Get-Process | Where-Object {$_.ProcessName -match 'ENDLUME|endlume'} | Stop-Process -Force -ErrorAction SilentlyContinue
           $p=Start-Process -FilePath $env:E1006_INSTALLER -ArgumentList '/S' -PassThru -Wait
           if($p.ExitCode -ne 0){throw "Installer exit $($p.ExitCode)"}
           Start-Sleep -Seconds 2
-          $roots=@(
-            (Join-Path $env:LOCALAPPDATA 'ENDLUME YT Studio PEISOV'),
-            (Join-Path $env:LOCALAPPDATA 'Programs\ENDLUME YT Studio PEISOV'),
-            (Join-Path $env:LOCALAPPDATA 'Programs')
-          )
+
+          $entry=Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*' -ErrorAction SilentlyContinue |
+            Where-Object {$_.DisplayName -like '*ENDLUME*'} | Select-Object -First 1
           $exe=$null
-          foreach($root in $roots){
-            if(Test-Path $root){
-              $candidate=Get-ChildItem $root -Recurse -Filter 'ENDLUME YT Studio PEISOV.exe' -File -ErrorAction SilentlyContinue | Select-Object -First 1
-              if($candidate){$exe=$candidate;break}
+          if($entry -and $entry.InstallLocation){
+            $loc=([string]$entry.InstallLocation).Trim().Trim('"')
+            if($loc){
+              $candidate=Join-Path $loc 'ENDLUME YT Studio PEISOV.exe'
+              if(Test-Path $candidate){$exe=Get-Item $candidate}
             }
+          }
+          if(!$exe){
+            $exe=Get-ChildItem $env:LOCALAPPDATA -Recurse -Filter 'ENDLUME YT Studio PEISOV.exe' -File -ErrorAction SilentlyContinue | Select-Object -First 1
           }
           if(!$exe){throw 'Installed ENDLUME executable not found'}
           "E1006_INSTALLED_EXE=$($exe.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          Write-Host "ENDLUME_1006_WINDOWS_INSTALL_GREEN $($exe.FullName)"
 
-      - name: Installed EXE icon resource
+          $shortcut=Get-ChildItem "$env:APPDATA\Microsoft\Windows\Start Menu\Programs" -Recurse -Filter '*.lnk' -File -ErrorAction SilentlyContinue |
+            Where-Object {$_.FullName -match 'ENDLUME'} | Select-Object -First 1
+          if(!$shortcut){throw 'ENDLUME Start Menu shortcut not found'}
+          $ws=New-Object -ComObject WScript.Shell
+          $lnk=$ws.CreateShortcut($shortcut.FullName)
+          if(!(Test-Path $lnk.TargetPath)){throw 'Start Menu shortcut target missing'}
+          if((Resolve-Path $lnk.TargetPath).Path -ne (Resolve-Path $exe.FullName).Path){throw 'Start Menu shortcut points to wrong EXE'}
+
+          $uninstaller=Get-ChildItem (Split-Path $exe.FullName) -Filter '*.exe' -File -ErrorAction SilentlyContinue |
+            Where-Object {$_.Name -match 'uninstall'} | Select-Object -First 1
+          if(!$uninstaller){throw 'ENDLUME uninstaller not found'}
+          "E1006_UNINSTALLER=$($uninstaller.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "ENDLUME_1006_WINDOWS_INSTALL_GREEN exe=$($exe.FullName) shortcut=$($shortcut.FullName)"
+
+      - name: Installer • installed EXE • uninstaller icon resources
         shell: pwsh
         run: |
           $ErrorActionPreference='Stop'
           Add-Type -AssemblyName System.Drawing
-          $ico=[System.Drawing.Icon]::ExtractAssociatedIcon($env:E1006_INSTALLED_EXE)
-          if($null -eq $ico){throw 'No associated app icon'}
-          $bmp=$ico.ToBitmap()
-          if($bmp.Width -lt 16 -or $bmp.Height -lt 16){throw "Invalid app icon $($bmp.Width)x$($bmp.Height)"}
-          $bmp.Save((Join-Path (Resolve-Path windows-qa) 'installed-icon.png'),[System.Drawing.Imaging.ImageFormat]::Png)
-          Write-Host "ENDLUME_1006_WINDOWS_ICON_GREEN $($bmp.Width)x$($bmp.Height)"
+          foreach($item in @(
+            @('installer',$env:E1006_INSTALLER),
+            @('installed',$env:E1006_INSTALLED_EXE),
+            @('uninstaller',$env:E1006_UNINSTALLER)
+          )){
+            $ico=[System.Drawing.Icon]::ExtractAssociatedIcon($item[1])
+            if($null -eq $ico){throw "$($item[0]) has no associated icon"}
+            $bmp=$ico.ToBitmap()
+            if($bmp.Width -lt 16 -or $bmp.Height -lt 16){throw "$($item[0]) icon invalid: $($bmp.Width)x$($bmp.Height)"}
+            $bmp.Save((Join-Path (Resolve-Path windows-qa) "$($item[0])-icon.png"),[System.Drawing.Imaging.ImageFormat]::Png)
+          }
+          Write-Host ENDLUME_1006_WINDOWS_ICON_RESOURCES_GREEN
 
-      - name: Installed app frontend launch marker
+      - name: Installed app • frontend • real window SMALL/BIG icons
         shell: pwsh
         run: |
           $ErrorActionPreference='Stop'
@@ -154,29 +179,61 @@ jobs:
           Remove-Item $marker -Force -ErrorAction SilentlyContinue
           $env:ENDLUME_LAUNCH_SMOKE_MARKER=$marker
           $p=Start-Process -FilePath $env:E1006_INSTALLED_EXE -PassThru
+          $hwnd=[IntPtr]::Zero
           for($i=0;$i -lt 80;$i++){
-            if(Test-Path $marker){if((Get-Item $marker).Length -gt 0){break}}
             Start-Sleep -Milliseconds 250
+            $p.Refresh()
+            if((Test-Path $marker) -and (Get-Item $marker).Length -gt 0 -and $p.MainWindowHandle -ne 0){
+              $hwnd=[IntPtr]$p.MainWindowHandle
+              break
+            }
           }
           if(!(Test-Path $marker)){Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue;throw 'Frontend launch marker missing'}
           $d=Get-Content $marker -Raw | ConvertFrom-Json
           if($d.label -ne 'main' -or $d.frontendLoaded -ne $true){throw "Bad launch marker: $(Get-Content $marker -Raw)"}
-          Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
-          Copy-Item $marker windows-qa\launch.json
-          Write-Host ENDLUME_1006_WINDOWS_LAUNCH_GREEN
+          if($hwnd -eq [IntPtr]::Zero){Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue;throw 'ENDLUME main window handle missing'}
 
-      - name: Built runtime render smoke
+          $src=@'
+          using System;
+          using System.Runtime.InteropServices;
+          public static class EndlumeIconProbe {
+            [DllImport("user32.dll", CharSet=CharSet.Auto)]
+            public static extern IntPtr SendMessage(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
+          }
+          '@
+          Add-Type -TypeDefinition $src
+          $WM_GETICON=0x007F
+          $small=[EndlumeIconProbe]::SendMessage($hwnd,$WM_GETICON,[IntPtr]0,[IntPtr]::Zero)
+          $big=[EndlumeIconProbe]::SendMessage($hwnd,$WM_GETICON,[IntPtr]1,[IntPtr]::Zero)
+          if($small -eq [IntPtr]::Zero){throw 'Live ENDLUME window has no ICON_SMALL'}
+          if($big -eq [IntPtr]::Zero){throw 'Live ENDLUME window has no ICON_BIG'}
+          Add-Type -AssemblyName System.Drawing
+          [System.Drawing.Icon]::FromHandle($small).ToBitmap().Save((Join-Path (Resolve-Path windows-qa) 'live-window-small-icon.png'),[System.Drawing.Imaging.ImageFormat]::Png)
+          [System.Drawing.Icon]::FromHandle($big).ToBitmap().Save((Join-Path (Resolve-Path windows-qa) 'live-window-big-icon.png'),[System.Drawing.Imaging.ImageFormat]::Png)
+          Copy-Item $marker windows-qa\launch.json
+          Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+          Remove-Item Env:ENDLUME_LAUNCH_SMOKE_MARKER -ErrorAction SilentlyContinue
+          Write-Host ENDLUME_1006_WINDOWS_LAUNCH_AND_WINDOW_ICONS_GREEN
+
+      - name: Installed exact candidate render smoke
         shell: pwsh
         run: |
           $ErrorActionPreference='Stop'
-          $target=Join-Path $env:RUNNER_TEMP 'e1006-windows\x86_64-pc-windows-msvc\release'
-          $exe=Get-ChildItem $target -Filter '*.exe' -File | Where-Object {$_.Name -match 'ENDLUME|endlume'} | Sort-Object Length -Descending | Select-Object -First 1
-          if(!$exe){throw 'Built ENDLUME runtime exe missing'}
           $ffmpeg=Resolve-Path 'src-tauri\binaries\ffmpeg-x86_64-pc-windows-msvc.exe'
           $ffprobe=Resolve-Path 'src-tauri\binaries\ffprobe-x86_64-pc-windows-msvc.exe'
-          python scripts\qa-endlume-1006-windows-render-smoke.py $exe.FullName $ffmpeg $ffprobe windows-qa\normal-render.json
-          if($LASTEXITCODE -ne 0){throw 'Windows normal render smoke failed'}
-          Write-Host ENDLUME_1006_WINDOWS_RENDER_GREEN
+          python scripts\qa-endlume-1006-windows-render-smoke.py $env:E1006_INSTALLED_EXE $ffmpeg $ffprobe windows-qa\normal-render.json
+          if($LASTEXITCODE -ne 0){throw 'Windows installed render smoke failed'}
+          Write-Host ENDLUME_1006_WINDOWS_INSTALLED_RENDER_GREEN
+
+      - name: Silent uninstall cleanup
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Continue'
+          if($env:E1006_UNINSTALLER -and (Test-Path $env:E1006_UNINSTALLER)){
+            $p=Start-Process -FilePath $env:E1006_UNINSTALLER -ArgumentList '/S' -PassThru -Wait
+            Write-Host "ENDLUME_1006_UNINSTALL_EXIT=$($p.ExitCode)"
+          }
 
       - uses: actions/upload-artifact@v4
         if: always()

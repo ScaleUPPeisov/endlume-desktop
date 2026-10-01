@@ -1,4 +1,4 @@
-use crate::{cache,model::{EffectPreset,Progress,QueueJob,RenderSettings,SubscribePreset}};
+use crate::{cache,model::{EffectPreset,Progress,ProjectScanItem,QueueJob,RenderSettings,SubscribePreset}};
 use serde_json::json;
 use sha2::{Digest,Sha256};
 use std::{collections::HashMap,io::Read,path::{Path,PathBuf},process::Command,sync::{Arc,OnceLock,atomic::{AtomicBool,AtomicU64,Ordering}},time::{Duration,Instant,UNIX_EPOCH}};
@@ -1174,7 +1174,7 @@ async fn prepare_overlays(app:&AppHandle,job:&QueueJob,started:i64,timer:&Instan
   if smart_repeat_project(job){
     emit_progress(app,job,started,timer,26.0,"Strict 8.56: проверяю быстрый lossless Effects cache",encoder,attempt,None);let mark=Instant::now();let mut fx=Vec::new();
     for e in job.effects.iter().filter(|e|effect_usage_mode(e)!="off"){match cache::prepare_strict_856(app,e,30,1920,1080).await{Ok(p)=>fx.push(resolve_effect_for_project(&job.project,&p)),Err(err)=>return Err(format!("Strict 8.56 Effects cache: {err}"))}}
-    let effects_sec=mark.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"effects-cache",effects_sec);emit_timing(app,&job.project.id,"effects",effects_sec);emit_timing(app,&job.project.id,"subscribe",0.0);emit_progress(app,job,started,timer,31.0,"Strict 8.56: lossless Effects cache готов",encoder,attempt,None);return Ok((fx,job.subscribes.clone()))
+    let effects_sec=mark.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"effects-cache",effects_sec);emit_timing(app,&job.project.id,"effects",effects_sec);emit_timing(app,&job.project.id,"subscribe",0.0);emit_progress(app,job,started,timer,31.0,"Strict 8.56: lossless Effects cache готов",encoder,attempt,None);let subs=job.subscribes.iter().cloned().map(|mut s|{s.effect=resolve_effect_for_project(&job.project,&s.effect);s}).collect();return Ok((fx,subs))
   }
   emit_progress(app,job,started,timer,26.0,"Проверяю кэш Effects и Subscribe",encoder,attempt,None);let mark=Instant::now();let effects_mark=Instant::now();let mut fx=Vec::new();let mut subs=Vec::new();
   for e in &job.effects{

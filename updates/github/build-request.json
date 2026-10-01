@@ -1,11 +1,11 @@
 {
   "enabled": true,
-  "generation": 44,
+  "generation": 45,
   "app": "endlume",
   "channel": "stable",
   "version": "10.0.6",
   "builder": "BUILD_ENDLUME_1006_MAC_UPDATER.command",
-  "notes": "ENDLUME 10.0.6 production macOS hotfix. Exact source bd81d86152cb2f20fe02e33849aec255ea013634; application hotfix 03df61a58641d5ce0b4e1c432c99af935acbf4d1. macOS updater only; Windows is intentionally not promoted by this request.",
+  "notes": "ENDLUME 10.0.6 production macOS updater. Exact source bd81d86152cb2f20fe02e33849aec255ea013634; hotfix 03df61a58641d5ce0b4e1c432c99af935acbf4d1. macOS only.",
   "platforms": [
     "darwin-aarch64"
   ]

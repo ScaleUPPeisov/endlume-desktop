@@ -3,6 +3,13 @@ name: ENDLUME 10.0.7 Production QA
 on:
   push:
     branches: [hotfix/endlume-10.0.7-production]
+    paths:
+      - "src/**"
+      - "src-tauri/**"
+      - "package.json"
+      - "package-lock.json"
+      - "scripts/qa-endlume-1007-production-smoke.py"
+      - ".github/workflows/endlume-1007-production-qa.yml"
   workflow_dispatch: {}
 
 permissions:

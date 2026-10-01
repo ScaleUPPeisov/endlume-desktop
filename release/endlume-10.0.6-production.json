@@ -1,0 +1,25 @@
+{
+  "enabled": false,
+  "user_release_approval": false,
+  "version": "10.0.6",
+  "source_branch": "candidate/endlume-10.0.6-production-freeze",
+  "source_sha": "a6b5b19ec0b97e15a01112752894109e578805bb",
+  "macos": {
+    "platform": "darwin-aarch64",
+    "qa_run_id": null,
+    "qa_head_sha": null,
+    "required_marker": "ENDLUME_1006_FULL_PRODUCTION_QA_GREEN"
+  },
+  "windows": {
+    "platform": "windows-x86_64",
+    "qa_run_id": null,
+    "qa_head_sha": null,
+    "required_marker": "ENDLUME_1006_WINDOWS_INSTALLED_RENDER_GREEN"
+  },
+  "publish": {
+    "stable_repo": "ScaleUPPeisov/scaleup-site",
+    "stable_tag": "endlume-stable",
+    "latest_json_last": true
+  },
+  "post_publish_updater_test": false
+}

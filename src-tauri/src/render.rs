@@ -1791,7 +1791,7 @@ async fn build_interval_half_master_1008(app:&AppHandle,job:&QueueJob,effects:&[
   let logical_fps=job.settings.fps.max(1);
   if logical_fps!=60||logical_frames%2!=0{return Err("10.0.8 half-rate master requires even 60 FPS logical frame count".into())}
   let physical_fps=30u32;let physical_frames=logical_frames/2;let duration=logical_frames as f64/logical_fps as f64;
-  let profile="interval-half30-allintra-v1";let key=visual_master_key_1000(job,effects,logical_frames,encoder,profile)?;
+  let profile="interval-half30-allintra-v2-8t";let key=visual_master_key_1000(job,effects,logical_frames,encoder,profile)?;
   let root=cache_root_1000(app,"visual-master-v10")?;let out=root.join(format!("{key}.mp4"));let lookup=Instant::now();
   if out.is_file()&&probe_video_packets_857(app,&out).await.ok()==Some(physical_frames)&&probe_all_video_packets_key_1008(app,&out,physical_frames).await.is_ok(){
     let sec=lookup.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"cache-lookup",sec);emit_timing(app,&job.project.id,"base-visual-cache",sec);
@@ -1804,7 +1804,7 @@ async fn build_interval_half_master_1008(app:&AppHandle,job:&QueueJob,effects:&[
   let vf=base_filter(&ws,"0:v").trim_start_matches("[0:v]").to_string();
   let prep=vec!["-hide_banner","-loglevel","error","-i",job.project.media[0].as_str(),"-vf",vf.as_str(),"-frames:v","1","-compression_level","1","-y",base_still.to_string_lossy().as_ref()].into_iter().map(String::from).collect();
   output(app,"ffmpeg",prep).await.map_err(|e|format!("10.0.8 half base preprocess: {e}"))?;emit_timing(app,&job.project.id,"image-preprocess",prep_mark.elapsed().as_secs_f64());
-  let tmp=root.join(format!(".{key}-{}.tmp.mp4",uuid::Uuid::new_v4()));let mut args:Vec<String>=vec!["-hide_banner","-loglevel","error","-filter_complex_threads","4","-loop","1","-framerate","30","-i",base_still.to_string_lossy().as_ref()].into_iter().map(String::from).collect();
+  let tmp=root.join(format!(".{key}-{}.tmp.mp4",uuid::Uuid::new_v4()));let mut args:Vec<String>=vec!["-hide_banner","-loglevel","error","-filter_complex_threads","8","-loop","1","-framerate","30","-i",base_still.to_string_lossy().as_ref()].into_iter().map(String::from).collect();
   for e in effects.iter().filter(|x|effect_usage_mode(x)!="off"&&!x.source.trim().is_empty()){args.extend(vec!["-stream_loop","-1","-i",e.source.as_str()].into_iter().map(String::from));}
   let base="[0:v]fps=30,setsar=1[b0]".to_string();let (graph,last)=apply_effects_filter(base,"b0".into(),effects,&ws,1);let graph=format!("{graph};[{last}]format=yuv420p[outv]");
   args.extend(vec!["-filter_complex",&graph,"-map","[outv]","-frames:v",&physical_frames.to_string(),"-an"].into_iter().map(String::from));
@@ -1967,21 +1967,16 @@ fn interval_1000_plan(job:&QueueJob,effects:&[EffectPreset],subs:&[SubscribePres
   Some(Interval1000Plan{first_frames,repeat_frames,duration_frames,master_frames,phase_frames,sub:sub.clone()})
 }
 
-async fn render_interval_zero_copy_1000(app:&AppHandle,job:&QueueJob,effects:&[EffectPreset],subs:&[SubscribePreset],audio:&AudioSource,final_duration:f64,min_visual_seconds:f64,prewarmed_half:Option<&(PathBuf,usize,PathBuf,usize)>,work:&Path,out:&Path,encoder:&str,attempt:u32,cancel:&AtomicBool,started:i64,timer:&Instant)->Result<bool,String>{
+async fn render_interval_zero_copy_1000(app:&AppHandle,job:&QueueJob,effects:&[EffectPreset],subs:&[SubscribePreset],audio:&AudioSource,final_duration:f64,min_visual_seconds:f64,work:&Path,out:&Path,encoder:&str,attempt:u32,cancel:&AtomicBool,started:i64,timer:&Instant)->Result<bool,String>{
   let Some(plan)=interval_1000_plan(job,effects,subs,final_duration,min_visual_seconds) else{return Ok(false)};
   if !strict_856_encoder_allowed(encoder){return Err(format!("10.0.1 interval zero-copy: HEVC encoder {encoder} unavailable"))}
   let fps=job.settings.fps.max(1) as usize;let half_rate=fps==60&&plan.master_frames%2==0&&plan.duration_frames%2==0;let master_mark=Instant::now();
   let final_audio_encoder=choose_audio_encoder(app).await;
   let audio_future=prepare_fast_aac_audio_1003(app,job,audio,&final_audio_encoder,cancel);
   let (master,master_physical,fast_audio_path)=if half_rate{
-    if let Some((master,physical,_,_))=prewarmed_half{
-      let audio_result=audio_future.await;
-      (master.clone(),*physical,audio_result)
-    }else{
-      let visual_future=build_interval_half_master_1008(app,job,effects,plan.master_frames,work,encoder,attempt,cancel,started,timer);
-      let (master_result,audio_result)=tokio::join!(visual_future,audio_future);
-      let (master,physical)=master_result?;(master,physical,audio_result)
-    }
+    let visual_future=build_interval_half_master_1008(app,job,effects,plan.master_frames,work,encoder,attempt,cancel,started,timer);
+    let (master_result,audio_result)=tokio::join!(visual_future,audio_future);
+    let (master,physical)=master_result?;(master,physical,audio_result)
   }else{
     let visual_future=build_cached_visual_master_1000(app,job,effects,plan.master_frames,work,encoder,true,attempt,cancel,started,timer);
     let (master_result,audio_result)=tokio::join!(visual_future,audio_future);
@@ -1991,8 +1986,7 @@ async fn render_interval_zero_copy_1000(app:&AppHandle,job:&QueueJob,effects:&[E
   let fast_audio_source=fast_audio_path.map(AudioSource::Loop);
   let mux_audio=fast_audio_source.as_ref().unwrap_or(audio);
   let sub_mark=Instant::now();let (sub_master,sub_physical)=if half_rate{
-    if let Some((_,_,sub,physical))=prewarmed_half{(sub.clone(),*physical)}
-    else{render_interval_half_sub_1008(app,job,&master,&plan.sub,plan.phase_frames,plan.duration_frames,work,"interval-v1008",encoder,attempt,cancel,started,timer).await?}
+    render_interval_half_sub_1008(app,job,&master,&plan.sub,plan.phase_frames,plan.duration_frames,work,"interval-v1008",encoder,attempt,cancel,started,timer).await?
   }else{
     let p=render_periodic_sub_852(app,job,&master,&plan.sub,plan.phase_frames,plan.duration_frames,work,"interval-v10",encoder,attempt,cancel,started,timer).await?;
     (p,plan.duration_frames)
@@ -2282,23 +2276,13 @@ pub async fn render_job(app:&AppHandle,job:&QueueJob,cancel:Arc<AtomicBool>)->Re
           let fx_bg=fx.clone();let work_bg=work.clone();let encoder_bg=encoder.clone();let cancel_bg=cancel.clone();let timer_bg=timer.clone();
           tauri::async_runtime::spawn(async move{
             if job_bg.settings.fps==60&&plan.master_frames%2==0&&plan.duration_frames%2==0{
-              if plan.phase_frames==0{
-                let mut combined=fx_bg.clone();combined.push(plan.sub.effect.clone());
-                let base_future=build_interval_half_master_1008(&app_bg,&job_bg,&fx_bg,plan.master_frames,&work_bg,&encoder_bg,attempt,cancel_bg.as_ref(),started,&timer_bg);
-                let sub_future=build_interval_half_master_1008(&app_bg,&job_bg,&combined,plan.duration_frames,&work_bg,&encoder_bg,attempt,cancel_bg.as_ref(),started,&timer_bg);
-                let (base_result,sub_result)=tokio::join!(base_future,sub_future);
-                let (master,master_physical)=base_result?;
-                let (sub,sub_physical)=sub_result?;
-                Ok::<(PathBuf,usize,Option<(PathBuf,usize)>),String>((master,master_physical,Some((sub,sub_physical))))
-              }else{
-                let (master,master_physical)=build_interval_half_master_1008(&app_bg,&job_bg,&fx_bg,plan.master_frames,&work_bg,&encoder_bg,attempt,cancel_bg.as_ref(),started,&timer_bg).await?;
-                let (sub,sub_physical)=render_interval_half_sub_1008(&app_bg,&job_bg,&master,&plan.sub,plan.phase_frames,plan.duration_frames,&work_bg,"prewarm-v1008",&encoder_bg,attempt,cancel_bg.as_ref(),started,&timer_bg).await?;
-                Ok((master,master_physical,Some((sub,sub_physical))))
-              }
+              let (master,_)=build_interval_half_master_1008(&app_bg,&job_bg,&fx_bg,plan.master_frames,&work_bg,&encoder_bg,attempt,cancel_bg.as_ref(),started,&timer_bg).await?;
+              let _=render_interval_half_sub_1008(&app_bg,&job_bg,&master,&plan.sub,plan.phase_frames,plan.duration_frames,&work_bg,"prewarm-v1008",&encoder_bg,attempt,cancel_bg.as_ref(),started,&timer_bg).await?;
+              Ok::<PathBuf,String>(master)
             }else{
               let master=build_cached_visual_master_1000(&app_bg,&job_bg,&fx_bg,plan.master_frames,&work_bg,&encoder_bg,true,attempt,cancel_bg.as_ref(),started,&timer_bg).await?;
               let _=render_periodic_sub_852(&app_bg,&job_bg,&master,&plan.sub,plan.phase_frames,plan.duration_frames,&work_bg,"prewarm-v1008",&encoder_bg,attempt,cancel_bg.as_ref(),started,&timer_bg).await?;
-              Ok::<(PathBuf,usize,Option<(PathBuf,usize)>),String>((master,plan.master_frames,None))
+              Ok::<PathBuf,String>(master)
             }
           })
         })
@@ -2340,13 +2324,9 @@ pub async fn render_job(app:&AppHandle,job:&QueueJob,cancel:Arc<AtomicBool>)->Re
         let audio=build_long_audio(app,job,started,&timer,&work,&cycle,cycle_duration,final_duration,&encoder,attempt,&cancel).await?;
         (audio,durations,final_duration,false)
       };
-      let mut prewarmed_interval_half:Option<(PathBuf,usize,PathBuf,usize)>=None;
       if let Some(task)=visual_prewarm{
         match task.await{
-          Ok(Ok((master,master_physical,sub)))=>{
-            if let Some((sub,sub_physical))=sub{prewarmed_interval_half=Some((master,master_physical,sub,sub_physical));}
-            emit_timing(app,&job.project.id,"visual-prewarm-parallel",visual_prewarm_started.elapsed().as_secs_f64())
-          },
+          Ok(Ok(_))=>emit_timing(app,&job.project.id,"visual-prewarm-parallel",visual_prewarm_started.elapsed().as_secs_f64()),
           Ok(Err(e))=>emit_warning(app,&job.project.id,&format!("10.0.8 visual prewarm fallback: {e}")),
           Err(e)=>emit_warning(app,&job.project.id,&format!("10.0.8 visual prewarm join fallback: {e}")),
         }
@@ -2354,7 +2334,7 @@ pub async fn render_job(app:&AppHandle,job:&QueueJob,cancel:Arc<AtomicBool>)->Re
       let zero_copy=if smart_repeat{
         if render_pingpong_zero_copy_1002(app,job,&source_master,&fx,&subs,&audio,final_duration,&work,&out,&encoder,attempt,&cancel,started,&timer).await?{true}
         else if render_multi_still_zero_copy_863(app,job,&audio,final_duration,&work,&out,&encoder,attempt,&cancel,started,&timer).await?{true}
-        else if render_interval_zero_copy_1000(app,job,&fx,&subs,&audio,final_duration,visual_master_duration,prewarmed_interval_half.as_ref(),&work,&out,&encoder,attempt,&cancel,started,&timer).await?{true}
+        else if render_interval_zero_copy_1000(app,job,&fx,&subs,&audio,final_duration,visual_master_duration,&work,&out,&encoder,attempt,&cancel,started,&timer).await?{true}
         else if render_zero_sub_zero_copy_856(app,job,&fx,&subs,&audio,visual_master_duration,final_duration,&work,&out,&encoder,attempt,&cancel,started,&timer).await?{true}
         else{render_periodic_zero_copy_852(app,job,&fx,&subs,&audio,final_duration,&work,&out,&encoder,attempt,&cancel,started,&timer).await?}
       }else{false};

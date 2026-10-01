@@ -100,14 +100,14 @@ jobs:
           rp=Path("src-tauri/src/lib.rs")
           rs=rp.read_text()
           qa_fn=r'''
-#[tauri::command]
-fn qa_write_marker(name:String,payload:String)->Result<(),String>{
-  let root=std::env::var("ENDLUME_QA_MARKER_DIR").map_err(|_|"ENDLUME_QA_MARKER_DIR missing".to_string())?;
-  std::fs::create_dir_all(&root).map_err(|e|e.to_string())?;
-  let safe=name.chars().filter(|c|c.is_ascii_alphanumeric()||*c=='_'||*c=='-').collect::<String>();
-  std::fs::write(std::path::Path::new(&root).join(format!("{safe}.json")),payload).map_err(|e|e.to_string())
-}
-'''
+          #[tauri::command]
+          fn qa_write_marker(name:String,payload:String)->Result<(),String>{
+            let root=std::env::var("ENDLUME_QA_MARKER_DIR").map_err(|_|"ENDLUME_QA_MARKER_DIR missing".to_string())?;
+            std::fs::create_dir_all(&root).map_err(|e|e.to_string())?;
+            let safe=name.chars().filter(|c|c.is_ascii_alphanumeric()||*c=='_'||*c=='-').collect::<String>();
+            std::fs::write(std::path::Path::new(&root).join(format!("{safe}.json")),payload).map_err(|e|e.to_string())
+          }
+          '''
           anchor_rs="#[cfg_attr(mobile, tauri::mobile_entry_point)]\npub fn run(){"
           assert anchor_rs in rs
           rs=rs.replace(anchor_rs,qa_fn+"\n"+anchor_rs)

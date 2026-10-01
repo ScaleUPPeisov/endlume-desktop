@@ -39,7 +39,7 @@ fn extend_audio_input_args(args:&mut Vec<String>,audio:&AudioSource,final_durati
       let source=std::fs::read_to_string(path).map_err(|e|format!("Не удалось прочитать audio concat list {}: {e}",path.display()))?;
       let source=source.trim();
       if source.is_empty(){return Err(format!("Audio concat list пуст: {}",path.display()))}
-      let repeats=((final_duration/cycle_duration).ceil() as usize).max(1).saturating_add(1);
+      let repeats=((final_duration/(*cycle_duration)).ceil() as usize).max(1).saturating_add(1);
       let finite=work.join(format!("audio-finite-concat-{}.txt",uuid::Uuid::new_v4()));
       let mut body=String::with_capacity(source.len().saturating_add(1).saturating_mul(repeats));
       for i in 0..repeats{if i>0{body.push('\n')}body.push_str(source)}
@@ -2027,7 +2027,7 @@ pub async fn render_job(app:&AppHandle,job:&QueueJob,cancel:Arc<AtomicBool>)->Re
           let audio_materialize_mark=Instant::now();let continuous=materialize_continuous_audio(app,job,started,&timer,&work,&cycle,final_duration,&encoder,attempt,&cancel).await?;emit_timing(app,&job.project.id,"processed-audio-materialize",audio_materialize_mark.elapsed().as_secs_f64());
           (AudioSource::Long(continuous),durations,final_duration,false)
         }else{
-          let (cycle,durations,_cycle_duration)=build_original_audio_cycle(app,job,started,&timer,&work,&encoder,attempt,&cancel).await?;
+          let (cycle,durations,cycle_duration)=build_original_audio_cycle(app,job,started,&timer,&work,&encoder,attempt,&cancel).await?;
           let final_duration=smart_final_duration(target,&durations,0.0,&job.settings.duration_mode);
           let direct_list=cycle.extension().and_then(|x|x.to_str()).map(|x|x.eq_ignore_ascii_case("txt")).unwrap_or(false);
           (if direct_list{AudioSource::ConcatList{path:cycle,cycle_duration}}else{AudioSource::Loop(cycle)},durations,final_duration,true)

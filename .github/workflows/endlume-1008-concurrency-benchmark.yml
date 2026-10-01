@@ -1,0 +1,109 @@
+name: ENDLUME 10.0.8 Audio Visual Concurrency Benchmark
+
+on:
+  push:
+    branches: [hotfix/endlume-10.0.8-performance-visual]
+    paths:
+      - ".github/workflows/endlume-1008-concurrency-benchmark.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-1008-concurrency-benchmark
+  cancel-in-progress: true
+
+jobs:
+  bench:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 20
+    steps:
+      - name: Measure real concurrent audio + Round Equalizer
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+          FF="$(command -v ffmpeg)"
+          ROOT="$RUNNER_TEMP/e1008-concurrency"; rm -rf "$ROOT"; mkdir -p "$ROOT"
+
+          LIB=""
+          while IFS= read -r p; do
+            if python3 - "$p" <<'PY'
+          import json,sys
+          try:d=json.load(open(sys.argv[1]))
+          except:raise SystemExit(1)
+          ok=any(isinstance(x,dict) and (x.get("id")=="825dd7a4-f0cf-4032-a3c9-64290cb5756d" or "эквалайзер круглый" in str(x.get("name","")).lower()) for x in d.get("effects",[]))
+          raise SystemExit(0 if ok else 1)
+          PY
+            then LIB="$p"; break; fi
+          done < <(find "$HOME/Library/Application Support" "$HOME/Library/Containers" -type f -name library.json 2>/dev/null)
+          test -n "$LIB"
+
+          python3 - "$LIB" "$ROOT/e.json" "$ROOT/ambient.txt" <<'PY'
+          import json,sys
+          d=json.load(open(sys.argv[1]))
+          for x in d.get("effects",[]):
+            if isinstance(x,dict) and (x.get("id")=="825dd7a4-f0cf-4032-a3c9-64290cb5756d" or "эквалайзер круглый" in str(x.get("name","")).lower()):
+              json.dump(x,open(sys.argv[2],"w"),ensure_ascii=False);break
+          open(sys.argv[3],"w").write(str(d.get("ambient") or ""))
+          PY
+          SRC="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["source"])' "$ROOT/e.json")"
+          AMB="$(cat "$ROOT/ambient.txt")"
+          test -f "$SRC"
+
+          mapfile -t TRACKS < <(find "/Volumes/TOSHIBA EXT" -type f -iname '*.mp3' -size +500k 2>/dev/null | head -12)
+          test "${#TRACKS[@]}" -ge 12
+          if [ ! -f "$AMB" ]; then AMB="${TRACKS[0]}"; fi
+
+          "$FF" -hide_banner -loglevel error -f lavfi -i "gradients=s=1920x1080:r=1:c0=0x10182a:c1=0x334866" -frames:v 1 -y "$ROOT/base.png"
+          python3 - "$ROOT/e.json" > "$ROOT/v.env" <<'PY'
+          import json,shlex,sys
+          e=json.load(open(sys.argv[1]))
+          vals={"KEY":str(e.get("keyColor","#00ff00")).lstrip("#"),"SCALE":float(e.get("scale",.25) or .25),"X":float(e.get("x",.5) or .5),"Y":float(e.get("y",.5) or .5),"OP":float(e.get("opacity",1) if e.get("opacity") is not None else 1),"DSP":float(e.get("despill",0) or 0)}
+          for k,v in vals.items():print(k+"="+shlex.quote(str(v)))
+          PY
+          source "$ROOT/v.env"
+          TARGET="$(python3 -c 'import sys;x=round(1920*float(sys.argv[1]));print(max(2,x if x%2==0 else x+1))' "$SCALE")"
+          VGRAPH="[0:v]fps=30,setsar=1[b0];[1:v]format=rgba,colorkey=0x$KEY:0.18:0.03,despill=type=green:mix=$DSP:expand=0.20,scale=$TARGET:-2:flags=lanczos,colorchannelmixer=aa=$OP[fx];[b0][fx]overlay=x='max(0,min(W-w,W*$X-w/2))':y='max(0,min(H-h,H*$Y-h/2))':shortest=1:eof_action=repeat:format=auto,format=yuv420p[outv]"
+
+          python3 - "$ROOT/audio.sh" "${TRACKS[@]}" -- "$AMB" <<'PY'
+          import sys,shlex
+          out=sys.argv[1];args=sys.argv[2:];sep=args.index("--");tracks=args[:sep];amb=args[sep+1]
+          cmd=["ffmpeg","-hide_banner","-loglevel","error"]
+          for p in tracks:cmd += ["-i",p]
+          cmd += ["-stream_loop","-1","-i",amb]
+          graph=[]
+          for i in range(len(tracks)):graph.append(f"[{i}:a]aresample=48000:async=1:first_pts=0,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,asetpts=N/SR/TB[a{i}]")
+          ins="".join(f"[a{i}]" for i in range(len(tracks)))
+          graph.append(f"{ins}concat=n={len(tracks)}:v=0:a=1[joined]")
+          graph.append("[joined]anull[processed_music]")
+          graph.append(f"[{len(tracks)}:a]aresample=48000:async=1:first_pts=0,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,volume=0.18[amb];[processed_music][amb]amix=inputs=2:duration=first:weights='1 1':normalize=0,alimiter=limit=0.98[outa]")
+          cmd += ["-filter_complex",";".join(graph),"-map","[outa]","-t","7200","-c:a","aac_at","-b:a","320k","-aac_at_mode","cvbr","-aac_at_quality","2","-ar","48000","-ac","2","-f","null","-"]
+          open(out,"w").write("#!/bin/bash\nexec "+" ".join(shlex.quote(x) for x in cmd)+"\n")
+          PY
+          chmod +x "$ROOT/audio.sh"
+
+          run_case(){
+            t="$1"; VOUT="$ROOT/v-$t.mp4"
+            START="$(python3 -c 'import time;print(time.time())')"
+            VSTART="$START"
+            "$FF" -hide_banner -loglevel error -filter_complex_threads "$t" -loop 1 -framerate 30 -i "$ROOT/base.png" -stream_loop -1 -i "$SRC"               -filter_complex "$VGRAPH" -map "[outv]" -t 40 -an               -c:v hevc_videotoolbox -realtime 1 -prio_speed 1 -power_efficient 0 -constant_bit_rate 1 -b:v 22M -g 1 -bf 0 -tag:v hvc1 -pix_fmt yuv420p               -fps_mode cfr -r 30 -video_track_timescale 60000 -y "$VOUT" &
+            VPID=$!
+            ASTART="$(python3 -c 'import time;print(time.time())')"
+            "$ROOT/audio.sh" &
+            APID=$!
+            wait "$VPID"; VEND="$(python3 -c 'import time;print(time.time())')"
+            wait "$APID"; AEND="$(python3 -c 'import time;print(time.time())')"
+            END="$(python3 -c 'import time;print(time.time())')"
+            python3 - "$t" "$VSTART" "$VEND" "$ASTART" "$AEND" "$START" "$END" <<'PY'
+          import sys
+          t,vs,ve,as_,ae,s,e=sys.argv[1:]
+          v=float(ve)-float(vs);a=float(ae)-float(as_);wall=float(e)-float(s)
+          print(f"CONCURRENCY_{t}T_VISUAL={v:.3f}")
+          print(f"CONCURRENCY_{t}T_AUDIO={a:.3f}")
+          print(f"CONCURRENCY_{t}T_WALL={wall:.3f}")
+          PY
+          }
+          for t in 2 4 6 8; do run_case "$t"; done
+          echo ENDLUME_1008_CONCURRENCY_BENCH_GREEN

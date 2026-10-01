@@ -1,5 +1,5 @@
 name: ENDLUME 10.0.6 Release Crossfade HQ320 Gate
-# rerun after finite-concat work-dir compile fix
+# rerun after duration-aware Strict 8.64 size gate
 # Production-code rerun after Effect delete-state fix
 
 on:

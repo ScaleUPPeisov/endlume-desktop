@@ -190,6 +190,15 @@ jobs:
           print('ENDLUME_1006_NORMAL_RENDER_GREEN',d)
           PY
 
+      - name: Two-track crossfade + HQ320 real render
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/qa-endlume-1006-crossfade-hq320.py \
+            "$E1006_UNPACKED_APP" \
+            e1006-qa/crossfade-hq320.json
+          grep -q 'ENDLUME_1006_CROSSFADE_HQ320_RUNTIME_GREEN' e1006-qa/crossfade-hq320.json
+
       - name: Effect anchor + opacity final render smoke
         shell: bash
         run: |

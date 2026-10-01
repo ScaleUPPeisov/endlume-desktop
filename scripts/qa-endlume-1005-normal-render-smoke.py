@@ -52,6 +52,14 @@ if not result.exists():
     print(p.stderr,file=sys.stderr)
     raise SystemExit("render result marker missing")
 data=json.loads(result.read_text())
+if data.get("status")!="passed":
+    print("ENDLUME_1005_RENDER_STDOUT_BEGIN")
+    print(p.stdout)
+    print("ENDLUME_1005_RENDER_STDOUT_END")
+    print("ENDLUME_1005_RENDER_STDERR_BEGIN",file=sys.stderr)
+    print(p.stderr,file=sys.stderr)
+    print("ENDLUME_1005_RENDER_STDERR_END",file=sys.stderr)
+    print("ENDLUME_1005_RENDER_RESULT",json.dumps(data,ensure_ascii=False),file=sys.stderr)
 assert data.get("status")=="passed",data
 rows=data.get("results") or []
 assert len(rows)==1,rows

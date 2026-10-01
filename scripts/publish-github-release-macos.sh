@@ -38,7 +38,42 @@ export ENDLUME_RELEASE_PLATFORM="darwin-aarch64"
 export ENDLUME_RELEASE_VERSION="$VERSION"
 export ENDLUME_UPDATER_PUBLIC_KEY_FILE="$PUB"
 export ENDLUME_UPDATER_ENDPOINT="https://github.com/$HOST_REPO/releases/download/$TAG/latest.json"
-/bin/bash "$BUILDER"
+BUILD_LOG="$ART/builder.log"
+set +e
+/bin/bash "$BUILDER" > >(tee "$BUILD_LOG") 2>&1
+BUILD_CODE=${PIPESTATUS[0]}
+set -e
+
+if [[ "$BUILD_CODE" -ne 0 ]]; then
+  ERR_FILE="$ART/last-release-error.txt"
+  {
+    echo "ENDLUME_RELEASE_FAILURE"
+    echo "version=$VERSION"
+    echo "builder=$BUILDER"
+    echo "exit_code=$BUILD_CODE"
+    echo "timestamp=$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+    echo
+    tail -n 120 "$BUILD_LOG" 2>/dev/null || true
+  } | sed -E 's#'"$HOME"'#~#g; s#ghp_[A-Za-z0-9_]+#[REDACTED]#g; s#github_pat_[A-Za-z0-9_]+#[REDACTED]#g' > "$ERR_FILE"
+
+  META_JSON="$ART/error-meta.json"
+  TARGET_PATH="updates/github/last-release-error.txt"
+  SHA="$(gh api "/repos/ScaleUPPeisov/endlume-desktop/contents/$TARGET_PATH?ref=release" --jq .sha 2>/dev/null || true)"
+  python3 - "$ERR_FILE" "$META_JSON" "$SHA" <<'PY'
+import base64,json,pathlib,sys
+src,out,sha=sys.argv[1:]
+p={
+  "message":"release: capture ENDLUME updater failure diagnostics",
+  "branch":"release",
+  "content":base64.b64encode(pathlib.Path(src).read_bytes()).decode()
+}
+if sha:
+  p["sha"]=sha
+json.dump(p,open(out,"w"))
+PY
+  gh api --method PUT "/repos/ScaleUPPeisov/endlume-desktop/contents/$TARGET_PATH" --input "$META_JSON" >/dev/null 2>&1 || true
+  exit "$BUILD_CODE"
+fi
 
 ASSET="$(find "$ART" -maxdepth 8 -type f -name '*.app.tar.gz' -print -quit)"
 [[ -n "$ASSET" && -f "$ASSET" ]] || { echo "No macOS updater artifact in $ART" >&2; find "$ART" -type f -print; exit 1; }

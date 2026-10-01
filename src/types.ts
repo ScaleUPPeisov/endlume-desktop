@@ -7,6 +7,16 @@ export type EncoderPreference = 'auto'|'quality'|'speed';
 export type EffectUsageMode = 'off'|'always'|'interval';
 export type SubscribeFirstAppearance = 'after-interval'|'immediate'|'custom';
 
+export interface AnchorPoint {
+  x: number;
+  y: number;
+  width?: number;
+  height?: number;
+  source?: 'manual'|'auto';
+  confidence?: number;
+}
+export type SceneAnchors = Record<string, AnchorPoint>;
+
 export interface ProjectScanItem {
   id: string;
   name: string;
@@ -15,6 +25,7 @@ export interface ProjectScanItem {
   audio: string[];
   valid: boolean;
   error?: string;
+  anchors?: SceneAnchors;
 }
 
 export interface RenderProject extends ProjectScanItem {
@@ -67,6 +78,10 @@ export interface EffectPreset {
   usageMode?: EffectUsageMode;
   intervalSec?: number;
   usageDurationSec?: number;
+  target?: string;
+  offsetX?: number;
+  offsetY?: number;
+  opacity?: number;
 }
 
 export interface SubscribePreset extends EffectPreset {

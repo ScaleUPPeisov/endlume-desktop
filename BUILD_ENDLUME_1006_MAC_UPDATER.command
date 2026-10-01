@@ -84,7 +84,8 @@ cp "$OLD_APP/Contents/MacOS/ffprobe" "$WORK/src-tauri/binaries/ffprobe-aarch64-a
 chmod 755 "$WORK/src-tauri/binaries/ffmpeg-aarch64-apple-darwin" "$WORK/src-tauri/binaries/ffprobe-aarch64-apple-darwin"
 file "$WORK/src-tauri/binaries/ffmpeg-aarch64-apple-darwin" | grep -E 'arm64|Mach-O'
 file "$WORK/src-tauri/binaries/ffprobe-aarch64-apple-darwin" | grep -E 'arm64|Mach-O'
-"$WORK/src-tauri/binaries/ffmpeg-aarch64-apple-darwin" -hide_banner -filters 2>/dev/null | grep -q acrossfade
+FF_FILTERS="$("$WORK/src-tauri/binaries/ffmpeg-aarch64-apple-darwin" -hide_banner -filters 2>/dev/null || true)"
+grep -q acrossfade <<<"$FF_FILTERS"
 "$WORK/src-tauri/binaries/ffprobe-aarch64-apple-darwin" -version >/dev/null
 echo ENDLUME_1006_PORTABLE_FFMPEG_GREEN
 

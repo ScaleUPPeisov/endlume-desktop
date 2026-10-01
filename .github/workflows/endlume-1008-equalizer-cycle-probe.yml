@@ -1,0 +1,92 @@
+name: ENDLUME 10.0.8 Round Equalizer Cycle Probe
+
+on:
+  push:
+    branches: [hotfix/endlume-10.0.8-performance-visual]
+    paths:
+      - ".github/workflows/endlume-1008-equalizer-cycle-probe.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-1008-equalizer-cycle-probe
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 20
+    steps:
+      - name: Probe real saved Round Equalizer asset
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+          FFMPEG="$(command -v ffmpeg || true)"
+          FFPROBE="$(command -v ffprobe || true)"
+          test -x "$FFMPEG" -a -x "$FFPROBE"
+
+          LIB=""
+          while IFS= read -r p; do
+            if python3 - "$p" <<'PY'
+          import json,sys
+          try:
+            d=json.load(open(sys.argv[1]))
+          except Exception:
+            raise SystemExit(1)
+          rows=d.get("effects") or []
+          ok=any("эквалайзер круглый" in str(x.get("name","")).lower() or x.get("id")=="825dd7a4-f0cf-4032-a3c9-64290cb5756d" for x in rows if isinstance(x,dict))
+          raise SystemExit(0 if ok else 1)
+          PY
+            then LIB="$p"; break; fi
+          done < <(find "$HOME/Library/Application Support" "$HOME/Library/Containers" -type f -name library.json 2>/dev/null)
+
+          test -n "$LIB"
+          SRC="$(python3 - "$LIB" <<'PY'
+          import json,sys
+          d=json.load(open(sys.argv[1]))
+          rows=d.get("effects") or []
+          for x in rows:
+            if not isinstance(x,dict): continue
+            if "эквалайзер круглый" in str(x.get("name","")).lower() or x.get("id")=="825dd7a4-f0cf-4032-a3c9-64290cb5756d":
+              print(x.get("source","")); break
+          PY
+          )"
+          test -f "$SRC"
+
+          DUR="$("$FFPROBE" -v error -show_entries format=duration -of default=nw=1:nk=1 "$SRC")"
+          FPS="$("$FFPROBE" -v error -select_streams v:0 -show_entries stream=avg_frame_rate -of default=nw=1:nk=1 "$SRC")"
+          SIZE="$(stat -f '%z' "$SRC")"
+          echo "ROUND_EQUALIZER_FOUND=1"
+          echo "ROUND_EQUALIZER_DURATION=$DUR"
+          echo "ROUND_EQUALIZER_FPS=$FPS"
+          echo "ROUND_EQUALIZER_BYTES=$SIZE"
+
+          python3 - "$FFMPEG" "$SRC" "$DUR" <<'PY'
+          import re,subprocess,sys
+          ffmpeg,src,dur=sys.argv[1],sys.argv[2],float(sys.argv[3])
+          candidates=[4,6,8,10,12,15,20,30]
+          rows=[]
+          for c in candidates:
+            if c+2.5>=dur: continue
+            # Compare two 2-second windows separated by the candidate period.
+            cmd=[ffmpeg,"-hide_banner","-nostats","-loglevel","info",
+                 "-ss","0","-t","2","-i",src,
+                 "-ss",str(c),"-t","2","-i",src,
+                 "-filter_complex","[0:v]fps=12,scale=480:-2[a];[1:v]fps=12,scale=480:-2[b];[a][b]ssim",
+                 "-f","null","-"]
+            p=subprocess.run(cmd,text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+            m=re.findall(r"All:([0-9.]+)",p.stderr)
+            score=float(m[-1]) if m else 0.0
+            rows.append((c,score))
+            print(f"CYCLE_CANDIDATE_{c}s_SSIM={score:.6f}")
+          good=[r for r in rows if r[1]>=0.995]
+          if good:
+            best=min(good,key=lambda x:x[0])
+            print(f"ROUND_EQUALIZER_SAFE_CYCLE_SECONDS={best[0]}")
+            print(f"ROUND_EQUALIZER_SAFE_CYCLE_SSIM={best[1]:.6f}")
+          else:
+            print("ROUND_EQUALIZER_SAFE_CYCLE_SECONDS=NONE")
+          PY

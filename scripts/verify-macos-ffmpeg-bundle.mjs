@@ -18,9 +18,11 @@ function forbidden(v){return v.startsWith('/opt/homebrew/')||v.startsWith('/usr/
 function walk(dir,depth=0){if(depth>7||!fs.existsSync(dir))return[];const out=[];for(const e of fs.readdirSync(dir,{withFileTypes:true})){const p=path.join(dir,e.name);if(e.isDirectory()){if(e.name.endsWith('.app'))out.push(p);else out.push(...walk(p,depth+1))}}return out}
 function roots(){const out=[];if(process.env.CARGO_TARGET_DIR)out.push(path.resolve(process.env.CARGO_TARGET_DIR));out.push(path.join(root,'src-tauri','target'));return[...new Set(out.filter(fs.existsSync))]}
 
-const apps=roots().flatMap(walk).filter(p=>path.basename(p).includes('ENDLUME'));
+const explicitApp=process.env.ENDLUME_APP_PATH?path.resolve(process.env.ENDLUME_APP_PATH):null;
+const apps=explicitApp?[explicitApp]:roots().flatMap(walk).filter(p=>path.basename(p).includes('ENDLUME'));
 if(!apps.length)throw new Error(`No ENDLUME .app found under: ${roots().join(', ')}`);
-apps.sort((a,b)=>fs.statSync(b).mtimeMs-fs.statSync(a).mtimeMs);
+if(explicitApp&&!fs.existsSync(explicitApp))throw new Error(`ENDLUME_APP_PATH does not exist: ${explicitApp}`);
+if(!explicitApp)apps.sort((a,b)=>fs.statSync(b).mtimeMs-fs.statSync(a).mtimeMs);
 const app=apps[0],macos=path.join(app,'Contents','MacOS'),frameworksDir=path.join(app,'Contents','Frameworks');
 const ffmpeg=path.join(macos,'ffmpeg'),ffprobe=path.join(macos,'ffprobe');
 for(const p of[ffmpeg,ffprobe])if(!fs.existsSync(p))throw new Error(`Bundled sidecar missing: ${p}`);

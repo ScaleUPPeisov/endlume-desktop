@@ -1,0 +1,234 @@
+name: ENDLUME 10.0.3 to 10.0.6 Production Updater Audit
+
+on:
+  push:
+    branches:
+      - release-prep/endlume-10.0.6
+    paths:
+      - "release/endlume-10.0.6-updater-audit.json"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: endlume-1006-postpublish-updater-audit
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    name: macOS ARM64 • live updater 10.0.3 → 10.0.6
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Require audit enable + successful production publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import json
+          d=json.load(open('release/endlume-10.0.6-updater-audit.json'))
+          assert d['enabled'] is True,'post-publish updater audit disabled'
+          assert d['version_from']=='10.0.3'
+          assert d['version_to']=='10.0.6'
+          assert d['baseline_source_sha']=='2ca40787fd7b36fc0f793aaa69c3297ed581232f'
+          assert isinstance(d['production_publish_run_id'],int) and d['production_publish_run_id']>0
+          print('ENDLUME_1006_UPDATER_AUDIT_APPROVED')
+          PY
+          PUBLISH_RUN="$(python3 -c "import json;print(json.load(open('release/endlume-10.0.6-updater-audit.json'))['production_publish_run_id'])")"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PUBLISH_RUN" --jq .conclusion)" = "success"
+          echo "ENDLUME_1006_PRODUCTION_PUBLISH_LINEAGE_GREEN run=$PUBLISH_RUN"
+
+      - name: Verify live production manifest is exactly 10.0.6
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          LIVE="$RUNNER_TEMP/e1006-live-latest.json"
+          URL='https://github.com/ScaleUPPeisov/scaleup-site/releases/download/endlume-stable/latest.json'
+          curl -fsSL --retry 8 --retry-delay 3 "$URL?audit=$GITHUB_RUN_ID" -o "$LIVE"
+          python3 - "$LIVE" <<'PY'
+          import json,sys
+          d=json.load(open(sys.argv[1]))
+          assert d['version']=='10.0.6',d
+          for platform in ('darwin-aarch64','windows-x86_64'):
+              p=d['platforms'][platform]
+              assert p['url'] and p['signature'] and len(p['sha256'])==64,p
+          print('ENDLUME_1006_LIVE_MANIFEST_GREEN')
+          PY
+
+      - name: Checkout exact production 10.0.3 baseline source
+        uses: actions/checkout@v4
+        with:
+          ref: 2ca40787fd7b36fc0f793aaa69c3297ed581232f
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Add audit-only updater invocation to 10.0.3
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import json
+          p=Path('src-tauri/src/lib.rs')
+          s=p.read_text()
+          needle='''    .setup(|app|{\n      persistence::mark_session_open(&app.handle().clone())?;\n      render::cleanup_runtime_caches_1003(&app.handle().clone());'''
+          repl='''    .setup(|app|{\n      persistence::mark_session_open(&app.handle().clone())?;\n      render::cleanup_runtime_caches_1003(&app.handle().clone());\n      if let Ok(check_path)=std::env::var("ENDLUME_AUDIT_UPDATER_CHECK"){\n        let handle=app.handle().clone();\n        tauri::async_runtime::spawn(async move{\n          let check=updater_local::local_update_check(handle.clone()).await;\n          let _=std::fs::write(&check_path,serde_json::to_vec_pretty(&check).unwrap_or_default());\n          let _=updater_local::local_update_start(handle.clone()).await;\n        });\n        return Ok(())\n      }'''
+          assert needle in s,'10.0.3 setup hook changed'
+          p.write_text(s.replace(needle,repl,1))
+          q=Path('src-tauri/tauri.conf.json')
+          d=json.loads(q.read_text())
+          assert d['version']=='10.0.3'
+          assert d['plugins']['updater']['endpoints']==['https://github.com/ScaleUPPeisov/scaleup-site/releases/download/endlume-stable/latest.json']
+          d['bundle']['createUpdaterArtifacts']=False
+          q.write_text(json.dumps(d,ensure_ascii=False,indent=2)+'\n')
+          print('ENDLUME_1003_AUDIT_HOOK_GREEN')
+          PY
+
+      - name: Stage FFmpeg and build exact 10.0.3 audit app
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          command -v ffmpeg >/dev/null || brew install ffmpeg
+          mkdir -p src-tauri/binaries
+          cp -L "$(command -v ffmpeg)" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp -L "$(command -v ffprobe)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          chmod 755 src-tauri/binaries/*
+          npm ci
+          npm run check
+          npm run build
+          export CARGO_TARGET_DIR="$RUNNER_TEMP/e1003-updater-audit"
+          export APPLE_SIGNING_IDENTITY="-"
+          npm run tauri build -- --target aarch64-apple-darwin --bundles app
+          APP="$(find "$CARGO_TARGET_DIR" -type d -path '*/release/bundle/macos/*.app' -print -quit)"
+          test -n "$APP" -a -d "$APP"
+          test "$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist")" = "10.0.3"
+          echo "AUDIT_APP=$APP" >> "$GITHUB_ENV"
+
+      - name: Execute live production updater and prove user-state survival
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          STATE_DIR="$HOME/Library/Application Support/studio.endlume.desktop"
+          CACHE_DIR="$HOME/Library/Caches/studio.endlume.desktop"
+          AUDIT_DIR="$RUNNER_TEMP/e1006-updater-audit"
+          mkdir -p "$STATE_DIR" "$CACHE_DIR" "$AUDIT_DIR"
+          SENTINEL="$STATE_DIR/ENDLUME-1006-UPDATER-SENTINEL.txt"
+          CACHE_SENTINEL="$CACHE_DIR/ENDLUME-1006-CACHE-SENTINEL.txt"
+          printf 'state-survives-%s\n' "$GITHUB_RUN_ID" > "$SENTINEL"
+          printf 'cache-survives-%s\n' "$GITHUB_RUN_ID" > "$CACHE_SENTINEL"
+          shasum -a 256 "$SENTINEL" | awk '{print $1}' > "$AUDIT_DIR/state-before.sha"
+          shasum -a 256 "$CACHE_SENTINEL" | awk '{print $1}' > "$AUDIT_DIR/cache-before.sha"
+
+          CHECK="$AUDIT_DIR/check.json"
+          UPDATE_STATE="$CACHE_DIR/update-center/state.json"
+          rm -f "$CHECK" "$UPDATE_STATE"
+          EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$AUDIT_APP/Contents/Info.plist")"
+          ENDLUME_AUDIT_UPDATER_CHECK="$CHECK" "$AUDIT_APP/Contents/MacOS/$EXE" >"$AUDIT_DIR/stdout.log" 2>"$AUDIT_DIR/stderr.log" &
+          PID=$!
+
+          for i in $(seq 1 120); do test -s "$CHECK" && break; sleep 0.25; done
+          test -s "$CHECK"
+          cat "$CHECK"
+          python3 - "$CHECK" <<'PY'
+          import json,sys
+          x=json.load(open(sys.argv[1]))
+          assert x['supported'] is True,x
+          assert x['available'] is True,x
+          assert x['current']=='10.0.3',x
+          assert x['version']=='10.0.6',x
+          assert not x.get('reason'),x
+          print('ENDLUME_1003_DETECTS_1006_GREEN')
+          PY
+
+          for i in $(seq 1 360); do
+            S="$(python3 - "$UPDATE_STATE" 2>/dev/null <<'PY' || true
+          import json,sys,pathlib
+          p=pathlib.Path(sys.argv[1])
+          print(json.load(open(p)).get('state','') if p.is_file() else '')
+          PY
+          )"
+            test "$S" = "RESTART_REQUIRED" && break
+            test "$S" = "FAILED" && { cat "$UPDATE_STATE"; exit 51; }
+            sleep 0.5
+          done
+          test -s "$UPDATE_STATE"
+          cat "$UPDATE_STATE"
+          python3 - "$UPDATE_STATE" <<'PY'
+          import json,sys
+          x=json.load(open(sys.argv[1]))
+          assert x['state']=='RESTART_REQUIRED',x
+          assert float(x['progress'])==100.0,x
+          assert int(x.get('downloadedBytes') or 0)>0,x
+          assert int(x.get('totalBytes') or x.get('downloadedBytes') or 0)>0,x
+          print('ENDLUME_1006_DOWNLOAD_SIGNATURE_SHA_INSTALL_GREEN')
+          PY
+
+          test -s "$SENTINEL"
+          test -s "$CACHE_SENTINEL"
+          shasum -a 256 "$SENTINEL" | awk '{print $1}' > "$AUDIT_DIR/state-after.sha"
+          shasum -a 256 "$CACHE_SENTINEL" | awk '{print $1}' > "$AUDIT_DIR/cache-after.sha"
+          cmp "$AUDIT_DIR/state-before.sha" "$AUDIT_DIR/state-after.sha"
+          cmp "$AUDIT_DIR/cache-before.sha" "$AUDIT_DIR/cache-after.sha"
+          echo ENDLUME_1006_STATE_AND_CACHE_SURVIVAL_GREEN
+
+          kill "$PID" >/dev/null 2>&1 || true
+          wait "$PID" 2>/dev/null || true
+
+          VER="$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$AUDIT_APP/Contents/Info.plist" 2>/dev/null || true)"
+          echo "AUDIT_APP_VERSION_AFTER=$VER"
+          test "$VER" = "10.0.6"
+          /usr/bin/codesign --verify --deep --strict --verbose=2 "$AUDIT_APP"
+          /usr/bin/xcrun stapler validate "$AUDIT_APP"
+          /usr/sbin/spctl -a -vv "$AUDIT_APP"
+          echo ENDLUME_1006_UPDATED_BUNDLE_GREEN
+
+      - name: Relaunch updated app and verify main frontend
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          MARKER="$RUNNER_TEMP/e1006-updated-launch.json"
+          rm -f "$MARKER"
+          /bin/launchctl setenv ENDLUME_LAUNCH_SMOKE_MARKER "$MARKER"
+          /usr/bin/open -n "$AUDIT_APP"
+          for i in $(seq 1 100); do test -s "$MARKER" && break; sleep 0.25; done
+          /bin/launchctl unsetenv ENDLUME_LAUNCH_SMOKE_MARKER || true
+          test -s "$MARKER"
+          cat "$MARKER"
+          PID="$(python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));assert d["label"]=="main";assert d["frontendLoaded"] is True;print(d["pid"])' "$MARKER")"
+          kill -0 "$PID"
+          test "$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$AUDIT_APP/Contents/Info.plist")" = "10.0.6"
+          kill "$PID" >/dev/null 2>&1 || true
+          echo ENDLUME_1006_POST_UPDATE_RELAUNCH_GREEN
+
+      - name: Cleanup audit sentinels only
+        if: always()
+        shell: bash
+        run: |
+          rm -f "$HOME/Library/Application Support/studio.endlume.desktop/ENDLUME-1006-UPDATER-SENTINEL.txt" || true
+          rm -f "$HOME/Library/Caches/studio.endlume.desktop/ENDLUME-1006-CACHE-SENTINEL.txt" || true
+
+      - name: Final updater verdict
+        shell: bash
+        run: echo ENDLUME_1006_PRODUCTION_UPDATER_E2E_GREEN

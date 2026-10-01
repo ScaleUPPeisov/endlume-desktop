@@ -95,6 +95,20 @@ jobs:
               if 550<=mb<=800:
                 videos.append((st.st_mtime,mb,str(fp)))
           videos.sort(reverse=True)
+          closest=sorted(videos,key=lambda x:abs(x[1]-679.6))
+          if closest:
+            mt,mb,p=closest[0]
+            print(f"BASELINE_CLOSEST|mb={mb:.3f}|mtime={mt:.0f}|path={p}")
+            parent=Path(p).parent; stem=Path(p).stem
+            sidecars=[x for x in parent.iterdir() if x.is_file() and stem in x.stem and x.suffix.lower()==".txt"]
+            for sf in sidecars[:4]:
+              try:
+                txt=sf.read_text(errors="ignore")
+                nonempty=[line.strip() for line in txt.splitlines() if line.strip()]
+                print(f"BASELINE_TRACKLIST|path={sf}|lines={len(nonempty)}")
+                for line in nonempty[:20]: print("TRACKLINE="+line)
+              except Exception as e:
+                print("TRACKLIST_ERROR="+str(e))
           print("RECENT_550_800MB_OUTPUTS="+str(len(videos)))
           for mt,mb,p in videos[:12]:
             print(f"OUTPUT|mb={mb:.1f}|mtime={mt:.0f}|path={p}")

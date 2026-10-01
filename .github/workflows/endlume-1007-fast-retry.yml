@@ -81,9 +81,10 @@ jobs:
                   const buttons=[...el.querySelectorAll('button')] as HTMLButtonElement[];
                   const del=buttons.find(b=>b.textContent?.includes('УДАЛИТЬ'));
                   const r=del?.getBoundingClientRect();
-                  const visible=!!r&&r.top>=68&&r.bottom<=window.innerHeight;
+                  const hit=r?document.elementFromPoint(r.left+r.width/2,r.top+r.height/2):null;
+                  const visible=!!r&&r.top>=68&&r.bottom<=window.innerHeight&&!!hit&&!!del&&(hit===del||del.contains(hit));
                   const intervals=!!(el.textContent?.includes('ПО ИНТЕРВАЛУ')&&el.textContent?.includes('Показывать каждые'));
-                  report(label,{scrollHeight:el.scrollHeight,clientHeight:el.clientHeight,scrollTop:Math.round(el.scrollTop),deleteVisible:visible,intervalsVisible:intervals});
+                  report(label,{scrollHeight:el.scrollHeight,clientHeight:el.clientHeight,scrollTop:Math.round(el.scrollTop),deleteVisible:visible,deleteHit:hit?.textContent||'',intervalsVisible:intervals});
                 },250);
               },400);
             };

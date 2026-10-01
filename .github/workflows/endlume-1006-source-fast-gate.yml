@@ -1,0 +1,57 @@
+name: ENDLUME 10.0.6 Fast Source Gate
+
+on:
+  push:
+    branches:
+      - release-prep/endlume-10.0.6-production-hotfix-final
+    paths:
+      - ".github/workflows/endlume-1006-source-fast-gate.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  source:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Frontend compile
+        run: |
+          npm ci
+          npm run check
+          npm run build
+
+      - name: 10.0.6 hotfix source contracts
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          r=Path('src-tauri/src/render.rs').read_text()
+          q=Path('src-tauri/src/queue.rs').read_text()
+          ui=Path('src/pages/Editors.tsx').read_text()
+          page=Path('src/pages/RenderPage.tsx').read_text()
+
+          assert 'if !requested_audio_processing{resolved_job.settings.duration_mode="whole-track".into();}' in r
+          assert 'job.settings.crossfade_sec>0.01' in r
+          assert 'acrossfade=d=' in r
+          assert '"-b:a","320k"' in r
+          assert 'AudioSource::ConcatList{path:PathBuf,cycle_duration:f64}' in r
+          assert 'audio-finite-concat-' in r
+          assert '"-stream_loop","-1","-f","concat"' not in r
+          assert 'expected_sec.max(1.0)*8_000.0' in r
+          assert 'Не удалось запустить внутренний видео-движок FFmpeg.' in q
+          assert 'Удалить эффект?' in ui and 'УДАЛИТЬ ЭФФЕКТ' in ui
+          assert 'Рендер завершён с ошибкой' in page and 'ОШИБКА РЕНДЕРА' in page
+          print('ENDLUME_1006_FAST_SOURCE_GATE_GREEN')
+          PY

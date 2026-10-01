@@ -7,5 +7,6 @@
   "qa_run_id": 36815504648,
   "qa_head_sha": "c4367b14e69d456883a18695f220bdb3faa92950",
   "release_kind": "macos-ffmpeg-runtime-hotfix",
-  "notes": "ENDLUME 10.0.4 macOS hotfix: portable bundled FFmpeg/FFprobe runtime, complete dylib closure, no Homebrew runtime dependency, Effects/Subscribe Live Preview packaged smoke PASS. Windows is intentionally unchanged."
+  "notes": "ENDLUME 10.0.4 macOS hotfix: portable bundled FFmpeg/FFprobe runtime, complete dylib closure, no Homebrew runtime dependency, Effects/Subscribe Live Preview packaged smoke PASS. Windows is intentionally unchanged.",
+  "release_attempt": 2
 }

@@ -92,7 +92,7 @@ jobs:
             test "$ACTUAL_SHA" = "$SHA"
             echo "ENDLUME_1006_QA_LINEAGE_GREEN $LABEL run=$RUN sha=$SHA"
           done
-          git fetch origin "${{ steps.manifest.outputs.source_sha }}" --depth=1
+          git fetch origin "${{ steps.manifest.outputs.source_sha }}" "${{ steps.manifest.outputs.mac_sha }}" "${{ steps.manifest.outputs.win_sha }}" --depth=100
           git merge-base --is-ancestor "${{ steps.manifest.outputs.mac_sha }}" "${{ steps.manifest.outputs.source_sha }}" || {
             echo "Mac QA SHA is not an ancestor of release source" >&2; exit 31;
           }
@@ -214,7 +214,7 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-          STAGE="$RUNNER_TEMP/e1006-mac-stage"
+          STAGE="$GITHUB_WORKSPACE/release-stage/mac"
           rm -rf "$STAGE"; mkdir -p "$STAGE"
           /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$RELEASE_APP" "$STAGE/$MAC_MANUAL_ASSET"
           /usr/bin/shasum -a 256 "$STAGE/$MAC_MANUAL_ASSET" > "$STAGE/$MAC_MANUAL_ASSET.sha256"
@@ -224,12 +224,10 @@ jobs:
           npx --yes @tauri-apps/cli@2.10.1 signer sign "$STAGE/$MAC_UPDATER_ASSET"
           test -s "$STAGE/$MAC_UPDATER_ASSET.sig"
           /usr/bin/shasum -a 256 "$STAGE/$MAC_UPDATER_ASSET" > "$STAGE/$MAC_UPDATER_ASSET.sha256"
-          echo "MAC_STAGE=$STAGE" >> "$GITHUB_ENV"
-
       - uses: actions/upload-artifact@v4
         with:
           name: ENDLUME-10.0.6-production-macos
-          path: ${{ env.MAC_STAGE }}/
+          path: release-stage/mac/
           if-no-files-found: error
           retention-days: 3
 
@@ -289,17 +287,15 @@ jobs:
           npm run tauri build -- --target x86_64-pc-windows-msvc --bundles nsis --config src-tauri/tauri.windows.conf.json
           $installer=Get-ChildItem "$env:CARGO_TARGET_DIR\x86_64-pc-windows-msvc\release\bundle\nsis" -Filter '*.exe' -File | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
           if(!$installer){throw 'NSIS missing'}
-          $stage=Join-Path $env:RUNNER_TEMP 'e1006-win-stage'
+          $stage=Join-Path $env:GITHUB_WORKSPACE 'release-stage\win'
           Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue
           New-Item -ItemType Directory -Force $stage | Out-Null
           Copy-Item $installer.FullName (Join-Path $stage $env:WIN_MANUAL_ASSET)
           (Get-FileHash (Join-Path $stage $env:WIN_MANUAL_ASSET) -Algorithm SHA256).Hash.ToLower() + "  " + $env:WIN_MANUAL_ASSET | Out-File (Join-Path $stage "$env:WIN_MANUAL_ASSET.sha256") -Encoding ascii
-          "WIN_STAGE=$stage" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
-
       - uses: actions/upload-artifact@v4
         with:
           name: ENDLUME-10.0.6-production-windows
-          path: ${{ env.WIN_STAGE }}\
+          path: release-stage\win\
           if-no-files-found: error
           retention-days: 3
 

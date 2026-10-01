@@ -2254,16 +2254,16 @@ pub async fn render_job(app:&AppHandle,job:&QueueJob,cancel:Arc<AtomicBool>)->Re
               if !requested_audio_processing{return Err(format!("Strict Fidelity: исходную музыку нельзя сохранить bitstream-copy ({reason}). Используй MP3 с одинаковыми sample rate/channel layout."))}
               let audio_cycle_mark=Instant::now();let (cycle,durations,_cycle_duration)=build_lossless_processed_audio_cycle(app,job,started,&timer,&work,&encoder,attempt,&cancel).await?;emit_timing(app,&job.project.id,"processed-audio-cycle",audio_cycle_mark.elapsed().as_secs_f64());
               let final_duration=smart_final_duration(target,&durations,job.settings.crossfade_sec,&job.settings.duration_mode);
-              let audio_materialize_mark=Instant::now();let continuous=materialize_continuous_audio(app,job,started,&timer,&work,&cycle,final_duration,&encoder,attempt,&cancel).await?;emit_timing(app,&job.project.id,"processed-audio-materialize",audio_materialize_mark.elapsed().as_secs_f64());
-              emit_warning(app,&job.project.id,&format!("Original MP3 packet-copy недоступен ({reason}); использую HQ processed fallback."));
-              (AudioSource::Long(continuous),durations,final_duration,false)
+              emit_timing(app,&job.project.id,"processed-audio-materialize",0.0);
+              emit_warning(app,&job.project.id,&format!("Original MP3 packet-copy недоступен ({reason}); использую HQ processed cycle без лишнего full-duration materialize."));
+              (AudioSource::Loop(cycle),durations,final_duration,false)
             }
           }
         }else if requested_audio_processing{
           let audio_cycle_mark=Instant::now();let (cycle,durations,_cycle_duration)=build_lossless_processed_audio_cycle(app,job,started,&timer,&work,&encoder,attempt,&cancel).await?;emit_timing(app,&job.project.id,"processed-audio-cycle",audio_cycle_mark.elapsed().as_secs_f64());
           let final_duration=smart_final_duration(target,&durations,job.settings.crossfade_sec,&job.settings.duration_mode);
-          let audio_materialize_mark=Instant::now();let continuous=materialize_continuous_audio(app,job,started,&timer,&work,&cycle,final_duration,&encoder,attempt,&cancel).await?;emit_timing(app,&job.project.id,"processed-audio-materialize",audio_materialize_mark.elapsed().as_secs_f64());
-          (AudioSource::Long(continuous),durations,final_duration,false)
+          emit_timing(app,&job.project.id,"processed-audio-materialize",0.0);
+          (AudioSource::Loop(cycle),durations,final_duration,false)
         }else{
           let (cycle,durations,cycle_duration)=build_original_audio_cycle(app,job,started,&timer,&work,&encoder,attempt,&cancel).await?;
           let final_duration=smart_final_duration(target,&durations,0.0,&job.settings.duration_mode);

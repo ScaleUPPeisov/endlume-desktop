@@ -1945,9 +1945,25 @@ async fn render_interval_zero_copy_1000(app:&AppHandle,job:&QueueJob,effects:&[E
   };
   emit_timing(app,&job.project.id,"subscribe-master",sub_mark.elapsed().as_secs_f64());
   let pool=work.join("interval-1000-video-pool.mp4");let pool_frames=master_physical+sub_physical;
-  if half_rate{concat_interval_half_pool_1008(app,job,&[master.clone(),sub_master],&pool,pool_frames,work,encoder,attempt,cancel,started,timer).await?}
-  else{concat_video_parts_852(app,job,&[master.clone(),sub_master],&pool,pool_frames,work,encoder,attempt,cancel,started,timer).await?};
-  let seed=destination_partial_path(out)?;let _=std::fs::remove_file(&seed);let mut args:Vec<String>=vec!["-hide_banner","-loglevel","error","-i",pool.to_string_lossy().as_ref()].into_iter().map(String::from).collect();
+  let half_concat=if half_rate{
+    let list=work.join("interval-1008-half-direct-concat.txt");
+    let body=[master.clone(),sub_master.clone()].iter().map(|x|format!("file '{}'
+",ffconcat_escape(x))).collect::<String>();
+    std::fs::write(&list,body).map_err(|e|format!("10.0.8 direct half concat list: {e}"))?;
+    Some(list)
+  }else{
+    concat_video_parts_852(app,job,&[master.clone(),sub_master],&pool,pool_frames,work,encoder,attempt,cancel,started,timer).await?;
+    None
+  };
+  let seed=destination_partial_path(out)?;let _=std::fs::remove_file(&seed);
+  let mut args:Vec<String>=vec!["-hide_banner","-loglevel","error"].into_iter().map(String::from).collect();
+  if let Some(list)=half_concat.as_ref(){
+    args.extend(vec!["-f","concat","-safe","0","-fflags","+genpts","-i",list.to_string_lossy().as_ref()].into_iter().map(String::from));
+    emit_timing(app,&job.project.id,"physical-video-pool",0.0);
+    let _=app.emit("engine-profile",json!({"id":job.project.id,"halfRateDirectConcat":true,"physicalPoolWriteSkipped":true,"physicalPoolFrames":pool_frames}));
+  }else{
+    args.extend(vec!["-i",pool.to_string_lossy().as_ref()].into_iter().map(String::from));
+  }
   extend_audio_input_args(&mut args,mux_audio,final_duration,work)?;
   args.extend(vec!["-t",&final_duration.to_string(),"-map","0:v:0","-map","1:a:0","-c:v","copy"].into_iter().map(String::from));
   args.extend(final_mp4_audio_args(mux_audio,&final_audio_encoder));

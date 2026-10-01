@@ -96,6 +96,12 @@ jobs:
           repl='''    .setup(|app|{\n      persistence::mark_session_open(&app.handle().clone())?;\n      render::cleanup_runtime_caches_1003(&app.handle().clone());\n      if let Ok(check_path)=std::env::var("ENDLUME_AUDIT_UPDATER_CHECK"){\n        let handle=app.handle().clone();\n        tauri::async_runtime::spawn(async move{\n          let check=updater_local::local_update_check(handle.clone()).await;\n          let _=std::fs::write(&check_path,serde_json::to_vec_pretty(&check).unwrap_or_default());\n          let _=updater_local::local_update_start(handle.clone()).await;\n        });\n        return Ok(())\n      }'''
           assert needle in s,'10.0.3 setup hook changed'
           p.write_text(s.replace(needle,repl,1))
+          sys=Path('src-tauri/src/system.rs')
+          ss=sys.read_text()
+          guard='''pub fn cleanup_duplicate_apps(aggressive:bool)->Value{'''
+          replacement='''pub fn cleanup_duplicate_apps(aggressive:bool)->Value{\n  if std::env::var_os("ENDLUME_AUDIT_UPDATER_CHECK").is_some(){return json!({"supported":false,"singleApp":true,"canonicalName":true,"canonicalInstall":true,"updaterAudit":true});}'''
+          assert guard in ss,'10.0.3 cleanup guard changed'
+          sys.write_text(ss.replace(guard,replacement,1))
           q=Path('src-tauri/tauri.conf.json')
           d=json.loads(q.read_text())
           assert d['version']=='10.0.3'

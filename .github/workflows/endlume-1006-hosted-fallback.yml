@@ -1,0 +1,176 @@
+name: ENDLUME 10.0.6 Hosted Fallback QA
+
+on:
+  push:
+    branches:
+      - qa/endlume-10.0.6-hosted-fallback
+    paths:
+      - ".github/workflows/endlume-1006-hosted-fallback.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-1006-hosted-fallback
+  cancel-in-progress: true
+
+jobs:
+  macos:
+    name: macOS hosted • compile • package • launch • render
+    runs-on: macos-15
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+      - name: Stage FFmpeg
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          brew list ffmpeg >/dev/null 2>&1 || brew install ffmpeg
+          mkdir -p src-tauri/binaries
+          cp -L "$(command -v ffmpeg)" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp -L "$(command -v ffprobe)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          chmod +x src-tauri/binaries/*
+      - name: Compile regression
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          npm ci
+          npm run check
+          npm run build
+          cargo check --manifest-path src-tauri/Cargo.toml --target aarch64-apple-darwin
+          cargo test --manifest-path src-tauri/Cargo.toml --target aarch64-apple-darwin --lib -- --nocapture
+      - name: Build exact ad-hoc candidate
+        shell: bash
+        env:
+          APPLE_SIGNING_IDENTITY: "-"
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('src-tauri/tauri.conf.json')
+          d=json.loads(p.read_text())
+          assert d['version']=='10.0.6'
+          assert d['app']['windows'] and any(w.get('label')=='main' for w in d['app']['windows'])
+          d['bundle']['createUpdaterArtifacts']=False
+          p.write_text(json.dumps(d,ensure_ascii=False,indent=2)+'\n')
+          PY
+          export CARGO_TARGET_DIR="$RUNNER_TEMP/e1006-hosted-fallback"
+          npm run tauri build -- --target aarch64-apple-darwin --bundles app --features e2e-render
+          APP="$(find "$CARGO_TARGET_DIR" -type d -path '*/release/bundle/macos/*.app' -print -quit)"
+          test -n "$APP" -a -d "$APP"
+          test "$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist")" = "10.0.6"
+          echo "E1006_APP=$APP" >> "$GITHUB_ENV"
+      - name: Package and launch exact ZIP
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p hosted-fallback
+          ZIP="$GITHUB_WORKSPACE/hosted-fallback/ENDLUME-10.0.6-hosted-fallback.zip"
+          /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$E1006_APP" "$ZIP"
+          UNPACK="$RUNNER_TEMP/e1006-hosted-unpack"
+          rm -rf "$UNPACK"; mkdir -p "$UNPACK"
+          /usr/bin/ditto -x -k "$ZIP" "$UNPACK"
+          APP="$(find "$UNPACK" -maxdepth 2 -type d -name '*.app' -print -quit)"
+          test -n "$APP"
+          MARKER="$RUNNER_TEMP/e1006-hosted-launch.json"
+          /bin/launchctl setenv ENDLUME_LAUNCH_SMOKE_MARKER "$MARKER"
+          /usr/bin/open -n "$APP"
+          for i in $(seq 1 80); do test -s "$MARKER" && break; sleep 0.25; done
+          /bin/launchctl unsetenv ENDLUME_LAUNCH_SMOKE_MARKER || true
+          test -s "$MARKER"
+          PID="$(python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));assert d["label"]=="main";assert d["frontendLoaded"] is True;print(d["pid"])' "$MARKER")"
+          kill -0 "$PID"
+          kill "$PID" || true
+          echo "E1006_UNPACKED_APP=$APP" >> "$GITHUB_ENV"
+          echo ENDLUME_1006_HOSTED_LAUNCH_GREEN
+      - name: Packaged FFmpeg runtime
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ENDLUME_APP_PATH="$E1006_UNPACKED_APP" node scripts/verify-macos-ffmpeg-bundle.mjs | tee hosted-fallback/runtime.log
+          grep -q EFFECTS_LIVE_PREVIEW_RUNTIME_PASS hosted-fallback/runtime.log
+          grep -q SUBSCRIBE_LIVE_PREVIEW_RUNTIME_PASS hosted-fallback/runtime.log
+          grep -q ENDLUME_MACOS_FFMPEG_RUNTIME_PASS hosted-fallback/runtime.log
+      - name: Normal render
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/qa-endlume-1005-normal-render-smoke.py             "$E1006_UNPACKED_APP"             "$E1006_UNPACKED_APP/Contents/MacOS/ffmpeg"             "$E1006_UNPACKED_APP/Contents/MacOS/ffprobe"             hosted-fallback/normal-render.json
+      - name: Crossfade HQ320 render
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/qa-endlume-1006-crossfade-hq320.py "$E1006_UNPACKED_APP" hosted-fallback/crossfade.json
+      - name: Anchor opacity render
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/qa-endlume-1006-effect-anchor-smoke.py             "$E1006_UNPACKED_APP"             "$E1006_UNPACKED_APP/Contents/MacOS/ffmpeg"             "$E1006_UNPACKED_APP/Contents/MacOS/ffprobe"             hosted-fallback/anchor.json
+      - name: Verdict
+        shell: bash
+        run: echo ENDLUME_1006_HOSTED_MAC_FALLBACK_GREEN
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ENDLUME-10.0.6-hosted-mac-fallback
+          path: hosted-fallback/
+          if-no-files-found: warn
+          retention-days: 7
+
+  windows:
+    name: Windows hosted • compile regression
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - name: Stage FFmpeg
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $ffmpeg=(Get-Command ffmpeg.exe -ErrorAction SilentlyContinue).Source
+          $ffprobe=(Get-Command ffprobe.exe -ErrorAction SilentlyContinue).Source
+          if(!$ffmpeg -or !$ffprobe){
+            choco install ffmpeg -y --no-progress
+            $env:Path=[Environment]::GetEnvironmentVariable('Path','Machine')+';'+[Environment]::GetEnvironmentVariable('Path','User')
+            $ffmpeg=(Get-Command ffmpeg.exe -ErrorAction Stop).Source
+            $ffprobe=(Get-Command ffprobe.exe -ErrorAction Stop).Source
+          }
+          New-Item -ItemType Directory -Force src-tauri/binaries | Out-Null
+          Copy-Item $ffmpeg src-tauri/binaries/ffmpeg-x86_64-pc-windows-msvc.exe
+          Copy-Item $ffprobe src-tauri/binaries/ffprobe-x86_64-pc-windows-msvc.exe
+      - name: Compile regression
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          npm ci
+          npm run check
+          npm run build
+          cargo check --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-msvc
+          cargo test --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-msvc --lib -- --nocapture
+          Write-Host ENDLUME_1006_HOSTED_WINDOWS_COMPILE_GREEN

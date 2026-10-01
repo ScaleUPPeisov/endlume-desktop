@@ -23,7 +23,7 @@ concurrency:
 jobs:
   hosted-macos:
     name: macOS ARM64 • Source • UI • Effects • Launch • Render
-    runs-on: macos-15
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4

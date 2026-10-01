@@ -269,16 +269,27 @@ jobs:
           print("AUDIO_START_MIDDLE_END="+",".join(f"{x:.1f}" for x in peaks))
           print(f"PERF_COLD={cold:.3f}")
           print(f"PERF_WARM={warm:.3f}")
-          print("PERF_GATE="+("GREEN" if cold<=20 and warm<=20 else "RED"))
-          print("SIZE_GATE="+("GREEN" if 400<=mib<=600 else "RED"))
-          # ETA: at all emitted checkpoints while active it must never falsely report zero.
+          perf_ok=cold<=20 and warm<=20
+          size_ok=400<=mib<=600
+          print("PERF_GATE="+("GREEN" if perf_ok else "RED"))
+          print("SIZE_GATE="+("GREEN" if size_ok else "RED"))
+          # ETA: before enough timing data, null means UI shows "Рассчитываю…" and is valid.
+          # Once >=1.2 s elapsed, ETA must be positive while meaningful work remains.
+          eta_ok=True
           for label,data in [("COLD",c),("WARM",w)]:
             rows=data.get("eta",[])
-            bad=[x for x in rows if x.get("checkpoint",0)<90 and (x.get("etaSec") is None or float(x.get("etaSec") or 0)<=0.05)]
+            bad=[x for x in rows if x.get("checkpoint",0)<90 and float(x.get("elapsedSec") or 0)>=1.2 and (x.get("etaSec") is None or float(x.get("etaSec") or 0)<=0.05)]
+            numeric=[x for x in rows if float(x.get("elapsedSec") or 0)>=1.2 and x.get("etaSec") is not None and float(x.get("etaSec") or 0)>0.05]
+            ok=not bad and len(rows)>=4 and len(numeric)>=2
+            eta_ok=eta_ok and ok
             print(f"{label}_ETA_CHECKPOINTS={len(rows)}")
-            print(f"{label}_ETA_GATE="+("GREEN" if not bad and len(rows)>=4 else "RED"))
+            print(f"{label}_ETA_NUMERIC_AFTER_WARMUP={len(numeric)}")
+            print(f"{label}_ETA_GATE="+("GREEN" if ok else "RED"))
           report={"cold":c,"warm":w,"ffprobe":meta,"realBitrate":real,"audioPeaks":peaks,"finalMiB":mib}
           json.dump(report,open(root/"benchmark-report.json","w"),ensure_ascii=False,indent=2)
+          assert perf_ok,(cold,warm)
+          assert size_ok,mib
+          assert eta_ok,(c.get("eta",[]),w.get("eta",[]))
           PY
 
           # Clean only outputs created by this benchmark.

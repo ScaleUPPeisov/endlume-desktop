@@ -185,6 +185,17 @@ jobs:
           print('ENDLUME_1006_NORMAL_RENDER_GREEN',d)
           PY
 
+      - name: Effect anchor + opacity final render smoke
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/qa-endlume-1006-effect-anchor-smoke.py \
+            "$E1006_UNPACKED_APP" \
+            "$E1006_UNPACKED_APP/Contents/MacOS/ffmpeg" \
+            "$E1006_UNPACKED_APP/Contents/MacOS/ffprobe" \
+            e1006-qa/effect-anchor-render.json
+          grep -q 'ENDLUME_1006_EFFECT_ANCHOR_RENDER_PASS' e1006-qa/effect-anchor-render.json
+
       - name: Verdict
         shell: bash
         run: |

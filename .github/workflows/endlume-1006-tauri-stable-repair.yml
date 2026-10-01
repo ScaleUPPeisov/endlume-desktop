@@ -120,7 +120,7 @@ jobs:
           p.write_text(json.dumps(c,ensure_ascii=False,indent=2)+'\n')
           PY
           ENDLUME_TAURI_TARGET=aarch64-apple-darwin node scripts/prepare-macos-ffmpeg-runtime.mjs
-          npm run tauri build -- --target aarch64-apple-darwin --bundles app
+          npx tauri build --target aarch64-apple-darwin --bundles app
           APP="$(find "$CARGO_TARGET_DIR/aarch64-apple-darwin/release/bundle/macos" -maxdepth 1 -type d -name '*.app' -print -quit)"
           test -n "$APP" -a -d "$APP"
           test "$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$APP/Contents/Info.plist")" = "studio.endlume.desktop"

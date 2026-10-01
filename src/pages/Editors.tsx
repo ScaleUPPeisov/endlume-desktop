@@ -11,6 +11,15 @@ const usageLabel = (item: EffectPreset) => { const mode=effectiveUsageMode(item)
 const subscribeFirst = (item: SubscribePreset): SubscribeFirstAppearance => item.firstAppearance ?? 'after-interval';
 const subscribeInterval = (item: SubscribePreset) => Math.max(60, item.intervalSec ?? item.repeatEverySec ?? 240);
 const subscribeDuration = (item: SubscribePreset) => Math.max(2, Math.min(20, item.showDurationSec ?? 8));
+const toggleEffectEnabled = (item: EffectPreset): EffectPreset => {
+  const enabled = !item.enabled;
+  return { ...item, enabled, usageMode: enabled && item.usageMode === 'off' ? 'always' : item.usageMode };
+};
+const toggleSubscribeEnabled = (item: SubscribePreset): SubscribePreset => {
+  const enabled = !item.enabled;
+  return { ...item, enabled, usageMode: enabled && item.usageMode === 'off' ? 'interval' : item.usageMode };
+};
+const previewEnabled = (item: EffectPreset) => item.enabled && effectiveUsageMode(item) !== 'off';
 
 const emptyEffect = (source = ''): EffectPreset => ({
   id: crypto.randomUUID(),
@@ -196,7 +205,7 @@ function EffectsEditor() {
           <span><b>{effect.name}</b><small>{effect.enabled ? 'Включён' : 'Выключен'} • {effect.mode} • {effect.cacheReady ? 'render-cache готов' : 'render-cache при первом рендере'}</small></span>
           <i className={effect.enabled ? 'enabled' : 'disabled'} title={effect.enabled ? 'Выключить' : 'Включить'} onClick={(event) => {
             event.stopPropagation();
-            void saveLibrary(effects.map((item) => item.id === effect.id ? { ...item, enabled: !item.enabled } : item), true);
+            void saveLibrary(effects.map((item) => item.id === effect.id ? toggleEffectEnabled(item) : item), true);
           }} />
         </button>)}
       </aside>
@@ -209,6 +218,7 @@ function EffectsEditor() {
             assets={assets}
             busy={previewBusy}
             current={resolvedCurrent}
+            active={previewEnabled(current)}
             anchor={sceneAnchor}
             anchorMode={anchorMode}
             onAnchorPick={pickAnchor}
@@ -251,7 +261,7 @@ function EffectsEditor() {
           <label className="checkLine"><input type="checkbox" checked={current.fullscreen} onChange={(event) => patch({ fullscreen: event.target.checked })} /> На весь экран</label>
           <p className="editorHint">Preview и Render используют одинаковые X / Y / SIZE. Пропорции исходного эффекта сохраняются.</p>
           <button className="savePreset" onClick={async () => { await saveLibrary([...effects], true); setSaved(true); window.setTimeout(() => setSaved(false), 1200); }}><Icon name="save" /> {saved ? 'СОХРАНЕНО ✓' : 'СОХРАНИТЬ PRESET'}</button>
-          <button className="savePreset" onClick={() => void saveLibrary(effects.map((e) => e.id === current.id ? { ...e, enabled: !e.enabled, usageMode: !e.enabled && e.usageMode === 'off' ? 'always' : e.usageMode } : e), true)}>{current.enabled ? 'ВЫКЛЮЧИТЬ ЭФФЕКТ' : 'ВКЛЮЧИТЬ ЭФФЕКТ'}</button>
+          <button className="savePreset" onClick={() => void saveLibrary(effects.map((e) => e.id === current.id ? toggleEffectEnabled(e) : e), true)}>{current.enabled ? 'ВЫКЛЮЧИТЬ ЭФФЕКТ' : 'ВКЛЮЧИТЬ ЭФФЕКТ'}</button>
           {deleteConfirm ? <div className="deleteConfirm" role="dialog" aria-label="Удалить эффект?"><b>Удалить эффект?</b><small>Удалится только эффект из проекта. Исходный видеофайл останется на диске.</small><div><button className="savePreset" onClick={() => setDeleteConfirm(false)}>ОТМЕНА</button><button className="deletePreset" onClick={() => void remove()}><Icon name="trash" /> УДАЛИТЬ</button></div></div> : <button className="deletePreset" onClick={() => setDeleteConfirm(true)}><Icon name="trash" /> УДАЛИТЬ ЭФФЕКТ</button>}
         </>}
       </aside>
@@ -344,14 +354,14 @@ function SubscribeEditor() {
           <span><b>{item.name}</b><small>{usageLabel(item)}{effectiveUsageMode(item) === 'interval' ? ` • каждые ${Math.round(subscribeInterval(item) / 60)} мин` : ''}</small></span>
           <i className={item.enabled ? 'enabled' : 'disabled'} title={item.enabled ? 'Выключить' : 'Включить'} onClick={(event) => {
             event.stopPropagation();
-            void saveLibrary(subscribes.map((entry) => entry.id === item.id ? { ...entry, enabled: !entry.enabled, usageMode: !entry.enabled && entry.usageMode === 'off' ? 'always' : entry.usageMode } : entry), true);
+            void saveLibrary(subscribes.map((entry) => entry.id === item.id ? toggleSubscribeEnabled(entry) : entry), true);
           }} />
         </button>)}
       </aside>
 
       <main className="visualEditor">
         {current ? <>
-          <PreviewStage title="LIVE PREVIEW" assets={assets} busy={previewBusy} current={current} onMove={(x, y) => patch({ x, y })} onScale={(scale) => patch({ scale })} onPickColor={(hex) => patch({ keyColor: hex, similarity: 0.10, blend: 0.06 })} />
+          <PreviewStage title="LIVE PREVIEW" assets={assets} busy={previewBusy} current={current} active={previewEnabled(current)} onMove={(x, y) => patch({ x, y })} onScale={(scale) => patch({ scale })} onPickColor={(hex) => patch({ keyColor: hex, similarity: 0.10, blend: 0.06 })} />
           <div className="previewTime"><span>Стартовый кадр Subscribe-видео</span><Range value={current.previewFrameTime} min={0} max={60} step={0.1} onChange={(value) => patch({ previewFrameTime: value })} minLabel="0:00" maxLabel="1:00" /><b>{current.previewFrameTime.toFixed(1)} сек</b></div>
           <button className="refreshPreview" disabled={previewBusy} onClick={() => void loadLive()}><Icon name="refresh" /> {previewBusy ? 'ГОТОВЛЮ PROXY…' : 'ОБНОВИТЬ LIVE PREVIEW'}</button>
           <SubscribeTimeline current={current} />
@@ -378,7 +388,7 @@ function SubscribeEditor() {
           </>}
           <p className="editorHint">Subscribe использует тот же aspect-safe compositor, что и Effects.</p>
           <button className="savePreset" onClick={async () => { await saveLibrary([...subscribes], true); setSaved(true); window.setTimeout(() => setSaved(false), 1200); }}><Icon name="save" /> {saved ? 'СОХРАНЕНО ✓' : 'СОХРАНИТЬ PRESET'}</button>
-          <button className="savePreset" onClick={() => void saveLibrary(subscribes.map((item) => item.id === current.id ? { ...item, enabled: !item.enabled, usageMode: !item.enabled && item.usageMode === 'off' ? 'interval' : item.usageMode } : item), true)}>{current.enabled ? 'ВЫКЛЮЧИТЬ SUBSCRIBE' : 'ВКЛЮЧИТЬ SUBSCRIBE'}</button>
+          <button className="savePreset" onClick={() => void saveLibrary(subscribes.map((item) => item.id === current.id ? toggleSubscribeEnabled(item) : item), true)}>{current.enabled ? 'ВЫКЛЮЧИТЬ SUBSCRIBE' : 'ВКЛЮЧИТЬ SUBSCRIBE'}</button>
           <button className="deletePreset" onClick={remove}><Icon name="trash" /> УДАЛИТЬ</button>
         </>}
       </aside>
@@ -390,11 +400,12 @@ function EditorHeader({ title, subtitle, onBack }: { title: string; subtitle: st
   return <div className="editorHeader"><div><small>ENDLUME</small><h1>{title}</h1><p>{subtitle}</p></div><button onClick={onBack}>← ВЕРНУТЬСЯ К ПРОЕКТУ</button></div>;
 }
 
-function PreviewStage({ title, assets, busy, current, anchor, anchorMode, onAnchorPick, onMove, onScale, onPickColor }: {
+function PreviewStage({ title, assets, busy, current, active, anchor, anchorMode, onAnchorPick, onMove, onScale, onPickColor }: {
   title: string;
   assets?: LivePreviewAssets;
   busy: boolean;
   current: EffectPreset;
+  active: boolean;
   anchor?: AnchorPoint;
   anchorMode?: boolean;
   onAnchorPick?: (x: number, y: number) => void;
@@ -605,7 +616,7 @@ function PreviewStage({ title, assets, busy, current, anchor, anchorMode, onAnch
 
   return <div className="previewStage livePreviewStage smartAlignStage" ref={stageRef} tabIndex={0} onKeyDown={keyMove}>
     <div className="previewLabel">{title}</div>
-    <LiveCompositePreview assets={assets} effect={current} busy={busy} overlayRef={overlayRef} overlayStyle={overlayStyle} anchor={anchor} anchorMode={anchorMode} onAnchorPick={onAnchorPick} onDragStart={(event) => begin('drag', event)} onResizeStart={(event) => begin('resize', event)} onPickColor={onPickColor} />
+    <LiveCompositePreview assets={assets} effect={current} active={active} busy={busy} overlayRef={overlayRef} overlayStyle={overlayStyle} anchor={anchor} anchorMode={anchorMode} onAnchorPick={onAnchorPick} onDragStart={(event) => begin('drag', event)} onResizeStart={(event) => begin('resize', event)} onPickColor={onPickColor} />
     <div className={`smartGuideLayer ${guidesEnabled ? 'visible' : ''}`} aria-hidden="true">
       <i className="smartGuideStatic vertical" /><i className="smartGuideStatic horizontal" />
       {safeEnabled && <i className="smartSafeArea" />}

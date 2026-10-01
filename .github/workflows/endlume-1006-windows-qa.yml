@@ -6,6 +6,11 @@ on:
       - qa/endlume-10.0.6-full-production
     paths:
       - ".github/workflows/endlume-1006-windows-qa.yml"
+      - "package.json"
+      - "package-lock.json"
+      - "src/**"
+      - "src-tauri/**"
+      - "scripts/**"
   workflow_dispatch: {}
 
 permissions:

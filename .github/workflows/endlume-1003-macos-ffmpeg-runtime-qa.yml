@@ -1,0 +1,112 @@
+name: ENDLUME 10.0.3 macOS FFmpeg Runtime QA
+
+on:
+  push:
+    branches: [hotfix/endlume-10.0.3-macos-ffmpeg-runtime]
+    paths:
+      - 'package.json'
+      - 'scripts/tauri-cli.mjs'
+      - 'scripts/prepare-macos-ffmpeg-runtime.mjs'
+      - 'scripts/verify-macos-ffmpeg-bundle.mjs'
+      - '.github/workflows/endlume-1003-macos-ffmpeg-runtime-qa.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-1003-macos-ffmpeg-runtime-qa
+  cancel-in-progress: true
+
+jobs:
+  package-runtime:
+    name: macOS ARM64 • portable FFmpeg • packaged Live Preview
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 1
+
+      - name: Confirm clean Apple Silicon runner
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          uname -a
+          test "$(uname -m)" = "arm64"
+          sw_vers
+
+      - name: Setup Node and Rust
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Stage intentionally Homebrew-linked FFmpeg source
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          brew list ffmpeg >/dev/null 2>&1 || brew install ffmpeg
+          mkdir -p src-tauri/binaries
+          cp -L "$(command -v ffmpeg)" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp -L "$(command -v ffprobe)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          chmod +x src-tauri/binaries/*
+          echo "===== ORIGINAL FFMPEG ====="
+          /usr/bin/file src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          /usr/bin/otool -L src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          echo "===== ORIGINAL FFPROBE ====="
+          /usr/bin/file src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          /usr/bin/otool -L src-tauri/binaries/ffprobe-aarch64-apple-darwin
+
+      - name: Frontend and Rust regression
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          npm ci
+          npm run check
+          npm run build
+          cargo check --manifest-path src-tauri/Cargo.toml --target aarch64-apple-darwin
+          cargo test --manifest-path src-tauri/Cargo.toml --target aarch64-apple-darwin -- --nocapture
+
+      - name: Build audit-only packaged app
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export CARGO_TARGET_DIR="$RUNNER_TEMP/endlume-target-1003-runtime"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('src-tauri/tauri.conf.json')
+          d=json.loads(p.read_text())
+          d['bundle']['createUpdaterArtifacts']=False
+          d['app']['windows']=[]
+          p.write_text(json.dumps(d,ensure_ascii=False,indent=2)+'\n')
+          PY
+          npm run tauri build -- --target aarch64-apple-darwin --bundles app
+
+      - name: Final packaged dependency report
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export CARGO_TARGET_DIR="$RUNNER_TEMP/endlume-target-1003-runtime"
+          APP="$(find "$CARGO_TARGET_DIR/release/bundle/macos" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          test -n "$APP" -a -d "$APP"
+          echo "APP=$APP"
+          echo "===== PACKAGED FFMPEG ====="
+          /usr/bin/otool -L "$APP/Contents/MacOS/ffmpeg"
+          echo "===== PACKAGED FFPROBE ====="
+          /usr/bin/otool -L "$APP/Contents/MacOS/ffprobe"
+          echo "===== FRAMEWORKS ====="
+          find "$APP/Contents/Frameworks" -maxdepth 1 -type f -print | sort
+          if grep -R -a -E '/opt/homebrew/|/usr/local/Cellar/|/Users/|/private/tmp/' "$APP/Contents/MacOS/ffmpeg" "$APP/Contents/MacOS/ffprobe" "$APP/Contents/Frameworks" >/dev/null; then
+            echo "Forbidden build-machine path found in packaged Mach-O" >&2
+            exit 1
+          fi
+          /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP"
+          echo "ENDLUME_1003_MACOS_FFMPEG_RUNTIME_QA_GREEN"

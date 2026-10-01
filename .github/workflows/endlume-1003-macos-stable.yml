@@ -23,6 +23,7 @@ jobs:
     timeout-minutes: 150
     env:
       RELEASE_TOKEN: ${{ secrets.ENDLUME_RELEASE_TOKEN }}
+      QA_TOKEN: ${{ github.token }}
     steps:
       - name: Checkout exact release commit
         uses: actions/checkout@v4
@@ -60,8 +61,15 @@ jobs:
           print(json.load(open('release/endlume-10.0.3-macos.json'))['qa_run_id'])
           PY
           )"
-          GH_TOKEN="$RELEASE_TOKEN" gh api "repos/$GITHUB_REPOSITORY/actions/runs/$QA_RUN" --jq '.conclusion' | grep -qx success
-          echo ENDLUME_1003_MAC_QA_GREEN
+          QA_SHA="$(python3 - <<'PY'
+          import json
+          print(json.load(open('release/endlume-10.0.3-macos.json'))['qa_head_sha'])
+          PY
+          )"
+          git merge-base --is-ancestor "$QA_SHA" "$GITHUB_SHA"
+          GH_TOKEN="$QA_TOKEN" gh api "repos/$GITHUB_REPOSITORY/actions/runs/$QA_RUN" --jq '.conclusion' | grep -qx success
+          GH_TOKEN="$QA_TOKEN" gh api "repos/$GITHUB_REPOSITORY/actions/runs/$QA_RUN" --jq '.head_sha' | grep -qx "$QA_SHA"
+          echo "ENDLUME_1003_MAC_QA_GREEN run=$QA_RUN sha=$QA_SHA"
 
       - name: Bound build cache and stage Apple Silicon FFmpeg
         shell: bash
@@ -127,21 +135,24 @@ jobs:
           test -x "$(find "$APP/Contents/MacOS" -maxdepth 1 -type f -name 'ffmpeg*' -print -quit)"
           test -x "$(find "$APP/Contents/MacOS" -maxdepth 1 -type f -name 'ffprobe*' -print -quit)"
           SIG="$(tr -d '\r\n' < "$STAGE/ENDLUME-macos-aarch64.app.tar.gz.sig")"
-          python3 - "$STAGE/latest.json" "$SIG" <<'PY'
+          SHA="$(shasum -a 256 "$STAGE/ENDLUME-macos-aarch64.app.tar.gz" | awk '{print $1}')"
+          python3 - "$STAGE/latest.json" "$SIG" "$SHA" <<'PY'
           import json,sys,datetime
-          out,sig=sys.argv[1:]
+          out,sig,sha=sys.argv[1:]
           data={
             "version":"10.0.3",
             "notes":"ENDLUME 10.0.3: accelerated physical masters and AAC caching, bounded build/runtime caches, SSD and TOSHIBA performance gates.",
             "pub_date":datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00","Z"),
             "platforms":{"darwin-aarch64":{
               "url":"https://github.com/ScaleUPPeisov/scaleup-site/releases/download/endlume-stable/ENDLUME-macos-aarch64.app.tar.gz",
-              "signature":sig
+              "signature":sig,
+              "sha256":sha
             }}
           }
           json.dump(data,open(out,"w"),ensure_ascii=False,indent=2)
           PY
           echo "ENDLUME_STAGE=$STAGE" >> "$GITHUB_ENV"
+          echo "ENDLUME_1003_MAC_SHA256=$SHA"
           echo ENDLUME_1003_MAC_BUILD_GREEN
 
       - name: Publish macOS stable
@@ -166,8 +177,9 @@ jobs:
           d=json.load(open(sys.argv[1]))
           assert d.get('version')=='10.0.3',d
           p=d.get('platforms',{}).get('darwin-aarch64')
-          assert p and p.get('url') and p.get('signature'),d
-          print('ENDLUME_1003_MAC_PUBLIC_STABLE_GREEN')
+          assert p and p.get('url') and p.get('signature') and p.get('sha256'),d
+          assert len(p['sha256'])==64,d
+          print('ENDLUME_1003_MAC_PUBLIC_STABLE_GREEN',p['sha256'])
           PY
           curl -fsIL "$BASE/ENDLUME-macos-aarch64.app.tar.gz" >/dev/null
           curl -fsIL "$BASE/ENDLUME-YT-Studio-PEISOV-10.0.3-macOS-ARM64.app.tar.gz" >/dev/null

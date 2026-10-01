@@ -1,0 +1,104 @@
+name: ENDLUME Effect Studio Phase 1 QA
+
+on:
+  push:
+    branches:
+      - feature/endlume-effect-studio-phase1-10.0.5
+    paths:
+      - "src/**"
+      - "src-tauri/src/**"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/endlume-effect-studio-phase1-qa.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-effect-studio-phase1-qa
+  cancel-in-progress: true
+
+jobs:
+  verify-and-build:
+    runs-on: macos-14
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Source contract
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(node -p "require('./package.json').version")" = "10.0.5"
+          test "$(python3 -c 'import json; print(json.load(open("src-tauri/tauri.conf.json"))["version"])')" = "10.0.5"
+          grep -q "resolve_effect_for_project" src-tauri/src/render.rs
+          grep -q "sceneAnchorsByPath" src/store.ts
+          grep -q "anchorMode" src/pages/Editors.tsx
+          grep -q "requestAnimationFrame" src/components/LiveCompositePreview.tsx
+
+      - name: Frontend typecheck and build
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          npm ci
+          npm run check
+          npm run build
+
+      - name: Rust check and tests
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cargo check --manifest-path src-tauri/Cargo.toml
+          cargo test --manifest-path src-tauri/Cargo.toml --lib -- --nocapture
+
+      - name: Stage FFmpeg sidecars
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          brew list ffmpeg >/dev/null 2>&1 || brew install ffmpeg
+          host="$(rustc -vV | awk '/^host:/{print $2}')"
+          mkdir -p src-tauri/binaries
+          cp -L "$(command -v ffmpeg)" "src-tauri/binaries/ffmpeg-$host"
+          cp -L "$(command -v ffprobe)" "src-tauri/binaries/ffprobe-$host"
+          chmod +x src-tauri/binaries/*
+
+      - name: Build non-release candidate app
+        env:
+          APPLE_SIGNING_IDENTITY: "-"
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path("src-tauri/tauri.conf.json")
+          d=json.loads(p.read_text())
+          d["bundle"]["createUpdaterArtifacts"]=False
+          assert d["app"]["windows"] and any(w.get("label")=="main" for w in d["app"]["windows"])
+          p.write_text(json.dumps(d,ensure_ascii=False,indent=2)+"\n")
+          PY
+          npm run tauri build -- --bundles app
+          app="$(find src-tauri/target -type d -path '*/release/bundle/macos/*.app' -print -quit)"
+          test -n "$app" -a -d "$app"
+          mkdir -p phase1-candidate
+          ditto -c -k --sequesterRsrc --keepParent "$app" phase1-candidate/ENDLUME-10.0.5-Effect-Studio-Phase1-Candidate.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ENDLUME-10.0.5-Effect-Studio-Phase1-Candidate
+          path: phase1-candidate/ENDLUME-10.0.5-Effect-Studio-Phase1-Candidate.zip
+          if-no-files-found: error
+          retention-days: 7

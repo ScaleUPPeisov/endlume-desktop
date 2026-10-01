@@ -126,6 +126,18 @@ pub fn run(){
       updater_local::local_update_check,updater_local::local_update_start,updater_local::local_update_status,
       vyron_bridge::consume_vyron_batch_request,vyron_bridge::load_vyron_batch_manifest,vyron_bridge::report_vyron_render
     ])
+    .on_page_load(|webview,_payload|{
+      if webview.label()=="main"{
+        if let Ok(marker)=std::env::var("ENDLUME_LAUNCH_SMOKE_MARKER"){
+          let payload=serde_json::json!({
+            "label":"main",
+            "frontendLoaded":true,
+            "pid":std::process::id()
+          });
+          let _=std::fs::write(marker,serde_json::to_vec_pretty(&payload).unwrap_or_default());
+        }
+      }
+    })
     .setup(|app|{
       persistence::mark_session_open(&app.handle().clone())?;
       render::cleanup_runtime_caches_1003(&app.handle().clone());

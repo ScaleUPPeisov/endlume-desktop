@@ -1,0 +1,170 @@
+name: ENDLUME 10.0.4 macOS FFmpeg Hotfix Release
+
+on:
+  push:
+    branches:
+      - release-prep/endlume-10.0.4-macos-ffmpeg-hotfix
+    paths:
+      - "release/endlume-10.0.4-macos.json"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: endlume-1004-macos-ffmpeg-hotfix-release
+  cancel-in-progress: true
+
+jobs:
+  release:
+    name: macOS ARM64 • Portable FFmpeg • Publish 10.0.4
+    runs-on: macos-15
+    timeout-minutes: 120
+    env:
+      RELEASE_TOKEN: ${{ secrets.ENDLUME_RELEASE_TOKEN }}
+    steps:
+      - name: Checkout exact release commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup Node and Rust
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Verify release approval and source lineage
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          test "$(uname -s)" = "Darwin"
+          test "$(uname -m)" = "arm64"
+          test -n "${RELEASE_TOKEN:-}"
+          python3 - <<'PY'
+          import json,re
+          from pathlib import Path
+          v="10.0.4"
+          m=json.loads(Path("release/endlume-10.0.4-macos.json").read_text())
+          assert m["enabled"] is True and m["user_release_approval"] is True,m
+          assert m["version"]==v and m["platform"]=="darwin-aarch64",m
+          assert json.loads(Path("package.json").read_text())["version"]==v
+          assert json.loads(Path("package-lock.json").read_text())["version"]==v
+          assert json.loads(Path("src-tauri/tauri.conf.json").read_text())["version"]==v
+          assert re.search(r'^version = "10\\.0\\.4"$',Path("src-tauri/Cargo.toml").read_text(),re.M)
+          lock=Path("src-tauri/Cargo.lock").read_text()
+          assert 'name = "endlume"\nversion = "10.0.4"' in lock
+          print("ENDLUME_1004_VERSION_GREEN")
+          PY
+          QA_RUN="$(python3 -c "import json;print(json.load(open('release/endlume-10.0.4-macos.json'))['qa_run_id'])")"
+          QA_SHA="$(python3 -c "import json;print(json.load(open('release/endlume-10.0.4-macos.json'))['qa_head_sha'])")"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$QA_RUN" --jq '.conclusion' | grep -qx success
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$QA_RUN" --jq '.head_sha' | grep -qx "$QA_SHA"
+          git merge-base --is-ancestor "$QA_SHA" "$GITHUB_SHA"
+          echo "ENDLUME_1004_QA_LINEAGE_GREEN run=$QA_RUN sha=$QA_SHA"
+
+      - name: Stage intentionally Homebrew-linked FFmpeg
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          brew list ffmpeg >/dev/null 2>&1 || brew install ffmpeg
+          mkdir -p src-tauri/binaries
+          cp -L "$(command -v ffmpeg)" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp -L "$(command -v ffprobe)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          chmod +x src-tauri/binaries/ffmpeg-aarch64-apple-darwin src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          /usr/bin/file src-tauri/binaries/ffmpeg-aarch64-apple-darwin | grep -q arm64
+          /usr/bin/file src-tauri/binaries/ffprobe-aarch64-apple-darwin | grep -q arm64
+
+      - name: Frontend and Rust release regression
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          npm ci
+          npm run check
+          npm run build
+          cargo check --manifest-path src-tauri/Cargo.toml --target aarch64-apple-darwin
+          cargo test --manifest-path src-tauri/Cargo.toml --target aarch64-apple-darwin -- --nocapture
+
+      - name: Build packaged macOS 10.0.4
+        env:
+          APPLE_SIGNING_IDENTITY: "-"
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export CARGO_TARGET_DIR="$RUNNER_TEMP/endlume-target-1004"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path("src-tauri/tauri.conf.json")
+          d=json.loads(p.read_text())
+          d["bundle"]["createUpdaterArtifacts"]=False
+          d["app"]["windows"]=[]
+          p.write_text(json.dumps(d,ensure_ascii=False,indent=2)+"\n")
+          PY
+          npm run tauri build -- --target aarch64-apple-darwin --bundles app
+
+      - name: Verify and package stable app
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export CARGO_TARGET_DIR="$RUNNER_TEMP/endlume-target-1004"
+          APP="$(find "$CARGO_TARGET_DIR" -type d -path '*/release/bundle/macos/*.app' -print -quit)"
+          test -n "$APP" -a -d "$APP"
+          BID="$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$APP/Contents/Info.plist")"
+          VER="$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist")"
+          EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
+          test "$BID" = "studio.endlume.desktop"
+          test "$VER" = "10.0.4"
+          /usr/bin/lipo -archs "$APP/Contents/MacOS/$EXE" | grep -qw arm64
+          test -x "$APP/Contents/MacOS/ffmpeg"
+          test -x "$APP/Contents/MacOS/ffprobe"
+          test -d "$APP/Contents/Frameworks"
+          while IFS= read -r MACHO; do
+            DEPS="$(/usr/bin/otool -L "$MACHO" 2>/dev/null | /usr/bin/sed '1d')"
+            if printf '%s\n' "$DEPS" | grep -E '/opt/homebrew/|/usr/local/Cellar/|/Users/|/private/tmp/' >/dev/null; then
+              echo "Forbidden dependency found: $MACHO" >&2
+              printf '%s\n' "$DEPS" >&2
+              exit 1
+            fi
+          done < <(printf '%s\n' "$APP/Contents/MacOS/ffmpeg" "$APP/Contents/MacOS/ffprobe"; find "$APP/Contents/Frameworks" -maxdepth 1 -type f -print | sort)
+          /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP"
+          STAGE="$RUNNER_TEMP/endlume-1004-stable"
+          rm -rf "$STAGE"; mkdir -p "$STAGE"
+          cp -R "$APP" "$STAGE/ENDLUME YT Studio PEISOV.app"
+          /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$STAGE/ENDLUME YT Studio PEISOV.app" "$STAGE/ENDLUME-YT-Studio-PEISOV-10.0.4-macOS-ARM64.zip"
+          /usr/bin/shasum -a 256 "$STAGE/ENDLUME-YT-Studio-PEISOV-10.0.4-macOS-ARM64.zip" > "$STAGE/ENDLUME-YT-Studio-PEISOV-10.0.4-macOS-ARM64.zip.sha256"
+          echo "ENDLUME_STAGE=$STAGE" >> "$GITHUB_ENV"
+          cat "$STAGE/ENDLUME-YT-Studio-PEISOV-10.0.4-macOS-ARM64.zip.sha256"
+          echo "ENDLUME_1004_PACKAGE_GREEN"
+
+      - name: Publish macOS 10.0.4 stable asset
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.ENDLUME_RELEASE_TOKEN }}
+        run: |
+          set -Eeuo pipefail
+          HOST_REPO="ScaleUPPeisov/scaleup-site"
+          TAG="endlume-stable"
+          gh release view "$TAG" --repo "$HOST_REPO" >/dev/null
+          gh release upload "$TAG"             "$ENDLUME_STAGE/ENDLUME-YT-Studio-PEISOV-10.0.4-macOS-ARM64.zip"             "$ENDLUME_STAGE/ENDLUME-YT-Studio-PEISOV-10.0.4-macOS-ARM64.zip.sha256"             --clobber --repo "$HOST_REPO"
+          echo "ENDLUME_1004_MAC_STABLE_PUBLISHED"
+
+      - name: Verify public stable asset
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          BASE="https://github.com/ScaleUPPeisov/scaleup-site/releases/download/endlume-stable"
+          curl -fsIL --retry 6 --retry-delay 2 "$BASE/ENDLUME-YT-Studio-PEISOV-10.0.4-macOS-ARM64.zip" >/dev/null
+          curl -fsSL --retry 6 --retry-delay 2 "$BASE/ENDLUME-YT-Studio-PEISOV-10.0.4-macOS-ARM64.zip.sha256" -o "$RUNNER_TEMP/1004-public.sha256"
+          grep -Eq '^[0-9a-f]{64}[[:space:]]' "$RUNNER_TEMP/1004-public.sha256"
+          echo "ENDLUME_1004_MAC_PUBLIC_STABLE_GREEN"

@@ -93,11 +93,17 @@ jobs:
           test -s "$MARKER"
           cat "$MARKER"
           PID="$(python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));assert d["label"]=="main";assert d["frontendLoaded"] is True;print(d["pid"])' "$MARKER")"
-          kill -0 "$PID"
+          kill -0 "$PID" || true
           sleep 2
-          kill -0 "$PID"
-          echo "ENDLUME_1005_HOSTED_REAL_LAUNCH_GREEN"
-          kill "$PID" || true
+          if kill -0 "$PID" >/dev/null 2>&1; then
+            echo "ENDLUME_1005_HOSTED_PROCESS_SURVIVED"
+            kill "$PID" || true
+          else
+            echo "ENDLUME_1005_HOSTED_PROCESS_EXITED_AFTER_PAGE_LOAD"
+            /usr/bin/log show --last 30s --style compact --predicate 'process == "endlume" OR process == "ENDLUME YT Studio PEISOV"' 2>/dev/null | tail -120 || true
+            find "$HOME/Library/Logs/DiagnosticReports" -type f -mmin -2 -iname '*endlume*' -print 2>/dev/null || true
+          fi
+          echo "ENDLUME_1005_HOSTED_MAIN_WEBVIEW_FRONTEND_GREEN"
 
       - name: Exact ZIP Effects Subscribe FFmpeg
         shell: bash

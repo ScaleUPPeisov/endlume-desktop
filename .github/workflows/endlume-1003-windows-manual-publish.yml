@@ -1,0 +1,149 @@
+name: ENDLUME 10.0.3 Windows Manual Publish
+
+on:
+  push:
+    branches:
+      - hotfix/endlume-10.0.3-performance
+    paths:
+      - "release/endlume-10.0.3-manual-windows.json"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: endlume-1003-windows-manual-publish
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    name: Windows x64 • Hosted Cross-Build • Publish Manual 10.0.3
+    runs-on: macos-15
+    timeout-minutes: 120
+    env:
+      RELEASE_TOKEN: ${{ secrets.ENDLUME_RELEASE_TOKEN }}
+      WINDOWS_TARGET: x86_64-pc-windows-msvc
+    steps:
+      - name: Checkout exact commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify approved source lineage
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          test "$(uname -s)" = "Darwin"
+          test "$(uname -m)" = "arm64"
+          test -n "${RELEASE_TOKEN:-}"
+          python3 - <<'PY'
+          import json,re
+          from pathlib import Path
+          v='10.0.3'
+          m=json.loads(Path('release/endlume-10.0.3-manual-windows.json').read_text())
+          assert m['enabled'] is True and m['user_release_approval'] is True,m
+          assert m['version']==v and m['platform']=='windows-x86_64',m
+          assert json.loads(Path('package.json').read_text())['version']==v
+          assert json.loads(Path('package-lock.json').read_text())['version']==v
+          assert json.loads(Path('src-tauri/tauri.conf.json').read_text())['version']==v
+          assert re.search(r'^version = "10\.0\.3"$',Path('src-tauri/Cargo.toml').read_text(),re.M)
+          PY
+          QA_RUN="$(python3 -c "import json;print(json.load(open('release/endlume-10.0.3-manual-windows.json'))['qa_run_id'])")"
+          QA_SHA="$(python3 -c "import json;print(json.load(open('release/endlume-10.0.3-manual-windows.json'))['qa_head_sha'])")"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$QA_RUN" --jq '.conclusion' | grep -qx success
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$QA_RUN" --jq '.head_sha' | grep -qx "$QA_SHA"
+          git merge-base --is-ancestor "$QA_SHA" "$GITHUB_SHA"
+          echo "ENDLUME_1003_WINDOWS_SOURCE_GREEN run=$QA_RUN sha=$QA_SHA"
+
+      - name: Install Windows cross-build toolchain
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          brew list nsis >/dev/null 2>&1 || brew install nsis
+          brew list llvm >/dev/null 2>&1 || brew install llvm
+          export PATH="$(brew --prefix llvm)/bin:$HOME/.cargo/bin:$PATH"
+          rustup target add "$WINDOWS_TARGET"
+          command -v cargo-xwin >/dev/null 2>&1 || cargo install --locked cargo-xwin
+          echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Stage Windows FFmpeg sidecars
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p src-tauri/binaries "$RUNNER_TEMP/ffmpeg-win"
+          ARCHIVE="$RUNNER_TEMP/ffmpeg-win/ffmpeg.zip"
+          curl -fL --retry 4 --connect-timeout 20 -o "$ARCHIVE"             "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
+          ditto -x -k "$ARCHIVE" "$RUNNER_TEMP/ffmpeg-win/extract"
+          FFMPEG="$(find "$RUNNER_TEMP/ffmpeg-win/extract" -type f -name ffmpeg.exe -print -quit)"
+          FFPROBE="$(find "$RUNNER_TEMP/ffmpeg-win/extract" -type f -name ffprobe.exe -print -quit)"
+          test -n "$FFMPEG" -a -s "$FFMPEG"
+          test -n "$FFPROBE" -a -s "$FFPROBE"
+          cp "$FFMPEG" "src-tauri/binaries/ffmpeg-$WINDOWS_TARGET.exe"
+          cp "$FFPROBE" "src-tauri/binaries/ffprobe-$WINDOWS_TARGET.exe"
+          file "src-tauri/binaries/ffmpeg-$WINDOWS_TARGET.exe" | grep -E 'PE32|MS Windows'
+
+      - name: Build Windows 10.0.3 NSIS
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          npm ci
+          npm run check
+          npm run build
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('src-tauri/tauri.conf.json')
+          d=json.loads(p.read_text())
+          d['bundle']['createUpdaterArtifacts']=False
+          p.write_text(json.dumps(d,ensure_ascii=False,indent=2)+'\n')
+          PY
+          npm run tauri build -- --runner cargo-xwin --target "$WINDOWS_TARGET" --bundles nsis --config src-tauri/tauri.windows.conf.json
+
+      - name: Verify and stage Windows installer
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          CAND="$(find src-tauri/target/$WINDOWS_TARGET/release/bundle/nsis -maxdepth 1 -type f -name '*10.0.3*x64-setup.exe' -print -quit)"
+          test -n "$CAND" -a -s "$CAND"
+          python3 - "$CAND" <<'PY'
+          import sys
+          from pathlib import Path
+          p=Path(sys.argv[1])
+          assert p.stat().st_size>1_000_000,p.stat().st_size
+          assert p.read_bytes()[:2]==b'MZ'
+          print('ENDLUME_1003_WINDOWS_PE_GREEN',p.stat().st_size)
+          PY
+          STAGE="$RUNNER_TEMP/endlume-1003-windows-manual"
+          mkdir -p "$STAGE"
+          cp "$CAND" "$STAGE/ENDLUME-YT-Studio-PEISOV-Setup-10.0.3-x64.exe"
+          shasum -a 256 "$STAGE/ENDLUME-YT-Studio-PEISOV-Setup-10.0.3-x64.exe" > "$STAGE/ENDLUME-YT-Studio-PEISOV-Setup-10.0.3-x64.exe.sha256"
+          echo "ENDLUME_STAGE=$STAGE" >> "$GITHUB_ENV"
+          cat "$STAGE/ENDLUME-YT-Studio-PEISOV-Setup-10.0.3-x64.exe.sha256"
+
+      - name: Publish Windows manual 10.0.3
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.ENDLUME_RELEASE_TOKEN }}
+        run: |
+          set -Eeuo pipefail
+          HOST_REPO="ScaleUPPeisov/scaleup-site"
+          TAG="endlume-stable"
+          gh release view "$TAG" --repo "$HOST_REPO" >/dev/null
+          gh release upload "$TAG"             "$ENDLUME_STAGE/ENDLUME-YT-Studio-PEISOV-Setup-10.0.3-x64.exe"             "$ENDLUME_STAGE/ENDLUME-YT-Studio-PEISOV-Setup-10.0.3-x64.exe.sha256"             --clobber --repo "$HOST_REPO"
+
+      - name: Verify public Windows package
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          BASE="https://github.com/ScaleUPPeisov/scaleup-site/releases/download/endlume-stable"
+          curl -fsIL "$BASE/ENDLUME-YT-Studio-PEISOV-Setup-10.0.3-x64.exe" >/dev/null
+          curl -fsSL "$BASE/ENDLUME-YT-Studio-PEISOV-Setup-10.0.3-x64.exe.sha256" -o "$RUNNER_TEMP/public.sha256"
+          grep -Eq '^[0-9a-f]{64}[[:space:]]' "$RUNNER_TEMP/public.sha256"
+          echo ENDLUME_1003_WINDOWS_MANUAL_PUBLIC_GREEN

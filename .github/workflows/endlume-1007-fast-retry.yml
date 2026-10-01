@@ -15,7 +15,7 @@ concurrency:
 
 env:
   VERSION: "10.0.7"
-  CARGO_TARGET_DIR: "${{ runner.home }}/.endlume-build-cache/target-1006-updater-repair"
+  CARGO_TARGET_DIR: "/Users/peisov/.endlume-build-cache/target-1006-updater-repair"
 
 jobs:
   fast-final:

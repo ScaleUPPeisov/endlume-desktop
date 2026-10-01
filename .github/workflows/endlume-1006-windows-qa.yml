@@ -11,6 +11,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: endlume-1006-windows-qa
+  cancel-in-progress: true
+
 jobs:
   windows:
     runs-on: windows-2022

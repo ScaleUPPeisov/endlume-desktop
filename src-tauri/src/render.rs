@@ -1068,16 +1068,64 @@ async fn build_media_clip(app:&AppHandle,job:&QueueJob,media:&str,index:usize,to
   run_ffmpeg(app,job,started,timer,args,&format!("Подготавливаю медиа {}/{}",index+1,total),base,span,duration,encoder,attempt,cancel).await?;Ok((clip,duration))
 }
 
+fn processed_audio_local_key_1008(path:&Path)->String{
+  let mut h=Sha256::new();
+  h.update(b"ENDLUME-10.0.8-PROCESSED-AUDIO-LOCAL-v1");
+  h.update(file_stamp_1000(path).as_bytes());
+  hex::encode(h.finalize())
+}
+
+async fn localize_processed_audio_1008(app:&AppHandle,path:&Path)->Result<PathBuf,String>{
+  let root=cache_root_1000(app,"processed-audio-local-v1008")?;
+  let key=processed_audio_local_key_1008(path);
+  let ext=path.extension().and_then(|x|x.to_str()).unwrap_or("audio");
+  let out=root.join(format!("{key}.{ext}"));
+  let src_size=std::fs::metadata(path).map_err(|e|format!("10.0.8 audio source metadata {}: {e}",path.display()))?.len();
+  if out.is_file()&&std::fs::metadata(&out).map(|m|m.len()).unwrap_or(0)==src_size{
+    return Ok(out)
+  }
+  let src=path.to_path_buf();let tmp=root.join(format!(".{key}-{}.tmp",uuid::Uuid::new_v4()));
+  let tmp_task=tmp.clone();
+  tauri::async_runtime::spawn_blocking(move||->Result<(),String>{
+    let copied=std::fs::copy(&src,&tmp_task).map_err(|e|format!("10.0.8 audio localize {}: {e}",src.display()))?;
+    if copied!=src_size{return Err(format!("10.0.8 audio localize truncated {}: {copied}/{src_size}",src.display()))}
+    Ok(())
+  }).await.map_err(|e|format!("10.0.8 audio localize join: {e}"))??;
+  if out.exists(){let _=std::fs::remove_file(&tmp);}else{std::fs::rename(&tmp,&out).map_err(|e|format!("10.0.8 audio cache commit: {e}"))?}
+  prune_cache_1000(&root,&out);
+  Ok(out)
+}
+
+async fn localize_processed_audio_inputs_1008(app:&AppHandle,job:&QueueJob,cancel:&AtomicBool)->Result<(Vec<PathBuf>,Option<PathBuf>),String>{
+  let mark=Instant::now();
+  let mut tracks=Vec::with_capacity(job.project.audio.len());
+  // Copy sequentially from external HDD: this preserves large sequential reads and
+  // avoids 12-way seek thrash when FFmpeg opens every input at once.
+  for src in &job.project.audio{
+    if cancel.load(Ordering::SeqCst){return Err(CANCELLED.into())}
+    tracks.push(localize_processed_audio_1008(app,Path::new(src)).await?);
+  }
+  let ambient=if let Some(src)=job.ambient.as_ref().filter(|p|!p.trim().is_empty()){
+    Some(localize_processed_audio_1008(app,Path::new(src)).await?)
+  }else{None};
+  let sec=mark.elapsed().as_secs_f64();
+  emit_timing(app,&job.project.id,"audio-source-localize",sec);
+  let _=app.emit("engine-profile",json!({"id":job.project.id,"processedAudioLocalized":true,"processedAudioInputs":tracks.len(),"audioSourceLocalizeSeconds":sec}));
+  Ok((tracks,ambient))
+}
+
 async fn build_lossless_processed_audio_cycle(app:&AppHandle,job:&QueueJob,started:i64,timer:&Instant,work:&Path,encoder:&str,attempt:u32,cancel:&AtomicBool)->Result<(PathBuf,Vec<f64>,f64),String>{
   if job.project.audio.is_empty(){return Err("Нет песен".into())}
+  let (local_tracks,local_ambient)=localize_processed_audio_inputs_1008(app,job,cancel).await?;
   let mut durations=Vec::new();let probe_mark=Instant::now();
   let mut args:Vec<String>=vec!["-hide_banner","-loglevel","error"].into_iter().map(String::from).collect();
-  for a in &job.project.audio{
-    durations.push(probe_duration(app,a).await.unwrap_or(180.0).max(0.2));
-    args.extend(vec!["-i",a.as_str()].into_iter().map(String::from));
+  for a in &local_tracks{
+    let a_str=a.to_string_lossy();
+    durations.push(probe_duration(app,a_str.as_ref()).await.unwrap_or(180.0).max(0.2));
+    args.extend(vec!["-i",a_str.as_ref()].into_iter().map(String::from));
   }
-  let ambient_index=job.project.audio.len();let ambient_enabled=job.ambient.as_ref().map(|x|!x.trim().is_empty()).unwrap_or(false);
-  if let Some(a)=job.ambient.as_ref().filter(|p|!p.trim().is_empty()){args.extend(vec!["-stream_loop","-1","-i",a.as_str()].into_iter().map(String::from));}
+  let ambient_index=local_tracks.len();let ambient_enabled=local_ambient.is_some();
+  if let Some(a)=local_ambient.as_ref(){args.extend(vec!["-stream_loop","-1","-i",a.to_string_lossy().as_ref()].into_iter().map(String::from));}
   emit_timing(app,&job.project.id,"probe",probe_mark.elapsed().as_secs_f64());
   let min_track=durations.iter().copied().fold(f64::INFINITY,f64::min);
   let cf=job.settings.crossfade_sec.clamp(0.0,10.0).min((min_track*0.40).max(0.0));

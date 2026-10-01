@@ -1,13 +1,12 @@
 {
   "enabled": true,
-  "generation": 43,
+  "generation": 44,
   "app": "endlume",
   "channel": "stable",
-  "version": "10.0.3",
-  "builder": "BUILD_ENDLUME_1003_PROMOTE.command",
-  "notes": "ENDLUME 10.0.3 signed updater promotion retry with mandatory SHA-256 in macOS manifest. Reuses already-published packages and existing updater key; no rebuild or rerender.",
+  "version": "10.0.6",
+  "builder": "BUILD_ENDLUME_1006_MAC_UPDATER.command",
+  "notes": "ENDLUME 10.0.6 production macOS hotfix. Exact source bd81d86152cb2f20fe02e33849aec255ea013634; application hotfix 03df61a58641d5ce0b4e1c432c99af935acbf4d1. macOS updater only; Windows is intentionally not promoted by this request.",
   "platforms": [
-    "darwin-aarch64",
-    "windows-x86_64"
+    "darwin-aarch64"
   ]
 }

@@ -1,0 +1,117 @@
+name: ENDLUME 10.0.5 Hosted macOS Structural Launch QA
+
+on:
+  push:
+    branches:
+      - candidate/endlume-10.0.5-macos-launch-hotfix
+    paths:
+      - ".github/workflows/endlume-1005-hosted-structural.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-1005-hosted-structural
+  cancel-in-progress: true
+
+jobs:
+  hosted:
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Source and main-window gate
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          node scripts/assert-production-main-window.mjs
+          test "$(node -p "require('./package.json').version")" = "10.0.5"
+
+      - name: Stage Homebrew FFmpeg and build exact candidate
+        env:
+          APPLE_SIGNING_IDENTITY: "-"
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          brew list ffmpeg >/dev/null 2>&1 || brew install ffmpeg
+          mkdir -p src-tauri/binaries
+          cp -L "$(command -v ffmpeg)" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp -L "$(command -v ffprobe)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          chmod +x src-tauri/binaries/*
+          npm ci
+          npm run check
+          npm run build
+          cargo check --manifest-path src-tauri/Cargo.toml --target aarch64-apple-darwin
+          cargo test --manifest-path src-tauri/Cargo.toml --target aarch64-apple-darwin -- --nocapture
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path("src-tauri/tauri.conf.json")
+          d=json.loads(p.read_text())
+          d["bundle"]["createUpdaterArtifacts"]=False
+          assert d["app"]["windows"] and any(w.get("label")=="main" for w in d["app"]["windows"])
+          p.write_text(json.dumps(d,ensure_ascii=False,indent=2)+"\n")
+          PY
+          node scripts/assert-production-main-window.mjs
+          export CARGO_TARGET_DIR="$RUNNER_TEMP/e1005-hosted"
+          npm run tauri build -- --target aarch64-apple-darwin --bundles app --features e2e-render
+          APP="$(find "$CARGO_TARGET_DIR" -type d -path '*/release/bundle/macos/*.app' -print -quit)"
+          test -n "$APP"
+          mkdir -p hosted-candidate
+          ditto -c -k --sequesterRsrc --keepParent "$APP" hosted-candidate/ENDLUME-10.0.5-hosted-candidate.zip
+          mkdir -p "$RUNNER_TEMP/e1005-unpack"
+          ditto -x -k hosted-candidate/ENDLUME-10.0.5-hosted-candidate.zip "$RUNNER_TEMP/e1005-unpack"
+          UNPACKED="$(find "$RUNNER_TEMP/e1005-unpack" -maxdepth 2 -type d -name '*.app' -print -quit)"
+          test -n "$UNPACKED"
+          echo "E1005_APP=$UNPACKED" >> "$GITHUB_ENV"
+
+      - name: Exact ZIP real launch marker
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          MARKER="$RUNNER_TEMP/e1005-hosted-launch.json"
+          launchctl setenv ENDLUME_LAUNCH_SMOKE_MARKER "$MARKER"
+          open -n "$E1005_APP"
+          for i in {1..60}; do test -s "$MARKER" && break; sleep 0.25; done
+          launchctl unsetenv ENDLUME_LAUNCH_SMOKE_MARKER || true
+          test -s "$MARKER"
+          cat "$MARKER"
+          PID="$(python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));assert d["label"]=="main";assert d["frontendLoaded"] is True;print(d["pid"])' "$MARKER")"
+          kill -0 "$PID"
+          sleep 2
+          kill -0 "$PID"
+          echo "ENDLUME_1005_HOSTED_REAL_LAUNCH_GREEN"
+          kill "$PID" || true
+
+      - name: Exact ZIP Effects Subscribe FFmpeg
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ENDLUME_APP_PATH="$E1005_APP" node scripts/verify-macos-ffmpeg-bundle.mjs | tee hosted-candidate/runtime.log
+          grep -q EFFECTS_LIVE_PREVIEW_RUNTIME_PASS hosted-candidate/runtime.log
+          grep -q SUBSCRIBE_LIVE_PREVIEW_RUNTIME_PASS hosted-candidate/runtime.log
+          grep -q ENDLUME_MACOS_FFMPEG_RUNTIME_PASS hosted-candidate/runtime.log
+          echo ENDLUME_1005_HOSTED_RUNTIME_GREEN
+
+      - name: Upload private structural evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: ENDLUME-10.0.5-hosted-structural
+          path: hosted-candidate/
+          retention-days: 7

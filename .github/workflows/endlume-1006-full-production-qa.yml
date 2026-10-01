@@ -89,7 +89,7 @@ jobs:
             assert token in editors,token
           assert 'requestAnimationFrame(draw)' in live
           assert 'effect.opacity??1' in live
-          assert 'prepare_live_preview' in live
+          assert 'api.prepareLivePreview' in editors
           assert 'offset_x' in model and 'offset_y' in model and 'opacity' in model
           assert 'resolve_effect_for_project' in render
           assert 'effect_opacity' in render

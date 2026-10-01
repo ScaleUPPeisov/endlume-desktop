@@ -1,12 +1,13 @@
 {
   "enabled": true,
-  "generation": 41,
+  "generation": 42,
   "app": "endlume",
   "channel": "stable",
-  "version": "1.0.0-alpha.8.61",
-  "builder": "BUILD_ENDLUME_861_EXTERNAL_DISK_STABILITY.command",
-  "notes": "ENDLUME STUDIO 8.61 external-disk stability hotfix, generation 41 release retry after correcting the production builder wrapper. Exact source pin 4ec332f4ccc4bca511065d8276e1ab34ac255826. Heavy master/audio/manifest temporary work runs on the internal Mac app cache; the completed MOV is finalized to the selected external disk once. Fresh real MacBookAir persistent-cache speed gate 34249649158 completed success: production compositor 18.724s, optimized probe 18.302s, 1920x1080 CFR60 HEVC q:v100, frame/packet counts matched the expected master, and 5-second SSIM was 0.999775. Existing certified contracts retained: one image + 15 MP3, whole-track, crossfade 0, no normalization, protected bright round equalizer, VYRON/queue, in-place MP4 manifest, and 500-700 MB final-size policy.",
+  "version": "10.0.3",
+  "builder": "BUILD_ENDLUME_1003_PROMOTE.command",
+  "notes": "ENDLUME 10.0.3 signed updater promotion. Reuses the already-published macOS 10.0.3 app and Windows 10.0.3 installer, signs updater artifacts with the existing local ENDLUME Tauri updater key, preserves studio.endlume.desktop identity, and publishes a dual-platform latest.json without rebuilding or rerendering.",
   "platforms": [
-    "darwin-aarch64"
+    "darwin-aarch64",
+    "windows-x86_64"
   ]
 }

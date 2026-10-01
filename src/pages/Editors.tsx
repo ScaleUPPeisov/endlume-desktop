@@ -85,6 +85,7 @@ function EffectsEditor() {
   const [assets, setAssets] = useState<LivePreviewAssets>();
   const [previewBusy, setPreviewBusy] = useState(false);
   const [anchorMode, setAnchorMode] = useState(false);
+  const [deleteConfirm, setDeleteConfirm] = useState(false);
   const persistTimer = useRef<number | undefined>(undefined);
   const current = effects.find((e) => e.id === selected);
   const projectPath = scenePath || sceneCandidates[0]?.path;

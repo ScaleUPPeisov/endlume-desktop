@@ -76,4 +76,4 @@ export const useApp=create<State>()(persist((set)=>({
   }),
   patchSettings:(patch)=>set(s=>({settings:{...s.settings,...patch}})),
   setLastRoot:(lastRoot)=>set({lastRoot})
-}),{name:'endlume-1-ui',version:7,migrate:(persisted:any)=>{const p:any=persisted||{};if(p.settings){p.settings={...p.settings,width:1920,height:1080,fps:60,crossfadeSec:3,normalizeLufs:false,codec:'h265'};}p.projects=[];p.sceneAnchorsByPath=p.sceneAnchorsByPath||{};return p;},partialize:(s)=>({settings:s.settings,lastRoot:s.lastRoot,sceneAnchorsByPath:s.sceneAnchorsByPath})}));
+}),{name:'endlume-1-ui',version:7,migrate:(persisted:any)=>{const p:any=persisted||{};p.settings={...initialSettings,...(p.settings||{})};p.projects=[];p.sceneAnchorsByPath=p.sceneAnchorsByPath||{};return p;},partialize:(s)=>({settings:s.settings,lastRoot:s.lastRoot,sceneAnchorsByPath:s.sceneAnchorsByPath})}));

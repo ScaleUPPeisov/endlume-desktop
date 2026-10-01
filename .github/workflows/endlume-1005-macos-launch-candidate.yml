@@ -1,0 +1,58 @@
+name: ENDLUME 10.0.5 macOS Launch Hotfix Candidate QA
+
+on:
+  push:
+    branches:
+      - candidate/endlume-10.0.5-macos-launch-hotfix
+    paths:
+      - ".github/workflows/endlume-1005-macos-launch-candidate.yml"
+      - "scripts/qa-endlume-1005-macos-candidate.sh"
+      - "scripts/assert-production-main-window.mjs"
+      - "scripts/verify-macos-ffmpeg-bundle.mjs"
+      - "scripts/prepare-macos-ffmpeg-runtime.mjs"
+      - "scripts/tauri-cli.mjs"
+      - "package.json"
+      - "package-lock.json"
+      - "src-tauri/Cargo.toml"
+      - "src-tauri/Cargo.lock"
+      - "src-tauri/tauri.conf.json"
+      - "src-tauri/src/lib.rs"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-1005-macos-launch-candidate
+  cancel-in-progress: true
+
+jobs:
+  candidate:
+    name: macOS ARM64 • Exact ZIP • Launch • Render • Signing
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Run exact-package candidate QA
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          chmod +x scripts/qa-endlume-1005-macos-candidate.sh
+          bash scripts/qa-endlume-1005-macos-candidate.sh
+
+      - name: Upload private candidate evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ENDLUME-10.0.5-macOS-Launch-Hotfix-Candidate
+          path: candidate-1005/
+          if-no-files-found: warn
+          retention-days: 7

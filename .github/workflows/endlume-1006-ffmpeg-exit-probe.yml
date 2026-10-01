@@ -48,12 +48,28 @@ jobs:
           "$FFM" -hide_banner -loglevel error -f lavfi -i sine=frequency=440:sample_rate=48000:duration=12 -ac 2 -c:a libmp3lame -b:a 320k -y "$W/audio.mp3"
           printf "file '%s'\n" "$W/audio.mp3" > "$W/audio-direct-list.txt"
           set +e
-          "$FFM" -hide_banner -loglevel error -i "$W/seed.mp4" -stream_loop -1 -f concat -safe 0 -fflags +genpts -i "$W/audio-direct-list.txt" -t 12 -map 0:v:0 -map 1:a:0 -c:v copy -c:a aac_at -b:a 320k -aac_at_mode cvbr -aac_at_quality 2 -ar 48000 -ac 2 -tag:a mp4a -disposition:a:0 default -metadata:s:a:0 language=und -progress pipe:1 -y "$W/out.mp4" >"$W/stdout.log" 2>"$W/stderr.log"
-          RC=$?
+          "$FFM" -hide_banner -loglevel error -i "$W/seed.mp4" -stream_loop -1 -f concat -safe 0 -fflags +genpts -i "$W/audio-direct-list.txt" -t 12 -map 0:v:0 -map 1:a:0 -c:v copy -c:a aac_at -b:a 320k -aac_at_mode cvbr -aac_at_quality 2 -ar 48000 -ac 2 -tag:a mp4a -disposition:a:0 default -metadata:s:a:0 language=und -progress pipe:1 -y "$W/out-loop.mp4" >"$W/loop-stdout.log" 2>"$W/loop-stderr.log"
+          LOOP_RC=$?
           set -e
-          echo "DIRECT_EXIT_CODE=$RC"
-          echo "DIRECT_STDOUT_BEGIN"; cat "$W/stdout.log"; echo "DIRECT_STDOUT_END"
-          echo "DIRECT_STDERR_BEGIN"; cat "$W/stderr.log"; echo "DIRECT_STDERR_END"
-          test -s "$W/out.mp4"
-          "$FFP" -v error -show_entries stream=codec_type,codec_name:format=duration -of json "$W/out.mp4"
-          if [ "$RC" -eq 0 ]; then echo "ENDLUME_1006_DIRECT_AAC320_EXIT_GREEN"; else exit "$RC"; fi
+          echo "LOOP_EXIT_CODE=$LOOP_RC"
+          echo "LOOP_STDERR_BEGIN"; cat "$W/loop-stderr.log"; echo "LOOP_STDERR_END"
+          test -s "$W/out-loop.mp4"
+
+          # Proposed production fix: repeat only the tiny concat manifest, never the media bytes.
+          {
+            cat "$W/audio-direct-list.txt"
+            cat "$W/audio-direct-list.txt"
+          } > "$W/audio-finite-list.txt"
+          set +e
+          "$FFM" -hide_banner -loglevel error -i "$W/seed.mp4" -f concat -safe 0 -fflags +genpts -i "$W/audio-finite-list.txt" -t 12 -map 0:v:0 -map 1:a:0 -c:v copy -c:a aac_at -b:a 320k -aac_at_mode cvbr -aac_at_quality 2 -ar 48000 -ac 2 -tag:a mp4a -disposition:a:0 default -metadata:s:a:0 language=und -progress pipe:1 -y "$W/out-finite.mp4" >"$W/finite-stdout.log" 2>"$W/finite-stderr.log"
+          FINITE_RC=$?
+          set -e
+          echo "FINITE_EXIT_CODE=$FINITE_RC"
+          echo "FINITE_STDERR_BEGIN"; cat "$W/finite-stderr.log"; echo "FINITE_STDERR_END"
+          test -s "$W/out-finite.mp4"
+          "$FFP" -v error -show_entries stream=codec_type,codec_name:format=duration -of json "$W/out-finite.mp4"
+          test "$LOOP_RC" -ne 0
+          test "$FINITE_RC" -eq 0
+          grep -qi 'Operation not permitted' "$W/loop-stderr.log"
+          ! grep -qi 'Operation not permitted' "$W/finite-stderr.log"
+          echo "ENDLUME_1006_FINITE_CONCAT_AAC320_FIX_PROVEN"

@@ -1,0 +1,115 @@
+name: ENDLUME 10.0.6 Release Crossfade HQ320 Gate
+# Production-code rerun after Effect delete-state fix
+
+on:
+  push:
+    branches:
+      - release-prep/endlume-10.0.6-production-hotfix-final
+    paths:
+      - ".github/workflows/endlume-1006-release-crossfade-hq320-gate.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Stage portable FFmpeg runtime
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          brew list ffmpeg >/dev/null 2>&1 || brew install ffmpeg
+          mkdir -p src-tauri/binaries
+          cp -L "$(command -v ffmpeg)" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp -L "$(command -v ffprobe)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          chmod 755 src-tauri/binaries/*
+          grep -q 'acrossfade=d=' src-tauri/src/render.rs
+          grep -q '"-b:a","320k"' src-tauri/src/render.rs
+          ! grep -q '"-stream_loop","-1","-f","concat"' src-tauri/src/render.rs
+          echo ENDLUME_1006_CROSSFADE_SOURCE_CONTRACT_GREEN
+
+      - name: Build exact app
+        env:
+          APPLE_SIGNING_IDENTITY: "-"
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          npm ci
+          npm run check
+          npm run build
+          export CARGO_TARGET_DIR="$RUNNER_TEMP/e1006-crossfade"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('src-tauri/tauri.conf.json')
+          d=json.loads(p.read_text())
+          d['bundle']['createUpdaterArtifacts']=False
+          p.write_text(json.dumps(d,ensure_ascii=False,indent=2)+'\n')
+          PY
+          npm run tauri build -- --target aarch64-apple-darwin --bundles app --features e2e-render
+          APP="$(find "$CARGO_TARGET_DIR" -type d -path '*/release/bundle/macos/*.app' -print -quit)"
+          test -n "$APP" -a -d "$APP"
+          test -x "$APP/Contents/MacOS/ffmpeg"
+          test -x "$APP/Contents/MacOS/ffprobe"
+          echo "E1006_APP=$APP" >> "$GITHUB_ENV"
+
+      - name: Two-track crossfade + HQ320 real render
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - "$E1006_APP" <<'PY'
+          import json,os,subprocess,sys,tempfile
+          from pathlib import Path
+          app=Path(sys.argv[1])
+          ff=app/'Contents/MacOS/ffmpeg'
+          fp=app/'Contents/MacOS/ffprobe'
+          exe=next(p for p in (app/'Contents/MacOS').iterdir() if p.is_file() and os.access(p,os.X_OK) and p.name not in ('ffmpeg','ffprobe'))
+          root=Path(tempfile.mkdtemp(prefix='endlume-1006-crossfade-'))
+          img=root/'image.png'; a1=root/'track-1.mp3'; a2=root/'track-2.mp3'; out=root/'out'; out.mkdir()
+          def run(args,**kw): return subprocess.run([str(x) for x in args],check=True,text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE,**kw)
+          run([ff,'-hide_banner','-loglevel','error','-f','lavfi','-i','color=c=0x18233a:s=1920x1080:r=60','-frames:v','1','-y',img])
+          run([ff,'-hide_banner','-loglevel','error','-f','lavfi','-i','sine=frequency=440:sample_rate=48000:duration=12','-ac','2','-c:a','libmp3lame','-b:a','320k','-y',a1])
+          run([ff,'-hide_banner','-loglevel','error','-f','lavfi','-i','sine=frequency=660:sample_rate=48000:duration=12','-ac','2','-c:a','libmp3lame','-b:a','320k','-y',a2])
+          job={
+            'project':{'id':'e1006-crossfade-hq320','name':'Crossfade HQ320','path':str(root),'media':[str(img)],'audio':[str(a1),str(a2)],'valid':True,'error':None},
+            'settings':{'width':1920,'height':1080,'fps':60,'codec':'h265','bitrateMbps':4.0,'durationHours':0.006,
+                        'durationMode':'fixed','loopMode':'image','crossfadeSec':2.0,'normalizeLufs':False,
+                        'outputDir':str(out),'preset':'fast','encoderPreference':'auto'},
+            'effects':[],'subscribes':[],'ambient':None
+          }
+          fixture=root/'job.json'; result=root/'result.json'
+          fixture.write_text(json.dumps(job,ensure_ascii=False))
+          env=os.environ.copy(); env['ENDLUME_E2E_RENDER_JOB']=str(fixture); env['ENDLUME_E2E_RESULT']=str(result); env['RUST_BACKTRACE']='1'
+          p=subprocess.run([str(exe)],env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=240)
+          print(p.stdout); print(p.stderr,file=sys.stderr)
+          assert p.returncode==0,p.returncode
+          data=json.loads(result.read_text()); assert data.get('status')=='passed',data
+          row=(data.get('results') or [])[0]; assert row.get('status')=='passed',row
+          video=Path(row['outputPath']); assert video.is_file() and video.stat().st_size>100_000
+          probe=json.loads(run([fp,'-v','error','-show_entries','stream=codec_type,codec_name,sample_rate,channels:format=duration','-of','json',video]).stdout)
+          au=next(x for x in probe['streams'] if x.get('codec_type')=='audio')
+          assert au.get('codec_name')=='aac',au
+          assert au.get('sample_rate')=='48000',au
+          assert au.get('channels')==2,au
+          assert float(probe['format']['duration'])>=18.0,probe
+          assert row.get('audioMode')=='PROCESSED_AAC',row
+          print('ENDLUME_1006_CROSSFADE_HQ320_RUNTIME_GREEN',json.dumps({'result':row,'audio':au,'duration':probe['format']['duration']},ensure_ascii=False))
+          PY

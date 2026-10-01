@@ -110,10 +110,12 @@ fn remap_sbgp(a:&[u8],selected:&[usize],n_samples:usize)->Result<Vec<u8>,String>
   let p=payload(a)?;if p.len()<12{return Err("MP4: sbgp short".into())}let version=p[0];let extra=if version==1{4}else{0};let head_len=12+extra;if p.len()<head_len{return Err("MP4: sbgp header short".into())}let entries=be32(p,8+extra)? as usize;if p.len()!=head_len+entries*8{return Err("MP4: malformed sbgp".into())}let mut groups=Vec::with_capacity(n_samples);for i in 0..entries{let o=head_len+i*8;let c=be32(p,o)? as usize;let g=be32(p,o+4)?;groups.extend(std::iter::repeat(g).take(c))}if groups.len()!=n_samples{return Err("MP4: sbgp sample count mismatch".into())}let chosen=selected.iter().map(|&i|groups[i]).collect::<Vec<_>>();let runs=compress_u32(&chosen);let mut q=p[..8+extra].to_vec();q.extend_from_slice(&(runs.len()as u32).to_be_bytes());for(c,g)in runs{q.extend_from_slice(&c.to_be_bytes());q.extend_from_slice(&g.to_be_bytes())}make_atom(*b"sbgp",&q)
 }
 
-fn rebuild_stbl(stbl:&[u8],selected:&[usize])->Result<(Vec<u8>,u64,bool),String>{
+fn rebuild_stbl(stbl:&[u8],selected:&[usize],forced_delta:Option<u32>)->Result<(Vec<u8>,u64,bool),String>{
   let cs=children(stbl)?;let stsz=cs.iter().find(|x|atom_type(x)==*b"stsz").ok_or("MP4: stsz missing")?;let n_samples=stsz_sizes(stsz)?.len();if selected.iter().any(|&i|i>=n_samples){return Err("MP4: selected sample outside video pool".into())}
   let (sizes,offs,descs)=sample_layout(stbl)?;let stts=cs.iter().find(|x|atom_type(x)==*b"stts").ok_or("MP4: stts missing")?;let deltas=expand_stts(stts,n_samples)?;let ctts=cs.iter().find(|x|atom_type(x)==*b"ctts").map(|x|expand_ctts(x,n_samples)).transpose()?;let stss=cs.iter().find(|x|atom_type(x)==*b"stss").map(|x|stss_set(x)).transpose()?;let sdtp=cs.iter().find(|x|atom_type(x)==*b"sdtp").map(|x|payload(x).map(|p|p[4..].to_vec())).transpose()?;
-  let chosen_sizes=selected.iter().map(|&i|sizes[i]).collect::<Vec<_>>();let chosen_offs=selected.iter().map(|&i|offs[i]).collect::<Vec<_>>();let chosen_descs=selected.iter().map(|&i|descs[i]).collect::<Vec<_>>();let chosen_deltas=selected.iter().map(|&i|deltas[i]).collect::<Vec<_>>();let duration=chosen_deltas.iter().map(|&x|x as u64).sum::<u64>();
+  if forced_delta.is_some()&&ctts.is_some(){return Err("MP4: fixed-delta remap requires all-intra/no-ctts source".into())}
+  let chosen_sizes=selected.iter().map(|&i|sizes[i]).collect::<Vec<_>>();let chosen_offs=selected.iter().map(|&i|offs[i]).collect::<Vec<_>>();let chosen_descs=selected.iter().map(|&i|descs[i]).collect::<Vec<_>>();
+  let chosen_deltas=if let Some(delta)=forced_delta{vec![delta.max(1);selected.len()]}else{selected.iter().map(|&i|deltas[i]).collect::<Vec<_>>()};let duration=chosen_deltas.iter().map(|&x|x as u64).sum::<u64>();
   let use_co64=chosen_offs.iter().any(|&x|x>u32::MAX as u64)||cs.iter().any(|x|atom_type(x)==*b"co64");
   let mut out=Vec::new();for b in cs{let typ=atom_type(&b);match typ{
     t if t==*b"stts"=>out.push(make_stts(payload(&b)?,&chosen_deltas)?),
@@ -129,11 +131,11 @@ fn rebuild_stbl(stbl:&[u8],selected:&[usize])->Result<(Vec<u8>,u64,bool),String>
   }}
   let sync_ok=match stss{None=>true,Some(ref s)=>s.contains(&1)};Ok((make_atom(*b"stbl",&out.concat())?,duration,sync_ok))
 }
-fn rebuild_minf(minf:&[u8],selected:&[usize])->Result<(Vec<u8>,u64,bool),String>{let mut out=Vec::new();let mut dur=None;let mut sync=false;for b in children(minf)?{if atom_type(&b)==*b"stbl"{let(x,d,s)=rebuild_stbl(&b,selected)?;out.push(x);dur=Some(d);sync=s}else{out.push(b)}}Ok((make_atom(*b"minf",&out.concat())?,dur.ok_or("MP4: minf/stbl missing")?,sync))}
-fn rebuild_mdia(mdia:&[u8],selected:&[usize])->Result<(Vec<u8>,u32,u64,bool),String>{let mdhd=find_child(mdia,*b"mdhd")?.ok_or("MP4: mdhd missing")?;let(ts,_)=timing(&mdhd,*b"mdhd")?;let mut out=Vec::new();let mut dur=None;let mut sync=false;for b in children(mdia)?{if atom_type(&b)==*b"minf"{let(x,d,s)=rebuild_minf(&b,selected)?;out.push(x);dur=Some(d);sync=s}else{out.push(b)}}let d=dur.ok_or("MP4: video duration missing")?;for b in out.iter_mut(){if atom_type(b)==*b"mdhd"{*b=patch_duration(b,*b"mdhd",d)?}}Ok((make_atom(*b"mdia",&out.concat())?,ts,d,sync))}
-fn rebuild_video_trak(trak:&[u8],selected:&[usize],movie_ts:u32)->Result<(Vec<u8>,u64,bool),String>{let mut out=Vec::new();let mut media=None;let mut sync=false;for b in children(trak)?{match atom_type(&b){t if t==*b"mdia"=>{let(x,ts,d,s)=rebuild_mdia(&b,selected)?;media=Some((ts,d));sync=s;out.push(x)},t if t==*b"edts"=>{},_=>out.push(b)}}let(ts,d)=media.ok_or("MP4: video mdia missing")?;let movie_dur=((d as u128*movie_ts as u128+ts as u128/2)/ts as u128)as u64;for b in out.iter_mut(){if atom_type(b)==*b"tkhd"{*b=patch_duration(b,*b"tkhd",movie_dur)?}}Ok((make_atom(*b"trak",&out.concat())?,movie_dur,sync))}
+fn rebuild_minf(minf:&[u8],selected:&[usize],forced_delta:Option<u32>)->Result<(Vec<u8>,u64,bool),String>{let mut out=Vec::new();let mut dur=None;let mut sync=false;for b in children(minf)?{if atom_type(&b)==*b"stbl"{let(x,d,s)=rebuild_stbl(&b,selected,forced_delta)?;out.push(x);dur=Some(d);sync=s}else{out.push(b)}}Ok((make_atom(*b"minf",&out.concat())?,dur.ok_or("MP4: minf/stbl missing")?,sync))}
+fn rebuild_mdia(mdia:&[u8],selected:&[usize],forced_delta:Option<u32>)->Result<(Vec<u8>,u32,u64,bool),String>{let mdhd=find_child(mdia,*b"mdhd")?.ok_or("MP4: mdhd missing")?;let(ts,_)=timing(&mdhd,*b"mdhd")?;let mut out=Vec::new();let mut dur=None;let mut sync=false;for b in children(mdia)?{if atom_type(&b)==*b"minf"{let(x,d,s)=rebuild_minf(&b,selected,forced_delta)?;out.push(x);dur=Some(d);sync=s}else{out.push(b)}}let d=dur.ok_or("MP4: video duration missing")?;for b in out.iter_mut(){if atom_type(b)==*b"mdhd"{*b=patch_duration(b,*b"mdhd",d)?}}Ok((make_atom(*b"mdia",&out.concat())?,ts,d,sync))}
+fn rebuild_video_trak(trak:&[u8],selected:&[usize],movie_ts:u32,forced_delta:Option<u32>)->Result<(Vec<u8>,u64,bool),String>{let mut out=Vec::new();let mut media=None;let mut sync=false;for b in children(trak)?{match atom_type(&b){t if t==*b"mdia"=>{let(x,ts,d,s)=rebuild_mdia(&b,selected,forced_delta)?;media=Some((ts,d));sync=s;out.push(x)},t if t==*b"edts"=>{},_=>out.push(b)}}let(ts,d)=media.ok_or("MP4: video mdia missing")?;let movie_dur=((d as u128*movie_ts as u128+ts as u128/2)/ts as u128)as u64;for b in out.iter_mut(){if atom_type(b)==*b"tkhd"{*b=patch_duration(b,*b"tkhd",movie_dur)?}}Ok((make_atom(*b"trak",&out.concat())?,movie_dur,sync))}
 
-fn remap_video_samples_impl(seed:&Path,out:&Path,selected:&[usize])->Result<(),String>{
+fn remap_video_samples_impl(seed:&Path,out:&Path,selected:&[usize],forced_delta:Option<u32>)->Result<(),String>{
   if selected.is_empty(){return Err("MP4 manifest: empty selected sample map".into())}
   let (top,file_len)=file_atoms(seed)?;
   let moovs=top.iter().filter(|x|x.typ==*b"moov").copied().collect::<Vec<_>>();
@@ -153,7 +155,7 @@ fn remap_video_samples_impl(seed:&Path,out:&Path,selected:&[usize])->Result<(),S
       let stbl=find_child(&find_child(&find_child(&b,*b"mdia")?.ok_or("MP4: mdia")?,*b"minf")?.ok_or("MP4: minf")?,*b"stbl")?.ok_or("MP4: stbl")?;
       let count=stsz_sizes(&find_child(&stbl,*b"stsz")?.ok_or("MP4: stsz")?)?.len();
       if selected.iter().any(|&i|i>=count){return Err(format!("MP4 manifest: selected video sample outside pool of {count} samples"))}
-      let(x,d,sync0)=rebuild_video_trak(&b,selected,movie_ts)?;
+      let(x,d,sync0)=rebuild_video_trak(&b,selected,movie_ts,forced_delta)?;
       if !sync0{return Err("MP4 manifest: source sample 1 is not sync/keyframe".into())}
       video_dur=Some(d);kids.push(x)
     }else{kids.push(b)}
@@ -192,13 +194,14 @@ fn remap_video_samples_impl(seed:&Path,out:&Path,selected:&[usize])->Result<(),S
   }
 }
 
-pub fn remap_video_samples(seed:&Path,out:&Path,selected:&[usize])->Result<(),String>{remap_video_samples_impl(seed,out,selected)}
+pub fn remap_video_samples(seed:&Path,out:&Path,selected:&[usize])->Result<(),String>{remap_video_samples_impl(seed,out,selected,None)}
+pub fn remap_video_samples_fixed_delta(seed:&Path,out:&Path,selected:&[usize],delta:u32)->Result<(),String>{remap_video_samples_impl(seed,out,selected,Some(delta.max(1)))}
 
 pub fn expand_video_prefix_cycle(seed:&Path,out:&Path,prefix_frames:usize,cycle_frames:usize,total_frames:usize)->Result<(),String>{
   if cycle_frames==0||total_frames<prefix_frames{return Err("MP4 manifest: invalid prefix/cycle/total frame counts".into())}
   let needed=prefix_frames.checked_add(cycle_frames).ok_or("MP4 manifest: frame overflow")?;let mut selected=Vec::with_capacity(total_frames);selected.extend(0..prefix_frames);for i in 0..(total_frames-prefix_frames){selected.push(prefix_frames+(i%cycle_frames))}
   if selected.iter().any(|&i|i>=needed){return Err("MP4 manifest: generated sample map outside prefix/cycle pool".into())}
-  remap_video_samples_impl(seed,out,&selected)
+  remap_video_samples_impl(seed,out,&selected,None)
 }
 
 #[cfg(test)]
@@ -210,6 +213,11 @@ mod tests{
     let mut mvhd=vec![0u8;100];mvhd[12..16].copy_from_slice(&1_000_000u32.to_be_bytes());let mvhd=make_atom(*b"mvhd",&mvhd).unwrap();let mvhd=patch_duration(&mvhd,*b"mvhd",long).unwrap();let p=payload(&mvhd).unwrap();assert_eq!(p[0],1);assert_eq!(be32(p,20).unwrap(),1_000_000);assert_eq!(be64(p,24).unwrap(),long);
     let mut mdhd=vec![0u8;24];mdhd[12..16].copy_from_slice(&60_000u32.to_be_bytes());let mdhd=make_atom(*b"mdhd",&mdhd).unwrap();let mdhd=patch_duration(&mdhd,*b"mdhd",long).unwrap();let p=payload(&mdhd).unwrap();assert_eq!(p[0],1);assert_eq!(be32(p,20).unwrap(),60_000);assert_eq!(be64(p,24).unwrap(),long);
     let mut tkhd=vec![0u8;84];tkhd[12..16].copy_from_slice(&7u32.to_be_bytes());let tkhd=make_atom(*b"tkhd",&tkhd).unwrap();let tkhd=patch_duration(&tkhd,*b"tkhd",long).unwrap();let p=payload(&tkhd).unwrap();assert_eq!(p[0],1);assert_eq!(be32(p,20).unwrap(),7);assert_eq!(be64(p,28).unwrap(),long);
+  }
+  #[test]fn fixed_delta_30_to_60_schedule_math(){
+    let physical=5usize;let logical=physical*2;let selected=(0..logical).map(|i|i/2).collect::<Vec<_>>();
+    assert_eq!(selected,vec![0,0,1,1,2,2,3,3,4,4]);
+    let timescale=60_000u32;let target_fps=60u32;assert_eq!(timescale/target_fps,1_000);
   }
   #[test]fn multistill_sample_schedule_math(){
     let media=3usize;let physical_frames=2usize;let logical_frames=6usize;let total_frames=24usize;

@@ -6,6 +6,11 @@ on:
       - candidate/endlume-10.0.6-production-freeze
     paths:
       - ".github/workflows/endlume-1006-crossfade-hq320-qa.yml"
+      - "package.json"
+      - "package-lock.json"
+      - "src/**"
+      - "src-tauri/**"
+      - "scripts/**"
   workflow_dispatch: {}
 
 permissions:

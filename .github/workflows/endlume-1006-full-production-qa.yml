@@ -3,7 +3,7 @@ name: ENDLUME 10.0.6 Full Production QA
 on:
   push:
     branches:
-      - qa/endlume-10.0.6-full-production
+      - candidate/endlume-10.0.6-production-freeze
     paths:
       - ".github/workflows/endlume-1006-full-production-qa.yml"
       - "package.json"

@@ -269,7 +269,6 @@ function SubscribeEditor() {
   const [assets, setAssets] = useState<LivePreviewAssets>();
   const [previewBusy, setPreviewBusy] = useState(false);
   const [saved, setSaved] = useState(false);
-  const [deleteConfirm, setDeleteConfirm] = useState(false);
   const persistTimer = useRef<number | undefined>(undefined);
   const current = subscribes.find((e) => e.id === selected);
 

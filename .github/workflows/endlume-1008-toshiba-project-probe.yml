@@ -1,0 +1,81 @@
+name: ENDLUME 10.0.8 TOSHIBA Project Probe
+
+on:
+  push:
+    branches: [hotfix/endlume-10.0.8-performance-visual]
+    paths:
+      - ".github/workflows/endlume-1008-toshiba-project-probe.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-1008-toshiba-project-probe
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 12
+    steps:
+      - name: Find real ENDLUME projects on TOSHIBA
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          VOL="/Volumes/TOSHIBA EXT"
+          test -d "$VOL" || { echo "TOSHIBA_MOUNTED=0"; exit 21; }
+          echo "TOSHIBA_MOUNTED=1"
+          python3 - "$VOL" "$HOME/Library/Application Support/studio.endlume.desktop" <<'PY'
+          import json,os,sys
+          from pathlib import Path
+
+          vol=Path(sys.argv[1])
+          app=Path(sys.argv[2])
+          audio={".mp3",".wav",".m4a",".aac",".flac",".ogg",".opus",".aif",".aiff"}
+          image={".jpg",".jpeg",".png",".webp",".bmp",".tif",".tiff",".heic",".avif"}
+          video={".mp4",".mov",".m4v",".mkv",".webm",".avi",".wmv",".flv",".ts",".mts",".m2ts",".mpg",".mpeg",".vob",".3gp"}
+
+          persisted=[]
+          if app.exists():
+            for p in app.rglob("*.json"):
+              try:
+                if p.stat().st_size>10_000_000: continue
+                obj=json.loads(p.read_text(errors="ignore"))
+              except Exception:
+                continue
+              def walk(x):
+                if isinstance(x,str) and x.startswith(str(vol)): persisted.append(x)
+                elif isinstance(x,dict):
+                  for v in x.values(): walk(v)
+                elif isinstance(x,list):
+                  for v in x: walk(v)
+              walk(obj)
+          print("PERSISTED_TOSHIBA_PATHS="+str(len(set(persisted))))
+          for x in list(dict.fromkeys(persisted))[:30]: print("PERSISTED="+x)
+
+          candidates=[]
+          root_depth=len(vol.parts)
+          for root,dirs,files in os.walk(vol):
+            p=Path(root)
+            depth=len(p.parts)-root_depth
+            dirs[:]=[d for d in dirs if not d.startswith(".") and d not in {"System Volume Information","$RECYCLE.BIN"}]
+            if depth>=4:
+              dirs[:]=[]
+            direct=[p/f for f in files if not f.startswith("._")]
+            aud=[x for x in direct if x.suffix.lower() in audio]
+            med=[x for x in direct if x.suffix.lower() in image|video]
+            if aud and med:
+              try: mt=max(x.stat().st_mtime for x in direct)
+              except: mt=0
+              candidates.append((len(aud),len(med),mt,str(p)))
+          candidates.sort(key=lambda x:(x[0]>=8,x[0]<=20,x[2]),reverse=True)
+          print("TOSHIBA_PROJECT_CANDIDATES="+str(len(candidates)))
+          for a,m,mt,p in candidates[:20]:
+            print(f"CANDIDATE|audio={a}|media={m}|mtime={mt:.0f}|path={p}")
+          if candidates:
+            best=candidates[0]
+            print(f"BEST_PROJECT_PATH={best[3]}")
+            print(f"BEST_PROJECT_AUDIO={best[0]}")
+            print(f"BEST_PROJECT_MEDIA={best[1]}")
+          PY

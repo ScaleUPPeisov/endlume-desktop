@@ -36,6 +36,10 @@ function changeDep(file,from,to){if(from!==to)execFileSync('/usr/bin/install_nam
 function deleteRpath(file,rp){try{execFileSync('/usr/bin/install_name_tool',['-delete_rpath',rp,file],{stdio:'ignore'})}catch{}}
 
 ensureSidecar(ffmpeg,'ffmpeg');ensureSidecar(ffprobe,'ffprobe');assertArch(ffmpeg);assertArch(ffprobe);
+const originalOtool={ffmpeg:run('/usr/bin/otool',['-L',ffmpeg]),ffprobe:run('/usr/bin/otool',['-L',ffprobe])};
+const originalAudit={ffmpeg:deps(ffmpeg),ffprobe:deps(ffprobe)};
+console.log('[ENDLUME ffmpeg-runtime] ORIGINAL_FFMPEG_OTOOL_BEGIN\\n'+originalOtool.ffmpeg+'[ENDLUME ffmpeg-runtime] ORIGINAL_FFMPEG_OTOOL_END');
+console.log('[ENDLUME ffmpeg-runtime] ORIGINAL_FFPROBE_OTOOL_BEGIN\\n'+originalOtool.ffprobe+'[ENDLUME ffmpeg-runtime] ORIGINAL_FFPROBE_OTOOL_END');
 fs.rmSync(frameworksDir,{recursive:true,force:true});fs.mkdirSync(frameworksDir,{recursive:true});
 
 const originByStaged=new Map([[ffmpeg,fs.realpathSync(ffmpeg)],[ffprobe,fs.realpathSync(ffprobe)]]);
@@ -56,6 +60,9 @@ for(const file of staged){
   for(const dep of deps(file)){
     if(isSystem(dep))continue;
     const resolved=resolveDep(origin,dep);if(!resolved)throw new Error(`Cannot map dependency during patch: ${dep} in ${file}`);
+    // otool -L lists a dylib's own LC_ID_DYLIB as its first entry; that is
+    // not an external dependency. Rewrite it with install_name_tool -id below.
+    if(file.startsWith(frameworksDir+path.sep)&&resolved===origin)continue;
     const framework=destByOrigin.get(resolved)||destByBase.get(path.basename(resolved));if(!framework)throw new Error(`Dependency not in closure: ${resolved}`);
     changeDep(file,dep,`@executable_path/../Frameworks/${path.basename(framework)}`);
   }
@@ -75,5 +82,5 @@ for(const file of staged){
 const frameworks=[...destByBase.values()].sort().map(p=>'./'+path.relative(tauriDir,p).split(path.sep).join('/'));
 fs.mkdirSync(generatedDir,{recursive:true});
 fs.writeFileSync(macConfig,JSON.stringify({'$schema':'https://schema.tauri.app/config/2',bundle:{macOS:{frameworks}}},null,2)+'\n');
-fs.writeFileSync(manifestPath,JSON.stringify({target,arch:expectedArch,ffmpeg:path.relative(root,ffmpeg),ffprobe:path.relative(root,ffprobe),frameworks,frameworkCount:frameworks.length},null,2)+'\n');
+fs.writeFileSync(manifestPath,JSON.stringify({target,arch:expectedArch,ffmpeg:path.relative(root,ffmpeg),ffprobe:path.relative(root,ffprobe),originalDependencies:originalAudit,originalOtool,forbiddenOriginal:[...originalAudit.ffmpeg,...originalAudit.ffprobe].filter(forbidden),frameworks,frameworkCount:frameworks.length},null,2)+'\\n');
 console.log(`[ENDLUME ffmpeg-runtime] portable closure ready: ${frameworks.length} dylibs, target=${target}`);

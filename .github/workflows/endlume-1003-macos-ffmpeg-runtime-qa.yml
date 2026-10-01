@@ -97,7 +97,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           export CARGO_TARGET_DIR="$RUNNER_TEMP/endlume-target-1003-runtime"
-          APP="$(find "$CARGO_TARGET_DIR/release/bundle/macos" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          APP="$(find "$CARGO_TARGET_DIR" -type d -path '*/release/bundle/macos/*.app' -print -quit)"
           test -n "$APP" -a -d "$APP"
           echo "APP=$APP"
           echo "===== PACKAGED FFMPEG ====="
@@ -106,9 +106,13 @@ jobs:
           /usr/bin/otool -L "$APP/Contents/MacOS/ffprobe"
           echo "===== FRAMEWORKS ====="
           find "$APP/Contents/Frameworks" -maxdepth 1 -type f -print | sort
-          if grep -R -a -E '/opt/homebrew/|/usr/local/Cellar/|/Users/|/private/tmp/' "$APP/Contents/MacOS/ffmpeg" "$APP/Contents/MacOS/ffprobe" "$APP/Contents/Frameworks" >/dev/null; then
-            echo "Forbidden build-machine path found in packaged Mach-O" >&2
-            exit 1
-          fi
+          while IFS= read -r MACHO; do
+            REPORT="$({ /usr/bin/otool -L "$MACHO"; /usr/bin/otool -l "$MACHO"; } 2>/dev/null)"
+            if printf '%s\n' "$REPORT" | grep -E '/opt/homebrew/|/usr/local/Cellar/|/Users/|/private/tmp/' >/dev/null; then
+              echo "Forbidden Mach-O load command found: $MACHO" >&2
+              printf '%s\n' "$REPORT" >&2
+              exit 1
+            fi
+          done < <(printf '%s\n' "$APP/Contents/MacOS/ffmpeg" "$APP/Contents/MacOS/ffprobe"; find "$APP/Contents/Frameworks" -maxdepth 1 -type f -print | sort)
           /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP"
           echo "ENDLUME_1003_MACOS_FFMPEG_RUNTIME_QA_GREEN"

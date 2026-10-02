@@ -96,6 +96,7 @@ export const api = {
   reorderQueue:(ids:string[])=>invoke<void>('reorder_queue',{ids}),
   cancelProject:(id:string)=>invoke<void>('cancel_project',{id}),
   generatePreview:(projectPath:string,timeSec:number,effects:EffectPreset[],subscribes:SubscribePreset[],requestId?:string)=>invoke<string>('generate_preview',{projectPath,timeSec,effects,subscribes,requestId:requestId||null}),
+  generatePreviewPoster:(projectPath:string,timeSec:number,effects:EffectPreset[],subscribes:SubscribePreset[],requestId?:string)=>invoke<string>('generate_preview_poster',{projectPath,timeSec,effects,subscribes,requestId:requestId||null}),
   previewFrontendFixture:()=>invoke<any|null>('preview_frontend_fixture'),
   previewFrontendReport:(payload:any)=>invoke<void>('preview_frontend_report',{payload}),
   prepareLivePreview:(projectPath:string,overlaySource:string,timeSec:number,requestId?:string,previewType?:'Effects'|'Subscribe')=>invoke<LivePreviewAssetPaths>('prepare_live_preview',{projectPath,overlaySource,timeSec,requestId:requestId||null,previewType:previewType||null}),

@@ -1,0 +1,112 @@
+name: ENDLUME 10.0.11 Post-Preview Continuation QA
+
+on:
+  push:
+    branches: [hotfix/endlume-10.0.11-cold-preview-decode]
+    paths:
+      - ".github/workflows/endlume-1011-post-preview-continuation.yml"
+      - "scripts/qa-endlume-1011-post-preview-continuation.py"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-1011-post-preview-continuation
+  cancel-in-progress: true
+
+jobs:
+  post-preview-continuation:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 45
+    steps:
+      - name: Checkout exact continuation HEAD
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Stage proven Apple Silicon FFmpeg sidecars
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          TMP="$(mktemp -d)"
+          curl -fL --retry 4 "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffmpeg.zip" -o "$TMP/ffmpeg.zip"
+          curl -fL --retry 4 "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffprobe.zip" -o "$TMP/ffprobe.zip"
+          mkdir -p "$TMP/fm" "$TMP/fp" src-tauri/binaries
+          ditto -x -k "$TMP/ffmpeg.zip" "$TMP/fm"
+          ditto -x -k "$TMP/ffprobe.zip" "$TMP/fp"
+          cp "$(find "$TMP/fm" -type f -name ffmpeg -print -quit)" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp "$(find "$TMP/fp" -type f -name ffprobe -print -quit)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          chmod 755 src-tauri/binaries/ffmpeg-aarch64-apple-darwin src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          ENDLUME_TAURI_TARGET=aarch64-apple-darwin node scripts/prepare-macos-ffmpeg-runtime.mjs
+          echo CONTINUATION_SIDECARS_GREEN
+
+      - name: Compile continuation source
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
+          npm ci
+          npm run check
+          npm run build
+          cargo check --manifest-path src-tauri/Cargo.toml --target aarch64-apple-darwin --features e2e-render
+          python3 -m py_compile scripts/qa-endlume-1011-post-preview-continuation.py
+          echo CONTINUATION_COMPILE_GREEN
+
+      - name: Build packaged continuation app
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
+          export CARGO_TARGET_DIR="$HOME/.endlume-build-cache/target-1011-post-preview"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path("src-tauri/tauri.conf.json")
+          d=json.loads(p.read_text())
+          d["bundle"]["createUpdaterArtifacts"]=False
+          p.write_text(json.dumps(d,ensure_ascii=False,indent=2)+"\n")
+          PY
+          ENDLUME_TAURI_TARGET=aarch64-apple-darwin node scripts/prepare-macos-ffmpeg-runtime.mjs
+          npx tauri build --target aarch64-apple-darwin --bundles app --features e2e-render
+          APP="$(find "$CARGO_TARGET_DIR/aarch64-apple-darwin/release/bundle/macos" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          test -n "$APP" -a -d "$APP"
+          /usr/bin/codesign --force --deep --sign - --timestamp=none "$APP"
+          /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP"
+          EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
+          FFMPEG="$APP/Contents/MacOS/ffmpeg"
+          FFPROBE="$APP/Contents/MacOS/ffprobe"
+          test -x "$APP/Contents/MacOS/$EXE"
+          test -x "$FFMPEG"
+          test -x "$FFPROBE"
+          env -i PATH="/usr/bin:/bin:/usr/sbin:/sbin" "$FFMPEG" -version | head -1
+          env -i PATH="/usr/bin:/bin:/usr/sbin:/sbin" "$FFPROBE" -version | head -1
+          printf '%s' "$APP/Contents/MacOS/$EXE" > "$RUNNER_TEMP/e1011-continuation-bin.txt"
+          printf '%s' "$FFMPEG" > "$RUNNER_TEMP/e1011-continuation-ffmpeg.txt"
+          printf '%s' "$FFPROBE" > "$RUNNER_TEMP/e1011-continuation-ffprobe.txt"
+          echo CONTINUATION_PACKAGED_APP_GREEN
+
+      - name: Post-Preview continuation gates only
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          BIN="$(cat "$RUNNER_TEMP/e1011-continuation-bin.txt")"
+          FFMPEG="$(cat "$RUNNER_TEMP/e1011-continuation-ffmpeg.txt")"
+          FFPROBE="$(cat "$RUNNER_TEMP/e1011-continuation-ffprobe.txt")"
+          REPORT="$RUNNER_TEMP/endlume-1011-post-preview-report.json"
+          python3 scripts/qa-endlume-1011-post-preview-continuation.py "$BIN" "$FFMPEG" "$FFPROBE" "$REPORT"
+          test -s "$REPORT"
+          cp "$REPORT" ./endlume-1011-post-preview-report.json
+          echo ENDLUME_1011_POST_PREVIEW_CONTINUATION_GREEN
+
+      - name: Upload continuation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: endlume-1011-post-preview-continuation
+          path: endlume-1011-post-preview-report.json
+          if-no-files-found: ignore

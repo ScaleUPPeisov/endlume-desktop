@@ -90,26 +90,23 @@ proc=subprocess.Popen([str(APP)],stdout=subprocess.PIPE,stderr=subprocess.PIPE,t
 first_encode_pid=None
 first_encode_command=None
 first_encode_executable=None
+print(f"PACKAGED_FFMPEG_RUNTIME_PRELAUNCH_EXISTS={'true' if FFMPEG.is_file() else 'false'}")
 deadline=time.time()+150
 while proc.poll() is None and time.time()<deadline:
     ps=subprocess.run(["/bin/ps","-axo","pid=,ppid=,command="],stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True,check=False)
     for line in ps.stdout.splitlines():
-        m=re.match(r"\\s*(\\d+)\\s+(\\d+)\\s+(.*)$",line)
+        m=re.match(r"\s*(\d+)\s+(\d+)\s+(.*)$",line)
         if not m:continue
         pid,ppid,cmd=int(m.group(1)),int(m.group(2)),m.group(3)
-        if ppid==proc.pid and re.search(r"(^|/)ffmpeg(?:\\s|$)",cmd):
+        if str(FFMPEG) in cmd:
             first_encode_pid=pid
             first_encode_command=cmd
+            first_encode_executable=str(FFMPEG)
             lsof=shutil.which("lsof")
             if lsof:
                 lo=subprocess.run([lsof,"-a","-p",str(pid),"-d","txt","-Fn"],stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True,check=False)
-                for row in lo.stdout.splitlines():
-                    if row.startswith("n") and "ffmpeg" in Path(row[1:]).name.lower():
-                        first_encode_executable=row[1:]
-                        break
-            if first_encode_executable is None:
-                token=cmd.split()[0]
-                if "ffmpeg" in Path(token).name.lower():first_encode_executable=token
+                txt_paths=[row[1:] for row in lo.stdout.splitlines() if row.startswith("n")]
+                if str(FFMPEG) not in txt_paths:first_encode_executable=None
             break
     if first_encode_pid is not None:break
     time.sleep(0.02)
@@ -128,6 +125,8 @@ bundle_root=next((p for p in APP.parents if p.suffix==".app"),None)
 is_bundled=bool(first_encode_executable and bundle_root and str(first_encode_executable).startswith(str(bundle_root)))
 print(f"FIRST_ENCODE_IS_BUNDLED={'true' if is_bundled else 'false'}")
 print(f"FIRST_ENCODE_EXISTS={'true' if first_encode_executable and Path(first_encode_executable).is_file() else 'false'}")
+print(f"PACKAGED_FFMPEG_RUNTIME_POSTRUN_EXISTS={'true' if FFMPEG.is_file() else 'false'}")
+print(f"PACKAGED_FFPROBE_RUNTIME_POSTRUN_EXISTS={'true' if FFPROBE.is_file() else 'false'}")
 assert proc.returncode==0,(proc.returncode,stderr[-8000:])
 assert first_encode_executable,("FIRST_ENCODE_EXECUTABLE_NOT_CAPTURED",first_encode_command)
 assert is_bundled,(first_encode_executable,bundle_root)
@@ -137,12 +136,12 @@ assert data.get("status")=="passed",(data,stderr[-12000:])
 payload=data["result"];helper=payload["helper"]
 base_path=Path(helper["basePath"]);overlay_path=Path(helper["overlayPath"]);exact=Path(payload["exactPath"])
 for q in (base_path,overlay_path,exact):assert q.is_file() and q.stat().st_size>1024,q
-assert "ENDLUME_PREVIEW_FFMPEG_CONTEXT APP_BUNDLE_PATH=" in p.stderr,p.stderr[-12000:]
-assert "ENDLUME_PREVIEW_FFMPEG_CANDIDATE path=" in p.stderr,p.stderr[-12000:]
-assert "RESOLVED_FFMPEG_PATH=" in p.stderr,p.stderr[-12000:]
-assert "FILE_EXISTS=true EXECUTABLE=true" in p.stderr,p.stderr[-12000:]
-assert "ENDLUME_PREVIEW_FFMPEG_VERSION_GREEN" in p.stderr,p.stderr[-12000:]
-assert "ENDLUME_PREVIEW_REAL_FRAME_DECODE_GREEN" in p.stderr,p.stderr[-12000:]
+assert "ENDLUME_PREVIEW_FFMPEG_CONTEXT APP_BUNDLE_PATH=" in stderr,stderr[-12000:]
+assert "ENDLUME_PREVIEW_FFMPEG_CANDIDATE path=" in stderr,stderr[-12000:]
+assert "RESOLVED_FFMPEG_PATH=" in stderr,stderr[-12000:]
+assert "FILE_EXISTS=true EXECUTABLE=true" in stderr,stderr[-12000:]
+assert "ENDLUME_PREVIEW_FFMPEG_VERSION_GREEN" in stderr,stderr[-12000:]
+assert "ENDLUME_PREVIEW_REAL_FRAME_DECODE_GREEN" in stderr,stderr[-12000:]
 meta=json.loads(run([FFPROBE,"-v","error","-show_entries","stream=codec_type,width,height,avg_frame_rate:format=duration","-of","json",exact]).stdout)
 v=next(x for x in meta["streams"] if x.get("codec_type")=="video")
 assert v["width"]==1920 and v["height"]==1080 and v["avg_frame_rate"]=="60/1",v

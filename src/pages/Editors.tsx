@@ -181,8 +181,12 @@ function EffectsEditor() {
     previewDiag('effects','START',request,{requestId});
     setPreviewBusy(true);
     try {
-      const result = await api.prepareLivePreview(projectPath, latest.source, latest.previewFrameTime, requestId, 'Effects');
-      previewDiag('effects','FINISH',request,{requestId,basePath:result.basePath,overlayPath:result.overlayPath});
+      const composed={...latest,target:(latest.target||'CUSTOM').trim().toUpperCase()||'CUSTOM',opacity:latest.opacity??1,x:sceneAnchor?clamp01(sceneAnchor.x+(latest.offsetX??0)):latest.x,y:sceneAnchor?clamp01(sceneAnchor.y+(latest.offsetY??0)):latest.y};
+      const [posterPath,result] = await Promise.all([
+        api.generatePreviewPoster(projectPath, latest.previewFrameTime, [composed], [], requestId),
+        api.prepareLivePreview(projectPath, latest.source, latest.previewFrameTime, requestId, 'Effects'),
+      ]);
+      previewDiag('effects','FINISH',request,{requestId,basePath:result.basePath,overlayPath:result.overlayPath,posterPath});
       if (request !== previewRequest.current) { previewDiag('effects','DISCARD',request,{requestId,latest:previewRequest.current}); return; }
       setAssets({
         basePath: api.previewUrl(result.basePath),
@@ -190,6 +194,8 @@ function EffectsEditor() {
         baseKind: result.baseKind,
         overlayPath: api.previewUrl(result.overlayPath),
         overlayFilePath: result.overlayPath,
+        posterPath: api.previewUrl(posterPath),
+        posterFilePath: posterPath,
         baseBytes: result.baseBytes,
         overlayBytes: result.overlayBytes,
         requestId,
@@ -352,8 +358,11 @@ function SubscribeEditor() {
     previewDiag('subscribe','START',request,{requestId});
     setPreviewBusy(true);
     try {
-      const result = await api.prepareLivePreview(projectPath, latest.source, latest.previewFrameTime, requestId, 'Subscribe');
-      previewDiag('subscribe','FINISH',request,{requestId,basePath:result.basePath,overlayPath:result.overlayPath});
+      const [posterPath,result] = await Promise.all([
+        api.generatePreviewPoster(projectPath, latest.previewFrameTime, [], [latest], requestId),
+        api.prepareLivePreview(projectPath, latest.source, latest.previewFrameTime, requestId, 'Subscribe'),
+      ]);
+      previewDiag('subscribe','FINISH',request,{requestId,basePath:result.basePath,overlayPath:result.overlayPath,posterPath});
       if (request !== previewRequest.current) { previewDiag('subscribe','DISCARD',request,{requestId,latest:previewRequest.current}); return; }
       setAssets({
         basePath: api.previewUrl(result.basePath),
@@ -361,6 +370,8 @@ function SubscribeEditor() {
         baseKind: result.baseKind,
         overlayPath: api.previewUrl(result.overlayPath),
         overlayFilePath: result.overlayPath,
+        posterPath: api.previewUrl(posterPath),
+        posterFilePath: posterPath,
         baseBytes: result.baseBytes,
         overlayBytes: result.overlayBytes,
         requestId,

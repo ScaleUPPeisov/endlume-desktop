@@ -2280,7 +2280,9 @@ pub async fn render_job(app:&AppHandle,job:&QueueJob,cancel:Arc<AtomicBool>)->Re
         interval_1000_plan(job,&fx,&subs,target.max(60.0),visual_master_duration).map(|plan|{
           let app_bg=app.clone();let mut job_bg=(*job).clone();job_bg.project.id=format!("{}::visual-prewarm",job.project.id);
           let fx_bg=fx.clone();let work_bg=work.clone();let encoder_bg=encoder.clone();let cancel_bg=cancel.clone();let timer_bg=timer.clone();
+          let stagger_audio_first=requested_audio_processing;
           tauri::async_runtime::spawn(async move{
+            if stagger_audio_first{tokio::time::sleep(Duration::from_secs(2)).await;}
             if job_bg.settings.fps==60&&plan.master_frames%2==0&&plan.duration_frames%2==0{
               let (master,_)=build_interval_half_master_1008(&app_bg,&job_bg,&fx_bg,plan.master_frames,&work_bg,&encoder_bg,attempt,cancel_bg.as_ref(),started,&timer_bg).await?;
               let _=render_interval_half_sub_1008(&app_bg,&job_bg,&master,&plan.sub,plan.phase_frames,plan.duration_frames,&work_bg,"prewarm-v1008",&encoder_bg,attempt,cancel_bg.as_ref(),started,&timer_bg).await?;
@@ -2308,16 +2310,16 @@ pub async fn render_job(app:&AppHandle,job:&QueueJob,cancel:Arc<AtomicBool>)->Re
               if !requested_audio_processing{return Err(format!("Strict Fidelity: исходную музыку нельзя сохранить bitstream-copy ({reason}). Используй MP3 с одинаковыми sample rate/channel layout."))}
               let audio_cycle_mark=Instant::now();let (cycle,durations,_cycle_duration)=build_lossless_processed_audio_cycle(app,job,started,&timer,&work,&encoder,attempt,&cancel).await?;emit_timing(app,&job.project.id,"processed-audio-cycle",audio_cycle_mark.elapsed().as_secs_f64());
               let final_duration=smart_final_duration(target,&durations,job.settings.crossfade_sec,&job.settings.duration_mode);
-              emit_timing(app,&job.project.id,"processed-audio-materialize",0.0);
-              emit_warning(app,&job.project.id,&format!("Original MP3 packet-copy недоступен ({reason}); использую HQ processed cycle без лишнего full-duration materialize."));
-              (AudioSource::Loop(cycle),durations,final_duration,false)
+              let audio_materialize_mark=Instant::now();let continuous=materialize_continuous_audio(app,job,started,&timer,&work,&cycle,final_duration,&encoder,attempt,&cancel).await?;emit_timing(app,&job.project.id,"processed-audio-materialize",audio_materialize_mark.elapsed().as_secs_f64());
+              emit_warning(app,&job.project.id,&format!("Original MP3 packet-copy недоступен ({reason}); использую HQ processed fallback."));
+              (AudioSource::Long(continuous),durations,final_duration,false)
             }
           }
         }else if requested_audio_processing{
           let audio_cycle_mark=Instant::now();let (cycle,durations,_cycle_duration)=build_lossless_processed_audio_cycle(app,job,started,&timer,&work,&encoder,attempt,&cancel).await?;emit_timing(app,&job.project.id,"processed-audio-cycle",audio_cycle_mark.elapsed().as_secs_f64());
           let final_duration=smart_final_duration(target,&durations,job.settings.crossfade_sec,&job.settings.duration_mode);
-          emit_timing(app,&job.project.id,"processed-audio-materialize",0.0);
-          (AudioSource::Loop(cycle),durations,final_duration,false)
+          let audio_materialize_mark=Instant::now();let continuous=materialize_continuous_audio(app,job,started,&timer,&work,&cycle,final_duration,&encoder,attempt,&cancel).await?;emit_timing(app,&job.project.id,"processed-audio-materialize",audio_materialize_mark.elapsed().as_secs_f64());
+          (AudioSource::Long(continuous),durations,final_duration,false)
         }else{
           let (cycle,durations,cycle_duration)=build_original_audio_cycle(app,job,started,&timer,&work,&encoder,attempt,&cancel).await?;
           let final_duration=smart_final_duration(target,&durations,0.0,&job.settings.duration_mode);

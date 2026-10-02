@@ -22,7 +22,7 @@ export type SingleAppStatus={
   error?:string;
 };
 
-export type LivePreviewAssetPaths={basePath:string;baseKind:'image'|'video';overlayPath:string};
+export type LivePreviewAssetPaths={basePath:string;baseKind:'image'|'video';overlayPath:string;baseBytes:number;overlayBytes:number};
 export type VyronBatchRequest={batchId:string;manifestPath:string;requestedAt?:string|null;handoffId?:string|null;selectedProjectIds?:string[];sourceManifestPath?:string|null;schemaVersion?:number|null};
 export type VyronBatchInfo={batchId:string;channelId:string;channelName:string;projectCount:number;tracksAssigned:number;rootPath:string;outputDir:string;statusPath:string;manifestPath:string;projectPaths:string[]};
 type NativeUpdateInfo={supported:boolean;available:boolean;current:string;version?:string|null;notes?:string|null;date?:string|null;reason?:string|null};

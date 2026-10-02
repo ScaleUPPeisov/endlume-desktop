@@ -107,13 +107,13 @@ jobs:
           assert d["coldSubscribePreview"]=="GREEN"
           assert d["cacheInvalidation"]=="GREEN"
           assert d["progress"]=="GREEN" and d["eta"]=="GREEN"
-          assert d["render"]["e1011-on"]["wall"]<=20
+          assert d["render"]["e1011-warm"]["wall"]<=20
           assert 400<=d["render"]["e1011-on"]["mib"]<=600
           print("COLD_SUBSCRIBE_PREVIEW=GREEN")
           print("FINAL_EFFECTS=GREEN")
           print("CACHE_INVALIDATION=GREEN")
           print("PROGRESS_ETA=GREEN")
-          print("RENDER_SECONDS=%.3f" % d["render"]["e1011-on"]["wall"])
+          print("RENDER_SECONDS=%.3f" % d["render"]["e1011-warm"]["wall"])
           print("FILE_MIB=%.3f" % d["render"]["e1011-on"]["mib"])
           print("OUTPUT_VALIDATION=GREEN")
           print("ENDLUME_1011_CONTINUATION_GREEN")

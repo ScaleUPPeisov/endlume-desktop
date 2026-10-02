@@ -1809,11 +1809,11 @@ async fn build_cached_visual_master_1000(app:&AppHandle,job:&QueueJob,effects:&[
 
 fn interval_half_fidelity_args_1008(encoder:&str)->Vec<String>{
   match encoder{
-    "hevc_videotoolbox"=>vec!["-c:v","hevc_videotoolbox","-realtime","1","-prio_speed","1","-power_efficient","0","-constant_bit_rate","1","-b:v","25M","-g","1","-bf","0","-tag:v","hvc1","-pix_fmt","yuv420p"].into_iter().map(String::from).collect(),
-    "hevc_nvenc"=>vec!["-c:v","hevc_nvenc","-preset","p4","-rc","cbr","-b:v","25M","-maxrate","25M","-bufsize","50M","-g","1","-bf","0","-tag:v","hvc1","-pix_fmt","yuv420p"].into_iter().map(String::from).collect(),
-    "hevc_qsv"=>vec!["-c:v","hevc_qsv","-b:v","25M","-maxrate","25M","-bufsize","50M","-g","1","-bf","0","-tag:v","hvc1","-pix_fmt","nv12"].into_iter().map(String::from).collect(),
-    "hevc_amf"=>vec!["-c:v","hevc_amf","-quality","speed","-rc","cbr","-b:v","25M","-maxrate","25M","-g","1","-bf","0","-tag:v","hvc1","-pix_fmt","yuv420p"].into_iter().map(String::from).collect(),
-    _=>vec!["-c:v","libx265","-preset","ultrafast","-x265-params","keyint=1:min-keyint=1:scenecut=0:bframes=0","-b:v","25M","-maxrate","25M","-bufsize","50M","-tag:v","hvc1","-pix_fmt","yuv420p"].into_iter().map(String::from).collect(),
+    "hevc_videotoolbox"=>vec!["-c:v","hevc_videotoolbox","-realtime","1","-prio_speed","1","-power_efficient","0","-constant_bit_rate","1","-b:v","60M","-g","1","-bf","0","-tag:v","hvc1","-pix_fmt","yuv420p"].into_iter().map(String::from).collect(),
+    "hevc_nvenc"=>vec!["-c:v","hevc_nvenc","-preset","p4","-rc","cbr","-b:v","60M","-maxrate","60M","-bufsize","120M","-g","1","-bf","0","-tag:v","hvc1","-pix_fmt","yuv420p"].into_iter().map(String::from).collect(),
+    "hevc_qsv"=>vec!["-c:v","hevc_qsv","-b:v","60M","-maxrate","60M","-bufsize","120M","-g","1","-bf","0","-tag:v","hvc1","-pix_fmt","nv12"].into_iter().map(String::from).collect(),
+    "hevc_amf"=>vec!["-c:v","hevc_amf","-quality","speed","-rc","cbr","-b:v","60M","-maxrate","60M","-g","1","-bf","0","-tag:v","hvc1","-pix_fmt","yuv420p"].into_iter().map(String::from).collect(),
+    _=>vec!["-c:v","libx265","-preset","ultrafast","-x265-params","keyint=1:min-keyint=1:scenecut=0:bframes=0","-b:v","60M","-maxrate","60M","-bufsize","120M","-tag:v","hvc1","-pix_fmt","yuv420p"].into_iter().map(String::from).collect(),
   }
 }
 
@@ -1831,7 +1831,7 @@ async fn build_interval_half_master_1008(app:&AppHandle,job:&QueueJob,effects:&[
   let logical_fps=job.settings.fps.max(1);
   if logical_fps!=60||logical_frames%2!=0{return Err("10.0.8 half-rate master requires even 60 FPS logical frame count".into())}
   let physical_fps=30u32;let physical_frames=logical_frames/2;let duration=logical_frames as f64/logical_fps as f64;
-  let profile="interval-half30-allintra-v7-25m-eq-fast2x";let key=visual_master_key_1000(job,effects,logical_frames,encoder,profile)?;
+  let profile="interval-half30-allintra-v8-60m-12s-eq-fast2x";let key=visual_master_key_1000(job,effects,logical_frames,encoder,profile)?;
   let root=cache_root_1000(app,"visual-master-v10")?;let out=root.join(format!("{key}.mp4"));let lookup=Instant::now();
   if out.is_file()&&probe_video_packets_857(app,&out).await.ok()==Some(physical_frames)&&probe_all_video_packets_key_1008(app,&out,physical_frames).await.is_ok(){
     let sec=lookup.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"cache-lookup",sec);emit_timing(app,&job.project.id,"base-visual-cache",sec);
@@ -1989,14 +1989,15 @@ fn interval_1000_plan(job:&QueueJob,effects:&[EffectPreset],subs:&[SubscribePres
   let duration_frames=(sub.show_duration_sec.unwrap_or(8.0).clamp(2.0,20.0)*fps).round().max(1.0) as usize;
   let first_frames=(subscribe_first_sec(sub)*fps).round().max(0.0) as usize;
   if repeat_frames<(60.0*fps) as usize||duration_frames>=repeat_frames{return None}
-  // 10.0.10 Final Stability: cap the physical composite cycle at 20 seconds.
-  // Effects remain stream-looped and Subscribe timing is still frame-exact; the
-  // two-hour file is expanded by the same zero-copy manifest. This prevents a
-  // 40-60s overlay source from forcing 1200+ physical 30fps HEVC frames on COLD.
-  let min_seconds=min_visual_seconds.max(8.0).min(20.0);
+  // 10.0.10 Final Stability: use a compact 12-second physical composite
+  // cycle. Effects remain stream-looped and Subscribe timing is frame-exact;
+  // the logical two-hour timeline is still produced by the same zero-copy manifest.
+  // Fewer physical frames make COLD fast; a higher all-intra bitrate below keeps
+  // per-frame fidelity and the final 400-600 MiB target.
+  let min_seconds=min_visual_seconds.max(8.0).min(12.0);
   let desired_seconds=min_seconds;
   let desired=(desired_seconds*fps).round() as usize;
-  let lo=(8.0*fps).ceil() as usize;let hi=(20.0*fps).round() as usize;let mut best=None;let mut dist=usize::MAX;
+  let lo=(8.0*fps).ceil() as usize;let hi=(12.0*fps).round() as usize;let mut best=None;let mut dist=usize::MAX;
   for d in lo.max(1)..=hi.max(lo.max(1)){
     if repeat_frames%d!=0{continue}
     let phase=first_frames%d;

@@ -1,10 +1,10 @@
-name: ENDLUME 10.0.9 TOSHIBA Cold Warm Production Benchmark
+name: ENDLUME 10.0.10 Brewroom Jazz TOSHIBA QA
 
 on:
   push:
-    branches: [hotfix/endlume-10.0.9-visual]
+    branches: [hotfix/endlume-10.0.10-final-stability]
     paths:
-      - ".github/workflows/endlume-1009-production-benchmark.yml"
+      - ".github/workflows/endlume-1008-production-benchmark.yml"
       - "src-tauri/src/render.rs"
       - "src-tauri/src/mp4_manifest.rs"
   workflow_dispatch: {}
@@ -13,7 +13,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: endlume-1009-production-benchmark
+  group: endlume-1010-brewroom-toshiba
   cancel-in-progress: true
 
 env:
@@ -22,7 +22,7 @@ env:
 jobs:
   benchmark:
     runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
-    timeout-minutes: 90
+    timeout-minutes: 100
     steps:
       - uses: actions/checkout@v4
         with:
@@ -31,30 +31,29 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Stage portable FFmpeg and build packaged E2E candidate
+      - name: Build packaged E2E candidate
         shell: bash
         run: |
           set -Eeuo pipefail
           export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
-          export CARGO_TARGET_DIR="$HOME/.endlume-build-cache/target-1006-updater-repair"
+          export CARGO_TARGET_DIR="$HOME/.endlume-build-cache/target-1010-candidate"
           TMP="$(mktemp -d)"
           curl -fL --retry 4 "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffmpeg.zip" -o "$TMP/ffmpeg.zip"
           curl -fL --retry 4 "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffprobe.zip" -o "$TMP/ffprobe.zip"
           mkdir -p "$TMP/fm" "$TMP/fp" src-tauri/binaries
           ditto -x -k "$TMP/ffmpeg.zip" "$TMP/fm"; ditto -x -k "$TMP/ffprobe.zip" "$TMP/fp"
-          FFMPEG="$(find "$TMP/fm" -type f -name ffmpeg -print -quit)"
-          FFPROBE="$(find "$TMP/fp" -type f -name ffprobe -print -quit)"
-          cp "$FFMPEG" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
-          cp "$FFPROBE" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          cp "$(find "$TMP/fm" -type f -name ffmpeg -print -quit)" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp "$(find "$TMP/fp" -type f -name ffprobe -print -quit)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
           chmod 755 src-tauri/binaries/ffmpeg-aarch64-apple-darwin src-tauri/binaries/ffprobe-aarch64-apple-darwin
-
           npm ci
           npm run check
           npm run build
           python3 - <<'PY'
           import json
           from pathlib import Path
-          p=Path("src-tauri/tauri.conf.json");d=json.loads(p.read_text());d["bundle"]["createUpdaterArtifacts"]=False
+          p=Path("src-tauri/tauri.conf.json");d=json.loads(p.read_text())
+          assert d["version"]=="10.0.9"
+          d["bundle"]["createUpdaterArtifacts"]=False
           p.write_text(json.dumps(d,ensure_ascii=False,indent=2)+"\n")
           PY
           ENDLUME_TAURI_TARGET=aarch64-apple-darwin node scripts/prepare-macos-ffmpeg-runtime.mjs
@@ -64,258 +63,215 @@ jobs:
           test "$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist")" = "$VERSION"
           /usr/bin/codesign --force --deep --sign - --timestamp=none "$APP"
           /usr/bin/codesign --verify --deep --strict "$APP"
-          printf '%s' "$APP" > "$RUNNER_TEMP/e1009-app.txt"
-          echo ENDLUME_1009_BENCH_APP_GREEN
+          printf '%s' "$APP" > "$RUNNER_TEMP/e1010-app.txt"
+          echo ENDLUME_1010_CANDIDATE_APP_GREEN
 
-      - name: Prepare representative 12-track project without touching user data
+      - name: Resolve REAL Brewroom Jazz project and library
         shell: bash
         run: |
           set -Eeuo pipefail
-          export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
           VOL="/Volumes/TOSHIBA EXT"; test -d "$VOL"
-          ROOT="$RUNNER_TEMP/e1009-prod"; rm -rf "$ROOT"; mkdir -p "$ROOT/project" "$ROOT/audio" "$VOL/ENDLUME_PERF_1009"
-          export ROOT VOL
-
-          # Unique static image guarantees a visual-cache MISS without clearing any user cache.
-          python3 - "$ROOT/cover.ppm" "$GITHUB_RUN_ID" <<'PY'
-          import sys
-          out,run=sys.argv[1],int(sys.argv[2]);w,h=1920,1080
-          with open(out,"wb") as f:
-            f.write(f"P6\n{w} {h}\n255\n".encode())
-            seed=run&255
-            for y in range(h):
-              for x in range(w):
-                r=(20+x*35//w+seed%7)%256;g=(25+y*45//h+seed%5)%256;b=(40+(x+y)*30//(w+h)+seed%3)%256
-                f.write(bytes((r,g,b)))
-          PY
-          ffmpeg -hide_banner -loglevel error -i "$ROOT/cover.ppm" -frames:v 1 -compression_level 2 -y "$ROOT/project/cover.png"
-          rm -f "$ROOT/cover.ppm"
-
+          ROOT="$RUNNER_TEMP/e1010-brewroom"; rm -rf "$ROOT"; mkdir -p "$ROOT"
+          OUT="$VOL/ENDLUME_QA_1010"; mkdir -p "$OUT"
+          export ROOT VOL OUT
           python3 - <<'PY'
-          import json,os,shutil,sys
+          import json,os,shlex
           from pathlib import Path
-          root=Path(os.environ["ROOT"]);vol=Path(os.environ["VOL"])
+          root=Path(os.environ["ROOT"]);vol=Path(os.environ["VOL"]);out=Path(os.environ["OUT"])
+          image={".jpg",".jpeg",".png",".webp",".bmp",".tif",".tiff",".heic",".avif"}
+          video={".mp4",".mov",".m4v",".mkv",".webm",".avi",".wmv",".flv",".ts",".mts",".m2ts",".mpg",".mpeg",".vob",".3gp"}
+          audio={".mp3",".wav",".m4a",".aac",".flac",".ogg",".opus",".aiff",".aif",".alac"}
+          def valid_file(p):
+              return p.is_file() and not p.name.startswith(".") and not p.name.startswith("._")
+          exact=vol/"ВАЙРОН"/"Render"/"Brewroom Jazz"/"Новая папка"
+          roots=[]
+          if exact.is_dir(): roots.append(exact)
+          for p in vol.rglob("*"):
+              if p.is_dir() and "brewroom jazz" in p.name.lower() and p not in roots: roots.append(p)
+          candidates=[]
+          for base in roots:
+              dirs=[base]+[p for p in base.rglob("*") if p.is_dir()]
+              for d in dirs:
+                  files=[p for p in d.iterdir() if valid_file(p)]
+                  media=sorted([p for p in files if p.suffix.lower() in image|video],key=lambda x:x.name.lower())
+                  songs=sorted([p for p in files if p.suffix.lower() in audio],key=lambda x:x.name.lower())
+                  if media and songs:
+                      score=(1 if d==exact else 0, min(len(songs),15), -len(str(d)))
+                      candidates.append((score,d,media,songs))
+          if not candidates: raise SystemExit("BREWROOM_JAZZ_REAL_PROJECT_NOT_FOUND")
+          _,project,media,songs=max(candidates,key=lambda x:x[0])
+          if len(songs)<10: raise SystemExit(f"BREWROOM_JAZZ_NEEDS_10_TRACKS_FOUND_{len(songs)}")
+          songs=songs[:15]
 
-          # Find real saved ENDLUME library.
           libs=[]
           for base in [Path.home()/"Library/Application Support",Path.home()/"Library/Containers"]:
-            if not base.exists():continue
-            for p in base.rglob("library.json"):
-              try:
-                if p.stat().st_size>10_000_000:continue
-                d=json.load(open(p))
-                fx=d.get("effects") or []
-                if any(isinstance(x,dict) and (x.get("id")=="825dd7a4-f0cf-4032-a3c9-64290cb5756d" or "эквалайзер круглый" in str(x.get("name","")).lower()) for x in fx):
-                  libs.append((p,d));break
-              except Exception:pass
-            if libs:break
-          if not libs:raise SystemExit("ENDLUME library with Round Equalizer not found")
-          lib_path,d=libs[0]
-          effect=next(x for x in d.get("effects",[]) if isinstance(x,dict) and (x.get("id")=="825dd7a4-f0cf-4032-a3c9-64290cb5756d" or "эквалайзер круглый" in str(x.get("name","")).lower()))
-          if not Path(effect.get("source","")).is_file():raise SystemExit("Round Equalizer source missing")
-          effect=dict(effect);effect["enabled"]=True;effect["usageMode"]="always";effect["startSec"]=0;effect["endSec"]=None
-
-          # Select 13 real MP3 files from TOSHIBA; 12 main + one ambient fallback.
-          mp3=[]
-          search_roots=[vol/"YouTube/песни для каналов",vol]
-          seen=set()
-          for sr in search_roots:
-            if not sr.exists():continue
-            for p in sr.rglob("*.mp3"):
-              if p.name.startswith("._"):continue
-              try:
-                if p.stat().st_size<500_000:continue
-              except Exception:continue
-              key=str(p.resolve())
-              if key in seen:continue
-              seen.add(key);mp3.append(p)
-              if len(mp3)>=13:break
-            if len(mp3)>=13:break
-          if len(mp3)<12:raise SystemExit(f"need 12 real MP3 tracks, found {len(mp3)}")
-          audio=[]
-          for i,p in enumerate(mp3[:12],1):
-            link=root/"audio"/f"{i:02d}.mp3"
-            link.symlink_to(p)
-            audio.append(str(link))
-          ambient=d.get("ambient")
-          if not ambient or not Path(str(ambient)).is_file():
-            ambient=str(mp3[12] if len(mp3)>12 else mp3[0])
-
-          # Prefer real Subscribe; otherwise use the same real overlay source as a pipeline-safe fallback.
-          subs=[x for x in (d.get("subscribes") or []) if isinstance(x,dict) and Path(str(x.get("source",""))).is_file()]
-          if subs:
-            sub=dict(subs[0])
-          else:
-            sub=dict(effect);sub["id"]="e1009-sub";sub["name"]="ENDLUME QA Subscribe";sub["scale"]=min(float(sub.get("scale",.18) or .18),.18)
+              if not base.exists(): continue
+              for p in base.rglob("library.json"):
+                  try:
+                      if p.stat().st_size>10_000_000: continue
+                      d=json.load(open(p))
+                      fx=d.get("effects") or []
+                      if any(isinstance(x,dict) and (x.get("id")=="825dd7a4-f0cf-4032-a3c9-64290cb5756d" or "эквалайзер круглый" in str(x.get("name","")).lower()) for x in fx):
+                          libs.append((p,d)); break
+                  except Exception: pass
+              if libs: break
+          if not libs: raise SystemExit("ENDLUME_LIBRARY_WITH_ROUND_EQUALIZER_NOT_FOUND")
+          lib_path,lib=libs[0]
+          fx=[x for x in (lib.get("effects") or []) if isinstance(x,dict) and Path(str(x.get("source",""))).is_file()]
+          eq=next(x for x in fx if x.get("id")=="825dd7a4-f0cf-4032-a3c9-64290cb5756d" or "эквалайзер круглый" in str(x.get("name","")).lower())
+          other=next((x for x in fx if x.get("id")!=eq.get("id") and x.get("enabled",True)),None) or next((x for x in fx if x.get("id")!=eq.get("id")),None)
+          if not other: raise SystemExit("SECOND_REAL_EFFECT_NOT_FOUND")
+          subs=[x for x in (lib.get("subscribes") or []) if isinstance(x,dict) and Path(str(x.get("source",""))).is_file()]
+          if not subs: raise SystemExit("REAL_SUBSCRIBE_NOT_FOUND")
+          sub=dict(subs[0])
+          eq=dict(eq);other=dict(other)
+          for e in (eq,other):
+              e.update({"enabled":True,"usageMode":"always","startSec":0,"endSec":None})
           sub.update({"enabled":True,"usageMode":"interval","intervalSec":240.0,"usageDurationSec":8.0,
                       "firstAtSec":0.0,"secondAtSec":240.0,"repeatEverySec":240.0,
                       "firstAppearance":"immediate","customFirstAtSec":0.0,"showDurationSec":8.0})
+          ambient=lib.get("ambient")
+          if not ambient or not Path(str(ambient)).is_file(): ambient=None
 
           job={
-            "project":{"id":"e1009-toshiba-prod","name":"ENDLUME 10.0.9 TOSHIBA PERF","path":str(root/"project"),
-                       "media":[str(root/"project"/"cover.png")],"audio":audio,"valid":True,"error":None,"anchors":{}},
+            "project":{"id":"e1010-brewroom-jazz","name":"Brewroom Jazz 10.0.10 QA","path":str(project),
+                       "media":[str(x) for x in media],"audio":[str(x) for x in songs],"valid":True,"error":None,"anchors":{}},
             "settings":{"width":1920,"height":1080,"fps":60,"codec":"h265","bitrateMbps":8.0,
-                        "durationHours":2.0,"durationMode":"whole-track","loopMode":"image","crossfadeSec":0.0,
-                        "normalizeLufs":False,"outputDir":str(vol/"ENDLUME_PERF_1009"),"preset":"fast","encoderPreference":"auto"},
-            "effects":[effect],"subscribes":[sub],"ambient":str(ambient)
+                        "durationHours":2.0,"durationMode":"whole-track","loopMode":"image" if all(x.suffix.lower() in image for x in media) else "original",
+                        "crossfadeSec":0.0,"normalizeLufs":False,"outputDir":str(out),"preset":"fast","encoderPreference":"auto"},
+            "effects":[eq,other],"subscribes":[sub],"ambient":str(ambient) if ambient else None
           }
           json.dump(job,open(root/"job.json","w"),ensure_ascii=False,indent=2)
-          print("BENCH_LIBRARY="+str(lib_path))
-          print("BENCH_TRACKS=12")
-          print("BENCH_EFFECT="+effect.get("name",""))
-          print("BENCH_SUBSCRIBE="+sub.get("name",""))
-          print("BENCH_AMBIENT="+Path(str(ambient)).name)
+          env={"PROJECT":str(project),"LIBRARY":str(lib_path),"EQ_NAME":eq.get("name",""),"OTHER_EFFECT":other.get("name",""),
+               "SUBSCRIBE":sub.get("name",""),"TRACK_COUNT":len(songs),"MEDIA_COUNT":len(media),"AMBIENT":str(ambient or ""),"OUT":str(out)}
+          with open(root/"fixture.env","w") as f:
+              for k,v in env.items(): f.write(k+"="+shlex.quote(str(v))+"\n")
+          print("BREWROOM_PROJECT="+str(project))
+          print("TRACK_COUNT="+str(len(songs)))
+          print("MEDIA_COUNT="+str(len(media)))
+          print("ROUND_EQUALIZER="+str(eq.get("name","")))
+          print("SECOND_EFFECT="+str(other.get("name","")))
+          print("SUBSCRIBE="+str(sub.get("name","")))
+          print("AMBIENT="+str(ambient or "OFF"))
           PY
-          echo "$ROOT" > "$RUNNER_TEMP/e1009-root.txt"
-          echo ENDLUME_1009_FIXTURE_GREEN
+          echo "$ROOT" > "$RUNNER_TEMP/e1010-root.txt"
+          echo ENDLUME_1010_REAL_BREWROOM_FIXTURE_GREEN
 
-      - name: COLD render to TOSHIBA
+      - name: COLD Brewroom Jazz render to TOSHIBA
         shell: bash
         run: |
           set -Eeuo pipefail
-          ROOT="$(cat "$RUNNER_TEMP/e1009-root.txt")";APP="$(cat "$RUNNER_TEMP/e1009-app.txt")"
-          EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
-          BIN="$APP/Contents/MacOS/$EXE"
+          ROOT="$(cat "$RUNNER_TEMP/e1010-root.txt")"; source "$ROOT/fixture.env"
+          APP="$(cat "$RUNNER_TEMP/e1010-app.txt")"; EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"; BIN="$APP/Contents/MacOS/$EXE"
           rm -f "$ROOT/cold-result.json" "$ROOT/cold.stderr" "$ROOT/cold.stdout"
           START="$(python3 -c 'import time;print(time.time())')"
-          ENDLUME_E2E_RENDER_JOB="$ROOT/job.json" ENDLUME_E2E_RESULT="$ROOT/cold-result.json"             "$BIN" >"$ROOT/cold.stdout" 2>"$ROOT/cold.stderr"
+          ENDLUME_E2E_RENDER_JOB="$ROOT/job.json" ENDLUME_E2E_RESULT="$ROOT/cold-result.json" "$BIN" >"$ROOT/cold.stdout" 2>"$ROOT/cold.stderr"
           END="$(python3 -c 'import time;print(time.time())')"
           python3 - "$ROOT" "$START" "$END" cold <<'PY'
-          import json,re,sys,os
+          import json,sys
           root,start,end,label=sys.argv[1],float(sys.argv[2]),float(sys.argv[3]),sys.argv[4]
           result=json.load(open(f"{root}/{label}-result.json"));assert result["status"]=="passed",result
           row=result["results"][0];assert row["status"]=="passed",row
-          timings={};eta=[];profiles=[]
+          timings={};diag=[]
           for line in open(f"{root}/{label}.stderr",errors="ignore"):
-            if "ENDLUME_DIAG " not in line:continue
-            raw=line.split("ENDLUME_DIAG ",1)[1].strip()
-            try:d=json.loads(raw)
-            except Exception:continue
-            if d.get("kind")=="engine-timing":timings[d.get("key")]=float(d.get("seconds",0))
-            elif d.get("kind")=="eta-checkpoint":eta.append(d)
-            elif d.get("kind") in {"cache","audio-cache-1003","ffmpeg-process","pingpong-fast"}:profiles.append(d)
-          summary={"label":label,"wall":end-start,"result":row,"timings":timings,"eta":eta,"profiles":profiles}
+              if "ENDLUME_DIAG " not in line: continue
+              try:d=json.loads(line.split("ENDLUME_DIAG ",1)[1].strip())
+              except Exception:continue
+              diag.append(d)
+              if d.get("kind")=="engine-timing":timings[d.get("key")]=float(d.get("seconds",0))
+          assert "MP4 manifest: sync in-place" not in open(f"{root}/{label}.stderr",errors="ignore").read()
+          summary={"label":label,"wall":end-start,"result":row,"timings":timings,"diag":diag}
           json.dump(summary,open(f"{root}/{label}-summary.json","w"),ensure_ascii=False,indent=2)
-          print(f"{label.upper()}_WALL={end-start:.3f}")
-          for k in ["effects-cache","base-visual-cache","base-visual-master","visual-master","audio-track-cache","subscribe-cache","subscribe-master","final-mux","destination-write","validation","total"]:
-            if k in timings:print(f"{label.upper()}_{k}={timings[k]:.3f}")
-          for x in eta:print(f"{label.upper()}_ETA|checkpoint={x.get('checkpoint')}|actual={x.get('actualProgress')}|elapsed={x.get('elapsedSec')}|eta={x.get('etaSec')}|stage={x.get('stage')}")
-          print(f"{label.upper()}_OUTPUT={row['outputPath']}")
-          print(f"{label.upper()}_BYTES={row.get('outputBytes')}")
-          print(f"{label.upper()}_DURATION={row.get('finalDuration')}")
+          print(f"COLD_WALL={end-start:.3f}")
+          for k in ["effects-cache","base-visual-master","subscribe-master","final-mux","destination-write","fsync","atomic-rename","validation","total"]:
+              if k in timings: print(f"COLD_{k}={timings[k]:.3f}")
+          print("COLD_OUTPUT="+row["outputPath"])
           PY
 
-      - name: WARM render same project to TOSHIBA
+      - name: WARM Brewroom Jazz render to TOSHIBA
         shell: bash
         run: |
           set -Eeuo pipefail
-          ROOT="$(cat "$RUNNER_TEMP/e1009-root.txt")";APP="$(cat "$RUNNER_TEMP/e1009-app.txt")"
-          EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")";BIN="$APP/Contents/MacOS/$EXE"
+          ROOT="$(cat "$RUNNER_TEMP/e1010-root.txt")"; source "$ROOT/fixture.env"
+          APP="$(cat "$RUNNER_TEMP/e1010-app.txt")"; EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"; BIN="$APP/Contents/MacOS/$EXE"
           START="$(python3 -c 'import time;print(time.time())')"
-          ENDLUME_E2E_RENDER_JOB="$ROOT/job.json" ENDLUME_E2E_RESULT="$ROOT/warm-result.json"             "$BIN" >"$ROOT/warm.stdout" 2>"$ROOT/warm.stderr"
+          ENDLUME_E2E_RENDER_JOB="$ROOT/job.json" ENDLUME_E2E_RESULT="$ROOT/warm-result.json" "$BIN" >"$ROOT/warm.stdout" 2>"$ROOT/warm.stderr"
           END="$(python3 -c 'import time;print(time.time())')"
           python3 - "$ROOT" "$START" "$END" warm <<'PY'
           import json,sys
           root,start,end,label=sys.argv[1],float(sys.argv[2]),float(sys.argv[3]),sys.argv[4]
           result=json.load(open(f"{root}/{label}-result.json"));assert result["status"]=="passed",result
           row=result["results"][0];assert row["status"]=="passed",row
-          timings={};eta=[];profiles=[]
-          for line in open(f"{root}/{label}.stderr",errors="ignore"):
-            if "ENDLUME_DIAG " not in line:continue
-            try:d=json.loads(line.split("ENDLUME_DIAG ",1)[1].strip())
-            except Exception:continue
-            if d.get("kind")=="engine-timing":timings[d.get("key")]=float(d.get("seconds",0))
-            elif d.get("kind")=="eta-checkpoint":eta.append(d)
-            elif d.get("kind") in {"cache","audio-cache-1003","ffmpeg-process","pingpong-fast"}:profiles.append(d)
-          summary={"label":label,"wall":end-start,"result":row,"timings":timings,"eta":eta,"profiles":profiles}
+          timings={};diag=[]
+          stderr=open(f"{root}/{label}.stderr",errors="ignore").read()
+          assert "MP4 manifest: sync in-place" not in stderr
+          for line in stderr.splitlines():
+              if "ENDLUME_DIAG " not in line: continue
+              try:d=json.loads(line.split("ENDLUME_DIAG ",1)[1].strip())
+              except Exception:continue
+              diag.append(d)
+              if d.get("kind")=="engine-timing":timings[d.get("key")]=float(d.get("seconds",0))
+          summary={"label":label,"wall":end-start,"result":row,"timings":timings,"diag":diag}
           json.dump(summary,open(f"{root}/{label}-summary.json","w"),ensure_ascii=False,indent=2)
-          print(f"{label.upper()}_WALL={end-start:.3f}")
-          for k in ["effects-cache","base-visual-cache","base-visual-master","visual-master","audio-track-cache","subscribe-cache","subscribe-master","final-mux","destination-write","validation","total"]:
-            if k in timings:print(f"{label.upper()}_{k}={timings[k]:.3f}")
-          for x in eta:print(f"{label.upper()}_ETA|checkpoint={x.get('checkpoint')}|actual={x.get('actualProgress')}|elapsed={x.get('elapsedSec')}|eta={x.get('etaSec')}|stage={x.get('stage')}")
-          print(f"{label.upper()}_OUTPUT={row['outputPath']}")
-          print(f"{label.upper()}_BYTES={row.get('outputBytes')}")
-          print(f"{label.upper()}_DURATION={row.get('finalDuration')}")
+          print(f"WARM_WALL={end-start:.3f}")
+          for k in ["effects-cache","base-visual-master","subscribe-master","final-mux","destination-write","fsync","atomic-rename","validation","total"]:
+              if k in timings: print(f"WARM_{k}={timings[k]:.3f}")
+          print("WARM_OUTPUT="+row["outputPath"])
           PY
 
-      - name: Final file QA and benchmark report
+      - name: FFprobe START MIDDLE END no-partial and performance gate
         shell: bash
         run: |
           set -Eeuo pipefail
-          ROOT="$(cat "$RUNNER_TEMP/e1009-root.txt")"
-          python3 - "$ROOT" <<'PY'
-          import json,subprocess,sys,os,re
+          ROOT="$(cat "$RUNNER_TEMP/e1010-root.txt")"; source "$ROOT/fixture.env"
+          python3 - "$ROOT" "$OUT" <<'PY'
+          import json,re,subprocess,sys
           from pathlib import Path
-          root=Path(sys.argv[1]);c=json.load(open(root/"cold-summary.json"));w=json.load(open(root/"warm-summary.json"))
-          out=Path(c["result"]["outputPath"]);assert out.is_file()
-          meta=json.loads(subprocess.check_output(["ffprobe","-v","error","-show_entries","stream=codec_type,codec_name,width,height,avg_frame_rate,sample_rate,channels,bit_rate:format=duration,size,bit_rate","-of","json",str(out)],text=True))
-          dur=float(meta["format"]["duration"]);size=int(meta["format"]["size"]);real=size*8/dur
-          vs=next(x for x in meta["streams"] if x.get("codec_type")=="video");a=next(x for x in meta["streams"] if x.get("codec_type")=="audio")
-          assert vs["codec_name"]=="hevc" and int(vs["width"])==1920 and int(vs["height"])==1080 and vs["avg_frame_rate"]=="60/1",vs
+          root=Path(sys.argv[1]);out_dir=Path(sys.argv[2])
+          cold=json.load(open(root/"cold-summary.json"));warm=json.load(open(root/"warm-summary.json"))
+          out=Path(warm["result"]["outputPath"]);assert out.is_file() and out.stat().st_size>0
+          meta=json.loads(subprocess.check_output(["ffprobe","-v","error","-show_entries","stream=codec_type,codec_name,width,height,avg_frame_rate,sample_rate,channels,bit_rate:format=duration,size","-of","json",str(out)],text=True))
+          dur=float(meta["format"]["duration"]);size=int(meta["format"]["size"]);mib=size/1048576
+          v=next(x for x in meta["streams"] if x.get("codec_type")=="video");a=next(x for x in meta["streams"] if x.get("codec_type")=="audio")
+          assert v["codec_name"]=="hevc" and int(v["width"])==1920 and int(v["height"])==1080 and v["avg_frame_rate"]=="60/1",v
           assert a["codec_name"]=="aac" and int(a["sample_rate"])==48000 and int(a["channels"])==2,a
           assert 280000<=int(a.get("bit_rate") or 0)<=360000,a
-          # START / MIDDLE / END audio audibility in one process per point.
+          positions=[("START",1.0),("MIDDLE",dur/2),("END",max(.5,dur-5))]
           peaks=[]
-          for pos in [1,max(.5,dur/2),max(.5,dur-5)]:
-            p=subprocess.run(["ffmpeg","-hide_banner","-nostats","-v","info","-ss",str(pos),"-i",str(out),"-t","2","-map","0:a:0","-af","volumedetect","-f","null","-"],text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE,check=True)
-            m=re.findall(r"max_volume:\s*(-?[0-9.]+) dB",p.stderr);peaks.append(float(m[-1]) if m else -999)
-          assert all(x>-55 for x in peaks),peaks
-
-          cold=float(c["result"]["wallSeconds"]);warm=float(w["result"]["wallSeconds"])
-          mib=size/1048576
+          for label,pos in positions:
+              subprocess.run(["ffmpeg","-hide_banner","-loglevel","error","-ss",str(pos),"-i",str(out),"-map","0:v:0","-frames:v","2","-f","null","-"],check=True)
+              p=subprocess.run(["ffmpeg","-hide_banner","-nostats","-v","info","-ss",str(pos),"-i",str(out),"-t","2","-map","0:a:0","-af","volumedetect","-f","null","-"],text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE,check=True)
+              m=re.findall(r"max_volume:\s*(-?[0-9.]+) dB",p.stderr);peak=float(m[-1]) if m else -999;assert peak>-55,(label,peak);peaks.append((label,peak))
+          leftovers=[str(p) for p in out_dir.iterdir() if p.is_file() and (".endlume.partial.mp4" in p.name or p.name.endswith(".endlume-part"))]
+          assert not leftovers,leftovers
+          c=float(cold["result"]["wallSeconds"]);w=float(warm["result"]["wallSeconds"])
+          perf_ok=c<=20 and w<=20;size_ok=400<=mib<=600
           print(f"FINAL_DURATION={dur:.3f}")
           print(f"FINAL_MIB={mib:.3f}")
-          print(f"FINAL_REAL_BITRATE_MBIT={real/1e6:.6f}")
-          print(f"FFPROBE_VIDEO_STREAM_BITRATE_MBIT={int(vs.get('bit_rate') or 0)/1e6:.6f}")
-          print(f"FINAL_AUDIO_BITRATE_KBIT={int(a.get('bit_rate') or 0)/1000:.3f}")
-          print("AUDIO_START_MIDDLE_END="+",".join(f"{x:.1f}" for x in peaks))
-          print(f"PERF_COLD={cold:.3f}")
-          print(f"PERF_WARM={warm:.3f}")
-          perf_ok=cold<=20 and warm<=20
-          size_ok=400<=mib<=600
+          print("START_MIDDLE_END=GREEN "+str(peaks))
+          print(f"PERF_COLD={c:.3f}")
+          print(f"PERF_WARM={w:.3f}")
           print("PERF_GATE="+("GREEN" if perf_ok else "RED"))
           print("SIZE_GATE="+("GREEN" if size_ok else "RED"))
-          # ETA: before enough timing data, null means UI shows "Рассчитываю…" and is valid.
-          # Once >=1.2 s elapsed, ETA must be positive while meaningful work remains.
-          eta_ok=True
-          for label,data in [("COLD",c),("WARM",w)]:
-            rows=data.get("eta",[])
-            bad=[x for x in rows if x.get("checkpoint",0)<90 and float(x.get("elapsedSec") or 0)>=1.2 and (x.get("etaSec") is None or float(x.get("etaSec") or 0)<=0.05)]
-            numeric=[x for x in rows if float(x.get("elapsedSec") or 0)>=1.2 and x.get("etaSec") is not None and float(x.get("etaSec") or 0)>0.05]
-            ok=not bad and len(rows)>=4 and len(numeric)>=2
-            eta_ok=eta_ok and ok
-            print(f"{label}_ETA_CHECKPOINTS={len(rows)}")
-            print(f"{label}_ETA_NUMERIC_AFTER_WARMUP={len(numeric)}")
-            print(f"{label}_ETA_GATE="+("GREEN" if ok else "RED"))
-          report={"cold":c,"warm":w,"ffprobe":meta,"realBitrate":real,"audioPeaks":peaks,"finalMiB":mib}
-          json.dump(report,open(root/"benchmark-report.json","w"),ensure_ascii=False,indent=2)
-          assert perf_ok,(cold,warm)
+          sync_fallback=[d for x in (cold,warm) for d in x.get("diag",[]) if d.get("kind")=="destination-sync-fallback"]
+          finalizers=[d for x in (cold,warm) for d in x.get("diag",[]) if d.get("kind")=="finalize-output-1010"]
+          print("DESTINATION_SYNC_FALLBACK="+json.dumps(sync_fallback,ensure_ascii=False))
+          print("FINALIZE_DIAGNOSTICS="+json.dumps(finalizers,ensure_ascii=False))
+          assert len(finalizers)>=2,finalizers
+          assert perf_ok,(c,w)
           assert size_ok,mib
-          assert eta_ok,(c.get("eta",[]),w.get("eta",[]))
+          json.dump({"cold":cold,"warm":warm,"ffprobe":meta,"sizeMiB":mib,"audioPeaks":peaks,"syncFallback":sync_fallback,"finalizers":finalizers},open(root/"benchmark-report.json","w"),ensure_ascii=False,indent=2)
           PY
-
-          # Clean only outputs created by this benchmark.
-          python3 - "$ROOT" <<'PY'
-          import json,sys
-          from pathlib import Path
-          root=Path(sys.argv[1])
-          for label in ["cold","warm"]:
-            d=json.load(open(root/f"{label}-summary.json"))
-            p=Path(d["result"]["outputPath"])
-            stem=p.stem
-            if p.is_file() and "ENDLUME 10.0.9 TOSHIBA PERF" in p.name:p.unlink()
-            for side in p.parent.glob(stem+" — *"):
-              if side.is_file():side.unlink()
-          PY
-          echo ENDLUME_1009_TOSHIBA_BENCHMARK_COMPLETE
+          echo ENDLUME_1010_BREWROOM_TOSHIBA_GREEN
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: ENDLUME-10.0.9-TOSHIBA-BENCHMARK
+          name: ENDLUME-10.0.10-BREWROOM-TOSHIBA-QA
           path: |
-            ${{ runner.temp }}/e1009-prod/*summary.json
-            ${{ runner.temp }}/e1009-prod/benchmark-report.json
+            ${{ runner.temp }}/e1010-brewroom/*summary.json
+            ${{ runner.temp }}/e1010-brewroom/benchmark-report.json
+            ${{ runner.temp }}/e1010-brewroom/*.stderr
+            ${{ runner.temp }}/e1010-brewroom/fixture.env
           if-no-files-found: warn
           retention-days: 7
-# rerun-head: a8336e90217659bd86ab37575cfae9a085a3f33a

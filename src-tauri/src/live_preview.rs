@@ -54,12 +54,25 @@ async fn run(app:&AppHandle,args:Vec<String>)->Result<(),String>{let out=app.she
 
 async fn validate_video_proxy(app:&AppHandle,out:&Path)->Result<(),String>{
   if !ready_file(out){return Err("proxy-файл отсутствует или слишком мал".into())}
-  let probe_args=vec!["-v","error","-select_streams","v:0","-show_entries","stream=codec_type,width,height:format=duration","-of","json",out.to_string_lossy().as_ref()].into_iter().map(String::from).collect::<Vec<_>>();
-  let probe=app.shell().sidecar("ffprobe").map_err(|e|format!("FFprobe Live Preview недоступен: {e}"))?.args(probe_args).output().await.map_err(|e|format!("Не удалось запустить FFprobe Live Preview: {e}"))?;
-  if !probe.status.success(){return Err(format!("FFprobe не принял proxy: {}",String::from_utf8_lossy(&probe.stderr).trim()))}
-  if !proxy_probe_valid(&probe.stdout){return Err("FFprobe не подтвердил video stream / geometry / duration".into())}
+  // Decode is the non-negotiable corruption gate and uses the FFmpeg sidecar that
+  // is already required for every Preview. FFprobe adds geometry/duration checks
+  // when packaged, but its absence must not turn a valid cold Preview into RED.
   let decode_args=vec!["-hide_banner","-loglevel","error","-ss","0","-i",out.to_string_lossy().as_ref(),"-map","0:v:0","-frames:v","1","-f","null","-"].into_iter().map(String::from).collect();
   run(app,decode_args).await.map_err(|e|format!("proxy не декодируется: {e}"))?;
+  let probe_args=vec!["-v","error","-select_streams","v:0","-show_entries","stream=codec_type,width,height:format=duration","-of","json",out.to_string_lossy().as_ref()].into_iter().map(String::from).collect::<Vec<_>>();
+  let Ok(cmd)=app.shell().sidecar("ffprobe") else{
+    if live_preview_diag_enabled(){eprintln!("ENDLUME_PREVIEW_FFPROBE_FALLBACK reason=sidecar-unavailable path={}",out.display());}
+    return Ok(())
+  };
+  let probe=match cmd.args(probe_args).output().await{
+    Ok(v)=>v,
+    Err(e)=>{
+      if live_preview_diag_enabled(){eprintln!("ENDLUME_PREVIEW_FFPROBE_FALLBACK reason=spawn-error error={:?} path={}",e,out.display());}
+      return Ok(())
+    }
+  };
+  if !probe.status.success(){return Err(format!("FFprobe не принял proxy: {}",String::from_utf8_lossy(&probe.stderr).trim()))}
+  if !proxy_probe_valid(&probe.stdout){return Err("FFprobe не подтвердил video stream / geometry / duration".into())}
   Ok(())
 }
 

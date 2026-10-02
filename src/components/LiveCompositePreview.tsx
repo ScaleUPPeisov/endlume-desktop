@@ -25,6 +25,7 @@ export function LiveCompositePreview({assets,effect,active=true,busy,overlayRef,
   const canvasRef=useRef<HTMLCanvasElement>(null),videoRef=useRef<HTMLVideoElement>(null),rafRef=useRef<number|undefined>(undefined),effectRef=useRef(effect),brushRaf=useRef<number|undefined>(undefined),lastBrushPoint=useRef<{x:number;y:number}|undefined>(undefined),brushDown=useRef(false);
   const [picker,setPicker]=useState(false),[overlayAspect,setOverlayAspect]=useState<number>(1);
   const exactComposite=Boolean(assets?.compositePath)&&!picker;
+  const syncOverlayAspect=(video:HTMLVideoElement)=>{if(video.videoWidth>0&&video.videoHeight>0)setOverlayAspect(video.videoWidth/video.videoHeight)};
   effectRef.current=effect;
 
   const sampleAt=(clientX:number,clientY:number)=>{
@@ -79,7 +80,7 @@ export function LiveCompositePreview({assets,effect,active=true,busy,overlayRef,
       onPointerMove={e=>{if(picker&&brushDown.current){e.preventDefault();e.stopPropagation();scheduleSample(e.clientX,e.clientY)}}}
       onPointerUp={e=>{if(picker){e.preventDefault();e.stopPropagation();brushDown.current=false;sampleAt(e.clientX,e.clientY)}}}
       onPointerCancel={()=>{brushDown.current=false}}>
-      {!exactComposite&&<><video ref={videoRef} className="liveOverlaySource" src={assets.overlayPath} autoPlay loop muted playsInline/>
+      {exactComposite?<video className="liveOverlaySource" src={assets.overlayPath} preload="metadata" muted playsInline onLoadedMetadata={e=>syncOverlayAspect(e.currentTarget)}/>:<><video ref={videoRef} className="liveOverlaySource" src={assets.overlayPath} autoPlay loop muted playsInline/>
       <canvas ref={canvasRef} className="liveOverlayCanvas" style={{mixBlendMode:effect.mode==='screen'?'screen':'normal',opacity:Math.max(0,Math.min(1,effect.opacity??1))}}/></>}
       {!effect.fullscreen&&!picker&&<><i className="corner nw"/><i className="corner ne"/><i className="corner sw"/><i className="corner se" onPointerDown={onResizeStart}/></>}
     </div>}

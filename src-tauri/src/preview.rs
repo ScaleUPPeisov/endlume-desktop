@@ -91,7 +91,7 @@ pub async fn generate_preview_poster(app:AppHandle,project_path:String,time_sec:
   let enabled_fx:Vec<EffectPreset>=effects.into_iter().filter(ready_overlay).collect();
   let enabled_sub:Vec<SubscribePreset>=subscribes.into_iter().filter(|x|ready_overlay(&x.effect)).collect();
   for e in &enabled_fx{args.extend(vec!["-stream_loop","-1","-ss",&e.preview_frame_time.max(0.0).to_string(),"-i",e.source.as_str()].into_iter().map(String::from));}
-  for x in &enabled_sub{args.extend(vec!["-stream_loop","-1","-ss",&x.effect.preview_frame_time.max(0.0).to_string(),"-i",x.effect.source.as_str()].into_iter().map(String::from));}
+  for x in &enabled_sub{let seek=x.effect.preview_frame_time.max(0.75);args.extend(vec!["-stream_loop","-1","-ss",&seek.to_string(),"-i",x.effect.source.as_str()].into_iter().map(String::from));}
   let (w,h)=(960u32,540u32);
   let mut graph=format!("[0:v]scale={w}:{h}:force_original_aspect_ratio=increase:flags=lanczos+accurate_rnd,crop={w}:{h}:(iw-ow)/2:(ih-oh)/2,fps=30,setsar=1[b0]");
   let mut base="b0".to_string();let mut idx=1usize;
@@ -139,7 +139,7 @@ pub async fn generate_preview(app:AppHandle,project_path:String,time_sec:f64,eff
   let enabled_fx:Vec<EffectPreset>=effects.into_iter().filter(ready_overlay).collect();
   let enabled_sub:Vec<SubscribePreset>=subscribes.into_iter().filter(|s|ready_overlay(&s.effect)).collect();
   for e in &enabled_fx{base_args.extend(vec!["-stream_loop","-1","-ss",&e.preview_frame_time.max(0.0).to_string(),"-i",e.source.as_str()].into_iter().map(String::from));}
-  for s in &enabled_sub{base_args.extend(vec!["-stream_loop","-1","-ss",&s.effect.preview_frame_time.max(0.0).to_string(),"-i",s.effect.source.as_str()].into_iter().map(String::from));}
+  for s in &enabled_sub{let seek=s.effect.preview_frame_time.max(0.75);base_args.extend(vec!["-stream_loop","-1","-ss",&seek.to_string(),"-i",s.effect.source.as_str()].into_iter().map(String::from));}
   let (w,h)=(1920u32,1080u32);let mut graph=format!("[0:v]scale={w}:{h}:force_original_aspect_ratio=increase:flags=lanczos+accurate_rnd,crop={w}:{h}:(iw-ow)/2:(ih-oh)/2,fps=30,setsar=1[b0]");let mut base="b0".to_string();let mut idx=1usize;
   for e in &enabled_fx{overlay_effect(&mut graph,&mut base,idx,e,w,h,false);idx+=1;}
   for s in &enabled_sub{overlay_effect(&mut graph,&mut base,idx,&s.effect,w,h,true);idx+=1;}

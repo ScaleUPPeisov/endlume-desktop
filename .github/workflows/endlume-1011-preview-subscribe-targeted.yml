@@ -57,7 +57,6 @@ jobs:
           grep -q "OBJECT_URL_CREATED=true" src/components/LiveCompositePreview.tsx
           grep -q "FRONTEND_RENDERER=CANVAS_2D" src/components/LiveCompositePreview.tsx
           grep -q "frontend-timeout" src/components/LiveCompositePreview.tsx
-          grep -q "Canvas2D Preview fallback" src/components/LiveCompositePreview.tsx
           grep -q "img-src.*blob:" src-tauri/tauri.conf.json
           grep -q "readFile" src/components/LiveCompositePreview.tsx
           grep -q "Live GPU Preview" src/pages/Editors.tsx

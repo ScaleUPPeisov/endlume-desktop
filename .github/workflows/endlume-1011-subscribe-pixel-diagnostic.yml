@@ -48,4 +48,17 @@ jobs:
               p=subprocess.run(["ffmpeg","-hide_banner","-loglevel","error","-ss",str(t),"-i",src,"-frames:v","1","-vf",vf,"-f","rawvideo","-pix_fmt","rgba","-"],stdout=subprocess.PIPE,stderr=subprocess.PIPE,check=True)
               a=p.stdout[3::4];n=len(a)
               print(f"T={t} FILTER={name} PIXELS={n} A1={sum(x>0 for x in a)/n:.6f} A128={sum(x>=128 for x in a)/n:.6f} A240={sum(x>=240 for x in a)/n:.6f} MEAN={sum(a)/n:.4f}")
+
+          # Same 960x540 overlay composition geometry as generate_preview_poster,
+          # against a synthetic blue base so any Subscribe pixel is measurable.
+          x=float(s.get("x",.5));y=float(s.get("y",.5));opacity=float(s.get("opacity",1))
+          xpos=f"max(0,min(W-w,W*{x}-w/2))";ypos=f"max(0,min(H-h,H*{y}-h/2))"
+          graph=f"[0:v]format=rgba[b];[1:v]fps=30,format=rgba,colorkey=0x{key}:0.10:0.06,despill=type=green:mix={float(s.get('despill',1))}:expand=0.20,scale={tw}:-2:flags=lanczos,colorchannelmixer=aa={opacity}[fx];[b][fx]overlay=x='{xpos}':y='{ypos}':shortest=1:eof_action=repeat:format=auto,format=rgb24[out]"
+          p=subprocess.run(["ffmpeg","-hide_banner","-loglevel","error","-f","lavfi","-i","color=blue:s=960x540:r=30:d=1","-stream_loop","-1","-ss","0.75","-i",src,"-filter_complex",graph,"-map","[out]","-frames:v","1","-f","rawvideo","-pix_fmt","rgb24","-"],stdout=subprocess.PIPE,stderr=subprocess.PIPE,check=True)
+          raw=p.stdout;n=len(raw)//3
+          # pure blue is 0,0,254/255 depending conversion
+          changed=0
+          for i in range(0,len(raw),3):
+            if raw[i]>8 or raw[i+1]>8 or raw[i+2]<240: changed+=1
+          print(f"COMPOSITE_T075_CHANGED_PIXELS={changed} TOTAL={n}")
           PY

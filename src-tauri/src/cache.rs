@@ -36,6 +36,18 @@ pub(crate) fn chromakey_params_859(e:&EffectPreset)->(f64,f64){
   }
 }
 
+pub(crate) fn subscribe_chromakey_params_1011(e:&EffectPreset)->(f64,f64){
+  // Real 10.0.11 user preset diagnostic: the legacy Subscribe UI max pair
+  // 0.60 / 0.35 leaves essentially no opaque pixels (alpha >= 128 = 0).
+  // Migrate ONLY this exact Subscribe signature. Ordinary Effects and the
+  // protected Round Equalizer continue through chromakey_params_859 unchanged.
+  if e.mode=="chromakey" && (e.similarity-0.60).abs()<0.000_001 && (e.blend-0.35).abs()<0.000_001{
+    (0.10,0.06)
+  }else{
+    chromakey_params_859(e)
+  }
+}
+
 fn cache_dir(app:&AppHandle)->Result<PathBuf,String>{
   // v4 cache contains only keyed pixels at the ORIGINAL source geometry.
   // Position/scale/fullscreen are applied later by the compositor, so resizing an
@@ -159,6 +171,17 @@ mod tests{
     similarity:0.6,blend:0.184,despill:0.35,luma_threshold:0.03,luma_tolerance:0.08,saturation:1.0,x:0.5,y:0.5,scale:1.0,fullscreen:false,
     preview_frame_time:0.0,start_sec:0.0,end_sec:None,cache_key:None,cache_ready:None,usage_mode:None,interval_sec:None,usage_duration_sec:None,target:None,offset_x:None,offset_y:None,opacity:None
   }}
+
+  #[test]
+  fn subscribe_1011_migrates_only_destructive_max_pair(){
+    let mut sub=preset("subscribe-real","ПОДПИСКА");
+    sub.similarity=0.60;sub.blend=0.35;
+    assert_eq!(subscribe_chromakey_params_1011(&sub),(0.10,0.06));
+    sub.blend=0.34;
+    assert_eq!(subscribe_chromakey_params_1011(&sub),(0.60,0.34));
+    let eq=preset(ROUND_EQUALIZER_859_ID,"эквалайзер круглый");
+    assert_eq!(subscribe_chromakey_params_1011(&eq),(0.18,0.03));
+  }
 
   #[test]
   fn round_equalizer_859_only_gets_protected_key(){

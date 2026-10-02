@@ -232,11 +232,13 @@ poster_diffs={
     "equalizer":diff_stats(base_frame,eq_frame),
     "third":diff_stats(base_frame,third_frame),
 }
-for name,st in poster_diffs.items():
+# The real 80s film preset is intentionally sparse dust: prove high-delta dust pixels,
+# while Subscribe / Equalizer / synthetic third effect must have broad visible coverage.
+assert poster_diffs["effects"]["changed"]>=20 and poster_diffs["effects"]["maxDiff"]>=100,poster_diffs["effects"]
+for name in ("subscribe","equalizer","third"):
+    st=poster_diffs[name]
     assert st["changed"]>=120 and st["meanMaxDiff"]>=0.8,(name,st)
 preview_diffs=dict(poster_diffs)
-for name,st in preview_diffs.items():
-    assert st["changed"]>=120 and st["meanMaxDiff"]>=0.8,(name,st)
 
 settings={"width":1920,"height":1080,"fps":60,"codec":"h265","bitrateMbps":30.0,"durationHours":2.0,"durationMode":"whole-track","loopMode":"image","crossfadeSec":0.0,"normalizeLufs":False,"outputDir":str(OUT),"preset":"fast","encoderPreference":"auto"}
 common_project={"path":str(project),"media":[str(base_media)],"audio":[str(x) for x in songs],"valid":True,"error":None,"anchors":{}}

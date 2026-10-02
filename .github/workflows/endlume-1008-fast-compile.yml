@@ -1,10 +1,10 @@
-name: ENDLUME 10.0.8 Fast Compile Gate
+name: ENDLUME 10.0.9 Fast Compile Gate
 
 on:
   push:
-    branches: [hotfix/endlume-10.0.8-performance-visual]
+    branches: [hotfix/endlume-10.0.9-visual]
     paths:
-      - ".github/workflows/endlume-1008-fast-compile.yml"
+      - ".github/workflows/endlume-1009-fast-compile.yml"
       - "src/**"
       - "src-tauri/**"
       - "package.json"
@@ -15,7 +15,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: endlume-1008-fast-compile
+  group: endlume-1009-fast-compile
   cancel-in-progress: true
 
 jobs:
@@ -54,11 +54,11 @@ jobs:
           python3 - <<'PY'
           import json,re
           from pathlib import Path
-          v="10.0.8"
+          v="10.0.9"
           assert json.loads(Path("package.json").read_text())["version"]==v
           assert json.loads(Path("package-lock.json").read_text())["version"]==v
           assert json.loads(Path("src-tauri/tauri.conf.json").read_text())["version"]==v
           assert re.search(r'^version\s*=\s*"10\.0\.8"$',Path("src-tauri/Cargo.toml").read_text(),re.M)
-          assert 'name = "endlume"\nversion = "10.0.8"' in Path("src-tauri/Cargo.lock").read_text()
-          print("ENDLUME_1008_COMPILE_GREEN")
+          assert 'name = "endlume"\nversion = "10.0.9"' in Path("src-tauri/Cargo.lock").read_text()
+          print("ENDLUME_1009_COMPILE_GREEN")
           PY

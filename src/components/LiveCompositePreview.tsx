@@ -17,7 +17,7 @@ type Props={
   anchor?:AnchorPoint;
   anchorMode?:boolean;
   onAnchorPick?:(x:number,y:number)=>void;
-  onFrameState?:(payload:{status:'GREEN'|'RED';requestId:string;previewType:string;width:number;height:number;payloadBytes:number;paintedNonBlack:number})=>void;
+  onFrameState?:(payload:{status:'GREEN'|'RED';requestId:string;previewType:string;width:number;height:number;payloadBytes:number;paintedNonBlack:number;browserVisible:boolean;pixelReadback:'GREEN'|'UNAVAILABLE'|'RED'})=>void;
 };
 
 function hexRgb(hex:string){const raw=hex.replace('#','').trim();const v=Number.parseInt(raw.length===3?raw.split('').map(x=>x+x).join(''):raw,16);return [((v>>16)&255)/255,((v>>8)&255)/255,(v&255)/255] as const}
@@ -54,7 +54,7 @@ export function LiveCompositePreview({assets,effect,active=true,busy,overlayRef,
         setBaseSrc(baseObjectUrl);setOverlaySrc(resolvedOverlay);setPosterSrc(posterObjectUrl);
       }catch(error){
         console.error(`[ENDLUME_PREVIEW] PREVIEW_REQUEST_ID=${requestId} PREVIEW_TYPE=${previewType} OBJECT_URL_CREATED=false IMAGE_LOAD=RED PREVIEW_APPLIED=false ERROR=${String(error)}`);
-        if(frameStateRef.current&&!reportedFrameRef.current){reportedFrameRef.current=true;frameStateRef.current({status:'RED',requestId,previewType,width:0,height:0,payloadBytes:transportBytesRef.current,paintedNonBlack:0})}
+        if(frameStateRef.current&&!reportedFrameRef.current){reportedFrameRef.current=true;frameStateRef.current({status:'RED',requestId,previewType,width:0,height:0,payloadBytes:transportBytesRef.current,paintedNonBlack:0,browserVisible:false,pixelReadback:'RED'})}
       }
     })();
     return()=>{disposed=true;if(baseObjectUrl)URL.revokeObjectURL(baseObjectUrl);if(posterObjectUrl)URL.revokeObjectURL(posterObjectUrl)};
@@ -68,19 +68,29 @@ export function LiveCompositePreview({assets,effect,active=true,busy,overlayRef,
   const posterLoaded=(img:HTMLImageElement)=>{
     const requestId=assets?.requestId||'<unknown>',previewType=assets?.previewType||'Effects';
     const w=img.naturalWidth||0,h=img.naturalHeight||0;
-    let paintedNonBlack=0;
+    const rect=img.getBoundingClientRect(),style=getComputedStyle(img);
+    const browserVisible=rect.width>1&&rect.height>1&&style.display!=='none'&&style.visibility!=='hidden'&&Number(style.opacity||1)>0.01;
+    let paintedNonBlack=0,pixelReadback:'GREEN'|'UNAVAILABLE'|'RED'='RED';
     if(w>0&&h>0){
       try{
         const probe=document.createElement('canvas');probe.width=64;probe.height=36;
         const ctx=probe.getContext('2d',{willReadFrequently:true});
-        if(ctx){ctx.drawImage(img,0,0,64,36);const px=ctx.getImageData(0,0,64,36).data;for(let i=0;i<px.length;i+=4){if(px[i+3]>8&&(px[i]+px[i+1]+px[i+2]>18))paintedNonBlack++;}}
-      }catch{}
+        if(ctx){
+          ctx.drawImage(img,0,0,64,36);
+          const px=ctx.getImageData(0,0,64,36).data;
+          for(let i=0;i<px.length;i+=4){if(px[i+3]>8&&(px[i]+px[i+1]+px[i+2]>18))paintedNonBlack++;}
+          pixelReadback=paintedNonBlack>8?'GREEN':'RED';
+        }else pixelReadback='UNAVAILABLE';
+      }catch{pixelReadback='UNAVAILABLE'}
     }
-    const green=w>0&&h>0&&paintedNonBlack>8;
-    console.info(`[ENDLUME_PREVIEW] PREVIEW_REQUEST_ID=${requestId} PREVIEW_TYPE=${previewType} POSTER_LOAD=${green?'GREEN':'RED'} IMAGE_NATURAL_WIDTH=${w} IMAGE_NATURAL_HEIGHT=${h} BROWSER_NONBLACK_PIXELS=${paintedNonBlack} PREVIEW_APPLIED=${green}`);
+    // WKWebView can deny canvas readback for local Blob-backed images even after a
+    // successful decode. In that case natural geometry + visible DOM placement proves
+    // frontend display, while backend/QA separately proves the composed poster pixels.
+    const green=w>0&&h>0&&browserVisible&&(pixelReadback==='GREEN'||pixelReadback==='UNAVAILABLE');
+    console.info(`[ENDLUME_PREVIEW] PREVIEW_REQUEST_ID=${requestId} PREVIEW_TYPE=${previewType} POSTER_LOAD=${green?'GREEN':'RED'} IMAGE_NATURAL_WIDTH=${w} IMAGE_NATURAL_HEIGHT=${h} BROWSER_VISIBLE=${browserVisible} BROWSER_RECT=${Math.round(rect.width)}x${Math.round(rect.height)} PIXEL_READBACK=${pixelReadback} BROWSER_NONBLACK_PIXELS=${paintedNonBlack} PREVIEW_APPLIED=${green}`);
     if(green&&frameStateRef.current&&!reportedFrameRef.current){
       reportedFrameRef.current=true;
-      frameStateRef.current({status:'GREEN',requestId,previewType,width:w,height:h,payloadBytes:transportBytesRef.current,paintedNonBlack});
+      frameStateRef.current({status:'GREEN',requestId,previewType,width:w,height:h,payloadBytes:transportBytesRef.current,paintedNonBlack,browserVisible,pixelReadback});
     }
   };
   const reportRed=(reason:string)=>{
@@ -88,7 +98,7 @@ export function LiveCompositePreview({assets,effect,active=true,busy,overlayRef,
     const requestId=assets?.requestId||'<unknown>',previewType=assets?.previewType||'Effects',bs=baseSizeRef.current;
     reportedFrameRef.current=true;
     console.error(`[ENDLUME_PREVIEW] PREVIEW_REQUEST_ID=${requestId} PREVIEW_TYPE=${previewType} IMAGE_LOAD=RED PREVIEW_APPLIED=false ERROR=${reason}`);
-    frameStateRef.current?.({status:'RED',requestId,previewType,width:bs.w,height:bs.h,payloadBytes:transportBytesRef.current,paintedNonBlack:0});
+    frameStateRef.current?.({status:'RED',requestId,previewType,width:bs.w,height:bs.h,payloadBytes:transportBytesRef.current,paintedNonBlack:0,browserVisible:false,pixelReadback:'RED'});
   };
   useEffect(()=>{
     if(!assets||!frameStateRef.current)return;

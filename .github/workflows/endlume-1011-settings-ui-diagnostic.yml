@@ -13,7 +13,7 @@ jobs:
     runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
     timeout-minutes: 8
     steps:
-      - name: Inspect installed 10.0.10 accessibility tree
+      - name: Probe keyboard focus path in installed ENDLUME
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -23,37 +23,47 @@ jobs:
           /usr/bin/open -n "$APP" || true
           /bin/sleep 2
           /usr/bin/osascript -e 'tell application id "studio.endlume.desktop" to activate'
-          /bin/sleep 2
+          /bin/sleep 1
           /usr/bin/osascript <<'APPLESCRIPT'
+          on focusedInfo(stepName)
+            tell application "System Events"
+              set ps to application processes whose bundle identifier is "studio.endlume.desktop"
+              if (count of ps) is 0 then return stepName & "|PROCESS_NOT_FOUND"
+              tell item 1 of ps
+                set frontmost to true
+                try
+                  set el to value of attribute "AXFocusedUIElement"
+                  set rr to ""
+                  set nn to ""
+                  set dd to ""
+                  set vv to ""
+                  try
+                    set rr to role of el as text
+                  end try
+                  try
+                    set nn to name of el as text
+                  end try
+                  try
+                    set dd to description of el as text
+                  end try
+                  try
+                    set vv to value of el as text
+                  end try
+                  return stepName & "|role=" & rr & "|name=" & nn & "|desc=" & dd & "|value=" & vv
+                on error errText
+                  return stepName & "|ERROR=" & errText
+                end try
+              end tell
+            end tell
+          end focusedInfo
           tell application "System Events"
             set ps to application processes whose bundle identifier is "studio.endlume.desktop"
-            if (count of ps) is 0 then error "PROCESS_NOT_FOUND"
-            tell item 1 of ps
-              set frontmost to true
-              set n to 0
-              repeat with itemRef in entire contents
-                set n to n + 1
-                if n > 350 then exit repeat
-                set rr to ""
-                set nn to ""
-                set dd to ""
-                set vv to ""
-                try
-                  set rr to role of itemRef as text
-                end try
-                try
-                  set nn to name of itemRef as text
-                end try
-                try
-                  set dd to description of itemRef as text
-                end try
-                try
-                  set vv to value of itemRef as text
-                end try
-                if nn is not "" or dd is not "" or vv is not "" then
-                  log ("AX|" & n & "|role=" & rr & "|name=" & nn & "|desc=" & dd & "|value=" & vv)
-                end if
-              end repeat
-            end tell
+            tell item 1 of ps to set frontmost to true
+            log my focusedInfo("START")
+            repeat with i from 1 to 14
+              key code 48
+              delay 0.12
+              log my focusedInfo("TAB" & i)
+            end repeat
           end tell
           APPLESCRIPT

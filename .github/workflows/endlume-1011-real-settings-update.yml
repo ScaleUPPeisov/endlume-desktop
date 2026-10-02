@@ -275,16 +275,47 @@ jobs:
           test "$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$CANON/Contents/Info.plist")" = "10.0.11"
           test ! -d "$LEGACY"
           /usr/bin/codesign --verify --deep --strict "$CANON"
+
+          # Prove the UI-triggered relaunch really started the updated app, then quit it
+          # cleanly before offline sidecar smoke. GitHub runner cleanup must not force-kill
+          # the freshly updated app while the macOS updater still owns its rollback backup.
           for I in $(seq 1 80); do
             /usr/bin/osascript -e 'tell application "System Events" to exists (first application process whose bundle identifier is "studio.endlume.desktop")' 2>/dev/null | grep -q true && break
             /bin/sleep 0.25
           done
-          ENDLUME_APP_PATH="$CANON" node scripts/verify-macos-ffmpeg-bundle.mjs | tee "$E1011_REAL_ROOT/post-update-runtime.log"
-          grep -q EFFECTS_LIVE_PREVIEW_RUNTIME_PASS "$E1011_REAL_ROOT/post-update-runtime.log"
-          grep -q SUBSCRIBE_LIVE_PREVIEW_RUNTIME_PASS "$E1011_REAL_ROOT/post-update-runtime.log"
-          grep -q ENDLUME_MACOS_FFMPEG_RUNTIME_PASS "$E1011_REAL_ROOT/post-update-runtime.log"
+          /usr/bin/osascript -e 'tell application "System Events" to exists (first application process whose bundle identifier is "studio.endlume.desktop")' | grep -q true
+          /bin/sleep 2
+          /usr/bin/osascript -e 'tell application id "studio.endlume.desktop" to quit' >/dev/null 2>&1 || true
+          for I in $(seq 1 80); do
+            if ! /usr/bin/osascript -e 'tell application "System Events" to exists (first application process whose bundle identifier is "studio.endlume.desktop")' 2>/dev/null | grep -q true; then break; fi
+            /bin/sleep 0.25
+          done
+          test "$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$CANON/Contents/Info.plist")" = "10.0.11"
+          /usr/bin/codesign --verify --deep --strict "$CANON"
+
+          python3 - <<'PY'
+          import os,subprocess,sys
+          env=os.environ.copy()
+          env["ENDLUME_APP_PATH"]="/Applications/ENDLUME YT Studio PEISOV.app"
+          p=subprocess.run(["node","scripts/verify-macos-ffmpeg-bundle.mjs"],env=env,text=True,capture_output=True,timeout=120)
+          print(p.stdout,end="")
+          print(p.stderr,end="",file=sys.stderr)
+          if p.returncode!=0: raise SystemExit(p.returncode)
+          for marker in ("EFFECTS_LIVE_PREVIEW_RUNTIME_PASS","SUBSCRIBE_LIVE_PREVIEW_RUNTIME_PASS","ENDLUME_MACOS_FFMPEG_RUNTIME_PASS"):
+              assert marker in p.stdout,marker
+          PY
+
+          # Relaunch the verified 10.0.11 without leaving a tracked child for runner cleanup.
+          /usr/bin/env -u RUNNER_TRACKING_ID /usr/bin/open -n "$CANON"
+          for I in $(seq 1 80); do
+            /usr/bin/osascript -e 'tell application "System Events" to exists (first application process whose bundle identifier is "studio.endlume.desktop")' 2>/dev/null | grep -q true && break
+            /bin/sleep 0.25
+          done
+          /usr/bin/osascript -e 'tell application "System Events" to exists (first application process whose bundle identifier is "studio.endlume.desktop")' | grep -q true
+          test "$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$CANON/Contents/Info.plist")" = "10.0.11"
           echo VERSION_10_0_11_GREEN
           echo UPDATE_10010_TO_10011_GREEN
           echo POST_UPDATE_EFFECTS_RUNTIME_GREEN
           echo POST_UPDATE_SUBSCRIBE_RUNTIME_GREEN
+          echo POST_UPDATE_RELAUNCH_GREEN
           echo ENDLUME_1011_REAL_SETTINGS_UPDATE_GREEN

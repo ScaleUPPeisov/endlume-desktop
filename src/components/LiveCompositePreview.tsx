@@ -1,7 +1,8 @@
 import React,{useEffect,useRef,useState} from 'react';
+import {readFile} from '@tauri-apps/plugin-fs';
 import type {AnchorPoint,EffectPreset} from '../types';
 
-export type LivePreviewAssets={basePath:string;baseKind:'image'|'video';overlayPath:string;compositePath?:string;requestId?:string;previewType?:'Effects'|'Subscribe'};
+export type LivePreviewAssets={basePath:string;baseKind:'image'|'video';overlayPath:string;compositePath?:string;compositeFilePath?:string;requestId?:string;previewType?:'Effects'|'Subscribe'};
 
 type Props={
   assets?:LivePreviewAssets;
@@ -36,32 +37,30 @@ export function LiveCompositePreview({assets,effect,active=true,busy,overlayRef,
     if(!assets?.compositePath||picker)return;
     const requestId=assets.requestId||'<unknown>';
     const previewType=assets.previewType||'Effects';
-    const controller=new AbortController();
     let disposed=false;
     let objectUrl:string|undefined;
     (async()=>{
       try{
-        const response=await fetch(assets.compositePath,{signal:controller.signal,cache:'no-store'});
-        if(!response.ok)throw new Error(`HTTP ${response.status}`);
-        const raw=await response.arrayBuffer();
-        if(raw.byteLength<1024)throw new Error(`empty preview payload: ${raw.byteLength} bytes`);
-        console.info(`[ENDLUME_PREVIEW] PREVIEW_REQUEST_ID=${requestId} PREVIEW_TYPE=${previewType} FRONTEND_PAYLOAD_BYTES=${raw.byteLength}`);
+        const filePath=assets.compositeFilePath;
+        if(!filePath)throw new Error('exact Preview file path missing');
+        const bytes=await readFile(filePath);
+        if(bytes.byteLength<1024)throw new Error(`empty preview payload: ${bytes.byteLength} bytes`);
+        console.info(`[ENDLUME_PREVIEW] PREVIEW_REQUEST_ID=${requestId} PREVIEW_TYPE=${previewType} FRONTEND_PAYLOAD_BYTES=${bytes.byteLength}`);
+        const raw=bytes.buffer.slice(bytes.byteOffset,bytes.byteOffset+bytes.byteLength) as ArrayBuffer;
         const blob=new Blob([raw],{type:'video/mp4'});
         objectUrl=URL.createObjectURL(blob);
         console.info(`[ENDLUME_PREVIEW] PREVIEW_REQUEST_ID=${requestId} PREVIEW_TYPE=${previewType} OBJECT_URL_CREATED=true`);
         if(disposed){URL.revokeObjectURL(objectUrl);objectUrl=undefined;return}
         setExactObjectUrl(objectUrl);
       }catch(error){
-        if(controller.signal.aborted)return;
         console.error(`[ENDLUME_PREVIEW] PREVIEW_REQUEST_ID=${requestId} PREVIEW_TYPE=${previewType} OBJECT_URL_CREATED=false IMAGE_LOAD=RED PREVIEW_APPLIED=false ERROR=${String(error)}`);
       }
     })();
     return()=>{
       disposed=true;
-      controller.abort();
       if(objectUrl)URL.revokeObjectURL(objectUrl);
     };
-  },[assets?.compositePath,assets?.requestId,assets?.previewType,picker]);
+  },[assets?.compositePath,assets?.compositeFilePath,assets?.requestId,assets?.previewType,picker]);
 
   const exactLoaded=(video:HTMLVideoElement)=>{
     const requestId=assets?.requestId||'<unknown>';

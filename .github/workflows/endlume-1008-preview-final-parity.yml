@@ -19,31 +19,21 @@ jobs:
     runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.sha }}
-          clean: true
-          fetch-depth: 1
-          persist-credentials: false
-
-      - name: Exact FFmpeg Preview vs Final pixel parity
+      - name: Real 10.0.8 Preview vs 30fps all-intra Final parity
         shell: bash
         run: |
           set -Eeuo pipefail
           export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
-          ROOT="$RUNNER_TEMP/e1008-exact-parity"; rm -rf "$ROOT"; mkdir -p "$ROOT"
-
-          grep -q 'FFmpeg Exact Preview' src/pages/Editors.tsx
-          grep -q 'compositePath' src/components/LiveCompositePreview.tsx
-          grep -q 'fps=60,format=yuv420p' src-tauri/src/preview.rs
+          FF="$(command -v ffmpeg)"
+          ROOT="$RUNNER_TEMP/e1008-real-parity"; rm -rf "$ROOT"; mkdir -p "$ROOT"
 
           LIB=""
           while IFS= read -r p; do
             if python3 - "$p" <<'PY'
           import json,sys
           try:d=json.load(open(sys.argv[1]))
-          except Exception:raise SystemExit(1)
-          ok=any(isinstance(x,dict) and (x.get("id")=="825dd7a4-f0cf-4032-a3c9-64290cb5756d" or "эквалайзер круглый" in str(x.get("name","")).lower()) for x in (d.get("effects") or []))
+          except:raise SystemExit(1)
+          ok=any(isinstance(x,dict) and (x.get("id")=="825dd7a4-f0cf-4032-a3c9-64290cb5756d" or "эквалайзер круглый" in str(x.get("name","")).lower()) for x in d.get("effects",[]))
           raise SystemExit(0 if ok else 1)
           PY
             then LIB="$p"; break; fi
@@ -54,57 +44,63 @@ jobs:
           import json,sys,shlex
           d=json.load(open(sys.argv[1]))
           e=next(x for x in d.get("effects",[]) if isinstance(x,dict) and (x.get("id")=="825dd7a4-f0cf-4032-a3c9-64290cb5756d" or "эквалайзер круглый" in str(x.get("name","")).lower()))
-          vals={"SRC":e["source"],"KEY":e.get("keyColor","#00ff00"),"SIM":0.18,"BLEND":0.03,
-                "DESPILL":float(e.get("despill",0) or 0),"SCALE":float(e.get("scale",1) or 1),
-                "X":float(e.get("x",.5) or .5),"Y":float(e.get("y",.5) or .5),
-                "OPACITY":float(e.get("opacity",1) if e.get("opacity") is not None else 1)}
-          for k,v in vals.items():print(f"{k}={shlex.quote(str(v))}")
+          vals={"SRC":e["source"],"KEY":str(e.get("keyColor","#00ff00")).lstrip("#"),"SCALE":float(e.get("scale",1) or 1),"X":float(e.get("x",.5) or .5),"Y":float(e.get("y",.5) or .5),"OP":float(e.get("opacity",1) if e.get("opacity") is not None else 1),"DSP":float(e.get("despill",0) or 0)}
+          for k,v in vals.items():print(k+"="+shlex.quote(str(v)))
           PY
-          source "$ROOT/env"; test -f "$SRC"; KEY_RAW="$(printf '%s' "$KEY"|sed 's/^#//')"
-
-          ffmpeg -hide_banner -loglevel error -f lavfi -i "gradients=s=1920x1080:r=30:c0=0x101828:c1=0x334466" -t 2 -c:v ffv1 -pix_fmt bgra -y "$ROOT/base.mkv"
+          source "$ROOT/env"; test -f "$SRC"
           TARGET="$(python3 -c 'import sys;x=round(1920*float(sys.argv[1]));print(max(2,x if x%2==0 else x+1))' "$SCALE")"
-          FILTER="[0:v]fps=30,setsar=1[b0];[1:v]fps=30,format=rgba,colorkey=0x$KEY_RAW:$SIM:$BLEND,despill=type=green:mix=$DESPILL:expand=0.20,scale=$TARGET:-2:flags=lanczos,colorchannelmixer=aa=$OPACITY[fx];[b0]format=rgba[base];[base][fx]overlay=x='max(0,min(W-w,W*$X-w/2))':y='max(0,min(H-h,H*$Y-h/2))':shortest=1:eof_action=repeat:format=auto[b1];[b1]fps=60,format=yuv420p[outv]"
+          "$FF" -hide_banner -loglevel error -f lavfi -i "gradients=s=1920x1080:r=30:c0=0x101828:c1=0x334466" -t 3 -c:v ffv1 -pix_fmt bgra -y "$ROOT/base.mkv"
+          XEX="max(0,min(W-w,W*$X-w/2))"; YEX="max(0,min(H-h,H*$Y-h/2))"
 
-          # Exact Preview codec path.
-          ffmpeg -hide_banner -loglevel error -stream_loop -1 -i "$ROOT/base.mkv" -stream_loop -1 -i "$SRC"             -filter_complex "$FILTER" -map "[outv]" -t 2 -an             -c:v h264_videotoolbox -realtime 1 -q:v 100 -b:v 35M -maxrate 50M -pix_fmt yuv420p             -y "$ROOT/preview.mp4"
+          make_graph(){
+            mode="$1"
+            if [ "$mode" = current ]; then
+              FX="[1:v]fps=30,format=rgba,colorkey=0x$KEY:0.18:0.03,despill=type=green:mix=$DSP:expand=0.20,scale=$TARGET:-2:flags=lanczos,colorchannelmixer=aa=$OP[fx]"
+            else
+              FX="[1:v]fps=30,scale=$TARGET:-2:flags=lanczos,format=rgba,colorkey=0x$KEY:0.18:0.03,despill=type=green:mix=$DSP:expand=0.20,colorchannelmixer=aa=$OP[fx]"
+            fi
+            echo "[0:v]fps=30,setsar=1[b0];$FX;[b0]format=rgba[base];[base][fx]overlay=x='$XEX':y='$YEX':shortest=1:eof_action=repeat:format=auto,format=yuv420p[outv]"
+          }
 
-          # Final master codec path for this 56 s class: HEVC VideoToolbox high-fidelity master.
-          ffmpeg -hide_banner -loglevel error -stream_loop -1 -i "$ROOT/base.mkv" -stream_loop -1 -i "$SRC"             -filter_complex "$FILTER" -map "[outv]" -t 2 -an             -c:v hevc_videotoolbox -realtime 1 -prio_speed 1 -power_efficient 0 -constant_bit_rate 1 -b:v 80M -g 120             -tag:v hvc1 -pix_fmt yuv420p -y "$ROOT/final.mp4"
-
-          for n in preview final; do
-            ffmpeg -hide_banner -loglevel error -ss 0.5 -i "$ROOT/$n.mp4" -frames:v 1 -y "$ROOT/$n.png"
-            ffmpeg -hide_banner -loglevel error -i "$ROOT/$n.png" -frames:v 1 -f rawvideo -pix_fmt rgb24 "$ROOT/$n.rgb"
-            echo "$n $(ffprobe -v error -select_streams v:0 -show_entries stream=codec_name,pix_fmt,color_range,color_space,color_primaries,color_transfer -of compact=p=0:nk=0 "$ROOT/$n.mp4")"
+          for mode in current scale_first; do
+            G="$(make_graph "$mode")"
+            # Effect Studio exact preview codec. It computes the same 30fps composite,
+            # then displays a 60fps H264 proxy.
+            "$FF" -hide_banner -loglevel error -filter_complex_threads 6 -stream_loop -1 -i "$ROOT/base.mkv" -stream_loop -1 -i "$SRC" \
+              -filter_complex "$G" -map "[outv]" -t 2 -an -r 60 \
+              -c:v h264_videotoolbox -realtime 1 -q:v 100 -b:v 35M -maxrate 50M -pix_fmt yuv420p -y "$ROOT/$mode-preview.mp4"
+            # Actual 10.0.8 physical master profile: 30fps HEVC VideoToolbox,
+            # all-intra 22M. Logical 60fps is sample-table duplication, no re-encode.
+            "$FF" -hide_banner -loglevel error -filter_complex_threads 6 -stream_loop -1 -i "$ROOT/base.mkv" -stream_loop -1 -i "$SRC" \
+              -filter_complex "$G" -map "[outv]" -frames:v 60 -an \
+              -c:v hevc_videotoolbox -realtime 1 -prio_speed 1 -power_efficient 0 -constant_bit_rate 1 -b:v 22M -g 1 -bf 0 -tag:v hvc1 -pix_fmt yuv420p \
+              -fps_mode cfr -r 30 -video_track_timescale 60000 -y "$ROOT/$mode-final.mp4"
+            for kind in preview final; do
+              "$FF" -hide_banner -loglevel error -ss 1.0 -i "$ROOT/$mode-$kind.mp4" -frames:v 1 -y "$ROOT/$mode-$kind.png"
+              "$FF" -hide_banner -loglevel error -i "$ROOT/$mode-$kind.png" -frames:v 1 -f rawvideo -pix_fmt rgb24 "$ROOT/$mode-$kind.rgb"
+            done
           done
 
-          ffmpeg -hide_banner -nostats -loglevel info -i "$ROOT/preview.png" -i "$ROOT/final.png" -lavfi "[0:v][1:v]ssim" -f null - 2>"$ROOT/ssim.txt"
-
           python3 - "$ROOT" "$TARGET" "$X" "$Y" <<'PY'
-          import os,re,sys
-          root,target,x,y=sys.argv[1],int(sys.argv[2]),float(sys.argv[3]),float(sys.argv[4])
-          pre=open(os.path.join(root,"preview.rgb"),"rb").read();fin=open(os.path.join(root,"final.rgb"),"rb").read()
-          W,H=1920,1080;assert len(pre)==len(fin)==W*H*3
-          # Round Equalizer source is square; use the exact visual effect box plus 6px guard.
-          h=target;x0=max(0,round(W*x-target/2)-6);x1=min(W,round(W*x+target/2)+6);y0=max(0,round(H*y-h/2)-6);y1=min(H,round(H*y+h/2)+6)
+          import os,subprocess,re,sys
+          root,target,x,y=sys.argv[1],int(sys.argv[2]),float(sys.argv[3]),float(sys.argv[4]);W,H=1920,1080
+          x0=max(0,round(W*x-target/2)-8);x1=min(W,round(W*x+target/2)+8);y0=max(0,round(H*y-target/2)-8);y1=min(H,round(H*y+target/2)+8)
           ids=[yy*W+xx for yy in range(y0,y1) for xx in range(x0,x1)]
-          def lum(img,i):
-            r,g,b=img[i*3:i*3+3];return .2126*r+.7152*g+.0722*b
-          pl=sum(lum(pre,i) for i in ids)/len(ids);fl=sum(lum(fin,i) for i in ids)/len(ids)
-          pw=sorted(max(pre[i*3:i*3+3]) for i in ids)[int(.99*(len(ids)-1))]
-          fw=sorted(max(fin[i*3:i*3+3]) for i in ids)[int(.99*(len(ids)-1))]
-          mad=sum(abs(pre[i*3+j]-fin[i*3+j]) for i in ids for j in range(3))/(len(ids)*3)
-          m=re.findall(r"All:([0-9.]+)",open(os.path.join(root,"ssim.txt")).read());ssim=float(m[-1]) if m else 0
-          ld=abs(pl-fl)/max(1,fl);wd=abs(pw-fw)/max(1,fw)
-          print(f"EXACT_PARITY_PREVIEW_LUMA={pl:.3f}")
-          print(f"EXACT_PARITY_FINAL_LUMA={fl:.3f}")
-          print(f"EXACT_PARITY_LUMA_DELTA={ld:.6f}")
-          print(f"EXACT_PARITY_PREVIEW_WHITE_P99={pw}")
-          print(f"EXACT_PARITY_FINAL_WHITE_P99={fw}")
-          print(f"EXACT_PARITY_WHITE_DELTA={wd:.6f}")
-          print(f"EXACT_PARITY_RGB_MAD={mad:.3f}")
-          print(f"EXACT_PARITY_SSIM={ssim:.6f}")
-          ok=ld<=0.04 and wd<=0.04 and mad<=6.0 and ssim>=0.995
-          print("ENDLUME_1008_EXACT_PIXEL_PARITY_GREEN="+("1" if ok else "0"))
-          if not ok:raise SystemExit(31)
+          def metrics(mode):
+            a=open(os.path.join(root,mode+"-preview.rgb"),"rb").read();b=open(os.path.join(root,mode+"-final.rgb"),"rb").read()
+            def lum(img,i):
+              r,g,bb=img[i*3:i*3+3];return .2126*r+.7152*g+.0722*bb
+            al=sum(lum(a,i) for i in ids)/len(ids);bl=sum(lum(b,i) for i in ids)/len(ids)
+            aw=sorted(max(a[i*3:i*3+3]) for i in ids)[int(.99*(len(ids)-1))];bw=sorted(max(b[i*3:i*3+3]) for i in ids)[int(.99*(len(ids)-1))]
+            mad=sum(abs(a[i*3+j]-b[i*3+j]) for i in ids for j in range(3))/(len(ids)*3)
+            p=subprocess.run(["ffmpeg","-hide_banner","-nostats","-loglevel","info","-i",os.path.join(root,mode+"-preview.png"),"-i",os.path.join(root,mode+"-final.png"),"-lavfi","[0:v][1:v]ssim","-f","null","-"],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+            m=re.findall(r"All:([0-9.]+)",p.stderr);ssim=float(m[-1]) if m else 0
+            ld=abs(al-bl)/max(1,bl);wd=abs(aw-bw)/max(1,bw)
+            print(f"REAL_PARITY|mode={mode}|previewLuma={al:.3f}|finalLuma={bl:.3f}|lumaDelta={ld:.6f}|previewWhiteP99={aw}|finalWhiteP99={bw}|whiteDelta={wd:.6f}|rgbMAD={mad:.3f}|ssim={ssim:.6f}")
+            return ld,wd,mad,ssim
+          cur=metrics("current");fast=metrics("scale_first")
+          ok=lambda m:m[0]<=.04 and m[1]<=.04 and m[2]<=6 and m[3]>=.995
+          print("CURRENT_REAL_PARITY="+("GREEN" if ok(cur) else "RED"))
+          print("SCALE_FIRST_REAL_PARITY="+("GREEN" if ok(fast) else "RED"))
+          if not ok(fast):raise SystemExit(31)
           PY

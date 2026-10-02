@@ -1,0 +1,37 @@
+name: ENDLUME 10.0.11 Installed Bundle Diagnostic
+on:
+  push:
+    branches: [release-endlume-10.0.11]
+    paths:
+      - ".github/workflows/endlume-1011-installed-bundle-diagnostic.yml"
+permissions:
+  contents: read
+concurrency:
+  group: endlume-1011-installed-bundle-diagnostic
+  cancel-in-progress: true
+jobs:
+  diagnose:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 5
+    steps:
+      - name: Inspect installed post-update bundle
+        shell: bash
+        run: |
+          set -u
+          APP="/Applications/ENDLUME YT Studio PEISOV.app"
+          echo "APP_EXISTS=$([ -d "$APP" ] && echo true || echo false)"
+          if [ -d "$APP" ]; then
+            echo "VERSION=$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist" 2>&1 || true)"
+            echo "BUNDLE_ID=$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$APP/Contents/Info.plist" 2>&1 || true)"
+            echo "MACOS_CONTENTS_BEGIN"
+            /bin/ls -la "$APP/Contents/MacOS" || true
+            echo "MACOS_CONTENTS_END"
+            echo "FFMPEG_EXISTS=$([ -e "$APP/Contents/MacOS/ffmpeg" ] && echo true || echo false)"
+            echo "FFMPEG_EXECUTABLE=$([ -x "$APP/Contents/MacOS/ffmpeg" ] && echo true || echo false)"
+            echo "FFPROBE_EXISTS=$([ -e "$APP/Contents/MacOS/ffprobe" ] && echo true || echo false)"
+            echo "FFPROBE_EXECUTABLE=$([ -x "$APP/Contents/MacOS/ffprobe" ] && echo true || echo false)"
+            /usr/bin/codesign --verify --deep --strict "$APP" >/tmp/e1011-codesign.out 2>&1
+            echo "CODESIGN_RC=$?"
+            cat /tmp/e1011-codesign.out || true
+            find "$APP/Contents" -maxdepth 4 -type f \( -name 'ffmpeg*' -o -name 'ffprobe*' \) -print || true
+          fi

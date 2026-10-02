@@ -85,9 +85,13 @@ jobs:
               return p.is_file() and not p.name.startswith(".") and not p.name.startswith("._")
           exact=vol/"ВАЙРОН"/"Render"/"Brewroom Jazz"/"Новая папка"
           roots=[]
-          if exact.is_dir(): roots.append(exact)
-          for p in vol.rglob("*"):
-              if p.is_dir() and "brewroom jazz" in p.name.lower() and p not in roots: roots.append(p)
+          if exact.is_dir():
+              roots.append(exact)
+          else:
+              search_base=vol/"ВАЙРОН"/"Render"
+              if search_base.is_dir():
+                  for p in search_base.rglob("*"):
+                      if p.is_dir() and "brewroom jazz" in p.name.lower() and p not in roots: roots.append(p)
           candidates=[]
           for base in roots:
               dirs=[base]+[p for p in base.rglob("*") if p.is_dir()]

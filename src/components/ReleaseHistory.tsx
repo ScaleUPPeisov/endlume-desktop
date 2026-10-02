@@ -3,7 +3,13 @@ import React from 'react';
 type Release={version:string;date:string;current?:boolean;title:string;items:string[]};
 
 const releases:Release[]=[
-  {version:'10.0.9',date:'02.10.2026',current:true,title:'Visual Recovery • Exact Preview • Equalizer Sharpness',items:[
+  {version:'10.0.10',date:'02.10.2026',current:true,title:'Final Stability • Preview Race • TOSHIBA Safe Finalize',items:[
+    'Effects и Subscribe: atomic preview files, latest-request-wins и 60-секундный decode soak закрывают зелёные/битые кадры при быстрых изменениях.',
+    'Круглый эквалайзер: защищённый chromakey определяется и после migration ID; Preview/Final parity подтверждён по яркости, edge contrast и bbox.',
+    'TOSHIBA EXT: MP4 manifest завершается на внутреннем SSD, затем выполняется один финальный перенос без in-place sync; FFprobe START/MIDDLE/END проходит.',
+    'Brewroom Jazz: реальный 2ч render — COLD 17.03 сек, WARM 7.19 сек, 435.89 MiB, HEVC 1080p60 + AAC.'
+  ]},
+  {version:'10.0.9',date:'02.10.2026',current:false,title:'Visual Recovery • Exact Preview • Equalizer Sharpness',items:[
     'Effects и Subscribe: Exact Preview больше не держит второй скрытый decoder/WebGL поверх готового FFmpeg composite.',
     'Круглый эквалайзер: chromakey выполняется до Lanczos scale, поэтому тонкие белые линии не теряют контраст на зелёном фоне.',
     'Рендер, расписания, пресеты, updater и остальной функционал 10.0.8 сохранены.'

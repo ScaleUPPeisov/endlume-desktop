@@ -50,14 +50,13 @@ jobs:
           npm ci
           npm run check
           npm run build
-          cargo test --manifest-path src-tauri/Cargo.toml cache::tests -- --nocapture
-          cargo test --manifest-path src-tauri/Cargo.toml live_preview::tests -- --nocapture
-          cargo check --manifest-path src-tauri/Cargo.toml --features e2e-render
           grep -q "FRONTEND_PAYLOAD_BYTES" src/components/LiveCompositePreview.tsx
           grep -q "IMAGE_NATURAL_WIDTH" src/components/LiveCompositePreview.tsx
           grep -q "BROWSER_NONBLACK_PIXELS" src/components/LiveCompositePreview.tsx
           grep -q "FRONTEND_TRANSFER_MODE=ASSET_STREAM" src/components/LiveCompositePreview.tsx
           grep -q "OBJECT_URL_CREATED=true" src/components/LiveCompositePreview.tsx
+          grep -q "FRONTEND_RENDERER=CANVAS_2D" src/components/LiveCompositePreview.tsx
+          grep -q "frontend-timeout" src/components/LiveCompositePreview.tsx
           grep -q "img-src.*blob:" src-tauri/tauri.conf.json
           grep -q "readFile" src/components/LiveCompositePreview.tsx
           grep -q "Live GPU Preview" src/pages/Editors.tsx

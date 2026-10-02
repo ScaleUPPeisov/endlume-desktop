@@ -16,17 +16,16 @@ concurrency:
 
 jobs:
   bench:
-    if: false
     runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
-    timeout-minutes: 25
+    timeout-minutes: 20
     steps:
-      - name: Benchmark AAC encoder and audio filter concurrency
+      - name: Benchmark audio-first stagger against 6v4a visual
         shell: bash
         run: |
           set -Eeuo pipefail
           export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
           FF="$(command -v ffmpeg)"
-          ROOT="$RUNNER_TEMP/e1008-concurrency"; rm -rf "$ROOT"; mkdir -p "$ROOT"
+          ROOT="$RUNNER_TEMP/e1008-stagger"; rm -rf "$ROOT"; mkdir -p "$ROOT"
 
           LIB=""
           while IFS= read -r p; do
@@ -50,13 +49,11 @@ jobs:
           open(sys.argv[3],"w").write(str(d.get("ambient") or ""))
           PY
           SRC="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["source"])' "$ROOT/e.json")"
-          AMB="$(cat "$ROOT/ambient.txt")"
-          test -f "$SRC"
+          AMB="$(cat "$ROOT/ambient.txt")"; test -f "$SRC"
 
           TRACKS=()
           while IFS= read -r p; do
-            TRACKS+=("$p")
-            [ "${#TRACKS[@]}" -ge 12 ] && break
+            TRACKS+=("$p"); [ "${#TRACKS[@]}" -ge 12 ] && break
           done < <(find "/Volumes/TOSHIBA EXT" -type f -iname '*.mp3' -size +500k 2>/dev/null)
           test "${#TRACKS[@]}" -ge 12
           if [ ! -f "$AMB" ]; then AMB="${TRACKS[0]}"; fi
@@ -70,60 +67,45 @@ jobs:
           PY
           source "$ROOT/v.env"
           TARGET="$(python3 -c 'import sys;x=round(1920*float(sys.argv[1]));print(max(2,x if x%2==0 else x+1))' "$SCALE")"
-          VGRAPH="[0:v]fps=30,setsar=1[b0];[1:v]fps=30,format=rgba,colorkey=0x$KEY:0.6:0.35,despill=type=green:mix=$DSP:expand=0.20,scale=$TARGET:-2:flags=lanczos,colorchannelmixer=aa=$OP[fx];[b0]format=rgba[base0];[base0][fx]overlay=x='max(0,min(W-w,W*$X-w/2))':y='max(0,min(H-h,H*$Y-h/2))':shortest=1:eof_action=repeat:format=auto,format=yuv420p[outv]"
+          VGRAPH="[0:v]fps=30,setsar=1[b0];[1:v]fps=30,scale=$TARGET:-2:flags=lanczos,format=rgba,colorkey=0x$KEY:0.6:0.35,despill=type=green:mix=$DSP:expand=0.20,colorchannelmixer=aa=$OP[fx];[b0]format=rgba[base0];[base0][fx]overlay=x='max(0,min(W-w,W*$X-w/2))':y='max(0,min(H-h,H*$Y-h/2))':shortest=1:eof_action=repeat:format=auto,format=yuv420p[outv]"
 
-          make_audio(){
-            at="$1"; enc="$2"; out="$ROOT/audio-${at}t-${enc}.sh"
-            python3 - "$out" "$at" "$enc" "${TRACKS[@]}" -- "$AMB" <<'PY'
+          python3 - "$ROOT/audio.sh" "${TRACKS[@]}" -- "$AMB" <<'PY'
           import sys,shlex
-          out=sys.argv[1];threads=sys.argv[2];enc=sys.argv[3];args=sys.argv[4:];sep=args.index("--");tracks=args[:sep];amb=args[sep+1]
-          cmd=["ffmpeg","-hide_banner","-loglevel","error","-filter_complex_threads",threads]
+          out=sys.argv[1];args=sys.argv[2:];sep=args.index("--");tracks=args[:sep];amb=args[sep+1]
+          cmd=["ffmpeg","-hide_banner","-loglevel","error","-filter_complex_threads","4"]
           for p in tracks:cmd += ["-i",p]
           cmd += ["-stream_loop","-1","-i",amb]
-          graph=[]
-          for i in range(len(tracks)):graph.append(f"[{i}:a]aresample=48000:async=1:first_pts=0,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,asetpts=N/SR/TB[a{i}]")
-          ins="".join(f"[a{i}]" for i in range(len(tracks)))
-          graph.append(f"{ins}concat=n={len(tracks)}:v=0:a=1[joined]")
-          graph.append("[joined]anull[processed_music]")
-          graph.append(f"[{len(tracks)}:a]aresample=48000:async=1:first_pts=0,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,volume=0.18[amb];[processed_music][amb]amix=inputs=2:duration=first:weights='1 1':normalize=0,alimiter=limit=0.98[outa]")
-          cmd += ["-filter_complex",";".join(graph),"-map","[outa]","-t","7200"]
-          if enc=="aac_at":cmd += ["-c:a","aac_at","-b:a","320k","-aac_at_mode","cvbr","-aac_at_quality","2"]
-          else:cmd += ["-c:a","aac","-b:a","320k"]
-          cmd += ["-ar","48000","-ac","2","-f","null","-"]
+          g=[]
+          for i in range(len(tracks)):g.append(f"[{i}:a]aresample=48000:async=1:first_pts=0,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,asetpts=N/SR/TB[a{i}]")
+          g.append("".join(f"[a{i}]" for i in range(len(tracks)))+f"concat=n={len(tracks)}:v=0:a=1[joined]")
+          g.append("[joined]anull[processed_music]")
+          g.append(f"[{len(tracks)}:a]aresample=48000:async=1:first_pts=0,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,volume=0.18[amb];[processed_music][amb]amix=inputs=2:duration=first:weights='1 1':normalize=0,alimiter=limit=0.98[outa]")
+          cmd += ["-filter_complex",";".join(g),"-map","[outa]","-t","7200","-c:a","aac_at","-b:a","320k","-aac_at_mode","cvbr","-aac_at_quality","2","-ar","48000","-ac","2","-f","null","-"]
           open(out,"w").write("#!/bin/bash\nexec "+" ".join(shlex.quote(x) for x in cmd)+"\n")
           PY
-            chmod +x "$out"
-          }
+          chmod +x "$ROOT/audio.sh"
 
           run_case(){
-            vt="$1"; at="$2"; enc="$3"
-            make_audio "$at" "$enc"
-            VOUT="$ROOT/v-${vt}v-${at}a-${enc}.mp4"
-            START="$(python3 -c 'import time;print(time.time())')"; VSTART="$START"
-            "$FF" -hide_banner -loglevel error -filter_complex_threads "$vt" -loop 1 -framerate 30 -i "$ROOT/base.png" -stream_loop -1 -i "$SRC" \
-              -filter_complex "$VGRAPH" -map "[outv]" -t 40 -an \
+            delay="$1"; VOUT="$ROOT/v-$delay.mp4"
+            START="$(python3 -c 'import time;print(time.time())')"
+            ASTART="$START"; "$ROOT/audio.sh" & APID=$!
+            sleep "$delay"
+            VSTART="$(python3 -c 'import time;print(time.time())')"
+            "$FF" -hide_banner -loglevel error -filter_complex_threads 6 -loop 1 -framerate 30 -i "$ROOT/base.png" -stream_loop -1 -i "$SRC" \
+              -filter_complex "$VGRAPH" -map "[outv]" -frames:v 1200 -an \
               -c:v hevc_videotoolbox -realtime 1 -prio_speed 1 -power_efficient 0 -constant_bit_rate 1 -b:v 22M -g 1 -bf 0 -tag:v hvc1 -pix_fmt yuv420p \
               -fps_mode cfr -r 30 -video_track_timescale 60000 -y "$VOUT" &
             VPID=$!
-            ASTART="$(python3 -c 'import time;print(time.time())')"
-            "$ROOT/audio-${at}t-${enc}.sh" &
-            APID=$!
             wait "$VPID"; VEND="$(python3 -c 'import time;print(time.time())')"
             wait "$APID"; AEND="$(python3 -c 'import time;print(time.time())')"
             END="$(python3 -c 'import time;print(time.time())')"
-            python3 - "$vt" "$at" "$enc" "$VSTART" "$VEND" "$ASTART" "$AEND" "$START" "$END" <<'PY'
+            python3 - "$delay" "$ASTART" "$AEND" "$VSTART" "$VEND" "$START" "$END" <<'PY'
           import sys
-          vt,at,enc,vs,ve,as_,ae,s,e=sys.argv[1:]
-          v=float(ve)-float(vs);a=float(ae)-float(as_);wall=float(e)-float(s)
-          print(f"AAC_CONCURRENCY|videoThreads={vt}|audioFilterThreads={at}|encoder={enc}|visual={v:.3f}|audio={a:.3f}|wall={wall:.3f}")
+          d,as_,ae,vs,ve,s,e=sys.argv[1:]
+          a=float(ae)-float(as_);v=float(ve)-float(vs);wall=float(e)-float(s)
+          print(f"STAGGER|audioFirstDelay={d}|audio={a:.3f}|visual={v:.3f}|wall={wall:.3f}")
           PY
           }
 
-          for enc in aac_at; do
-            for vt in 6 8; do
-              for at in 1 2 4; do
-                run_case "$vt" "$at" "$enc"
-              done
-            done
-          done
-          echo ENDLUME_1008_AAC_CONCURRENCY_GREEN
+          for d in 0 1 2 3 4 5 6; do run_case "$d"; done
+          echo ENDLUME_1008_STAGGER_GREEN

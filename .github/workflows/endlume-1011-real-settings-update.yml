@@ -206,7 +206,7 @@ jobs:
           except Exception: print("")
           PY
               )"
-              if [ "$S" = "success" ]; then break; fi
+              if [ "$S" = "success" ] || [ "$S" = "restart_required" ]; then break; fi
               if [ "$S" = "failed" ]; then cat "$STATE"; cat "$LOG" || true; exit 74; fi
             fi
             /bin/sleep 0.5
@@ -215,9 +215,50 @@ jobs:
           python3 - "$STATE" <<'PY'
           import json,sys
           d=json.load(open(sys.argv[1]))
-          assert str(d.get("state","")).lower()=="success",d
+          assert str(d.get("state","")).lower() in ("success","restart_required"),d
           print("ENDLUME_1011_SETTINGS_INSTALL_GREEN")
           PY
+          STATE_VALUE="$(python3 - "$STATE" <<'PY'
+          import json,sys
+          print(str(json.load(open(sys.argv[1])).get("state","")).lower())
+          PY
+          )"
+          if [ "$STATE_VALUE" = "restart_required" ]; then
+            cat > "$RUNNER_TEMP/e1011-restart.applescript" <<'APPLESCRIPT'
+          on focusedName()
+            tell application "System Events"
+              set ps to application processes whose bundle identifier is "studio.endlume.desktop"
+              if (count of ps) is 0 then return ""
+              tell item 1 of ps
+                set frontmost to true
+                try
+                  set el to value of attribute "AXFocusedUIElement"
+                  try
+                    return name of el as text
+                  on error
+                    return ""
+                  end try
+                on error
+                  return ""
+                end try
+              end tell
+            end tell
+          end focusedName
+
+          tell application id "studio.endlume.desktop" to activate
+          delay 0.5
+          repeat with i from 1 to 50
+            if my focusedName() is "RESTART ENDLUME" then
+              tell application "System Events" to key code 36
+              return
+            end if
+            tell application "System Events" to key code 48
+            delay 0.08
+          end repeat
+          error "RESTART_ENDLUME_FOCUS_NOT_FOUND"
+          APPLESCRIPT
+            /usr/bin/osascript "$RUNNER_TEMP/e1011-restart.applescript"
+          fi
 
       - name: Verify normalized relaunch and post-update runtime smoke
         shell: bash

@@ -16,11 +16,15 @@ pub(crate) fn despill_type(hex:&str)->&'static str{
   "green"
 }
 
+pub(crate) fn is_round_equalizer_859(e:&EffectPreset)->bool{
+  e.id==ROUND_EQUALIZER_859_ID && e.mode=="chromakey"
+}
+
 pub(crate) fn chromakey_params_859(e:&EffectPreset)->(f64,f64){
   // 8.59 is intentionally scoped to this one existing preset only. The legacy
   // 0.60 / 0.184 values key away the equalizer itself, leaving it mostly
   // semi-transparent. Every other Effect keeps its user-selected key values.
-  if e.id==ROUND_EQUALIZER_859_ID && e.mode=="chromakey"{
+  if is_round_equalizer_859(e){
     (ROUND_EQUALIZER_859_SIMILARITY,ROUND_EQUALIZER_859_BLEND)
   }else{
     (e.similarity.clamp(0.001,0.60),e.blend.clamp(0.001,0.35))

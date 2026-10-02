@@ -186,16 +186,18 @@ function EffectsEditor() {
     previewDiag('effects','START',request,{requestId});
     setPreviewBusy(true);
     try {
-      const [result, exactPath] = await Promise.all([
-        api.prepareLivePreview(projectPath, latest.source, latest.previewFrameTime),
-        api.generatePreview(projectPath, latest.previewFrameTime, [renderEffect], [], requestId),
-      ]);
+      // Exact FFmpeg composite is the source of truth. The legacy base/overlay proxy
+      // is auxiliary only; a base-frame helper failure must never blank a valid Preview.
+      const exactPath = await api.generatePreview(projectPath, latest.previewFrameTime, [renderEffect], [], requestId);
+      let result:Awaited<ReturnType<typeof api.prepareLivePreview>>|undefined;
+      try { result = await api.prepareLivePreview(projectPath, latest.source, latest.previewFrameTime); }
+      catch (helperError) { previewDiag('effects','DISCARD',request,{requestId,helper:'prepareLivePreview',error:String(helperError)}); }
       previewDiag('effects','FINISH',request,{requestId,exactPath});
       if (request !== previewRequest.current) { previewDiag('effects','DISCARD',request,{requestId,latest:previewRequest.current}); return; }
       setAssets({
-        basePath: api.previewUrl(result.basePath),
-        baseKind: result.baseKind,
-        overlayPath: api.previewUrl(result.overlayPath),
+        basePath: result ? api.previewUrl(result.basePath) : api.previewUrl(exactPath),
+        baseKind: result?.baseKind ?? 'video',
+        overlayPath: result ? api.previewUrl(result.overlayPath) : api.previewUrl(latest.source),
         compositePath: api.previewUrl(exactPath),
       });
       previewDiag('effects','APPLY',request,{requestId});
@@ -355,16 +357,16 @@ function SubscribeEditor() {
     previewDiag('subscribe','START',request,{requestId});
     setPreviewBusy(true);
     try {
-      const [result, exactPath] = await Promise.all([
-        api.prepareLivePreview(projectPath, latest.source, latest.previewFrameTime),
-        api.generatePreview(projectPath, latest.previewFrameTime, [], [latest], requestId),
-      ]);
+      const exactPath = await api.generatePreview(projectPath, latest.previewFrameTime, [], [latest], requestId);
+      let result:Awaited<ReturnType<typeof api.prepareLivePreview>>|undefined;
+      try { result = await api.prepareLivePreview(projectPath, latest.source, latest.previewFrameTime); }
+      catch (helperError) { previewDiag('subscribe','DISCARD',request,{requestId,helper:'prepareLivePreview',error:String(helperError)}); }
       previewDiag('subscribe','FINISH',request,{requestId,exactPath});
       if (request !== previewRequest.current) { previewDiag('subscribe','DISCARD',request,{requestId,latest:previewRequest.current}); return; }
       setAssets({
-        basePath: api.previewUrl(result.basePath),
-        baseKind: result.baseKind,
-        overlayPath: api.previewUrl(result.overlayPath),
+        basePath: result ? api.previewUrl(result.basePath) : api.previewUrl(exactPath),
+        baseKind: result?.baseKind ?? 'video',
+        overlayPath: result ? api.previewUrl(result.overlayPath) : api.previewUrl(latest.source),
         compositePath: api.previewUrl(exactPath),
       });
       previewDiag('subscribe','APPLY',request,{requestId});

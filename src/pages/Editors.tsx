@@ -186,20 +186,15 @@ function EffectsEditor() {
     previewDiag('effects','START',request,{requestId});
     setPreviewBusy(true);
     try {
-      // Exact FFmpeg composite is the source of truth. The legacy base/overlay proxy
-      // is auxiliary only; a base-frame helper failure must never blank a valid Preview.
-      const exactPath = await api.generatePreview(projectPath, latest.previewFrameTime, [renderEffect], [], requestId);
-      let result:Awaited<ReturnType<typeof api.prepareLivePreview>>|undefined;
-      try { result = await api.prepareLivePreview(projectPath, latest.source, latest.previewFrameTime, requestId, 'Effects'); }
-      catch (helperError) { previewDiag('effects','DISCARD',request,{requestId,helper:'prepareLivePreview',error:String(helperError)}); }
-      previewDiag('effects','FINISH',request,{requestId,exactPath});
+      const result = await api.prepareLivePreview(projectPath, latest.source, latest.previewFrameTime, requestId, 'Effects');
+      previewDiag('effects','FINISH',request,{requestId,basePath:result.basePath,overlayPath:result.overlayPath});
       if (request !== previewRequest.current) { previewDiag('effects','DISCARD',request,{requestId,latest:previewRequest.current}); return; }
       setAssets({
-        basePath: result ? api.previewUrl(result.basePath) : api.previewUrl(exactPath),
-        baseKind: result?.baseKind ?? 'video',
-        overlayPath: result ? api.previewUrl(result.overlayPath) : api.previewUrl(latest.source),
-        compositePath: api.previewUrl(exactPath),
-        compositeFilePath: exactPath,
+        basePath: api.previewUrl(result.basePath),
+        baseKind: result.baseKind,
+        overlayPath: api.previewUrl(result.overlayPath),
+        baseBytes: result.baseBytes,
+        overlayBytes: result.overlayBytes,
         requestId,
         previewType:'Effects',
       });
@@ -227,7 +222,7 @@ function EffectsEditor() {
   ]);
 
   return <div className="editorPage">
-    <EditorHeader title="Эффекты" subtitle="FFmpeg Exact Preview • chromakey / luma / screen • Preview = Final" onBack={() => openEditor(null)} />
+    <EditorHeader title="Эффекты" subtitle="Live GPU Preview • chromakey / luma / screen • Final renderer unchanged" onBack={() => openEditor(null)} />
     <div className="editorLayout">
       <aside className="assetList">
         <button className="addAsset" onClick={add}>+ ДОБАВИТЬ</button>
@@ -360,18 +355,15 @@ function SubscribeEditor() {
     previewDiag('subscribe','START',request,{requestId});
     setPreviewBusy(true);
     try {
-      const exactPath = await api.generatePreview(projectPath, latest.previewFrameTime, [], [latest], requestId);
-      let result:Awaited<ReturnType<typeof api.prepareLivePreview>>|undefined;
-      try { result = await api.prepareLivePreview(projectPath, latest.source, latest.previewFrameTime, requestId, 'Subscribe'); }
-      catch (helperError) { previewDiag('subscribe','DISCARD',request,{requestId,helper:'prepareLivePreview',error:String(helperError)}); }
-      previewDiag('subscribe','FINISH',request,{requestId,exactPath});
+      const result = await api.prepareLivePreview(projectPath, latest.source, latest.previewFrameTime, requestId, 'Subscribe');
+      previewDiag('subscribe','FINISH',request,{requestId,basePath:result.basePath,overlayPath:result.overlayPath});
       if (request !== previewRequest.current) { previewDiag('subscribe','DISCARD',request,{requestId,latest:previewRequest.current}); return; }
       setAssets({
-        basePath: result ? api.previewUrl(result.basePath) : api.previewUrl(exactPath),
-        baseKind: result?.baseKind ?? 'video',
-        overlayPath: result ? api.previewUrl(result.overlayPath) : api.previewUrl(latest.source),
-        compositePath: api.previewUrl(exactPath),
-        compositeFilePath: exactPath,
+        basePath: api.previewUrl(result.basePath),
+        baseKind: result.baseKind,
+        overlayPath: api.previewUrl(result.overlayPath),
+        baseBytes: result.baseBytes,
+        overlayBytes: result.overlayBytes,
         requestId,
         previewType:'Subscribe',
       });

@@ -190,7 +190,7 @@ function EffectsEditor() {
       // is auxiliary only; a base-frame helper failure must never blank a valid Preview.
       const exactPath = await api.generatePreview(projectPath, latest.previewFrameTime, [renderEffect], [], requestId);
       let result:Awaited<ReturnType<typeof api.prepareLivePreview>>|undefined;
-      try { result = await api.prepareLivePreview(projectPath, latest.source, latest.previewFrameTime); }
+      try { result = await api.prepareLivePreview(projectPath, latest.source, latest.previewFrameTime, requestId, 'Effects'); }
       catch (helperError) { previewDiag('effects','DISCARD',request,{requestId,helper:'prepareLivePreview',error:String(helperError)}); }
       previewDiag('effects','FINISH',request,{requestId,exactPath});
       if (request !== previewRequest.current) { previewDiag('effects','DISCARD',request,{requestId,latest:previewRequest.current}); return; }
@@ -199,6 +199,8 @@ function EffectsEditor() {
         baseKind: result?.baseKind ?? 'video',
         overlayPath: result ? api.previewUrl(result.overlayPath) : api.previewUrl(latest.source),
         compositePath: api.previewUrl(exactPath),
+        requestId,
+        previewType:'Effects',
       });
       previewDiag('effects','APPLY',request,{requestId});
     } catch (error) {
@@ -368,6 +370,8 @@ function SubscribeEditor() {
         baseKind: result?.baseKind ?? 'video',
         overlayPath: result ? api.previewUrl(result.overlayPath) : api.previewUrl(latest.source),
         compositePath: api.previewUrl(exactPath),
+        requestId,
+        previewType:'Subscribe',
       });
       previewDiag('subscribe','APPLY',request,{requestId});
     } catch (error) {

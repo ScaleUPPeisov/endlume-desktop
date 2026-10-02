@@ -1,4 +1,5 @@
 name: ENDLUME 10.0.11 Preview Subscribe Targeted
+# proven Preview PTS normalization after source seek
 # subscribe preview seek 0.75s from real asset diagnostic
 # poster-mask QA fix
 # deterministic composed-poster Preview fallback acceptance

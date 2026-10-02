@@ -1,0 +1,31 @@
+name: ENDLUME 10.0.11 Subscribe State Diagnostic
+
+on:
+  push:
+    branches: [hotfix/endlume-10.0.11-preview-subscribe-final]
+    paths:
+      - ".github/workflows/endlume-1011-subscribe-state-diagnostic.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-1011-subscribe-state-diagnostic
+  cancel-in-progress: true
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Inspect real persisted Subscribe state
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          /usr/bin/python3 scripts/diag-endlume-1011-subscribe-state.py

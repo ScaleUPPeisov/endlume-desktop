@@ -1,7 +1,7 @@
 name: ENDLUME 10.0.11 Preview Subscribe Targeted
 # poster-mask QA fix
 # deterministic composed-poster Preview fallback acceptance
-# infrastructure restart after stale build step
+# runner restarted by user; rerun exact targeted gate
 
 on:
   push:

@@ -108,7 +108,7 @@ jobs:
             "$FF" -hide_banner -loglevel error -stream_loop -1 -i "$ROOT/base.mkv" -stream_loop -1 -i "$src" -filter_complex "$graph" -map "[outv]" -t 3 -an               -c:v h264_videotoolbox -realtime 1 -q:v 100 -b:v 35M -maxrate 50M -g 1 -bf 0 -pix_fmt yuv420p               -fps_mode cfr -r 60 -video_track_timescale 60000 -movflags +faststart -y "$ROOT/$kind-preview.mp4"
             # Decode every frame repeatedly for sixty seconds. Any corrupt packet/decode is a hard failure.
             "$FF" -hide_banner -loglevel error -stream_loop 19 -i "$ROOT/$kind-preview.mp4" -t 60 -map 0:v:0 -f null -
-            echo "${kind^^}_60S_DECODE_GREEN"
+            upper="$(printf '%s' "$kind" | tr '[:lower:]' '[:upper:]')"; echo "${upper}_60S_DECODE_GREEN"
           }
           make_exact effects "$EQ_SRC" "$EQ_KEY" 0.18 0.03 "$EQ_DSP" "$EQ_SCALE" "$EQ_X" "$EQ_Y" "$EQ_OP"
           make_exact subscribe "$SUB_SRC" "$SUB_KEY" "$SUB_SIM" "$SUB_BLEND" "$SUB_DSP" "$SUB_SCALE" "$SUB_X" "$SUB_Y" "$SUB_OP"

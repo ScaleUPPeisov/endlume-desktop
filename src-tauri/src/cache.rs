@@ -23,11 +23,14 @@ pub(crate) fn is_round_equalizer_859(e:&EffectPreset)->bool{
 }
 
 pub(crate) fn chromakey_params_859(e:&EffectPreset)->(f64,f64){
-  // 8.59 is intentionally scoped to this one existing preset only. The legacy
-  // 0.60 / 0.184 values key away the equalizer itself, leaving it mostly
-  // semi-transparent. Every other Effect keeps its user-selected key values.
+  // Legacy alpha.8 presets used the exact 0.60 / 0.184 pair. On the 10.0.10
+  // fused-direct fast path those values are applied to the RAW overlay and can
+  // key away almost the whole ordinary Effect. Treat only that exact legacy
+  // signature as a migration sentinel; all real user-selected values survive.
   if is_round_equalizer_859(e){
     (ROUND_EQUALIZER_859_SIMILARITY,ROUND_EQUALIZER_859_BLEND)
+  }else if (e.similarity-0.60).abs()<0.000_001 && (e.blend-0.184).abs()<0.000_001{
+    (0.10,0.06)
   }else{
     (e.similarity.clamp(0.001,0.60),e.blend.clamp(0.001,0.35))
   }
@@ -162,6 +165,8 @@ mod tests{
     let eq=preset(ROUND_EQUALIZER_859_ID,"эквалайзер круглый");
     assert_eq!(chromakey_params_859(&eq),(0.18,0.03));
     let dust=preset("9951d1c3-5ff6-4a37-891f-1c323889a663","пыль и царапины 80-х");
-    assert_eq!(chromakey_params_859(&dust),(0.6,0.184));
+    assert_eq!(chromakey_params_859(&dust),(0.10,0.06));
+    let mut custom=dust.clone();custom.similarity=0.31;custom.blend=0.09;
+    assert_eq!(chromakey_params_859(&custom),(0.31,0.09));
   }
 }

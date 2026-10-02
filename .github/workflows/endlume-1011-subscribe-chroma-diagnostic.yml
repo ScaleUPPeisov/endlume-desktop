@@ -1,0 +1,29 @@
+name: ENDLUME 10.0.11 Subscribe Chroma Diagnostic
+on:
+  push:
+    branches: [hotfix/endlume-10.0.11-preview-subscribe-final]
+    paths: [".github/workflows/endlume-1011-subscribe-chroma-diagnostic.yml"]
+permissions:
+  contents: read
+concurrency:
+  group: endlume-1011-subscribe-chroma-diagnostic
+  cancel-in-progress: true
+jobs:
+  diagnose:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Prove real Subscribe chromakey survival
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+          FFMPEG="$(command -v ffmpeg)"
+          test -x "$FFMPEG"
+          FFMPEG="$FFMPEG" /usr/bin/python3 scripts/diag-endlume-1011-subscribe-chroma.py

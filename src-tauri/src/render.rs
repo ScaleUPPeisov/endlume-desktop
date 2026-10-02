@@ -1836,9 +1836,11 @@ async fn build_interval_half_master_1008(app:&AppHandle,job:&QueueJob,effects:&[
   if out.is_file()&&probe_video_packets_857(app,&out).await.ok()==Some(physical_frames)&&probe_all_video_packets_key_1008(app,&out,physical_frames).await.is_ok(){
     let sec=lookup.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"cache-lookup",sec);emit_timing(app,&job.project.id,"base-visual-cache",sec);
     let _=app.emit("engine-profile",json!({"id":job.project.id,"visualCache":"HIT","visualCacheKey":key,"physicalFps":physical_fps,"logicalFps":logical_fps}));
+    diag_line(json!({"kind":"cache","projectId":job.project.id,"visualCache":"HIT","visualCacheKey":key,"physicalFps":physical_fps,"logicalFps":logical_fps}));
     return Ok((out,physical_frames))
   }
   let _=std::fs::remove_file(&out);emit_timing(app,&job.project.id,"cache-lookup",lookup.elapsed().as_secs_f64());
+  diag_line(json!({"kind":"cache","projectId":job.project.id,"visualCache":"MISS","visualCacheKey":key,"physicalFps":physical_fps,"logicalFps":logical_fps}));
   let mut ws=job.settings.clone();ws.fps=physical_fps;
   let base_still=work.join(format!("base-half-{key}.png"));let prep_mark=Instant::now();
   let vf=base_filter(&ws,"0:v").trim_start_matches("[0:v]").to_string();

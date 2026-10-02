@@ -1,0 +1,617 @@
+name: ENDLUME 10.0.11 Production Release
+
+on:
+  push:
+    branches:
+      - release-endlume-10.0.11
+    paths:
+      - ".github/workflows/endlume-1011-production-release.yml"
+      - "scripts/verify-macos-ffmpeg-bundle.mjs"
+      - "scripts/tauri-cli.mjs"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-1011-production-hotfix-final
+  cancel-in-progress: false
+
+env:
+  VERSION: "10.0.11"
+  RELEASE_BASE_SHA: "8c43319fea61ca0e7f25b8fbdce8f38307d4b97f"
+  STABLE_REPO: "ScaleUPPeisov/scaleup-site"
+  STABLE_TAG: "endlume-stable"
+  MAC_ZIP: "ENDLUME-YT-Studio-PEISOV-10.0.11-macOS-ARM64.zip"
+  MAC_UPDATER: "ENDLUME-YT-Studio-PEISOV-10.0.11-macOS-ARM64.app.tar.gz"
+  WIN_EXE: "ENDLUME-YT-Studio-PEISOV-Setup-10.0.11-x64.exe"
+  SOURCE_REPO: "ScaleUPPeisov/endlume-desktop"
+  LEGACY_TAG: "endlume-v10.0.11"
+  LEGACY_MANIFEST_BRANCH: "release"
+
+jobs:
+  macos:
+    name: macOS ARM64 • Self-hosted • Signed production
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 150
+    env:
+      RELEASE_TOKEN: ${{ secrets.ENDLUME_RELEASE_TOKEN }}
+    steps:
+      - name: Checkout exact release HEAD
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify source lineage version and local signing
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          test "$(uname -s)" = Darwin
+          test "$(uname -m)" = arm64
+          git merge-base --is-ancestor "$RELEASE_BASE_SHA" "$GITHUB_SHA"
+          test "$(git show "$RELEASE_BASE_SHA:package.json" | python3 -c 'import json,sys;print(json.load(sys.stdin)["version"])')" = "$VERSION"
+          test -n "${RELEASE_TOKEN:-}"
+          test -s "$HOME/.endlume-updater/endlume.key"
+          test -s "$HOME/.endlume-updater/endlume.key.pub"
+          python3 - <<'PY'
+          import json,re
+          from pathlib import Path
+          v='10.0.11'
+          assert json.loads(Path('package.json').read_text())['version']==v
+          assert json.loads(Path('package-lock.json').read_text())['version']==v
+          t=json.loads(Path('src-tauri/tauri.conf.json').read_text())
+          assert t['version']==v and t['identifier']=='studio.endlume.desktop'
+          assert t['app']['windows'] and any(w.get('label')=='main' for w in t['app']['windows'])
+          assert re.search(r'^version\s*=\s*"10[.]0[.]10"$',Path('src-tauri/Cargo.toml').read_text(),re.M)
+          assert 'name = "endlume"\nversion = "10.0.11"' in Path('src-tauri/Cargo.lock').read_text()
+          print('ENDLUME_1011_RELEASE_SOURCE_GREEN')
+          PY
+          command -v node; command -v npm; command -v cargo; command -v gh
+          echo "RUNNER_NAME=${RUNNER_NAME:-unknown}"
+
+      - name: Stage proven portable Apple Silicon FFmpeg
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+          TMP="$(mktemp -d)"
+          curl -fL --retry 4 "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffmpeg.zip" -o "$TMP/ffmpeg.zip"
+          curl -fL --retry 4 "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffprobe.zip" -o "$TMP/ffprobe.zip"
+          mkdir -p "$TMP/fm" "$TMP/fp" src-tauri/binaries
+          ditto -x -k "$TMP/ffmpeg.zip" "$TMP/fm"
+          ditto -x -k "$TMP/ffprobe.zip" "$TMP/fp"
+          FFMPEG="$(find "$TMP/fm" -type f -name ffmpeg -print -quit)"
+          FFPROBE="$(find "$TMP/fp" -type f -name ffprobe -print -quit)"
+          test -n "$FFMPEG" -a -s "$FFMPEG"
+          test -n "$FFPROBE" -a -s "$FFPROBE"
+          cp "$FFMPEG" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp "$FFPROBE" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          chmod 755 src-tauri/binaries/ffmpeg-aarch64-apple-darwin src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          ENDLUME_TAURI_TARGET=aarch64-apple-darwin node scripts/prepare-macos-ffmpeg-runtime.mjs
+          src-tauri/binaries/ffmpeg-aarch64-apple-darwin -version | head -1
+          src-tauri/binaries/ffprobe-aarch64-apple-darwin -version | head -1
+          echo ENDLUME_1011_PORTABLE_FFMPEG_GREEN
+
+      - name: Frontend and Rust release gate
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
+          npm ci
+          npm run check
+          npm run build
+          cargo check --manifest-path src-tauri/Cargo.toml --target aarch64-apple-darwin
+          cargo test --manifest-path src-tauri/Cargo.toml --target aarch64-apple-darwin --lib -- --nocapture
+
+      - name: Select proven stable macOS signing path
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          echo "Using ad-hoc app codesign + Tauri updater signature, matching successful ENDLUME 10.0.7 production run 36876025301."
+          echo ENDLUME_1011_STABLE_SIGNING_PATH_GREEN
+
+      - name: Build exact production macOS app
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
+          export CARGO_TARGET_DIR="$HOME/.endlume-build-cache/target-1011-production-mac"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('src-tauri/tauri.conf.json')
+          d=json.loads(p.read_text())
+          d['bundle']['createUpdaterArtifacts']=False
+          assert d['app']['windows'] and any(w.get('label')=='main' for w in d['app']['windows'])
+          p.write_text(json.dumps(d,ensure_ascii=False,indent=2)+'\n')
+          PY
+          npm run tauri build -- --target aarch64-apple-darwin --bundles app
+          APP="$(find "$CARGO_TARGET_DIR" -type d -path '*/release/bundle/macos/*.app' -print -quit)"
+          test -n "$APP" -a -d "$APP"
+          test "$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$APP/Contents/Info.plist")" = studio.endlume.desktop
+          test "$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist")" = "$VERSION"
+          test -x "$APP/Contents/MacOS/ffmpeg"
+          test -x "$APP/Contents/MacOS/ffprobe"
+          env -i PATH="/usr/bin:/bin:/usr/sbin:/sbin" "$APP/Contents/MacOS/ffmpeg" -version >/dev/null
+          env -i PATH="/usr/bin:/bin:/usr/sbin:/sbin" "$APP/Contents/MacOS/ffprobe" -version >/dev/null
+          /usr/bin/codesign --force --deep --sign - --timestamp=none "$APP"
+          /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP"
+          echo "E1011_MAC_APP=$APP" >> "$GITHUB_ENV"
+
+      - name: Verify proven stable app signature and self-contained runtime
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          /usr/bin/codesign --verify --deep --strict --verbose=2 "$E1011_MAC_APP"
+          EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$E1011_MAC_APP/Contents/Info.plist")"
+          /usr/bin/lipo -archs "$E1011_MAC_APP/Contents/MacOS/$EXE" | grep -qw arm64
+          env -i PATH="/usr/bin:/bin:/usr/sbin:/sbin" "$E1011_MAC_APP/Contents/MacOS/ffmpeg" -version >/dev/null
+          env -i PATH="/usr/bin:/bin:/usr/sbin:/sbin" "$E1011_MAC_APP/Contents/MacOS/ffprobe" -version >/dev/null
+          echo ENDLUME_1011_MAC_STABLE_SIGNATURE_GREEN
+
+      - name: macOS packaged launch FFmpeg Effects Subscribe smoke
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          STAGE="$RUNNER_TEMP/endlume-1011-mac"
+          rm -rf "$STAGE"; mkdir -p "$STAGE"
+          /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$E1011_MAC_APP" "$STAGE/$MAC_ZIP"
+          /usr/bin/shasum -a 256 "$STAGE/$MAC_ZIP" > "$STAGE/$MAC_ZIP.sha256"
+          UNPACK="$RUNNER_TEMP/endlume-1011-mac-unpack"
+          rm -rf "$UNPACK"; mkdir -p "$UNPACK"
+          /usr/bin/ditto -x -k "$STAGE/$MAC_ZIP" "$UNPACK"
+          APP="$(find "$UNPACK" -maxdepth 2 -type d -name '*.app' -print -quit)"
+          test -n "$APP"
+          MARKER="$RUNNER_TEMP/e1011-production-launch.json"
+          rm -f "$MARKER"
+          /bin/launchctl setenv ENDLUME_LAUNCH_SMOKE_MARKER "$MARKER"
+          /usr/bin/open -n "$APP"
+          for I in $(seq 1 80); do test -s "$MARKER" && break; sleep 0.25; done
+          /bin/launchctl unsetenv ENDLUME_LAUNCH_SMOKE_MARKER || true
+          test -s "$MARKER"
+          PID="$(python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));assert d["label"]=="main";assert d["frontendLoaded"] is True;print(d["pid"])' "$MARKER")"
+          kill -0 "$PID"; kill "$PID" || true
+          ENDLUME_APP_PATH="$APP" node scripts/verify-macos-ffmpeg-bundle.mjs | tee "$STAGE/runtime.log"
+          grep -q EFFECTS_LIVE_PREVIEW_RUNTIME_PASS "$STAGE/runtime.log"
+          grep -q SUBSCRIBE_LIVE_PREVIEW_RUNTIME_PASS "$STAGE/runtime.log"
+          grep -q ENDLUME_MACOS_FFMPEG_RUNTIME_PASS "$STAGE/runtime.log"
+          echo "E1011_MAC_STAGE=$STAGE" >> "$GITHUB_ENV"
+          echo ENDLUME_1011_MAC_RELEASE_SMOKE_GREEN
+
+      - name: Publish versioned macOS clean install
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.ENDLUME_RELEASE_TOKEN }}
+        run: |
+          set -Eeuo pipefail
+          gh release view "$STABLE_TAG" --repo "$STABLE_REPO" >/dev/null
+          gh release upload "$STABLE_TAG" "$E1011_MAC_STAGE/$MAC_ZIP" "$E1011_MAC_STAGE/$MAC_ZIP.sha256" --clobber --repo "$STABLE_REPO"
+          curl -fsIL --retry 5 "https://github.com/$STABLE_REPO/releases/download/$STABLE_TAG/$MAC_ZIP" >/dev/null
+          echo ENDLUME_1011_MAC_CLEAN_PUBLIC_GREEN
+
+      - name: Publish macOS package for Settings updater channel
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.ENDLUME_RELEASE_TOKEN }}
+        run: |
+          set -Eeuo pipefail
+          gh release view "$LEGACY_TAG" --repo "$SOURCE_REPO" >/dev/null 2>&1 || gh release create "$LEGACY_TAG" --repo "$SOURCE_REPO" --title "ENDLUME 10.0.11" --notes "ENDLUME 10.0.11 production update."
+          gh release upload "$LEGACY_TAG" "$E1011_MAC_STAGE/$MAC_ZIP" "$E1011_MAC_STAGE/$MAC_ZIP.sha256" --clobber --repo "$SOURCE_REPO"
+          VERIFY="$RUNNER_TEMP/e1011-settings-channel"
+          rm -rf "$VERIFY"; mkdir -p "$VERIFY"
+          gh release download "$LEGACY_TAG" --repo "$SOURCE_REPO" --dir "$VERIFY" --pattern "$MAC_ZIP" --pattern "$MAC_ZIP.sha256" --clobber
+          (cd "$VERIFY" && /usr/bin/shasum -a 256 -c "$MAC_ZIP.sha256")
+          echo ENDLUME_1011_SETTINGS_MAC_ASSET_GREEN
+
+  windows:
+    name: Windows x64 • Self-hosted Mac cross-build • Production
+    needs: macos
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 180
+    env:
+      RELEASE_TOKEN: ${{ secrets.ENDLUME_RELEASE_TOKEN }}
+      WINDOWS_TARGET: "x86_64-pc-windows-msvc"
+    steps:
+      - name: Checkout exact release HEAD
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify Windows release source
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
+          test "$(uname -s)" = Darwin
+          test "$(uname -m)" = arm64
+          test -n "${RELEASE_TOKEN:-}"
+          git merge-base --is-ancestor "$RELEASE_BASE_SHA" "$GITHUB_SHA"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          assert json.loads(Path('package.json').read_text())['version']=='10.0.11'
+          assert json.loads(Path('src-tauri/tauri.conf.json').read_text())['version']=='10.0.11'
+          w=json.loads(Path('src-tauri/tauri.windows.conf.json').read_text())
+          assert w['identifier']=='studio.endlume.desktop'
+          assert w['productName']=='ENDLUME YT Studio PEISOV'
+          PY
+
+      - name: Prepare proven cargo-xwin toolchain and Windows FFmpeg
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
+          brew list nsis >/dev/null 2>&1 || brew install nsis
+          brew list llvm >/dev/null 2>&1 || brew install llvm
+          export PATH="$(brew --prefix llvm)/bin:$HOME/.cargo/bin:$PATH"
+          rustup target add "$WINDOWS_TARGET"
+          command -v cargo-xwin >/dev/null 2>&1 || cargo install --locked cargo-xwin
+          CACHE="$HOME/.endlume-build-cache/windows-sidecars-1011"
+          ZIP="$CACHE/ffmpeg-master-latest-win64-gpl.zip"
+          EXTRACT="$CACHE/extract"
+          mkdir -p "$CACHE" src-tauri/binaries
+          test -s "$ZIP" || curl -fL --retry 4 --connect-timeout 20 -o "$ZIP" "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
+          rm -rf "$EXTRACT"; mkdir -p "$EXTRACT"
+          ditto -x -k "$ZIP" "$EXTRACT"
+          FFMPEG="$(find "$EXTRACT" -type f -name ffmpeg.exe -print -quit)"
+          FFPROBE="$(find "$EXTRACT" -type f -name ffprobe.exe -print -quit)"
+          test -n "$FFMPEG" -a -s "$FFMPEG"; test -n "$FFPROBE" -a -s "$FFPROBE"
+          cp "$FFMPEG" "src-tauri/binaries/ffmpeg-$WINDOWS_TARGET.exe"
+          cp "$FFPROBE" "src-tauri/binaries/ffprobe-$WINDOWS_TARGET.exe"
+          file "src-tauri/binaries/ffmpeg-$WINDOWS_TARGET.exe" | grep -E 'PE32|MS Windows'
+          echo ENDLUME_1011_WINDOWS_TOOLCHAIN_GREEN
+
+      - name: Build exact Windows NSIS
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="$(brew --prefix llvm)/bin:$HOME/.cargo/bin:/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+          export CARGO_TARGET_DIR="$HOME/.endlume-build-cache/target-1011-production-win"
+          npm ci
+          npm run check
+          npm run build
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('src-tauri/tauri.conf.json')
+          d=json.loads(p.read_text())
+          d['bundle']['createUpdaterArtifacts']=False
+          p.write_text(json.dumps(d,ensure_ascii=False,indent=2)+'\n')
+          PY
+          npm run tauri build -- --runner cargo-xwin --target "$WINDOWS_TARGET" --bundles nsis --config src-tauri/tauri.windows.conf.json
+          CAND="$(find "$CARGO_TARGET_DIR/$WINDOWS_TARGET/release/bundle/nsis" -maxdepth 1 -type f -name '*.exe' -print -quit)"
+          test -n "$CAND" -a -s "$CAND"
+          STAGE="$RUNNER_TEMP/endlume-1011-win"
+          rm -rf "$STAGE"; mkdir -p "$STAGE"
+          cp "$CAND" "$STAGE/$WIN_EXE"
+          python3 - "$STAGE/$WIN_EXE" <<'PY'
+          import sys
+          from pathlib import Path
+          p=Path(sys.argv[1])
+          assert p.stat().st_size>50_000_000,p.stat().st_size
+          assert p.read_bytes()[:2]==b'MZ'
+          print('ENDLUME_1011_WINDOWS_PE_GREEN',p.stat().st_size)
+          PY
+          shasum -a 256 "$STAGE/$WIN_EXE" > "$STAGE/$WIN_EXE.sha256"
+          echo "E1011_WIN_STAGE=$STAGE" >> "$GITHUB_ENV"
+
+      - name: Publish versioned Windows clean installer
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.ENDLUME_RELEASE_TOKEN }}
+        run: |
+          set -Eeuo pipefail
+          gh release view "$STABLE_TAG" --repo "$STABLE_REPO" >/dev/null
+          gh release upload "$STABLE_TAG" "$E1011_WIN_STAGE/$WIN_EXE" "$E1011_WIN_STAGE/$WIN_EXE.sha256" --clobber --repo "$STABLE_REPO"
+          curl -fsIL --retry 5 "https://github.com/$STABLE_REPO/releases/download/$STABLE_TAG/$WIN_EXE" >/dev/null
+          echo ENDLUME_1011_WINDOWS_CLEAN_PUBLIC_GREEN
+
+  updater:
+    name: Updater • local key • publish manifest last
+    needs: [macos, windows]
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 60
+    env:
+      RELEASE_TOKEN: ${{ secrets.ENDLUME_RELEASE_TOKEN }}
+    steps:
+      - name: Checkout exact release HEAD
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify signing identity and download exact clean builds
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.ENDLUME_RELEASE_TOKEN }}
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
+          git merge-base --is-ancestor "$RELEASE_BASE_SHA" "$GITHUB_SHA"
+          KEY="$HOME/.endlume-updater/endlume.key"; PUB="$HOME/.endlume-updater/endlume.key.pub"
+          test -s "$KEY"; test -s "$PUB"; test -n "${RELEASE_TOKEN:-}"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          cfg=json.loads(Path('src-tauri/tauri.conf.json').read_text())
+          embedded=cfg['plugins']['updater']['pubkey'].strip()
+          disk=(Path.home()/'.endlume-updater/endlume.key.pub').read_text().replace('\r','').replace('\n','').strip()
+          assert embedded==disk
+          assert cfg['version']=='10.0.11'
+          print('ENDLUME_1011_UPDATER_KEY_GREEN')
+          PY
+          WORK="$RUNNER_TEMP/endlume-1011-updater"
+          rm -rf "$WORK"; mkdir -p "$WORK"
+          gh release download "$STABLE_TAG" --repo "$STABLE_REPO" --dir "$WORK" --pattern "$MAC_ZIP" --clobber
+          gh release download "$STABLE_TAG" --repo "$STABLE_REPO" --dir "$WORK" --pattern "$WIN_EXE" --clobber
+          test -s "$WORK/$MAC_ZIP"; test -s "$WORK/$WIN_EXE"
+          echo "E1011_UPDATER_WORK=$WORK" >> "$GITHUB_ENV"
+
+      - name: Create and sign dual-platform updater artifacts
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
+          WORK="$E1011_UPDATER_WORK"
+          mkdir -p "$WORK/unpack"
+          /usr/bin/ditto -x -k "$WORK/$MAC_ZIP" "$WORK/unpack"
+          APP="$(find "$WORK/unpack" -maxdepth 2 -type d -name '*.app' -print -quit)"
+          test -n "$APP" -a -d "$APP"
+          test "$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist")" = "$VERSION"
+          /usr/bin/codesign --verify --deep --strict "$APP"
+          "$APP/Contents/MacOS/ffmpeg" -version >/dev/null
+          "$APP/Contents/MacOS/ffprobe" -version >/dev/null
+          /usr/bin/tar -czf "$WORK/$MAC_UPDATER" -C "$(dirname "$APP")" "$(basename "$APP")"
+          export TAURI_SIGNING_PRIVATE_KEY_PATH="$HOME/.endlume-updater/endlume.key"
+          export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
+          unset TAURI_SIGNING_PRIVATE_KEY || true
+          npx --yes @tauri-apps/cli@2.10.1 signer sign "$WORK/$MAC_UPDATER"
+          npx --yes @tauri-apps/cli@2.10.1 signer sign "$WORK/$WIN_EXE"
+          test -s "$WORK/$MAC_UPDATER.sig"; test -s "$WORK/$WIN_EXE.sig"
+          MAC_SHA="$(shasum -a 256 "$WORK/$MAC_UPDATER" | awk '{print $1}')"
+          WIN_SHA="$(shasum -a 256 "$WORK/$WIN_EXE" | awk '{print $1}')"
+          MAC_SIG="$(tr -d '\r\n' < "$WORK/$MAC_UPDATER.sig")"
+          WIN_SIG="$(tr -d '\r\n' < "$WORK/$WIN_EXE.sig")"
+          python3 - "$WORK/latest.json" "$MAC_SIG" "$WIN_SIG" "$MAC_SHA" "$WIN_SHA" <<'PY'
+          import datetime,json,sys
+          out,mac_sig,win_sig,mac_sha,win_sha=sys.argv[1:]
+          base='https://github.com/ScaleUPPeisov/scaleup-site/releases/download/endlume-stable/'
+          d={
+            'version':'10.0.11',
+            'notes':'ENDLUME 10.0.11: cold Effects/Subscribe Preview fix with bundled FFmpeg validation, final Effects parity, cache invalidation, real progress/ETA, fast HEVC/AAC production render.',
+            'pub_date':datetime.datetime.now(datetime.timezone.utc).isoformat().replace('+00:00','Z'),
+            'platforms':{
+              'darwin-aarch64':{'url':base+'ENDLUME-YT-Studio-PEISOV-10.0.11-macOS-ARM64.app.tar.gz','signature':mac_sig,'sha256':mac_sha},
+              'windows-x86_64':{'url':base+'ENDLUME-YT-Studio-PEISOV-Setup-10.0.11-x64.exe','signature':win_sig,'sha256':win_sha}
+            }
+          }
+          json.dump(d,open(out,'w'),ensure_ascii=False,indent=2)
+          PY
+          cp "$WORK/$MAC_UPDATER" "$WORK/ENDLUME-macos-aarch64.app.tar.gz"
+          cp "$WORK/$MAC_UPDATER.sig" "$WORK/ENDLUME-macos-aarch64.app.tar.gz.sig"
+          cp "$WORK/$WIN_EXE" "$WORK/ENDLUME-windows-x86_64-setup.exe"
+          cp "$WORK/$WIN_EXE.sig" "$WORK/ENDLUME-windows-x86_64-setup.exe.sig"
+          echo ENDLUME_1011_UPDATER_SIGNED_GREEN
+
+      - name: Guard stable channel monotonicity
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          CUR="$RUNNER_TEMP/e1011-current-latest.json"
+          curl -fsSL --retry 5 "https://github.com/$STABLE_REPO/releases/download/$STABLE_TAG/latest.json?preflight=$GITHUB_RUN_ID" -o "$CUR"
+          python3 - "$CUR" <<'PY'
+          import json,re,sys
+          d=json.load(open(sys.argv[1]))
+          cur=str(d.get('version','0.0.0'))
+          def v(x):
+              m=re.fullmatch(r'(\d+)\.(\d+)\.(\d+)',x)
+              return tuple(map(int,m.groups())) if m else (0,0,0)
+          assert v(cur) <= v('10.0.11'), (cur,'10.0.11')
+          print('STABLE_PREVIOUS_VERSION='+cur)
+          print('ENDLUME_1011_STABLE_MONOTONIC_GREEN')
+          PY
+
+      - name: Publish updater packages then latest.json LAST
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.ENDLUME_RELEASE_TOKEN }}
+        run: |
+          set -Eeuo pipefail
+          W="$E1011_UPDATER_WORK"
+          gh release upload "$STABLE_TAG"             "$W/$MAC_UPDATER" "$W/$MAC_UPDATER.sig"             "$W/$WIN_EXE.sig"             "$W/ENDLUME-macos-aarch64.app.tar.gz" "$W/ENDLUME-macos-aarch64.app.tar.gz.sig"             "$W/ENDLUME-windows-x86_64-setup.exe" "$W/ENDLUME-windows-x86_64-setup.exe.sig"             --clobber --repo "$STABLE_REPO"
+          gh release upload "$STABLE_TAG" "$W/latest.json" --clobber --repo "$STABLE_REPO"
+          echo ENDLUME_1011_UPDATER_PUBLISHED
+
+      - name: Public download SHA and manifest verification
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          W="$E1011_UPDATER_WORK"
+          BASE="https://github.com/$STABLE_REPO/releases/download/$STABLE_TAG"
+          PUB="$RUNNER_TEMP/e1011-public"
+          rm -rf "$PUB"; mkdir -p "$PUB"
+          for i in {1..24}; do
+            if curl -fsSL "$BASE/latest.json?run=$GITHUB_RUN_ID-$i" -o "$PUB/latest.json" &&                python3 - "$PUB/latest.json" <<'PY'
+          import json,sys
+          d=json.load(open(sys.argv[1]))
+          assert d.get('version')=='10.0.11'
+          assert {'darwin-aarch64','windows-x86_64'} <= set(d.get('platforms',{}))
+          PY
+            then break; fi
+            sleep 5
+          done
+          python3 - "$PUB/latest.json" <<'PY'
+          import json,sys
+          d=json.load(open(sys.argv[1]));assert d['version']=='10.0.11'
+          for k in ('darwin-aarch64','windows-x86_64'):
+            assert d['platforms'][k]['url'] and d['platforms'][k]['signature'] and len(d['platforms'][k]['sha256'])==64
+          PY
+          curl -fsSL "$BASE/$MAC_UPDATER" -o "$PUB/$MAC_UPDATER"
+          curl -fsSL "$BASE/$WIN_EXE" -o "$PUB/$WIN_EXE"
+          test "$(shasum -a 256 "$PUB/$MAC_UPDATER" | awk '{print $1}')" = "$(shasum -a 256 "$W/$MAC_UPDATER" | awk '{print $1}')"
+          test "$(shasum -a 256 "$PUB/$WIN_EXE" | awk '{print $1}')" = "$(shasum -a 256 "$W/$WIN_EXE" | awk '{print $1}')"
+          echo ENDLUME_1011_PUBLIC_RELEASE_GREEN
+
+      - name: Publish Settings updater manifest LAST
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.ENDLUME_RELEASE_TOKEN }}
+        run: |
+          set -Eeuo pipefail
+          WORK="$E1011_UPDATER_WORK"
+          LEGACY="$WORK/settings-latest.json"
+          python3 - "$LEGACY" "$MAC_ZIP" <<'PY'
+import json,sys
+out,asset=sys.argv[1:]
+d={
+  "version":"10.0.11",
+  "date":"02.10.2026",
+  "channel":"remote-binary",
+  "candidateRevision":11,
+  "builder":"endlume-1011-production",
+  "ciBuilder":"endlume-1011-production",
+  "releaseTag":"endlume-v10.0.11",
+  "asset":asset,
+  "checksumAsset":asset+".sha256",
+  "notes":"ENDLUME 10.0.11: cold Preview, final Effects, cache invalidation, progress/ETA and production render acceptance."
+}
+json.dump(d,open(out,"w"),ensure_ascii=False,indent=2)
+PY
+          SHA="$(gh api "repos/$SOURCE_REPO/contents/updates/latest.json?ref=$LEGACY_MANIFEST_BRANCH" --jq .sha)"
+          B64="$(python3 - "$LEGACY" <<'PY'
+import base64,sys
+print(base64.b64encode(open(sys.argv[1],"rb").read()).decode())
+PY
+)"
+          gh api --method PUT "repos/$SOURCE_REPO/contents/updates/latest.json" -f message="release: ENDLUME 10.0.11 updater manifest" -f content="$B64" -f sha="$SHA" -f branch="$LEGACY_MANIFEST_BRANCH" >/dev/null
+          gh api -H "Accept: application/vnd.github.raw+json" "repos/$SOURCE_REPO/contents/updates/latest.json?ref=$LEGACY_MANIFEST_BRANCH" > "$WORK/settings-latest-public.json"
+          python3 - "$WORK/settings-latest-public.json" <<'PY'
+import json,sys
+d=json.load(open(sys.argv[1]));assert d["version"]=="10.0.11";assert d["releaseTag"]=="endlume-v10.0.11";assert d["channel"]=="remote-binary"
+print("ENDLUME_1011_SETTINGS_MANIFEST_GREEN")
+PY
+
+  post_update:
+    name: macOS • real Settings 10.0.10 → 10.0.11
+    needs: updater
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 35
+    env:
+      RELEASE_TOKEN: ${{ secrets.ENDLUME_RELEASE_TOKEN }}
+    steps:
+      - name: Install exact public 10.0.10 baseline
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          test -n "${RELEASE_TOKEN:-}"
+          gh auth status -h github.com >/dev/null
+          BASE="https://github.com/$STABLE_REPO/releases/download/$STABLE_TAG"
+          OLD_ZIP="ENDLUME-YT-Studio-PEISOV-10.0.10-macOS-ARM64.zip"
+          ROOT="$RUNNER_TEMP/e1011-real-update"
+          rm -rf "$ROOT"; mkdir -p "$ROOT/old"
+          curl -fsSL --retry 5 "$BASE/$OLD_ZIP" -o "$ROOT/$OLD_ZIP"
+          /usr/bin/ditto -x -k "$ROOT/$OLD_ZIP" "$ROOT/old"
+          OLD_APP="$(find "$ROOT/old" -maxdepth 2 -type d -name '*.app' -print -quit)"
+          test -n "$OLD_APP" -a -d "$OLD_APP"
+          test "$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$OLD_APP/Contents/Info.plist")" = "10.0.10"
+          DEST="/Applications/ENDLUME YT Studio PEISOV.app"
+          /usr/bin/pkill -x "ENDLUME YT Studio PEISOV" >/dev/null 2>&1 || true
+          /bin/sleep 1
+          rm -rf "$DEST"
+          /usr/bin/ditto "$OLD_APP" "$DEST"
+          /usr/bin/codesign --verify --deep --strict "$DEST"
+          test "$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$DEST/Contents/Info.plist")" = "10.0.10"
+          echo "E1011_UPDATE_DEST=$DEST" >> "$GITHUB_ENV"
+          echo "E1011_UPDATE_ROOT=$ROOT" >> "$GITHUB_ENV"
+          echo ENDLUME_1011_OLD_BASELINE_GREEN
+
+      - name: Verify Settings UI can drive the signed update
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ACCESS="$(/usr/bin/osascript -e 'tell application "System Events" to return UI elements enabled' 2>/dev/null || true)"
+          if [ "$ACCESS" != "true" ]; then echo "ENDLUME_REAL_BLOCKER=MACOS_ACCESSIBILITY_DISABLED"; exit 73; fi
+          /usr/bin/open -n "$E1011_UPDATE_DEST"
+          for I in $(seq 1 80); do /usr/bin/pgrep -x "ENDLUME YT Studio PEISOV" >/dev/null 2>&1 && break; /bin/sleep 0.25; done
+          /bin/sleep 4
+          cat > "$RUNNER_TEMP/e1011-click.applescript" <<'APPLESCRIPT'
+on clickNamed(targetName)
+  tell application "System Events"
+    tell process "ENDLUME YT Studio PEISOV"
+      set frontmost to true
+      repeat with itemRef in entire contents
+        try
+          if (name of itemRef as text) is targetName then
+            click itemRef
+            return true
+          end if
+        end try
+      end repeat
+    end tell
+  end tell
+  return false
+end clickNamed
+
+tell application "ENDLUME YT Studio PEISOV" to activate
+delay 1
+set settingsOk to clickNamed("Настройки")
+if settingsOk is false then error "SETTINGS_BUTTON_NOT_FOUND"
+delay 1
+set updatesOk to clickNamed("ОБНОВЛЕНИЯ")
+if updatesOk is false then error "UPDATES_TAB_NOT_FOUND"
+delay 1
+set checkOk to clickNamed("ПРОВЕРИТЬ ОБНОВЛЕНИЯ")
+if checkOk is false then error "CHECK_UPDATE_BUTTON_NOT_FOUND"
+delay 3
+-- Settings dispatches the found update into the same signed UpdateExperience used by automatic checks.
+set updateOk to clickNamed("ОБНОВИТЬ")
+if updateOk is false then error "UPDATE_BUTTON_NOT_FOUND"
+APPLESCRIPT
+          /usr/bin/osascript "$RUNNER_TEMP/e1011-click.applescript"
+          STATE="$HOME/Library/Caches/studio.endlume.desktop/update-center/state.json"
+          for I in $(seq 1 240); do
+            if [ -s "$STATE" ]; then
+              S="$(python3 - "$STATE" <<'PY'
+import json,sys
+try: print(str(json.load(open(sys.argv[1])).get("state","")).lower())
+except Exception: print("")
+PY
+)"
+              [ "$S" = "success" ] && break
+              [ "$S" = "failed" ] && { cat "$STATE"; cat "$HOME/Library/Caches/studio.endlume.desktop/update-center/update.log" || true; exit 74; }
+            fi
+            /bin/sleep 0.5
+          done
+          test -s "$STATE"
+          python3 - "$STATE" <<'PY'
+import json,sys
+d=json.load(open(sys.argv[1]));assert str(d.get("state","")).lower()=="success",d
+print("ENDLUME_1011_SETTINGS_INSTALL_GREEN")
+PY
+
+      - name: Verify relaunch is 10.0.11
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          DEST="$E1011_UPDATE_DEST"
+          for I in $(seq 1 80); do
+            V="$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$DEST/Contents/Info.plist" 2>/dev/null || true)"
+            [ "$V" = "10.0.11" ] && break
+            /bin/sleep 0.25
+          done
+          test "$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$DEST/Contents/Info.plist")" = "10.0.11"
+          /usr/bin/codesign --verify --deep --strict "$DEST"
+          for I in $(seq 1 80); do /usr/bin/pgrep -x "ENDLUME YT Studio PEISOV" >/dev/null 2>&1 && break; /bin/sleep 0.25; done
+          /usr/bin/pgrep -x "ENDLUME YT Studio PEISOV" >/dev/null
+          echo ENDLUME_1011_REAL_UPDATE_RELAUNCH_GREEN
+

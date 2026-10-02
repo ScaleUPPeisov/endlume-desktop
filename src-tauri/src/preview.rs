@@ -1,10 +1,24 @@
 use crate::{cache,model::{EffectPreset,SubscribePreset}};
+use serde_json::Value;
 use std::path::{Path,PathBuf};
 use tauri::{AppHandle,Manager};
 use tauri_plugin_shell::ShellExt;
 
 const IMAGE:&[&str]=&["jpg","jpeg","png","webp","bmp","tif","tiff","heic","avif"];
 const VIDEO:&[&str]=&["mp4","mov","m4v","mkv","webm","avi","wmv","flv","ts","mts","m2ts","mpg","mpeg","vob","3gp"];
+
+#[tauri::command]
+pub fn preview_frontend_fixture()->Result<Option<Value>,String>{
+  let Some(path)=std::env::var_os("ENDLUME_E2E_FRONTEND_PREVIEW_FIXTURE") else{return Ok(None)};
+  let raw=std::fs::read(&path).map_err(|e|format!("frontend Preview fixture read: {e}"))?;
+  serde_json::from_slice(&raw).map(Some).map_err(|e|format!("frontend Preview fixture json: {e}"))
+}
+
+#[tauri::command]
+pub fn preview_frontend_report(payload:Value)->Result<(),String>{
+  let path=std::env::var_os("ENDLUME_E2E_FRONTEND_PREVIEW_RESULT").ok_or("frontend Preview result path missing")?;
+  std::fs::write(path,serde_json::to_vec_pretty(&payload).map_err(|e|e.to_string())?).map_err(|e|format!("frontend Preview result write: {e}"))
+}
 fn ext(p:&Path)->String{p.extension().and_then(|x|x.to_str()).unwrap_or("").to_ascii_lowercase()}
 fn color(hex:&str)->String{format!("0x{}",hex.trim().trim_start_matches('#').trim_start_matches("0x"))}
 fn is_image(p:&Path)->bool{IMAGE.contains(&ext(p).as_str())}

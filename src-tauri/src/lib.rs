@@ -45,7 +45,7 @@ fn maybe_start_preview_e2e(app:tauri::AppHandle){
       let time_sec=value.get("timeSec").and_then(|x|x.as_f64()).unwrap_or(0.0);
       let effects=serde_json::from_value::<Vec<model::EffectPreset>>(value.get("effects").cloned().unwrap_or_else(||serde_json::json!([]))).map_err(|e|format!("preview effects: {e}"))?;
       let subscribes=serde_json::from_value::<Vec<model::SubscribePreset>>(value.get("subscribes").cloned().unwrap_or_else(||serde_json::json!([]))).map_err(|e|format!("preview subscribes: {e}"))?;
-      let helper=live_preview::prepare_live_preview(app.clone(),project_path.clone(),overlay_source,time_sec).await?;
+      let helper=live_preview::prepare_live_preview(app.clone(),project_path.clone(),overlay_source,time_sec,Some("e1011-cold-preview".into()),Some(if subscribes.is_empty(){"Effects".into()}else{"Subscribe".into()})).await?;
       let exact=preview::generate_preview(app.clone(),project_path,time_sec,effects,subscribes,Some("e1011-cold-preview".into())).await?;
       Ok(serde_json::json!({"helper":serde_json::to_value(helper).map_err(|e|e.to_string())?,"exactPath":exact}))
     }.await;

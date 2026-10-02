@@ -110,7 +110,6 @@ ordinary=[x for x in fx if x.get("id")!=eq.get("id")]
 film=next((x for x in ordinary if any(t in str(x.get("name","")).lower() for t in ("80","плен","пыль","царап"))),ordinary[0] if ordinary else None)
 assert film,"80S_EFFECT_NOT_FOUND"
 third=next((x for x in ordinary if x.get("id")!=film.get("id")),None)
-assert third,"THIRD_REAL_EFFECT_NOT_FOUND"
 subs=[dict(x) for x in lib.get("subscribes",[]) if isinstance(x,dict) and Path(str(x.get("source",""))).is_file()]
 assert subs,"REAL_SUBSCRIBE_NOT_FOUND"
 sub=subs[0]
@@ -122,6 +121,13 @@ film=always(film);eq=always(eq);third=always(third)
 sub.update({"enabled":True,"usageMode":"interval","intervalSec":240.0,"repeatEverySec":240.0,"firstAppearance":"immediate","customFirstAtSec":0.0,"firstAtSec":0.0,"secondAtSec":240.0,"showDurationSec":8.0,"usageDurationSec":8.0})
 
 tmp_root=Path(tempfile.mkdtemp(prefix="endlume1011-qa-"))
+if third is None:
+    # The user's current library may only contain the 80s Film + Round Equalizer.
+    # Add one QA-only ordinary chromakey layer so the compositor is still tested
+    # with the required third Effect without mutating the persisted library.
+    src=tmp_root/"qa-third-effect.mp4"
+    run([FFMPEG,"-hide_banner","-loglevel","error","-f","lavfi","-i","color=c=0x00ff00:size=640x360:rate=30","-t","2","-vf","drawbox=x=120:y=80:w=400:h=180:color=red@1:t=fill,drawbox=x=200:y=130:w=240:h=80:color=white@1:t=fill","-c:v","libx264","-preset","ultrafast","-pix_fmt","yuv420p","-y",src],timeout=60)
+    third={"id":"e1011-qa-third","name":"QA Third Ordinary Effect","source":str(src),"enabled":True,"mode":"chromakey","keyColor":"#00ff00","similarity":0.10,"blend":0.06,"despill":0.35,"lumaThreshold":0.03,"lumaTolerance":0.08,"saturation":1.0,"x":0.72,"y":0.32,"scale":0.28,"fullscreen":False,"previewFrameTime":0.0,"startSec":0.0,"endSec":None,"cacheKey":None,"cacheReady":False,"usageMode":"always","intervalSec":240.0,"usageDurationSec":30.0,"target":None,"offsetX":None,"offsetY":None,"opacity":1.0}
 preview_project=tmp_root/"preview-project";preview_project.mkdir()
 base_media=media[0]
 link=preview_project/("001"+base_media.suffix.lower())

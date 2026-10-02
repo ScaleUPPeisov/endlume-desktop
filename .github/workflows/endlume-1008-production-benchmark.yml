@@ -140,7 +140,7 @@ jobs:
                   media=sorted([p for p in files if p.suffix.lower() in image|video],key=lambda x:x.name.lower())
                   songs=sorted([p for p in files if p.suffix.lower() in audio],key=lambda x:x.name.lower())
                   if media and songs:
-                      score=(1 if d==exact else 0, min(len(songs),15), -len(str(d)))
+                      score=(1 if roots and d==roots[0] else 0, min(len(songs),15), -len(str(d)))
                       candidates.append((score,d,media,songs))
           if not candidates: raise SystemExit("BREWROOM_JAZZ_REAL_PROJECT_NOT_FOUND")
           _,project,media,songs=max(candidates,key=lambda x:x[0])

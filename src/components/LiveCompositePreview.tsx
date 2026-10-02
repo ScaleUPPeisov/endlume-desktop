@@ -1,7 +1,7 @@
 import React,{useEffect,useRef,useState} from 'react';
 import type {AnchorPoint,EffectPreset} from '../types';
 
-export type LivePreviewAssets={basePath:string;baseKind:'image'|'video';overlayPath:string;compositePath?:string};
+export type LivePreviewAssets={basePath:string;baseKind:'image'|'video';overlayPath:string;compositePath?:string;requestId?:string;previewType?:'Effects'|'Subscribe'};
 
 type Props={
   assets?:LivePreviewAssets;
@@ -24,9 +24,65 @@ function rgbHex(r:number,g:number,b:number){return `#${[r,g,b].map(v=>Math.max(0
 export function LiveCompositePreview({assets,effect,active=true,busy,overlayRef,overlayStyle,onDragStart,onResizeStart,onPickColor,anchor,anchorMode,onAnchorPick}:Props){
   const canvasRef=useRef<HTMLCanvasElement>(null),videoRef=useRef<HTMLVideoElement>(null),rafRef=useRef<number|undefined>(undefined),effectRef=useRef(effect),brushRaf=useRef<number|undefined>(undefined),lastBrushPoint=useRef<{x:number;y:number}|undefined>(undefined),brushDown=useRef(false);
   const [picker,setPicker]=useState(false),[overlayAspect,setOverlayAspect]=useState<number>(1);
+  const [exactObjectUrl,setExactObjectUrl]=useState<string>();
+  const [exactReady,setExactReady]=useState(false);
   const exactComposite=Boolean(assets?.compositePath)&&!picker;
   const syncOverlayAspect=(video:HTMLVideoElement)=>{if(video.videoWidth>0&&video.videoHeight>0)setOverlayAspect(video.videoWidth/video.videoHeight)};
   effectRef.current=effect;
+
+  useEffect(()=>{
+    setExactReady(false);
+    setExactObjectUrl(undefined);
+    if(!assets?.compositePath||picker)return;
+    const requestId=assets.requestId||'<unknown>';
+    const previewType=assets.previewType||'Effects';
+    const controller=new AbortController();
+    let disposed=false;
+    let objectUrl:string|undefined;
+    (async()=>{
+      try{
+        const response=await fetch(assets.compositePath,{signal:controller.signal,cache:'no-store'});
+        if(!response.ok)throw new Error(`HTTP ${response.status}`);
+        const raw=await response.arrayBuffer();
+        if(raw.byteLength<1024)throw new Error(`empty preview payload: ${raw.byteLength} bytes`);
+        console.info(`[ENDLUME_PREVIEW] PREVIEW_REQUEST_ID=${requestId} PREVIEW_TYPE=${previewType} FRONTEND_PAYLOAD_BYTES=${raw.byteLength}`);
+        const blob=new Blob([raw],{type:'video/mp4'});
+        objectUrl=URL.createObjectURL(blob);
+        console.info(`[ENDLUME_PREVIEW] PREVIEW_REQUEST_ID=${requestId} PREVIEW_TYPE=${previewType} OBJECT_URL_CREATED=true`);
+        if(disposed){URL.revokeObjectURL(objectUrl);objectUrl=undefined;return}
+        setExactObjectUrl(objectUrl);
+      }catch(error){
+        if(controller.signal.aborted)return;
+        console.error(`[ENDLUME_PREVIEW] PREVIEW_REQUEST_ID=${requestId} PREVIEW_TYPE=${previewType} OBJECT_URL_CREATED=false IMAGE_LOAD=RED PREVIEW_APPLIED=false ERROR=${String(error)}`);
+      }
+    })();
+    return()=>{
+      disposed=true;
+      controller.abort();
+      if(objectUrl)URL.revokeObjectURL(objectUrl);
+    };
+  },[assets?.compositePath,assets?.requestId,assets?.previewType,picker]);
+
+  const exactLoaded=(video:HTMLVideoElement)=>{
+    const requestId=assets?.requestId||'<unknown>';
+    const previewType=assets?.previewType||'Effects';
+    const w=video.videoWidth||0,h=video.videoHeight||0;
+    console.info(`[ENDLUME_PREVIEW] PREVIEW_REQUEST_ID=${requestId} PREVIEW_TYPE=${previewType} IMAGE_LOAD=${w>0&&h>0?'GREEN':'RED'} IMAGE_NATURAL_WIDTH=${w} IMAGE_NATURAL_HEIGHT=${h}`);
+    if(w>0&&h>0){
+      setExactReady(true);
+      void video.play().catch(()=>undefined);
+      console.info(`[ENDLUME_PREVIEW] PREVIEW_REQUEST_ID=${requestId} PREVIEW_TYPE=${previewType} PREVIEW_APPLIED=true`);
+    }else{
+      setExactReady(false);
+      console.error(`[ENDLUME_PREVIEW] PREVIEW_REQUEST_ID=${requestId} PREVIEW_TYPE=${previewType} PREVIEW_APPLIED=false`);
+    }
+  };
+  const exactFailed=()=>{
+    const requestId=assets?.requestId||'<unknown>';
+    const previewType=assets?.previewType||'Effects';
+    setExactReady(false);
+    console.error(`[ENDLUME_PREVIEW] PREVIEW_REQUEST_ID=${requestId} PREVIEW_TYPE=${previewType} IMAGE_LOAD=RED IMAGE_NATURAL_WIDTH=0 IMAGE_NATURAL_HEIGHT=0 PREVIEW_APPLIED=false`);
+  };
 
   const sampleAt=(clientX:number,clientY:number)=>{
     const video=videoRef.current,host=overlayRef.current;if(!video||!host||video.readyState<2||video.videoWidth<2||video.videoHeight<2||!onPickColor)return;
@@ -69,10 +125,12 @@ export function LiveCompositePreview({assets,effect,active=true,busy,overlayRef,
 
   useEffect(()=>()=>{if(brushRaf.current!=null)cancelAnimationFrame(brushRaf.current)},[]);
   if(!assets)return <div className="livePreviewEmpty"><span>{busy?'Подготавливаю Live Preview…':'Выберите проект на основном экране'}</span></div>;
-  const base=exactComposite?<video key={assets.compositePath} className="livePreviewBase exactCompositePreview" src={assets.compositePath} preload="auto" autoPlay loop muted playsInline/>:assets.baseKind==='video'?<video key={assets.basePath} className="livePreviewBase" src={assets.basePath} preload="auto" autoPlay loop muted playsInline/>:<img className="livePreviewBase" src={assets.basePath} draggable={false}/>;
+  const helperBase=assets.baseKind==='video'?<video key={assets.basePath} className="livePreviewBase helperPreviewBase" src={assets.basePath} preload="auto" autoPlay loop muted playsInline/>:<img className="livePreviewBase helperPreviewBase" src={assets.basePath} draggable={false}/>;
+  const exactBase=exactComposite&&exactObjectUrl?<video key={exactObjectUrl} className={`livePreviewBase exactCompositePreview ${exactReady?'ready':'pending'}`} src={exactObjectUrl} preload="auto" autoPlay loop muted playsInline onLoadedMetadata={e=>exactLoaded(e.currentTarget)} onLoadedData={e=>exactLoaded(e.currentTarget)} onError={exactFailed}/>:null;
   const exactOverlayStyle:React.CSSProperties=effect.fullscreen?overlayStyle:{...overlayStyle,aspectRatio:String(Math.max(.05,overlayAspect)),height:'auto'};
   return <div className={`liveComposite ${picker?'chromaPicking':''} ${anchorMode?'anchorPicking':''}`} onPointerDownCapture={pickAnchor}>
-    {base}
+    {helperBase}
+    {exactBase}
     {anchor&&<div aria-hidden="true" style={{position:'absolute',left:`${anchor.x*100}%`,top:`${anchor.y*100}%`,width:18,height:18,border:'2px solid currentColor',borderRadius:'50%',transform:'translate(-50%,-50%)',boxShadow:'0 0 0 1px rgba(0,0,0,.75)',zIndex:12,pointerEvents:'none'}}><i style={{position:'absolute',left:'50%',top:-7,bottom:-7,width:1,background:'currentColor',transform:'translateX(-50%)'}}/><i style={{position:'absolute',top:'50%',left:-7,right:-7,height:1,background:'currentColor',transform:'translateY(-50%)'}}/></div>}
     {active&&effect.mode==='chromakey'&&<button type="button" className={`chromaPickerButton ${picker?'active':''}`} onClick={e=>{e.preventDefault();e.stopPropagation();setPicker(v=>!v)}}>{picker?'✓ ВЫБЕРИ/ПРОВЕДИ ПО ФОНУ':'⌾ ПИПЕТКА / КИСТЬ'}</button>}
     {active&&<div ref={overlayRef} className={`liveGpuOverlay ${effect.fullscreen?'fullscreen':''}`} style={exactOverlayStyle}
@@ -85,6 +143,6 @@ export function LiveCompositePreview({assets,effect,active=true,busy,overlayRef,
       {!effect.fullscreen&&!picker&&<><i className="corner nw"/><i className="corner ne"/><i className="corner sw"/><i className="corner se" onPointerDown={onResizeStart}/></>}
     </div>}
     {!active&&<div className="livePreviewDisabled">OFF • overlay скрыт</div>}
-    {busy&&<div className="livePreviewPreparing">Обновляю proxy…</div>}
+    {(busy||(exactComposite&&!exactReady))&&<div className="livePreviewPreparing">Подготавливаю Live Preview…</div>}
   </div>
 }

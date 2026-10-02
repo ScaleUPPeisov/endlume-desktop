@@ -1,0 +1,17 @@
+name: ENDLUME 10.0.10 Release Runner Unblock
+
+on:
+  push:
+    branches: [hotfix/endlume-10.0.10-final-stability]
+    paths:
+      - ".github/workflows/endlume-1010-release-runner-unblock.yml"
+
+concurrency:
+  group: endlume-1010-candidate-compile
+  cancel-in-progress: true
+
+jobs:
+  unblock:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "ENDLUME_1010_RELEASE_RUNNER_UNBLOCK_GREEN"

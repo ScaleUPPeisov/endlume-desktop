@@ -1,0 +1,43 @@
+name: ENDLUME 10.0.11 Performance Diagnostic
+
+on:
+  push:
+    branches: [hotfix/endlume-10.0.11-cold-preview-decode]
+    paths:
+      - ".github/workflows/endlume-1011-performance-diagnostic.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  inspect-last-continuation:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 10
+    steps:
+      - name: Inspect persisted continuation render diagnostics
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ROOT="$(find /var/folders -type d -name 'endlume1011-post-preview-*' -print 2>/dev/null | while read -r p; do test -f "$p/render-result.json" && printf '%s\n' "$p"; done | xargs -I{} stat -f '%m {}' "{}" | sort -nr | head -1 | cut -d' ' -f2-)"
+          test -n "$ROOT" -a -f "$ROOT/render-result.json" -a -f "$ROOT/render.stderr"
+          echo "DIAGNOSTIC_ROOT=$ROOT"
+          python3 - "$ROOT/render-result.json" "$ROOT/render.stderr" <<'PY'
+          import json,sys
+          result_path,stderr_path=sys.argv[1:]
+          d=json.load(open(result_path))
+          print("RENDER_RESULT_STATUS="+str(d.get("status")))
+          print("RENDER_RESULT_WALL="+str(d.get("wallSeconds")))
+          for row in d.get("results",[]):
+              print("ROW="+json.dumps(row,ensure_ascii=False,sort_keys=True))
+          events=[]
+          for line in open(stderr_path,errors="replace"):
+              if "ENDLUME_DIAG " not in line:continue
+              try:ev=json.loads(line.split("ENDLUME_DIAG ",1)[1].strip())
+              except Exception:continue
+              if ev.get("projectId")=="e1011-off" or ev.get("id")=="e1011-off":
+                  events.append(ev)
+          for ev in events:
+              print("OFF_DIAG="+json.dumps(ev,ensure_ascii=False,sort_keys=True))
+          print("OFF_DIAG_COUNT="+str(len(events)))
+          PY

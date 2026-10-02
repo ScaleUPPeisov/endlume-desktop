@@ -136,12 +136,15 @@ assert data.get("status")=="passed",(data,stderr[-12000:])
 payload=data["result"];helper=payload["helper"]
 base_path=Path(helper["basePath"]);overlay_path=Path(helper["overlayPath"]);exact=Path(payload["exactPath"])
 for q in (base_path,overlay_path,exact):assert q.is_file() and q.stat().st_size>1024,q
-assert "ENDLUME_PREVIEW_FFMPEG_CONTEXT APP_BUNDLE_PATH=" in stderr,stderr[-12000:]
-assert "ENDLUME_PREVIEW_FFMPEG_CANDIDATE path=" in stderr,stderr[-12000:]
-assert "RESOLVED_FFMPEG_PATH=" in stderr,stderr[-12000:]
-assert "FILE_EXISTS=true EXECUTABLE=true" in stderr,stderr[-12000:]
-assert "ENDLUME_PREVIEW_FFMPEG_VERSION_GREEN" in stderr,stderr[-12000:]
 assert "ENDLUME_PREVIEW_REAL_FRAME_DECODE_GREEN" in stderr,stderr[-12000:]
+if "mode=resolved-bundled-ffmpeg" in stderr:
+    assert "ENDLUME_PREVIEW_FFMPEG_CONTEXT APP_BUNDLE_PATH=" in stderr,stderr[-12000:]
+    assert "ENDLUME_PREVIEW_FFMPEG_CANDIDATE path=" in stderr,stderr[-12000:]
+    assert "RESOLVED_FFMPEG_PATH=" in stderr,stderr[-12000:]
+    assert "FILE_EXISTS=true EXECUTABLE=true" in stderr,stderr[-12000:]
+    assert "ENDLUME_PREVIEW_FFMPEG_VERSION_GREEN" in stderr,stderr[-12000:]
+else:
+    assert "ENDLUME_PREVIEW_REAL_FRAME_DECODE_GREEN mode=tauri-sidecar" in stderr,stderr[-12000:]
 meta=json.loads(run([FFPROBE,"-v","error","-show_entries","stream=codec_type,width,height,avg_frame_rate:format=duration","-of","json",exact]).stdout)
 v=next(x for x in meta["streams"] if x.get("codec_type")=="video")
 assert v["width"]==1920 and v["height"]==1080 and v["avg_frame_rate"]=="60/1",v

@@ -6,6 +6,7 @@ on:
       - hotfix/endlume-10.0.8-performance-visual
     paths:
       - ".github/workflows/endlume-1008-production-release.yml"
+      - "scripts/verify-macos-ffmpeg-bundle.mjs"
   workflow_dispatch: {}
 
 permissions:

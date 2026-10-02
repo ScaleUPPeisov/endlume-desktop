@@ -89,7 +89,8 @@ env.update({"ENDLUME_E2E_PREVIEW_JOB":str(fixture),"ENDLUME_E2E_RENDER_JOB":str(
 p=run([APP],check=False,timeout=150,env=env)
 (tmp/"stderr.log").write_text(p.stderr)
 (tmp/"stdout.log").write_text(p.stdout)
-print(p.stderr[-16000:])
+stderr=p.stderr
+print(stderr[-16000:])
 m=re.search(r"^FIRST_ENCODE_RESOLVED_PATH=(.+)$",p.stderr,re.M)
 first_encode_executable=m.group(1).strip() if m else None
 m2=re.search(r"^FIRST_ENCODE_IS_BUNDLED=(true|false)$",p.stderr,re.M)

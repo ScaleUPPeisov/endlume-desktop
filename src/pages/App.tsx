@@ -172,6 +172,8 @@ function FrontendPreviewHarness({fixture}:{fixture:any}){
     baseKind:fixture.baseKind==='video'?'video':'image',
     overlayPath:api.previewUrl(String(fixture.overlayPath)),
     overlayFilePath:String(fixture.overlayPath),
+    posterPath:api.previewUrl(String(fixture.posterPath)),
+    posterFilePath:String(fixture.posterPath),
     baseBytes:Number(fixture.baseBytes||0),
     overlayBytes:Number(fixture.overlayBytes||0),
     requestId:String(fixture.requestId||'frontend-e2e'),

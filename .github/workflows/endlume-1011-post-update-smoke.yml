@@ -36,8 +36,10 @@ jobs:
           /usr/bin/codesign --verify --deep --strict "$APP"
           test -x "$APP/Contents/MacOS/ffmpeg"
           test -x "$APP/Contents/MacOS/ffprobe"
-          env -i PATH="/usr/bin:/bin:/usr/sbin:/sbin" "$APP/Contents/MacOS/ffmpeg" -version | head -1
-          env -i PATH="/usr/bin:/bin:/usr/sbin:/sbin" "$APP/Contents/MacOS/ffprobe" -version | head -1
+          env -i PATH="/usr/bin:/bin:/usr/sbin:/sbin" "$APP/Contents/MacOS/ffmpeg" -version > "$RUNNER_TEMP/e1011-ffmpeg-version.txt"
+          env -i PATH="/usr/bin:/bin:/usr/sbin:/sbin" "$APP/Contents/MacOS/ffprobe" -version > "$RUNNER_TEMP/e1011-ffprobe-version.txt"
+          /usr/bin/head -1 "$RUNNER_TEMP/e1011-ffmpeg-version.txt"
+          /usr/bin/head -1 "$RUNNER_TEMP/e1011-ffprobe-version.txt"
           /usr/bin/osascript -e 'tell application id "studio.endlume.desktop" to quit' >/dev/null 2>&1 || true
           /bin/sleep 1
           python3 - <<'PY'

@@ -7,7 +7,7 @@ on:
       - ".github/workflows/endlume-1011-real-settings-update.yml"
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: endlume-1011-real-settings-update
@@ -41,7 +41,7 @@ jobs:
       - name: Build legacy-compatible 10.0.11 updater package
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.ENDLUME_RELEASE_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -Eeuo pipefail
           export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
@@ -95,7 +95,7 @@ jobs:
       - name: Publish 10.0.11 Settings manifest LAST
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.ENDLUME_RELEASE_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -Eeuo pipefail
           ROOT="$E1011_REAL_ROOT"

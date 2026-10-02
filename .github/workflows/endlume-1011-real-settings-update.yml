@@ -148,34 +148,52 @@ jobs:
             exit 73
           fi
           cat > "$RUNNER_TEMP/e1011-settings.applescript" <<'APPLESCRIPT'
-          on clickNamed(targetName)
+          on focusedName()
             tell application "System Events"
               set ps to application processes whose bundle identifier is "studio.endlume.desktop"
-              if (count of ps) is 0 then return false
+              if (count of ps) is 0 then return ""
               tell item 1 of ps
                 set frontmost to true
-                repeat with itemRef in entire contents
+                try
+                  set el to value of attribute "AXFocusedUIElement"
                   try
-                    if (name of itemRef as text) is targetName then
-                      click itemRef
-                      return true
-                    end if
+                    return name of el as text
+                  on error
+                    return ""
                   end try
-                end repeat
+                on error
+                  return ""
+                end try
               end tell
             end tell
+          end focusedName
+
+          on focusAndPress(targetName, maxTabs)
+            repeat with i from 1 to maxTabs
+              set currentName to my focusedName()
+              if currentName is targetName then
+                tell application "System Events" to key code 36
+                delay 0.25
+                return true
+              end if
+              tell application "System Events" to key code 48
+              delay 0.08
+            end repeat
             return false
-          end clickNamed
+          end focusAndPress
 
           tell application id "studio.endlume.desktop" to activate
-          delay 1
-          if clickNamed("Настройки") is false then error "SETTINGS_BUTTON_NOT_FOUND"
-          delay 1
-          if clickNamed("ОБНОВЛЕНИЯ") is false then error "UPDATES_TAB_NOT_FOUND"
-          delay 1
-          if clickNamed("ПРОВЕРИТЬ ОБНОВЛЕНИЯ") is false then error "CHECK_UPDATE_BUTTON_NOT_FOUND"
-          delay 3
-          if clickNamed("ОБНОВИТЬ") is false then error "UPDATE_BUTTON_NOT_FOUND"
+          delay 0.4
+          -- The global auto-update watcher may already have opened the update modal.
+          -- Dismiss it if present, then explicitly exercise Settings -> Updates -> Check.
+          if my focusAndPress("ПОЗЖЕ", 36) then delay 0.25
+          if my focusAndPress("Настройки", 36) is false then error "SETTINGS_FOCUS_NOT_FOUND"
+          delay 0.35
+          if my focusAndPress("ОБНОВЛЕНИЯ", 24) is false then error "UPDATES_TAB_FOCUS_NOT_FOUND"
+          delay 0.25
+          if my focusAndPress("ПРОВЕРИТЬ ОБНОВЛЕНИЯ", 24) is false then error "CHECK_UPDATE_FOCUS_NOT_FOUND"
+          delay 1.2
+          if my focusAndPress("ОБНОВИТЬ", 48) is false then error "UPDATE_MODAL_FOCUS_NOT_FOUND"
           APPLESCRIPT
           /usr/bin/osascript "$RUNNER_TEMP/e1011-settings.applescript"
           STATE="$HOME/Library/Caches/studio.endlume.desktop/update-center/state.json"

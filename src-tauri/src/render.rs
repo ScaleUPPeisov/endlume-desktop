@@ -1989,13 +1989,14 @@ fn interval_1000_plan(job:&QueueJob,effects:&[EffectPreset],subs:&[SubscribePres
   let duration_frames=(sub.show_duration_sec.unwrap_or(8.0).clamp(2.0,20.0)*fps).round().max(1.0) as usize;
   let first_frames=(subscribe_first_sec(sub)*fps).round().max(0.0) as usize;
   if repeat_frames<(60.0*fps) as usize||duration_frames>=repeat_frames{return None}
-  // 10.0.3 Turbo: preserve at least one full natural Effect cycle, then choose
-  // the shortest Subscribe-compatible divisor near 10 seconds. The HQ encoder
-  // raises bitrate for shorter masters, preserving/increasing bits per frame.
-  let min_seconds=min_visual_seconds.max(8.0).min(40.0);
-  let desired_seconds=min_seconds.max(8.0).min(40.0);
+  // 10.0.10 Final Stability: cap the physical composite cycle at 20 seconds.
+  // Effects remain stream-looped and Subscribe timing is still frame-exact; the
+  // two-hour file is expanded by the same zero-copy manifest. This prevents a
+  // 40-60s overlay source from forcing 1200+ physical 30fps HEVC frames on COLD.
+  let min_seconds=min_visual_seconds.max(8.0).min(20.0);
+  let desired_seconds=min_seconds;
   let desired=(desired_seconds*fps).round() as usize;
-  let lo=(min_seconds*fps).ceil() as usize;let hi=(40.0*fps).round() as usize;let mut best=None;let mut dist=usize::MAX;
+  let lo=(8.0*fps).ceil() as usize;let hi=(20.0*fps).round() as usize;let mut best=None;let mut dist=usize::MAX;
   for d in lo.max(1)..=hi.max(lo.max(1)){
     if repeat_frames%d!=0{continue}
     let phase=first_frames%d;

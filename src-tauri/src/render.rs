@@ -2314,7 +2314,10 @@ pub async fn render_job(app:&AppHandle,job:&QueueJob,cancel:Arc<AtomicBool>)->Re
       let visual_prewarm_started=Instant::now();
       let visual_prewarm=if smart_repeat&&fx.iter().all(|e|matches!(effect_usage_mode(e),"always"|"off")){
         interval_1000_plan(job,&fx,&subs,target.max(60.0),visual_master_duration).map(|plan|{
-          let app_bg=app.clone();let mut job_bg=(*job).clone();job_bg.project.id=format!("{}::visual-prewarm",job.project.id);
+          let app_bg=app.clone();let job_bg=(*job).clone();
+          // 10.0.11: prewarm is real work for the active project. Keep the real id so
+          // FFmpeg -progress / ETA events reach the visible render row instead of a
+          // synthetic ::visual-prewarm id that the frontend cannot display.
           let fx_bg=fx.clone();let work_bg=work.clone();let encoder_bg=encoder.clone();let cancel_bg=cancel.clone();let timer_bg=timer.clone();
           let stagger_audio_first=requested_audio_processing;
           tauri::async_runtime::spawn(async move{

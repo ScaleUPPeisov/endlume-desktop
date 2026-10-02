@@ -675,10 +675,12 @@ fn finalize_local_output(src:&Path,out:&Path)->Result<(f64,f64,f64,u64),String>{
       let mut output=std::fs::File::create(&part).map_err(|e|format!("10.0.10 destination transfer create temp {}: {e}",part.display()))?;
       bytes_written=std::io::copy(&mut input,&mut output).map_err(|e|format!("10.0.10 destination transfer write {}: {e}",part.display()))?;
       output.flush().map_err(|e|format!("10.0.10 destination transfer flush {}: {e}",part.display()))?;
-      let sync_mark=Instant::now();
-      if let Err(e)=output.sync_data(){sync_errno=e.raw_os_error();sync_error=Some(e.to_string());}
-      sync_seconds=sync_mark.elapsed().as_secs_f64();
+      // 10.0.10 external-volume policy: close the completed temp file and
+      // verify exact byte count + FFprobe after atomic rename. Blocking sync_data
+      // adds several seconds on TOSHIBA and previously surfaced os error 5 even
+      // after a successful full write.
       drop(output);
+      sync_seconds=0.0;
       if bytes_written!=expected{return Err(format!("10.0.10 destination transfer truncated: {bytes_written}/{expected} bytes"))}
     }
   }
@@ -1299,11 +1301,12 @@ fn apply_effects_filter(mut graph:String,mut base:String,effects:&[EffectPreset]
         if e.fullscreen{
           format!("[{idx}:v]fps={},format=rgba,colorkey={}:{}:{},despill=type={kind}:mix={mix}:expand=0.20,{scale}",s.fps,color_ffmpeg(&e.key_color),similarity,blend)
         }else if cache::is_round_equalizer_859(e){
-          // 10.0.9: protect the Equalizer's thin white lines from green/white
-          // resampling bleed. Key at native resolution, then Lanczos-scale the
-          // alpha result; keep despill after scaling so the expensive color cleanup
-          // still runs only on the small target overlay.
-          format!("[{idx}:v]fps={},format=rgba,colorkey={}:{}:{},{scale},despill=type={kind}:mix={mix}:expand=0.20",s.fps,color_ffmpeg(&e.key_color),similarity,blend)
+          // 10.0.10: preserve pure white/green samples without paying full-HD
+          // chromakey cost on every frame. Nearest-neighbour pre-scale avoids the
+          // green/white mixing that caused the old dull-line regression; key the
+          // 2x target image, then Lanczos the alpha result to the final geometry.
+          let pre_target=target.saturating_mul(2).max(target);
+          format!("[{idx}:v]fps={},scale={pre_target}:-2:flags=neighbor,format=rgba,colorkey={}:{}:{},{scale},despill=type={kind}:mix={mix}:expand=0.20",s.fps,color_ffmpeg(&e.key_color),similarity,blend)
         }else{
           // Keep the measured 10.0.8 fast path for every other chroma overlay.
           format!("[{idx}:v]fps={},{scale},format=rgba,colorkey={}:{}:{},despill=type={kind}:mix={mix}:expand=0.20",s.fps,color_ffmpeg(&e.key_color),similarity,blend)
@@ -1828,7 +1831,7 @@ async fn build_interval_half_master_1008(app:&AppHandle,job:&QueueJob,effects:&[
   let logical_fps=job.settings.fps.max(1);
   if logical_fps!=60||logical_frames%2!=0{return Err("10.0.8 half-rate master requires even 60 FPS logical frame count".into())}
   let physical_fps=30u32;let physical_frames=logical_frames/2;let duration=logical_frames as f64/logical_fps as f64;
-  let profile="interval-half30-allintra-v5-22m-real-eq";let key=visual_master_key_1000(job,effects,logical_frames,encoder,profile)?;
+  let profile="interval-half30-allintra-v6-22m-eq-fast2x";let key=visual_master_key_1000(job,effects,logical_frames,encoder,profile)?;
   let root=cache_root_1000(app,"visual-master-v10")?;let out=root.join(format!("{key}.mp4"));let lookup=Instant::now();
   if out.is_file()&&probe_video_packets_857(app,&out).await.ok()==Some(physical_frames)&&probe_all_video_packets_key_1008(app,&out,physical_frames).await.is_ok(){
     let sec=lookup.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"cache-lookup",sec);emit_timing(app,&job.project.id,"base-visual-cache",sec);

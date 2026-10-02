@@ -331,13 +331,28 @@ async fn make_overlay(app:&AppHandle,src:&Path,seek:f64,out:&Path)->Result<(),St
 }
 
 #[tauri::command]
-pub async fn prepare_live_preview(app:AppHandle,project_path:String,overlay_source:String,time_sec:f64)->Result<LivePreviewAssets,String>{
+pub async fn prepare_live_preview(app:AppHandle,project_path:String,overlay_source:String,time_sec:f64,request_id:Option<String>,preview_type:Option<String>)->Result<LivePreviewAssets,String>{
   let project=PathBuf::from(project_path);if !project.is_dir(){return Err("Сначала выберите папку проекта".into())}
   let overlay=PathBuf::from(overlay_source);if !overlay.is_file(){return Err("Не найден файл Effects/Subscribe".into())}if rejected_macos_input(&overlay){return Err("ENDLUME заблокировала служебный AppleDouble/resource-fork файл macOS. Выберите настоящий Effects/Subscribe файл.".into())}if rejected_macos_input(&overlay){return Err("ENDLUME заблокировала служебный AppleDouble/resource-fork файл macOS. Выберите настоящий Effects/Subscribe файл.".into())}
   let base=first_media(&project).ok_or("В проекте нет корректного изображения или видео")?;let dir=cache_dir(&app)?;
   let base_key=fingerprint(&base,time_sec,"base");let overlay_key=fingerprint(&overlay,time_sec,"overlay");
   let base_out=if is_image(&base){dir.join(format!("base-{base_key}.png"))}else{dir.join(format!("base-{base_key}.mp4"))};let overlay_out=dir.join(format!("overlay-{overlay_key}.mp4"));
   let base_kind=make_base(&app,&base,time_sec,&base_out).await?;make_overlay(&app,&overlay,time_sec,&overlay_out).await?;
+  if live_preview_diag_enabled(){
+    let request=request_id.as_deref().unwrap_or("<none>");
+    let kind=preview_type.as_deref().unwrap_or("Unknown");
+    let base_bytes=fs::metadata(&base_out).map(|m|m.len()).unwrap_or(0);
+    let overlay_bytes=fs::metadata(&overlay_out).map(|m|m.len()).unwrap_or(0);
+    eprintln!("PREVIEW_REQUEST_ID={request}");
+    eprintln!("PREVIEW_TYPE={kind}");
+    eprintln!("SOURCE_IMAGE={}",base.display());
+    eprintln!("BASE_FRAME_PATH={}",base_out.display());
+    eprintln!("BASE_FRAME_EXISTS={}",base_out.is_file());
+    eprintln!("BASE_FRAME_BYTES={base_bytes}");
+    eprintln!("OVERLAY_PROXY_PATH={}",overlay_out.display());
+    eprintln!("OVERLAY_PROXY_EXISTS={}",overlay_out.is_file());
+    eprintln!("OVERLAY_PROXY_BYTES={overlay_bytes}");
+  }
   Ok(LivePreviewAssets{base_path:base_out.to_string_lossy().into_owned(),base_kind,overlay_path:overlay_out.to_string_lossy().into_owned()})
 }
 

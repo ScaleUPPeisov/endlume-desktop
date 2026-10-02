@@ -55,6 +55,7 @@ jobs:
           grep -q "ENDLUME_PREVIEW_REAL_FRAME_DECODE_GREEN" src-tauri/src/live_preview.rs
           grep -q "resolve_bundled_ffmpeg" src-tauri/src/live_preview.rs
           grep -q "RESOLVED_FFMPEG_PATH" src-tauri/src/live_preview.rs
+          grep -q "FIRST_ENCODE_EXECUTABLE_SOURCE=tauri-plugin-shell sidecar externalBin" src-tauri/src/live_preview.rs
           echo TARGETED_COMPILE_GREEN
 
       - name: Build packaged QA app

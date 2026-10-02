@@ -52,13 +52,63 @@ fn first_media(project:&Path)->Option<PathBuf>{let mut files=WalkDir::new(projec
 
 async fn run(app:&AppHandle,args:Vec<String>)->Result<(),String>{let out=app.shell().sidecar("ffmpeg").map_err(|e|e.to_string())?.args(args).output().await.map_err(|e|e.to_string())?;if out.status.success(){Ok(())}else{Err(String::from_utf8_lossy(&out.stderr).trim().to_string())}}
 
+fn packaged_ffmpeg_path()->Result<PathBuf,String>{
+  let exe=std::env::current_exe().map_err(|e|format!("Live Preview current_exe: {e}"))?;
+  let dir=exe.parent().ok_or("Live Preview executable directory missing")?;
+  #[cfg(target_os="windows")]
+  let p=dir.join("ffmpeg.exe");
+  #[cfg(not(target_os="windows"))]
+  let p=dir.join("ffmpeg");
+  if p.is_file(){Ok(p)}else{Err(format!("Packaged FFmpeg sidecar not found: {}",p.display()))}
+}
+
+fn direct_decode_proxy_frame(out:&Path)->Result<(),String>{
+  let ffmpeg=packaged_ffmpeg_path()?;
+  let result=std::process::Command::new(&ffmpeg)
+    .args(["-hide_banner","-loglevel","error","-ss","0","-i"])
+    .arg(out)
+    .args(["-map","0:v:0","-frames:v","1","-f","null","-"])
+    .output()
+    .map_err(|e|format!("direct packaged FFmpeg decode spawn: {e}"))?;
+  if !result.status.success(){
+    let err=String::from_utf8_lossy(&result.stderr).trim().to_string();
+    return Err(if err.is_empty(){"direct packaged FFmpeg decode failed".into()}else{err})
+  }
+  if live_preview_diag_enabled(){eprintln!("ENDLUME_PREVIEW_REAL_FRAME_DECODE_GREEN mode=direct-packaged-ffmpeg path={} ffmpeg={}",out.display(),ffmpeg.display());}
+  Ok(())
+}
+
+async fn decode_proxy_frame(app:&AppHandle,out:&Path)->Result<(),String>{
+  let args=vec!["-hide_banner","-loglevel","error","-ss","0","-i",out.to_string_lossy().as_ref(),"-map","0:v:0","-frames:v","1","-f","null","-"].into_iter().map(String::from).collect::<Vec<_>>();
+  match app.shell().sidecar("ffmpeg"){
+    Ok(cmd)=>match cmd.args(args).output().await{
+      Ok(result)=>{
+        if result.status.success(){
+          if live_preview_diag_enabled(){eprintln!("ENDLUME_PREVIEW_REAL_FRAME_DECODE_GREEN mode=tauri-sidecar path={}",out.display());}
+          Ok(())
+        }else{
+          let err=String::from_utf8_lossy(&result.stderr).trim().to_string();
+          Err(if err.is_empty(){"FFmpeg frame decode failed".into()}else{err})
+        }
+      },
+      Err(spawn_error)=>{
+        if live_preview_diag_enabled(){eprintln!("ENDLUME_PREVIEW_DECODE_DIRECT_FALLBACK reason=spawn-error error={:?} path={}",spawn_error,out.display());}
+        direct_decode_proxy_frame(out)
+      }
+    },
+    Err(resolve_error)=>{
+      if live_preview_diag_enabled(){eprintln!("ENDLUME_PREVIEW_DECODE_DIRECT_FALLBACK reason=sidecar-resolve error={:?} path={}",resolve_error,out.display());}
+      direct_decode_proxy_frame(out)
+    }
+  }
+}
+
 async fn validate_video_proxy(app:&AppHandle,out:&Path)->Result<(),String>{
   if !ready_file(out){return Err("proxy-файл отсутствует или слишком мал".into())}
-  // Decode is the non-negotiable corruption gate and uses the FFmpeg sidecar that
-  // is already required for every Preview. FFprobe adds geometry/duration checks
-  // when packaged, but its absence must not turn a valid cold Preview into RED.
-  let decode_args=vec!["-hide_banner","-loglevel","error","-ss","0","-i",out.to_string_lossy().as_ref(),"-map","0:v:0","-frames:v","1","-f","null","-"].into_iter().map(String::from).collect();
-  run(app,decode_args).await.map_err(|e|format!("proxy не декодируется: {e}"))?;
+  // A real decoded frame is mandatory. Prefer Tauri's sidecar launcher; if the
+  // packaged launcher cannot resolve/spawn a second process, execute the bundled
+  // sibling FFmpeg directly. Corrupt media still fails because decode exit != 0.
+  decode_proxy_frame(app,out).await.map_err(|e|format!("proxy не декодируется: {e}"))?;
   let probe_args=vec!["-v","error","-select_streams","v:0","-show_entries","stream=codec_type,width,height:format=duration","-of","json",out.to_string_lossy().as_ref()].into_iter().map(String::from).collect::<Vec<_>>();
   let Ok(cmd)=app.shell().sidecar("ffprobe") else{
     if live_preview_diag_enabled(){eprintln!("ENDLUME_PREVIEW_FFPROBE_FALLBACK reason=sidecar-unavailable path={}",out.display());}

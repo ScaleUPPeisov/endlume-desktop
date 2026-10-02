@@ -56,6 +56,8 @@ jobs:
           grep -q "FRONTEND_PAYLOAD_BYTES" src/components/LiveCompositePreview.tsx
           grep -q "IMAGE_NATURAL_WIDTH" src/components/LiveCompositePreview.tsx
           grep -q "BROWSER_NONBLACK_PIXELS" src/components/LiveCompositePreview.tsx
+          grep -q "FRONTEND_TRANSFER_MODE=ASSET_STREAM" src/components/LiveCompositePreview.tsx
+          grep -q "Live GPU Preview" src/pages/Editors.tsx
           grep -q "subscribe_chromakey_params_1011" src-tauri/src/render.rs
           grep -q "ENDLUME-10.0.11-SUBSCRIBE-v2-CHROMA-SAFE" src-tauri/src/render.rs
           echo TARGETED_COMPILE_GREEN

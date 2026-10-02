@@ -1,7 +1,7 @@
 use crate::{cache,model::{EffectPreset,Progress,ProjectScanItem,QueueJob,RenderSettings,SubscribePreset}};
 use serde_json::json;
 use sha2::{Digest,Sha256};
-use std::{collections::HashMap,io::Read,path::{Path,PathBuf},process::Command,sync::{Arc,OnceLock,atomic::{AtomicBool,AtomicU64,Ordering}},time::{Duration,Instant,UNIX_EPOCH}};
+use std::{collections::HashMap,io::{Read,Write},path::{Path,PathBuf},process::Command,sync::{Arc,OnceLock,atomic::{AtomicBool,AtomicU64,Ordering}},thread,time::{Duration,Instant,UNIX_EPOCH}};
 use sysinfo::{Disks,Pid,ProcessesToUpdate,System};
 use tauri::{AppHandle,Emitter,Manager};
 use tauri_plugin_shell::{process::CommandEvent,ShellExt};
@@ -654,27 +654,53 @@ fn commit_destination_partial(part:&Path,out:&Path)->Result<(f64,f64),String>{
   let _=std::fs::remove_file(out);let rename_mark=Instant::now();std::fs::rename(part,out).map_err(|e|format!("10.0 atomic destination rename: {e}"))?;Ok((fsync,rename_mark.elapsed().as_secs_f64()))
 }
 
-fn finalize_local_output(src:&Path,out:&Path)->Result<(),String>{
-  let total_mark=Instant::now();let parent=out.parent().ok_or_else(||"8.61: у итогового файла нет родительской папки".to_string())?;
-  std::fs::create_dir_all(parent).map_err(|e|format!("8.61: не удалось создать папку результата: {e}"))?;
-  let part=parent.join(format!(".{}.endlume-part",out.file_name().and_then(|x|x.to_str()).unwrap_or("render.mov")));
-  let _=std::fs::remove_file(&part);let rename_mark=Instant::now();let mut mode="rename";let mut copy_seconds=0.0;let mut fsync_seconds=0.0;let mut copied_bytes=0u64;
+fn finalize_local_output(src:&Path,out:&Path)->Result<(f64,f64,f64,u64),String>{
+  let total_mark=Instant::now();
+  let parent=out.parent().ok_or_else(||"10.0.10: у итогового файла нет родительской папки".to_string())?;
+  std::fs::create_dir_all(parent).map_err(|e|format!("10.0.10: не удалось создать папку результата: {e}"))?;
+  let expected=std::fs::metadata(src).map_err(|e|format!("10.0.10 local final metadata {}: {e}",src.display()))?.len();
+  let part=parent.join(format!(".{}.endlume-part",out.file_name().and_then(|x|x.to_str()).unwrap_or("render.mp4")));
+  let _=std::fs::remove_file(&part);
+  let transfer_mark=Instant::now();
+  let mut mode="rename";
+  let mut bytes_written=expected;
+  let mut sync_seconds=0.0;
+  let mut sync_error=None::<String>;
+  let mut sync_errno=None::<i32>;
   match std::fs::rename(src,&part){
     Ok(_)=>{},
     Err(_)=>{
-      mode="copy";let mut input=std::fs::File::open(src).map_err(|e|format!("8.61: не удалось открыть локальный результат: {e}"))?;
-      let mut output=std::fs::File::create(&part).map_err(|e|format!("8.61: не удалось создать временный итоговый файл: {e}"))?;
-      let copy_mark=Instant::now();copied_bytes=std::io::copy(&mut input,&mut output).map_err(|e|format!("8.61: не удалось перенести итоговое видео на выбранный диск: {e}"))?;copy_seconds=copy_mark.elapsed().as_secs_f64();
-      let fsync_mark=Instant::now();output.sync_all().map_err(|e|format!("8.61: не удалось синхронизировать итоговое видео: {e}"))?;fsync_seconds=fsync_mark.elapsed().as_secs_f64();
-      drop(output);let _=std::fs::remove_file(src);
+      mode="copy";
+      let mut input=std::fs::File::open(src).map_err(|e|format!("10.0.10 destination transfer open source {}: {e}",src.display()))?;
+      let mut output=std::fs::File::create(&part).map_err(|e|format!("10.0.10 destination transfer create temp {}: {e}",part.display()))?;
+      bytes_written=std::io::copy(&mut input,&mut output).map_err(|e|format!("10.0.10 destination transfer write {}: {e}",part.display()))?;
+      output.flush().map_err(|e|format!("10.0.10 destination transfer flush {}: {e}",part.display()))?;
+      let sync_mark=Instant::now();
+      if let Err(e)=output.sync_data(){sync_errno=e.raw_os_error();sync_error=Some(e.to_string());}
+      sync_seconds=sync_mark.elapsed().as_secs_f64();
+      drop(output);
+      if bytes_written!=expected{return Err(format!("10.0.10 destination transfer truncated: {bytes_written}/{expected} bytes"))}
     }
   }
-  let initial_rename_seconds=rename_mark.elapsed().as_secs_f64();let _=std::fs::remove_file(out);let final_rename_mark=Instant::now();
-  std::fs::rename(&part,out).map_err(|e|format!("8.63: не удалось атомарно завершить итоговый MP4: {e}"))?;
-  diag_line(json!({"kind":"finalize-output","mode":mode,"src":src,"out":out,"copiedBytes":copied_bytes,"initialRenameOrCopySeconds":initial_rename_seconds,"copySeconds":copy_seconds,"fsyncSeconds":fsync_seconds,"finalRenameSeconds":final_rename_mark.elapsed().as_secs_f64(),"totalSeconds":total_mark.elapsed().as_secs_f64()}));
-  Ok(())
+  let transfer_seconds=transfer_mark.elapsed().as_secs_f64();
+  let actual_part=std::fs::metadata(&part).map_err(|e|format!("10.0.10 destination temp metadata {}: {e}",part.display()))?.len();
+  if actual_part!=expected{return Err(format!("10.0.10 destination temp size mismatch: {actual_part}/{expected} bytes"))}
+  if let Some(err)=sync_error.as_ref(){
+    diag_line(json!({"kind":"destination-sync-fallback","operation":"sync_data","destinationPath":out,"tempPath":part,"filesystem":"external-or-unknown","bytesWritten":bytes_written,"expectedBytes":expected,"actualBytes":actual_part,"errno":sync_errno,"error":err,"elapsedSeconds":sync_seconds}));
+  }
+  let _=std::fs::remove_file(out);
+  let rename_mark=Instant::now();
+  if let Err(first)=std::fs::rename(&part,out){
+    thread::sleep(Duration::from_millis(120));
+    std::fs::rename(&part,out).map_err(|second|format!("10.0.10 atomic destination rename failed after one retry: first={first}; second={second}"))?;
+  }
+  let rename_seconds=rename_mark.elapsed().as_secs_f64();
+  let actual=std::fs::metadata(out).map_err(|e|format!("10.0.10 final destination metadata {}: {e}",out.display()))?.len();
+  if actual!=expected{return Err(format!("10.0.10 final destination size mismatch: {actual}/{expected} bytes"))}
+  if src.exists(){let _=std::fs::remove_file(src);}
+  diag_line(json!({"kind":"finalize-output-1010","operation":"single-final-transfer","mode":mode,"src":src,"destinationPath":out,"tempPath":part,"bytesWritten":bytes_written,"expectedBytes":expected,"actualBytes":actual,"syncSeconds":sync_seconds,"syncError":sync_error,"syncErrno":sync_errno,"transferSeconds":transfer_seconds,"renameSeconds":rename_seconds,"totalSeconds":total_mark.elapsed().as_secs_f64()}));
+  Ok((transfer_seconds,sync_seconds,rename_seconds,actual))
 }
-
 
 fn refresh_project_paths(job:&mut QueueJob){
   let root=PathBuf::from(&job.project.path);
@@ -2014,7 +2040,7 @@ async fn render_interval_zero_copy_1000(app:&AppHandle,job:&QueueJob,effects:&[E
     concat_video_parts_852(app,job,&[master.clone(),sub_master],&pool,pool_frames,work,encoder,attempt,cancel,started,timer).await?;
     None
   };
-  let seed=destination_partial_path(out)?;let _=std::fs::remove_file(&seed);
+  let seed=work.join("interval-1000-final-local.mp4");let _=std::fs::remove_file(&seed);
   let mut args:Vec<String>=vec!["-hide_banner","-loglevel","error"].into_iter().map(String::from).collect();
   if let Some(list)=half_concat.as_ref(){
     args.extend(vec!["-f","concat","-safe","0","-fflags","+genpts","-i",list.to_string_lossy().as_ref()].into_iter().map(String::from));
@@ -2027,8 +2053,8 @@ async fn render_interval_zero_copy_1000(app:&AppHandle,job:&QueueJob,effects:&[E
   args.extend(vec!["-t",&final_duration.to_string(),"-map","0:v:0","-map","1:a:0","-c:v","copy"].into_iter().map(String::from));
   args.extend(final_mp4_audio_args(mux_audio,&final_audio_encoder));
   args.extend(vec!["-progress","pipe:1","-y",seed.to_string_lossy().as_ref()].into_iter().map(String::from));
-  let mux_stage=if fast_audio_source.is_some(){"10.0.3: cached AAC packet-copy → destination"}else{"10.0.2: final mux AAC → destination partial"};
-  let mux_mark=Instant::now();run_ffmpeg(app,job,started,timer,args,mux_stage,78.0,8.0,final_duration,encoder,attempt,cancel).await?;let mux_sec=mux_mark.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"final-mux",mux_sec);emit_timing(app,&job.project.id,"destination-write",mux_sec);
+  let mux_stage=if fast_audio_source.is_some(){"10.0.3: cached AAC packet-copy → local SSD final"}else{"10.0.2: final mux AAC → local SSD final"};
+  let mux_mark=Instant::now();run_ffmpeg(app,job,started,timer,args,mux_stage,78.0,8.0,final_duration,encoder,attempt,cancel).await?;let mux_sec=mux_mark.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"final-mux",mux_sec);
   let total_frames=(final_duration*fps as f64).round().max(1.0) as usize;let mut selected=Vec::with_capacity(total_frames);let mut appearances=0usize;
   for frame in 0..total_frames{
     if frame>=plan.first_frames{
@@ -2049,7 +2075,7 @@ async fn render_interval_zero_copy_1000(app:&AppHandle,job:&QueueJob,effects:&[E
   ensure_license_allowed()?;let map_sec=map_mark.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"sample-table",map_sec);emit_timing(app,&job.project.id,"zero-copy-manifest",map_sec);
   let _=app.emit("engine-profile",json!({"id":job.project.id,"physicalEncodedFrames":pool_frames,"logicalFrames":total_frames,"physicalFps":if half_rate{30}else{fps},"logicalFps":fps,"halfRateAllIntra":half_rate,"numberOfSubscribeAppearances":appearances,"subscribeIntervalSec":plan.repeat_frames as f64/fps as f64,"subscribeDurationSec":plan.duration_frames as f64/fps as f64}));
   strict_856_validate_natural_size(&seed,final_duration)?;
-  let (fsync_sec,rename_sec)=commit_destination_partial(&seed,out)?;emit_timing(app,&job.project.id,"fsync",fsync_sec);emit_timing(app,&job.project.id,"atomic-rename",rename_sec);
+  let (transfer_sec,sync_sec,rename_sec,_)=finalize_local_output(&seed,out)?;emit_timing(app,&job.project.id,"destination-write",transfer_sec);emit_timing(app,&job.project.id,"fsync",sync_sec);emit_timing(app,&job.project.id,"atomic-rename",rename_sec);
   emit_progress(app,job,started,timer,96.0,"10.0.1 interval sample-table готов",encoder,attempt,None);Ok(true)
 }
 
@@ -2069,8 +2095,8 @@ async fn render_zero_sub_zero_copy_856(app:&AppHandle,job:&QueueJob,effects:&[Ef
   let visual_master_seconds=vm.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"strict-visual-master",visual_master_seconds);emit_timing(app,&job.project.id,"visual-master",visual_master_seconds);
   let fast_audio_source=fast_audio_path.map(AudioSource::Loop);
   let mux_audio=fast_audio_source.as_ref().unwrap_or(audio);
-  let seed=destination_partial_path(out)?;let _=std::fs::remove_file(&seed);let mut mux:Vec<String>=vec!["-hide_banner","-loglevel","error","-i",master.to_string_lossy().as_ref()].into_iter().map(String::from).collect();extend_audio_input_args(&mut mux,mux_audio,final_duration,work)?;mux.extend(vec!["-t",&final_duration.to_string(),"-map","0:v:0","-map","1:a:0","-c:v","copy"].into_iter().map(String::from));mux.extend(final_mp4_audio_args(mux_audio,&final_audio_encoder));mux.extend(vec!["-progress","pipe:1","-y",seed.to_string_lossy().as_ref()].into_iter().map(String::from));let audio_stage=if fast_audio_source.is_some(){"10.0.3: cached AAC packet-copy"}else if matches!(audio,&AudioSource::Loop(_)|&AudioSource::ConcatList{..}){"10.0.2: MP3 → AAC-LC 320k"}else{"10.0.1: AAC passthrough"};let am=Instant::now();run_ffmpeg(app,job,started,timer,mux,audio_stage,74.0,12.0,final_duration,encoder,attempt,cancel).await?;let audio_mux_sec=am.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"strict-audio-mux",audio_mux_sec);emit_timing(app,&job.project.id,"audio-mux",audio_mux_sec);emit_timing(app,&job.project.id,"final-mux",audio_mux_sec);emit_timing(app,&job.project.id,"destination-write",audio_mux_sec);if let Ok(meta)=std::fs::metadata(&seed){let mb_s=(meta.len() as f64/1_048_576.0)/audio_mux_sec.max(0.001);let _=app.emit("engine-profile",json!({"id":job.project.id,"diskWriteMBs":mb_s}));}
-  let total_frames=(final_duration*fps as f64).round().max(master_frames as f64) as usize;let _=app.emit("engine-profile",json!({"id":job.project.id,"physicalEncodedFrames":master_frames,"logicalFrames":total_frames,"manifestFrames":total_frames}));let mm=Instant::now();ensure_license_allowed()?;crate::mp4_manifest::expand_video_prefix_cycle(&seed,&seed,0,master_frames,total_frames)?;ensure_license_allowed()?;let manifest_seconds=mm.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"zero-copy-manifest",manifest_seconds);emit_timing(app,&job.project.id,"manifest-expand",manifest_seconds);ensure_license_allowed()?;strict_856_validate_natural_size(&seed,final_duration)?;let finalize_mark=Instant::now();let (fsync_sec,rename_sec)=commit_destination_partial(&seed,out).map_err(|e|format!("10.0: finalize destination partial: {e}"))?;emit_timing(app,&job.project.id,"fsync",fsync_sec);emit_timing(app,&job.project.id,"atomic-rename",rename_sec);ensure_license_allowed()?;emit_timing(app,&job.project.id,"finalize",finalize_mark.elapsed().as_secs_f64());emit_progress(app,job,started,timer,96.0,"10.0.1 zero-copy готов",encoder,attempt,None);Ok(true)
+  let seed=work.join("zero-sub-856-final-local.mp4");let _=std::fs::remove_file(&seed);let mut mux:Vec<String>=vec!["-hide_banner","-loglevel","error","-i",master.to_string_lossy().as_ref()].into_iter().map(String::from).collect();extend_audio_input_args(&mut mux,mux_audio,final_duration,work)?;mux.extend(vec!["-t",&final_duration.to_string(),"-map","0:v:0","-map","1:a:0","-c:v","copy"].into_iter().map(String::from));mux.extend(final_mp4_audio_args(mux_audio,&final_audio_encoder));mux.extend(vec!["-progress","pipe:1","-y",seed.to_string_lossy().as_ref()].into_iter().map(String::from));let audio_stage=if fast_audio_source.is_some(){"10.0.3: cached AAC packet-copy"}else if matches!(audio,&AudioSource::Loop(_)|&AudioSource::ConcatList{..}){"10.0.2: MP3 → AAC-LC 320k"}else{"10.0.1: AAC passthrough"};let am=Instant::now();run_ffmpeg(app,job,started,timer,mux,audio_stage,74.0,12.0,final_duration,encoder,attempt,cancel).await?;let audio_mux_sec=am.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"strict-audio-mux",audio_mux_sec);emit_timing(app,&job.project.id,"audio-mux",audio_mux_sec);emit_timing(app,&job.project.id,"final-mux",audio_mux_sec);if let Ok(meta)=std::fs::metadata(&seed){let mb_s=(meta.len() as f64/1_048_576.0)/audio_mux_sec.max(0.001);let _=app.emit("engine-profile",json!({"id":job.project.id,"diskWriteMBs":mb_s}));}
+  let total_frames=(final_duration*fps as f64).round().max(master_frames as f64) as usize;let _=app.emit("engine-profile",json!({"id":job.project.id,"physicalEncodedFrames":master_frames,"logicalFrames":total_frames,"manifestFrames":total_frames}));let mm=Instant::now();ensure_license_allowed()?;crate::mp4_manifest::expand_video_prefix_cycle(&seed,&seed,0,master_frames,total_frames)?;ensure_license_allowed()?;let manifest_seconds=mm.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"zero-copy-manifest",manifest_seconds);emit_timing(app,&job.project.id,"manifest-expand",manifest_seconds);ensure_license_allowed()?;strict_856_validate_natural_size(&seed,final_duration)?;let finalize_mark=Instant::now();let (transfer_sec,sync_sec,rename_sec,_)=finalize_local_output(&seed,out).map_err(|e|format!("10.0.10: finalize local output: {e}"))?;emit_timing(app,&job.project.id,"destination-write",transfer_sec);emit_timing(app,&job.project.id,"fsync",sync_sec);emit_timing(app,&job.project.id,"atomic-rename",rename_sec);ensure_license_allowed()?;emit_timing(app,&job.project.id,"finalize",finalize_mark.elapsed().as_secs_f64());emit_progress(app,job,started,timer,96.0,"10.0.1 zero-copy готов",encoder,attempt,None);Ok(true)
 }
 
 async fn render_periodic_zero_copy_852(app:&AppHandle,job:&QueueJob,effects:&[EffectPreset],subs:&[SubscribePreset],audio:&AudioSource,final_duration:f64,work:&Path,out:&Path,encoder:&str,attempt:u32,cancel:&AtomicBool,started:i64,timer:&Instant)->Result<bool,String>{
@@ -2086,8 +2112,8 @@ async fn render_periodic_zero_copy_852(app:&AppHandle,job:&QueueJob,effects:&[Ef
   let recurring_mark=Instant::now();let recurring=render_periodic_sub_852(app,job,&master,&plan.sub,phase,cycle_sub,work,"cycle",encoder,attempt,cancel,started,timer).await?;emit_timing(app,&job.project.id,"periodic-sub-cycle",recurring_mark.elapsed().as_secs_f64());
   let mut parts=prefix;parts.push(recurring);let remain=plan.repeat_frames-cycle_sub;let full=remain/plan.master_frames;let tail=remain%plan.master_frames;for _ in 0..full{parts.push(master.clone())}if tail>0{let p=work.join("periodic-852-cycle-tail.mp4");copy_head_frames_852(app,job,&master,tail,&p,encoder,attempt,cancel,started,timer).await?;parts.push(p)}
   let seed_video=work.join("periodic-852-seed-video.mp4");let seed_frames=plan.anchor_frames+plan.repeat_frames;let concat_mark=Instant::now();concat_video_parts_852(app,job,&parts,&seed_video,seed_frames,work,encoder,attempt,cancel,started,timer).await?;emit_timing(app,&job.project.id,"periodic-video-concat",concat_mark.elapsed().as_secs_f64());
-  let seed=destination_partial_path(out)?;let _=std::fs::remove_file(&seed);let mut args:Vec<String>=vec!["-hide_banner","-loglevel","error","-i",seed_video.to_string_lossy().as_ref()].into_iter().map(String::from).collect();extend_audio_input_args(&mut args,audio,final_duration,work)?;let final_audio_encoder=choose_audio_encoder(app).await;args.extend(vec!["-t",&final_duration.to_string(),"-map","0:v:0","-map","1:a:0","-c:v","copy"].into_iter().map(String::from));args.extend(final_mp4_audio_args(audio,&final_audio_encoder));args.extend(vec!["-progress","pipe:1","-y",seed.to_string_lossy().as_ref()].into_iter().map(String::from));let seed_mux_mark=Instant::now();run_ffmpeg(app,job,started,timer,args,"10.0.2: AAC mux напрямую в destination partial",78.0,8.0,final_duration,encoder,attempt,cancel).await?;let seed_mux_seconds=seed_mux_mark.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"periodic-seed-mux",seed_mux_seconds);emit_timing(app,&job.project.id,"final-mux",seed_mux_seconds);emit_timing(app,&job.project.id,"destination-write",seed_mux_seconds);
-  let total_frames=(final_duration*fps as f64).round().max(seed_frames as f64) as usize;let _=app.emit("engine-profile",json!({"id":job.project.id,"physicalEncodedFrames":seed_frames,"logicalFrames":total_frames,"manifestFrames":total_frames}));let mark=Instant::now();ensure_license_allowed()?;crate::mp4_manifest::expand_video_prefix_cycle(&seed,&seed,plan.anchor_frames,plan.repeat_frames,total_frames)?;ensure_license_allowed()?;let manifest_seconds=mark.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"zero-copy-manifest",manifest_seconds);emit_timing(app,&job.project.id,"manifest-expand",manifest_seconds);ensure_license_allowed()?;strict_856_validate_natural_size(&seed,final_duration)?;let finalize_mark=Instant::now();let (fsync_sec,rename_sec)=commit_destination_partial(&seed,out).map_err(|e|format!("10.0: finalize periodic partial: {e}"))?;emit_timing(app,&job.project.id,"fsync",fsync_sec);emit_timing(app,&job.project.id,"atomic-rename",rename_sec);ensure_license_allowed()?;emit_timing(app,&job.project.id,"finalize",finalize_mark.elapsed().as_secs_f64());emit_timing(app,&job.project.id,"periodic-total",periodic_total_mark.elapsed().as_secs_f64());emit_progress(app,job,started,timer,96.0,"10.0.1 Zero-copy manifest готов",encoder,attempt,None);Ok(true)
+  let seed=work.join("periodic-852-final-local.mp4");let _=std::fs::remove_file(&seed);let mut args:Vec<String>=vec!["-hide_banner","-loglevel","error","-i",seed_video.to_string_lossy().as_ref()].into_iter().map(String::from).collect();extend_audio_input_args(&mut args,audio,final_duration,work)?;let final_audio_encoder=choose_audio_encoder(app).await;args.extend(vec!["-t",&final_duration.to_string(),"-map","0:v:0","-map","1:a:0","-c:v","copy"].into_iter().map(String::from));args.extend(final_mp4_audio_args(audio,&final_audio_encoder));args.extend(vec!["-progress","pipe:1","-y",seed.to_string_lossy().as_ref()].into_iter().map(String::from));let seed_mux_mark=Instant::now();run_ffmpeg(app,job,started,timer,args,"10.0.2: AAC mux → local SSD final",78.0,8.0,final_duration,encoder,attempt,cancel).await?;let seed_mux_seconds=seed_mux_mark.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"periodic-seed-mux",seed_mux_seconds);emit_timing(app,&job.project.id,"final-mux",seed_mux_seconds);
+  let total_frames=(final_duration*fps as f64).round().max(seed_frames as f64) as usize;let _=app.emit("engine-profile",json!({"id":job.project.id,"physicalEncodedFrames":seed_frames,"logicalFrames":total_frames,"manifestFrames":total_frames}));let mark=Instant::now();ensure_license_allowed()?;crate::mp4_manifest::expand_video_prefix_cycle(&seed,&seed,plan.anchor_frames,plan.repeat_frames,total_frames)?;ensure_license_allowed()?;let manifest_seconds=mark.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"zero-copy-manifest",manifest_seconds);emit_timing(app,&job.project.id,"manifest-expand",manifest_seconds);ensure_license_allowed()?;strict_856_validate_natural_size(&seed,final_duration)?;let finalize_mark=Instant::now();let (transfer_sec,sync_sec,rename_sec,_)=finalize_local_output(&seed,out).map_err(|e|format!("10.0.10: finalize periodic local output: {e}"))?;emit_timing(app,&job.project.id,"destination-write",transfer_sec);emit_timing(app,&job.project.id,"fsync",sync_sec);emit_timing(app,&job.project.id,"atomic-rename",rename_sec);ensure_license_allowed()?;emit_timing(app,&job.project.id,"finalize",finalize_mark.elapsed().as_secs_f64());emit_timing(app,&job.project.id,"periodic-total",periodic_total_mark.elapsed().as_secs_f64());emit_progress(app,job,started,timer,96.0,"10.0.1 Zero-copy manifest готов",encoder,attempt,None);Ok(true)
 }
 
 
@@ -2202,7 +2228,7 @@ async fn render_pingpong_zero_copy_1002(app:&AppHandle,job:&QueueJob,source_mast
     let phase=first_frames%cycle_frames;let sub_master=render_periodic_sub_852(app,job,&master,&sub,phase,duration_frames,work,"pingpong-v1002",encoder,attempt,cancel,started,timer).await?;
     pool=work.join("pingpong-1002-video-pool.mp4");pool_frames=cycle_frames+duration_frames;concat_video_parts_852(app,job,&[master.clone(),sub_master],&pool,pool_frames,work,encoder,attempt,cancel,started,timer).await?;sub_plan=Some((first_frames,repeat_frames,duration_frames));
   }
-  let seed=destination_partial_path(out)?;let _=std::fs::remove_file(&seed);
+  let seed=work.join("pingpong-1002-final-local.mp4");let _=std::fs::remove_file(&seed);
   let args:Vec<String>=vec![
     "-hide_banner","-loglevel","error",
     "-i",pool.to_string_lossy().as_ref(),
@@ -2213,7 +2239,7 @@ async fn render_pingpong_zero_copy_1002(app:&AppHandle,job:&QueueJob,source_mast
     "-tag:a","mp4a","-disposition:a:0","default","-metadata:s:a:0","language=und",
     "-progress","pipe:1","-y",seed.to_string_lossy().as_ref()
   ].into_iter().map(String::from).collect();
-  let mux_mark=Instant::now();run_ffmpeg(app,job,started,timer,args,"10.0.2: Ping-Pong cached AAC packet-copy mux",58.0,10.0,final_duration,encoder,attempt,cancel).await?;let mux_sec=mux_mark.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"final-mux",mux_sec);emit_timing(app,&job.project.id,"destination-write",mux_sec);
+  let mux_mark=Instant::now();run_ffmpeg(app,job,started,timer,args,"10.0.2: Ping-Pong cached AAC packet-copy mux",58.0,10.0,final_duration,encoder,attempt,cancel).await?;let mux_sec=mux_mark.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"final-mux",mux_sec);
   let total_frames=(final_duration*fps as f64).round().max(cycle_frames as f64) as usize;let mut selected=Vec::with_capacity(total_frames);let mut appearances=0usize;
   for frame in 0..total_frames{
     if let Some((first,repeat,duration))=sub_plan{
@@ -2222,7 +2248,7 @@ async fn render_pingpong_zero_copy_1002(app:&AppHandle,job:&QueueJob,source_mast
     selected.push(frame%cycle_frames)
   }
   let map_mark=Instant::now();ensure_license_allowed()?;crate::mp4_manifest::remap_video_samples(&seed,&seed,&selected)?;ensure_license_allowed()?;let map_sec=map_mark.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"sample-table",map_sec);emit_timing(app,&job.project.id,"zero-copy-manifest",map_sec);
-  strict_856_validate_natural_size(&seed,final_duration)?;let (fsync_sec,rename_sec)=commit_destination_partial(&seed,out)?;emit_timing(app,&job.project.id,"fsync",fsync_sec);emit_timing(app,&job.project.id,"atomic-rename",rename_sec);
+  strict_856_validate_natural_size(&seed,final_duration)?;let (transfer_sec,sync_sec,rename_sec,_)=finalize_local_output(&seed,out)?;emit_timing(app,&job.project.id,"destination-write",transfer_sec);emit_timing(app,&job.project.id,"fsync",sync_sec);emit_timing(app,&job.project.id,"atomic-rename",rename_sec);
   let bytes=std::fs::metadata(out).map(|m|m.len()).unwrap_or(0);
   if bytes<P0C_FINAL_MIN_BYTES||bytes>P0C_FINAL_MAX_BYTES{let _=std::fs::remove_file(out);return Err(format!("ENDLUME FINAL SIZE BLOCKER: final bytes={bytes}, required={}..{}",P0C_FINAL_MIN_BYTES,P0C_FINAL_MAX_BYTES))}
   let _=app.emit("engine-profile",json!({"id":job.project.id,"pingPongFast":true,"pingPongPhysicalFrames":cycle_frames,"pingPongPhysicalSeconds":cycle_frames as f64/fps as f64,"pingPongPhysicalPoolFrames":pool_frames,"pingPongCache":"ACTIVE","numberOfSubscribeAppearances":appearances,"finalBytes":bytes}));

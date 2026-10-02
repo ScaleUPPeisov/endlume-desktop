@@ -78,6 +78,44 @@ async fn run_preview(app:&AppHandle,args:Vec<String>)->Result<Vec<u8>,String>{
 }
 
 #[tauri::command]
+pub async fn generate_preview_poster(app:AppHandle,project_path:String,time_sec:f64,effects:Vec<EffectPreset>,subscribes:Vec<SubscribePreset>,request_id:Option<String>)->Result<String,String>{
+  let request=request_id.unwrap_or_else(||uuid::Uuid::new_v4().to_string());
+  let dir=PathBuf::from(&project_path);if !dir.is_dir(){return Err("Сначала выберите папку проекта".into())}
+  let mut media:Vec<PathBuf>=std::fs::read_dir(&dir).map_err(|e|e.to_string())?.flatten().map(|e|e.path()).filter(|p|p.is_file()&&(IMAGE.contains(&ext(p).as_str())||VIDEO.contains(&ext(p).as_str()))).collect();
+  media.sort_by(|a,b|natural_name(a).cmp(&natural_name(b)));
+  let (src,local_time)=pick_preview_media(&media,time_sec).ok_or("В проекте нет изображения или видео")?;
+  let preview_dir=app.path().app_cache_dir().map_err(|e|e.to_string())?.join("previews-v3");std::fs::create_dir_all(&preview_dir).map_err(|e|e.to_string())?;
+  let id=uuid::Uuid::new_v4();let out=preview_dir.join(format!("endlume-poster-{id}.png"));let tmp=preview_dir.join(format!(".endlume-poster-{id}.tmp.png"));
+  let mut args:Vec<String>=vec!["-hide_banner","-loglevel","error"].into_iter().map(String::from).collect();
+  if is_image(src){args.extend(vec!["-loop","1","-framerate","30","-i",src.to_string_lossy().as_ref()].into_iter().map(String::from));}else{args.extend(vec!["-stream_loop","-1","-ss",&local_time.max(0.0).to_string(),"-i",src.to_string_lossy().as_ref()].into_iter().map(String::from));}
+  let enabled_fx:Vec<EffectPreset>=effects.into_iter().filter(ready_overlay).collect();
+  let enabled_sub:Vec<SubscribePreset>=subscribes.into_iter().filter(|x|ready_overlay(&x.effect)).collect();
+  for e in &enabled_fx{args.extend(vec!["-stream_loop","-1","-ss",&e.preview_frame_time.max(0.0).to_string(),"-i",e.source.as_str()].into_iter().map(String::from));}
+  for x in &enabled_sub{args.extend(vec!["-stream_loop","-1","-ss",&x.effect.preview_frame_time.max(0.0).to_string(),"-i",x.effect.source.as_str()].into_iter().map(String::from));}
+  let (w,h)=(960u32,540u32);
+  let mut graph=format!("[0:v]scale={w}:{h}:force_original_aspect_ratio=increase:flags=lanczos+accurate_rnd,crop={w}:{h}:(iw-ow)/2:(ih-oh)/2,fps=30,setsar=1[b0]");
+  let mut base="b0".to_string();let mut idx=1usize;
+  for e in &enabled_fx{overlay_effect(&mut graph,&mut base,idx,e,w,h,false);idx+=1;}
+  for x in &enabled_sub{overlay_effect(&mut graph,&mut base,idx,&x.effect,w,h,true);idx+=1;}
+  graph.push_str(&format!(";[{base}]format=rgb24[outv]"));
+  args.extend(vec!["-filter_complex",&graph,"-map","[outv]","-frames:v","1","-compression_level","1","-y",tmp.to_string_lossy().as_ref()].into_iter().map(String::from));
+  run_preview(&app,args).await?;
+  let size=std::fs::metadata(&tmp).map_err(|e|format!("Preview poster metadata: {e}"))?.len();
+  if size<1024{let _=std::fs::remove_file(&tmp);return Err(format!("Preview poster слишком мал: {size} bytes"))}
+  std::fs::rename(&tmp,&out).map_err(|e|format!("Preview poster atomic publish: {e}"))?;
+  if cfg!(debug_assertions)||std::env::var_os("ENDLUME_PREVIEW_DIAG").is_some(){
+    eprintln!("PREVIEW_REQUEST_ID={request}");
+    eprintln!("PREVIEW_TYPE={}",if !enabled_sub.is_empty(){"Subscribe"}else if !enabled_fx.is_empty(){"Effects"}else{"Baseline"});
+    eprintln!("COMPOSED_POSTER_PATH={}",out.display());
+    eprintln!("COMPOSED_POSTER_EXISTS={}",out.is_file());
+    eprintln!("COMPOSED_POSTER_BYTES={size}");
+    eprintln!("POSTER_WIDTH={w}");
+    eprintln!("POSTER_HEIGHT={h}");
+  }
+  Ok(out.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
 pub async fn generate_preview(app:AppHandle,project_path:String,time_sec:f64,effects:Vec<EffectPreset>,subscribes:Vec<SubscribePreset>,request_id:Option<String>)->Result<String,String>{
   let request=request_id.unwrap_or_else(||uuid::Uuid::new_v4().to_string());
   let started=std::time::Instant::now();

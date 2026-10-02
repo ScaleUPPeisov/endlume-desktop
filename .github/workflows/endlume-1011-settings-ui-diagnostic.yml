@@ -13,7 +13,7 @@ jobs:
     runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
     timeout-minutes: 8
     steps:
-      - name: Probe keyboard focus path in installed ENDLUME
+      - name: Probe Settings keyboard focus path
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -35,21 +35,13 @@ jobs:
                   set el to value of attribute "AXFocusedUIElement"
                   set rr to ""
                   set nn to ""
-                  set dd to ""
-                  set vv to ""
                   try
                     set rr to role of el as text
                   end try
                   try
                     set nn to name of el as text
                   end try
-                  try
-                    set dd to description of el as text
-                  end try
-                  try
-                    set vv to value of el as text
-                  end try
-                  return stepName & "|role=" & rr & "|name=" & nn & "|desc=" & dd & "|value=" & vv
+                  return stepName & "|role=" & rr & "|name=" & nn
                 on error errText
                   return stepName & "|ERROR=" & errText
                 end try
@@ -59,11 +51,18 @@ jobs:
           tell application "System Events"
             set ps to application processes whose bundle identifier is "studio.endlume.desktop"
             tell item 1 of ps to set frontmost to true
-            log my focusedInfo("START")
-            repeat with i from 1 to 14
+            repeat with i from 1 to 4
+              key code 48
+              delay 0.1
+            end repeat
+            log my focusedInfo("SETTINGS_FOCUS")
+            key code 36
+            delay 0.5
+            log my focusedInfo("AFTER_SETTINGS_ENTER")
+            repeat with i from 1 to 12
               key code 48
               delay 0.12
-              log my focusedInfo("TAB" & i)
+              log my focusedInfo("S_TAB" & i)
             end repeat
           end tell
           APPLESCRIPT

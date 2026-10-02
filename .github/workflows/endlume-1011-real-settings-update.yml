@@ -140,7 +140,8 @@ jobs:
         run: |
           set -Eeuo pipefail
           export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-          gh auth status -h github.com >/dev/null
+          # Public Settings updater does not require a user's local GitHub CLI session.
+          # Release publishing above is authenticated by github.token; the app consumes published assets.
           ACCESS="$(/usr/bin/osascript -e 'tell application "System Events" to return UI elements enabled' 2>/dev/null || true)"
           if [ "$ACCESS" != "true" ]; then
             echo "ENDLUME_REAL_BLOCKER=MACOS_ACCESSIBILITY_DISABLED"

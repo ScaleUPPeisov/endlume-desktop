@@ -20,6 +20,19 @@ fn is_image(p:&Path)->bool{IMAGE.contains(&ext(p).as_str())}
 fn is_media(p:&Path)->bool{is_image(p)||VIDEO.contains(&ext(p).as_str())}
 fn natural_name(p:&Path)->String{p.file_name().and_then(|x|x.to_str()).unwrap_or("").to_lowercase()}
 fn ready_file(p:&Path)->bool{!is_macos_sidecar(p)&&fs::metadata(p).map(|m|m.is_file()&&m.len()>1024).unwrap_or(false)}
+fn live_preview_diag_enabled()->bool{cfg!(debug_assertions)||std::env::var_os("ENDLUME_PREVIEW_DIAG").is_some()}
+async fn frame_probe_diag(app:&AppHandle,p:&Path)->(String,String,String){
+  if !p.is_file(){return ("0".into(),"0".into(),"unknown".into())}
+  let args=vec!["-v","error","-select_streams","v:0","-show_entries","stream=width,height,pix_fmt","-of","json",p.to_string_lossy().as_ref()].into_iter().map(String::from).collect::<Vec<_>>();
+  let Ok(cmd)=app.shell().sidecar("ffprobe") else{return ("0".into(),"0".into(),"unknown".into())};
+  let Ok(out)=cmd.args(args).output().await else{return ("0".into(),"0".into(),"unknown".into())};
+  let Ok(v)=serde_json::from_slice::<serde_json::Value>(&out.stdout) else{return ("0".into(),"0".into(),"unknown".into())};
+  let stream=v.get("streams").and_then(|x|x.as_array()).and_then(|x|x.first());
+  let w=stream.and_then(|x|x.get("width")).map(|x|x.to_string()).unwrap_or_else(||"0".into());
+  let h=stream.and_then(|x|x.get("height")).map(|x|x.to_string()).unwrap_or_else(||"0".into());
+  let pix=stream.and_then(|x|x.get("pix_fmt")).and_then(|x|x.as_str()).unwrap_or("unknown").to_string();
+  (w,h,pix)
+}
 
 fn json_positive(v:Option<&serde_json::Value>)->bool{
   v.and_then(|x|x.as_f64().or_else(||x.as_str().and_then(|s|s.parse::<f64>().ok()))).map(|x|x.is_finite()&&x>0.0).unwrap_or(false)
@@ -105,10 +118,17 @@ async fn encode_proxy(app:&AppHandle,prefix:Vec<String>,safe_prefix:Option<Vec<S
 async fn make_base(app:&AppHandle,src:&Path,seek:f64,out:&Path)->Result<String,String>{
   if is_image(src){
     if ready_file(out){return Ok("image".into())}
-    let name=out.file_name().and_then(|x|x.to_str()).unwrap_or("base.jpg");
-    let tmp=out.with_file_name(format!(".{name}-{}.tmp.jpg",uuid::Uuid::new_v4()));
-    let args=vec!["-hide_banner","-loglevel","error","-i",src.to_string_lossy().as_ref(),"-vf","scale=960:540:force_original_aspect_ratio=decrease,pad=960:540:(ow-iw)/2:(oh-ih)/2","-frames:v","1","-q:v","2","-y",tmp.to_string_lossy().as_ref()].into_iter().map(String::from).collect();
-    run(app,args).await?;
+    let name=out.file_name().and_then(|x|x.to_str()).unwrap_or("base.png");
+    let tmp=out.with_file_name(format!(".{name}-{}.tmp.png",uuid::Uuid::new_v4()));
+    let args=vec!["-hide_banner","-loglevel","error","-i",src.to_string_lossy().as_ref(),"-vf","scale=960:540:force_original_aspect_ratio=decrease,pad=960:540:(ow-iw)/2:(oh-ih)/2","-frames:v","1","-compression_level","1","-y",tmp.to_string_lossy().as_ref()].into_iter().map(String::from).collect::<Vec<_>>();
+    let output=app.shell().sidecar("ffmpeg").map_err(|e|format!("FFmpeg Live Preview недоступен: {e}"))?.args(args).output().await.map_err(|e|format!("Не удалось запустить FFmpeg Live Preview: {e}"))?;
+    let stderr=String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let (width,height,pix_fmt)=frame_probe_diag(app,&tmp).await;
+    if live_preview_diag_enabled(){
+      let size=fs::metadata(&tmp).map(|m|m.len()).unwrap_or(0);
+      eprintln!("ENDLUME_PREVIEW_BASE SOURCE_IMAGE={} BASE_FRAME_PATH={} BASE_FRAME_EXISTS={} BASE_FRAME_SIZE={} WIDTH={} HEIGHT={} PIX_FMT={} FFMPEG_EXIT={:?} STDERR={:?} CACHE_KEY={} TEMP_PATH={}",src.display(),out.display(),tmp.is_file(),size,width,height,pix_fmt,output.status.code(),stderr,out.file_stem().and_then(|x|x.to_str()).unwrap_or(""),tmp.display());
+    }
+    if !output.status.success(){let _=fs::remove_file(&tmp);return Err(if stderr.is_empty(){"Не удалось создать базовый кадр Live Preview".into()}else{stderr})}
     if !ready_file(&tmp){let _=fs::remove_file(&tmp);return Err("Не удалось создать базовый кадр Live Preview".into())}
     if ready_file(out){let _=fs::remove_file(&tmp);}else{let _=fs::remove_file(out);fs::rename(&tmp,out).map_err(|e|format!("Live Preview atomic base publish: {e}"))?;}
     Ok("image".into())
@@ -139,7 +159,7 @@ pub async fn prepare_live_preview(app:AppHandle,project_path:String,overlay_sour
   let overlay=PathBuf::from(overlay_source);if !overlay.is_file(){return Err("Не найден файл Effects/Subscribe".into())}if rejected_macos_input(&overlay){return Err("ENDLUME заблокировала служебный AppleDouble/resource-fork файл macOS. Выберите настоящий Effects/Subscribe файл.".into())}if rejected_macos_input(&overlay){return Err("ENDLUME заблокировала служебный AppleDouble/resource-fork файл macOS. Выберите настоящий Effects/Subscribe файл.".into())}
   let base=first_media(&project).ok_or("В проекте нет корректного изображения или видео")?;let dir=cache_dir(&app)?;
   let base_key=fingerprint(&base,time_sec,"base");let overlay_key=fingerprint(&overlay,time_sec,"overlay");
-  let base_out=if is_image(&base){dir.join(format!("base-{base_key}.jpg"))}else{dir.join(format!("base-{base_key}.mp4"))};let overlay_out=dir.join(format!("overlay-{overlay_key}.mp4"));
+  let base_out=if is_image(&base){dir.join(format!("base-{base_key}.png"))}else{dir.join(format!("base-{base_key}.mp4"))};let overlay_out=dir.join(format!("overlay-{overlay_key}.mp4"));
   let base_kind=make_base(&app,&base,time_sec,&base_out).await?;make_overlay(&app,&overlay,time_sec,&overlay_out).await?;
   Ok(LivePreviewAssets{base_path:base_out.to_string_lossy().into_owned(),base_kind,overlay_path:overlay_out.to_string_lossy().into_owned()})
 }

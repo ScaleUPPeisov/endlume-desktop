@@ -1,7 +1,8 @@
 import React,{useEffect,useRef,useState} from 'react';
+import {readFile} from '@tauri-apps/plugin-fs';
 import type {AnchorPoint,EffectPreset} from '../types';
 
-export type LivePreviewAssets={basePath:string;baseKind:'image'|'video';overlayPath:string;baseBytes?:number;overlayBytes?:number;requestId?:string;previewType?:'Effects'|'Subscribe'};
+export type LivePreviewAssets={basePath:string;baseFilePath?:string;baseKind:'image'|'video';overlayPath:string;overlayFilePath?:string;baseBytes?:number;overlayBytes?:number;requestId?:string;previewType?:'Effects'|'Subscribe'};
 
 type Props={
   assets?:LivePreviewAssets;
@@ -24,12 +25,38 @@ function rgbHex(r:number,g:number,b:number){return `#${[r,g,b].map(v=>Math.max(0
 
 export function LiveCompositePreview({assets,effect,active=true,busy,overlayRef,overlayStyle,onDragStart,onResizeStart,onPickColor,anchor,anchorMode,onAnchorPick,onFrameState}:Props){
   const canvasRef=useRef<HTMLCanvasElement>(null),videoRef=useRef<HTMLVideoElement>(null),rafRef=useRef<number|undefined>(undefined),effectRef=useRef(effect),brushRaf=useRef<number|undefined>(undefined),lastBrushPoint=useRef<{x:number;y:number}|undefined>(undefined),brushDown=useRef(false);
-  const baseReadyRef=useRef(false),baseSizeRef=useRef({w:0,h:0}),reportedFrameRef=useRef(false);
+  const baseReadyRef=useRef(false),baseSizeRef=useRef({w:0,h:0}),reportedFrameRef=useRef(false),transportBytesRef=useRef(0);
   const [picker,setPicker]=useState(false),[overlayAspect,setOverlayAspect]=useState<number>(1);
+  const [baseSrc,setBaseSrc]=useState<string>(),[overlaySrc,setOverlaySrc]=useState<string>();
   const syncOverlayAspect=(video:HTMLVideoElement)=>{if(video.videoWidth>0&&video.videoHeight>0)setOverlayAspect(video.videoWidth/video.videoHeight)};
   effectRef.current=effect;
 
-  useEffect(()=>{baseReadyRef.current=false;baseSizeRef.current={w:0,h:0};reportedFrameRef.current=false},[assets?.basePath,assets?.overlayPath,assets?.requestId]);
+  useEffect(()=>{baseReadyRef.current=false;baseSizeRef.current={w:0,h:0};reportedFrameRef.current=false;transportBytesRef.current=0;setBaseSrc(undefined);setOverlaySrc(undefined)},[assets?.basePath,assets?.overlayPath,assets?.requestId]);
+
+  useEffect(()=>{
+    if(!assets)return;
+    const requestId=assets.requestId||'<unknown>',previewType=assets.previewType||'Effects';
+    let disposed=false,baseObjectUrl:string|undefined,overlayObjectUrl:string|undefined;
+    (async()=>{
+      try{
+        if(!assets.baseFilePath||!assets.overlayFilePath)throw new Error('helper file path missing');
+        const [baseBytes,overlayBytes]=await Promise.all([readFile(assets.baseFilePath),readFile(assets.overlayFilePath)]);
+        if(baseBytes.byteLength<1024||overlayBytes.byteLength<1024)throw new Error(`helper payload too small: base=${baseBytes.byteLength} overlay=${overlayBytes.byteLength}`);
+        transportBytesRef.current=baseBytes.byteLength+overlayBytes.byteLength;
+        const baseRaw=baseBytes.buffer.slice(baseBytes.byteOffset,baseBytes.byteOffset+baseBytes.byteLength) as ArrayBuffer;
+        const overlayRaw=overlayBytes.buffer.slice(overlayBytes.byteOffset,overlayBytes.byteOffset+overlayBytes.byteLength) as ArrayBuffer;
+        baseObjectUrl=URL.createObjectURL(new Blob([baseRaw],{type:assets.baseKind==='image'?'image/png':'video/mp4'}));
+        overlayObjectUrl=URL.createObjectURL(new Blob([overlayRaw],{type:'video/mp4'}));
+        console.info(`[ENDLUME_PREVIEW] PREVIEW_REQUEST_ID=${requestId} PREVIEW_TYPE=${previewType} FRONTEND_PAYLOAD_BYTES=${transportBytesRef.current} OBJECT_URL_CREATED=true`);
+        if(disposed){URL.revokeObjectURL(baseObjectUrl);URL.revokeObjectURL(overlayObjectUrl);baseObjectUrl=undefined;overlayObjectUrl=undefined;return}
+        setBaseSrc(baseObjectUrl);setOverlaySrc(overlayObjectUrl);
+      }catch(error){
+        console.error(`[ENDLUME_PREVIEW] PREVIEW_REQUEST_ID=${requestId} PREVIEW_TYPE=${previewType} OBJECT_URL_CREATED=false IMAGE_LOAD=RED PREVIEW_APPLIED=false ERROR=${String(error)}`);
+        if(onFrameState&&!reportedFrameRef.current){reportedFrameRef.current=true;onFrameState({status:'RED',requestId,previewType,width:0,height:0,payloadBytes:transportBytesRef.current,paintedNonBlack:0})}
+      }
+    })();
+    return()=>{disposed=true;if(baseObjectUrl)URL.revokeObjectURL(baseObjectUrl);if(overlayObjectUrl)URL.revokeObjectURL(overlayObjectUrl)};
+  },[assets?.baseFilePath,assets?.overlayFilePath,assets?.baseKind,assets?.requestId,assets?.previewType,onFrameState]);
   const baseLoaded=(w:number,h:number)=>{
     if(w<=0||h<=0)return;
     baseReadyRef.current=true;baseSizeRef.current={w,h};
@@ -54,7 +81,7 @@ export function LiveCompositePreview({assets,effect,active=true,busy,overlayRef,
 
   useEffect(()=>{
     if(!active)return;
-    const canvas=canvasRef.current,video=videoRef.current;if(!canvas||!video||!assets?.overlayPath)return;
+    const canvas=canvasRef.current,video=videoRef.current;if(!canvas||!video||!overlaySrc)return;
     const gl=canvas.getContext('webgl',{alpha:true,premultipliedAlpha:false,antialias:false,preserveDrawingBuffer:false});if(!gl)return;
     const vs=gl.createShader(gl.VERTEX_SHADER)!,fs=gl.createShader(gl.FRAGMENT_SHADER)!;
     gl.shaderSource(vs,'attribute vec2 p;attribute vec2 t;varying vec2 v;void main(){gl_Position=vec4(p,0.,1.);v=t;}');
@@ -66,14 +93,14 @@ export function LiveCompositePreview({assets,effect,active=true,busy,overlayRef,
     const uKey=gl.getUniformLocation(program,'key'),uSim=gl.getUniformLocation(program,'sim'),uBlend=gl.getUniformLocation(program,'blend'),uDsp=gl.getUniformLocation(program,'dsp'),uMode=gl.getUniformLocation(program,'mode'),uLthr=gl.getUniformLocation(program,'lthr'),uLtol=gl.getUniformLocation(program,'ltol');
     let lastAspect=0;
     const syncAspect=()=>{if(video.videoWidth>0&&video.videoHeight>0){const next=video.videoWidth/video.videoHeight;if(Math.abs(next-lastAspect)>0.0001){lastAspect=next;setOverlayAspect(next)}}};
-    const draw=()=>{rafRef.current=requestAnimationFrame(draw);if(video.readyState<2||video.videoWidth<2)return;syncAspect();const w=Math.min(640,video.videoWidth),h=Math.max(2,Math.round(w*video.videoHeight/video.videoWidth));if(canvas.width!==w||canvas.height!==h){canvas.width=w;canvas.height=h;gl.viewport(0,0,w,h)}const e=effectRef.current,[r,g,b]=hexRgb(e.keyColor);const eq=e.id==='825dd7a4-f0cf-4032-a3c9-64290cb5756d'&&e.mode==='chromakey';const destructiveSubscribe=assets?.previewType==='Subscribe'&&e.mode==='chromakey'&&Math.abs(e.similarity-.60)<.000001&&Math.abs(e.blend-.35)<.000001;const sim=eq ? 0.18 : destructiveSubscribe ? 0.10 : e.similarity;const blend=eq ? 0.03 : destructiveSubscribe ? 0.06 : e.blend;gl.uniform3f(uKey,r,g,b);gl.uniform1f(uSim,Math.max(.001,Math.min(.6,sim)));gl.uniform1f(uBlend,Math.max(.001,Math.min(.35,blend)));gl.uniform1f(uDsp,Math.max(0,Math.min(1,e.despill||0)));gl.uniform1f(uMode,e.mode==='luma'?1:e.mode==='screen'?2:0);gl.uniform1f(uLthr,e.lumaThreshold);gl.uniform1f(uLtol,e.lumaTolerance);gl.bindTexture(gl.TEXTURE_2D,texture);try{gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,video);gl.drawArrays(gl.TRIANGLES,0,6);if(onFrameState&&baseReadyRef.current&&!reportedFrameRef.current){const px=new Uint8Array(w*h*4);gl.readPixels(0,0,w,h,gl.RGBA,gl.UNSIGNED_BYTE,px);let paintedNonBlack=0;for(let i=0;i<px.length;i+=4){if(px[i+3]>8&&(px[i]+px[i+1]+px[i+2]>18))paintedNonBlack++}const green=paintedNonBlack>8;const requestId=assets?.requestId||'<unknown>',previewType=assets?.previewType||'Effects',payloadBytes=(assets?.baseBytes||0)+(assets?.overlayBytes||0),bs=baseSizeRef.current;reportedFrameRef.current=true;console.info(`[ENDLUME_PREVIEW] PREVIEW_REQUEST_ID=${requestId} PREVIEW_TYPE=${previewType} FRONTEND_PAYLOAD_BYTES=${payloadBytes} OBJECT_URL_CREATED=false FRONTEND_TRANSFER_MODE=ASSET_STREAM IMAGE_LOAD=${green?'GREEN':'RED'} IMAGE_NATURAL_WIDTH=${bs.w} IMAGE_NATURAL_HEIGHT=${bs.h} BROWSER_NONBLACK_PIXELS=${paintedNonBlack} PREVIEW_APPLIED=${green}`);onFrameState({status:green?'GREEN':'RED',requestId,previewType,width:bs.w,height:bs.h,payloadBytes,paintedNonBlack})}}catch{}};
+    const draw=()=>{rafRef.current=requestAnimationFrame(draw);if(video.readyState<2||video.videoWidth<2)return;syncAspect();const w=Math.min(640,video.videoWidth),h=Math.max(2,Math.round(w*video.videoHeight/video.videoWidth));if(canvas.width!==w||canvas.height!==h){canvas.width=w;canvas.height=h;gl.viewport(0,0,w,h)}const e=effectRef.current,[r,g,b]=hexRgb(e.keyColor);const eq=e.id==='825dd7a4-f0cf-4032-a3c9-64290cb5756d'&&e.mode==='chromakey';const destructiveSubscribe=assets?.previewType==='Subscribe'&&e.mode==='chromakey'&&Math.abs(e.similarity-.60)<.000001&&Math.abs(e.blend-.35)<.000001;const sim=eq ? 0.18 : destructiveSubscribe ? 0.10 : e.similarity;const blend=eq ? 0.03 : destructiveSubscribe ? 0.06 : e.blend;gl.uniform3f(uKey,r,g,b);gl.uniform1f(uSim,Math.max(.001,Math.min(.6,sim)));gl.uniform1f(uBlend,Math.max(.001,Math.min(.35,blend)));gl.uniform1f(uDsp,Math.max(0,Math.min(1,e.despill||0)));gl.uniform1f(uMode,e.mode==='luma'?1:e.mode==='screen'?2:0);gl.uniform1f(uLthr,e.lumaThreshold);gl.uniform1f(uLtol,e.lumaTolerance);gl.bindTexture(gl.TEXTURE_2D,texture);try{gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,video);gl.drawArrays(gl.TRIANGLES,0,6);if(onFrameState&&baseReadyRef.current&&!reportedFrameRef.current){const px=new Uint8Array(w*h*4);gl.readPixels(0,0,w,h,gl.RGBA,gl.UNSIGNED_BYTE,px);let paintedNonBlack=0;for(let i=0;i<px.length;i+=4){if(px[i+3]>8&&(px[i]+px[i+1]+px[i+2]>18))paintedNonBlack++}const green=paintedNonBlack>8;const requestId=assets?.requestId||'<unknown>',previewType=assets?.previewType||'Effects',payloadBytes=transportBytesRef.current||((assets?.baseBytes||0)+(assets?.overlayBytes||0)),bs=baseSizeRef.current;reportedFrameRef.current=true;console.info(`[ENDLUME_PREVIEW] PREVIEW_REQUEST_ID=${requestId} PREVIEW_TYPE=${previewType} FRONTEND_PAYLOAD_BYTES=${payloadBytes} OBJECT_URL_CREATED=false FRONTEND_TRANSFER_MODE=ASSET_STREAM IMAGE_LOAD=${green?'GREEN':'RED'} IMAGE_NATURAL_WIDTH=${bs.w} IMAGE_NATURAL_HEIGHT=${bs.h} BROWSER_NONBLACK_PIXELS=${paintedNonBlack} PREVIEW_APPLIED=${green}`);onFrameState({status:green?'GREEN':'RED',requestId,previewType,width:bs.w,height:bs.h,payloadBytes,paintedNonBlack})}}catch{}};
     const start=()=>{syncAspect();video.play().catch(()=>{});if(rafRef.current==null)rafRef.current=requestAnimationFrame(draw)};video.addEventListener('loadedmetadata',syncAspect);video.addEventListener('loadeddata',start);if(video.readyState>=1)syncAspect();if(video.readyState>=2)start();
     return()=>{video.removeEventListener('loadedmetadata',syncAspect);video.removeEventListener('loadeddata',start);if(rafRef.current!=null)cancelAnimationFrame(rafRef.current);rafRef.current=undefined;gl.deleteTexture(texture);gl.deleteBuffer(pos);gl.deleteBuffer(tc);gl.deleteProgram(program);gl.deleteShader(vs);gl.deleteShader(fs)};
-  },[assets?.overlayPath,assets?.previewType,assets?.requestId,assets?.baseBytes,assets?.overlayBytes,active,onFrameState]);
+  },[overlaySrc,assets?.previewType,assets?.requestId,assets?.baseBytes,assets?.overlayBytes,active,onFrameState]);
 
   useEffect(()=>()=>{if(brushRaf.current!=null)cancelAnimationFrame(brushRaf.current)},[]);
   if(!assets)return <div className="livePreviewEmpty"><span>{busy?'Подготавливаю Live Preview…':'Выберите проект на основном экране'}</span></div>;
-  const helperBase=assets.baseKind==='video'?<video key={assets.basePath} className="livePreviewBase helperPreviewBase" src={assets.basePath} preload="auto" autoPlay loop muted playsInline onLoadedData={e=>baseLoaded(e.currentTarget.videoWidth,e.currentTarget.videoHeight)}/>:<img className="livePreviewBase helperPreviewBase" src={assets.basePath} draggable={false} onLoad={e=>baseLoaded(e.currentTarget.naturalWidth,e.currentTarget.naturalHeight)}/>;
+  const helperBase=baseSrc?(assets.baseKind==='video'?<video key={baseSrc} className="livePreviewBase helperPreviewBase" src={baseSrc} preload="auto" autoPlay loop muted playsInline onLoadedData={e=>baseLoaded(e.currentTarget.videoWidth,e.currentTarget.videoHeight)}/>:<img className="livePreviewBase helperPreviewBase" src={baseSrc} draggable={false} onLoad={e=>baseLoaded(e.currentTarget.naturalWidth,e.currentTarget.naturalHeight)}/>):null;
   const exactOverlayStyle:React.CSSProperties=effect.fullscreen?overlayStyle:{...overlayStyle,aspectRatio:String(Math.max(.05,overlayAspect)),height:'auto'};
   return <div className={`liveComposite ${picker?'chromaPicking':''} ${anchorMode?'anchorPicking':''}`} onPointerDownCapture={pickAnchor}>
     {helperBase}
@@ -84,11 +111,11 @@ export function LiveCompositePreview({assets,effect,active=true,busy,overlayRef,
       onPointerMove={e=>{if(picker&&brushDown.current){e.preventDefault();e.stopPropagation();scheduleSample(e.clientX,e.clientY)}}}
       onPointerUp={e=>{if(picker){e.preventDefault();e.stopPropagation();brushDown.current=false;sampleAt(e.clientX,e.clientY)}}}
       onPointerCancel={()=>{brushDown.current=false}}>
-      <><video ref={videoRef} className="liveOverlaySource" src={assets.overlayPath} autoPlay loop muted playsInline/>
+      <><video ref={videoRef} className="liveOverlaySource" src={overlaySrc} autoPlay loop muted playsInline/>
       <canvas ref={canvasRef} className="liveOverlayCanvas" style={{mixBlendMode:effect.mode==='screen'?'screen':'normal',opacity:Math.max(0,Math.min(1,effect.opacity??1))}}/></>
       {!effect.fullscreen&&!picker&&<><i className="corner nw"/><i className="corner ne"/><i className="corner sw"/><i className="corner se" onPointerDown={onResizeStart}/></>}
     </div>}
     {!active&&<div className="livePreviewDisabled">OFF • overlay скрыт</div>}
-    {busy&&<div className="livePreviewPreparing">Подготавливаю Live Preview…</div>}
+    {(busy||!baseSrc||!overlaySrc)&&<div className="livePreviewPreparing">Подготавливаю Live Preview…</div>}
   </div>
 }

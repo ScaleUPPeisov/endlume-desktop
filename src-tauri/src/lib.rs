@@ -144,7 +144,7 @@ pub fn run(){
     .invoke_handler(tauri::generate_handler![
       scan::scan_root,
       queue::enqueue_projects,queue::queue_snapshot,queue::reorder_queue,queue::cancel_project,queue::resume_recovery,queue::resume_license_queue,
-      preview::generate_preview,live_preview::prepare_live_preview,assets::import_library_asset,
+      preview::generate_preview,preview::preview_frontend_fixture,preview::preview_frontend_report,live_preview::prepare_live_preview,assets::import_library_asset,
       persistence::load_library,persistence::save_library,persistence::load_recovery,persistence::dismiss_recovery,
       benchmark::benchmark_engine,
       license::activate_license,license::license_status,license::set_license_screen,license::set_license_queue_depth,

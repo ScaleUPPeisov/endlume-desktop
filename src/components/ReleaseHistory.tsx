@@ -3,7 +3,12 @@ import React from 'react';
 type Release={version:string;date:string;current?:boolean;title:string;items:string[]};
 
 const releases:Release[]=[
-  {version:'10.0.3',date:'30.09.2026',current:true,title:'Performance Hotfix • Parallel AAC • 400–600 MB',items:[
+  {version:'10.0.9',date:'02.10.2026',current:true,title:'Visual Recovery • Exact Preview • Equalizer Sharpness',items:[
+    'Effects и Subscribe: Exact Preview больше не держит второй скрытый decoder/WebGL поверх готового FFmpeg composite.',
+    'Круглый эквалайзер: chromakey выполняется до Lanczos scale, поэтому тонкие белые линии не теряют контраст на зелёном фоне.',
+    'Рендер, расписания, пресеты, updater и остальной функционал 10.0.8 сохранены.'
+  ]},
+  {version:'10.0.3',date:'30.09.2026',current:false,title:'Performance Hotfix • Parallel AAC • 400–600 MB',items:[
     '1-image fast-path: 10 MP3 больше не перекодируются последовательно внутри final mux; Apple-compatible AAC 320k/48k/stereo кэшируется по каждой песне и строится параллельно.',
     'AAC playlist собирается packet-copy и переиспользуется между рендерами; warm render не выполняет повторное двухчасовое AAC-кодирование.',
     'Visual master и AAC cache готовятся параллельно, а final mux получает уже готовую AAC дорожку packet-copy.',

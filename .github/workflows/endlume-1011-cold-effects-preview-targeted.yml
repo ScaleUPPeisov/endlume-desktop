@@ -79,10 +79,20 @@ jobs:
           EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
           test -x "$APP/Contents/MacOS/$EXE"
           echo "PACKAGED_APP_BUNDLE=$APP"
-          echo "PACKAGED_FFMPEG_CANDIDATES_BEGIN"
-          find "$APP/Contents" -maxdepth 6 -type f \( -name 'ffmpeg' -o -name 'ffmpeg-*' \) -perm -111 -print || true
-          echo "PACKAGED_FFMPEG_CANDIDATES_END"
+          FFMPEG_CAND="$(find "$APP/Contents" -maxdepth 6 -type f \( -name 'ffmpeg' -o -name 'ffmpeg-*' \) -perm -111 -print -quit)"
+          FFPROBE_CAND="$(find "$APP/Contents" -maxdepth 6 -type f \( -name 'ffprobe' -o -name 'ffprobe-*' \) -perm -111 -print -quit)"
+          test -n "$FFMPEG_CAND" -a -f "$FFMPEG_CAND" -a -x "$FFMPEG_CAND"
+          test -n "$FFPROBE_CAND" -a -f "$FFPROBE_CAND" -a -x "$FFPROBE_CAND"
+          echo "PACKAGED_FFMPEG_PATH=$FFMPEG_CAND"
+          echo "PACKAGED_FFPROBE_PATH=$FFPROBE_CAND"
+          /usr/bin/stat -f 'PACKAGED_FFMPEG_MODE=%Sp' "$FFMPEG_CAND"
+          /usr/bin/stat -f 'PACKAGED_FFPROBE_MODE=%Sp' "$FFPROBE_CAND"
+          env -i PATH="/usr/bin:/bin:/usr/sbin:/sbin" "$FFMPEG_CAND" -version | head -1
+          env -i PATH="/usr/bin:/bin:/usr/sbin:/sbin" "$FFPROBE_CAND" -version | head -1
+          /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP"
           printf '%s' "$APP/Contents/MacOS/$EXE" > "$RUNNER_TEMP/e1011-targeted-bin.txt"
+          printf '%s' "$FFMPEG_CAND" > "$RUNNER_TEMP/e1011-targeted-ffmpeg.txt"
+          printf '%s' "$FFPROBE_CAND" > "$RUNNER_TEMP/e1011-targeted-ffprobe.txt"
           echo TARGETED_PACKAGED_APP_GREEN
 
       - name: Cold Effects Preview only
@@ -91,5 +101,7 @@ jobs:
           set -Eeuo pipefail
           export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
           BIN="$(cat "$RUNNER_TEMP/e1011-targeted-bin.txt")"
-          python3 scripts/qa-endlume-1011-cold-effects-preview.py "$BIN" "$(command -v ffmpeg)" "$(command -v ffprobe)"
+          BUNDLED_FFMPEG="$(cat "$RUNNER_TEMP/e1011-targeted-ffmpeg.txt")"
+          BUNDLED_FFPROBE="$(cat "$RUNNER_TEMP/e1011-targeted-ffprobe.txt")"
+          python3 scripts/qa-endlume-1011-cold-effects-preview.py "$BIN" "$BUNDLED_FFMPEG" "$BUNDLED_FFPROBE"
           echo ENDLUME_1011_COLD_EFFECTS_TARGETED_GREEN

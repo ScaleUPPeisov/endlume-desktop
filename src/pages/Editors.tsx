@@ -361,7 +361,7 @@ function SubscribeEditor() {
     try {
       const exactPath = await api.generatePreview(projectPath, latest.previewFrameTime, [], [latest], requestId);
       let result:Awaited<ReturnType<typeof api.prepareLivePreview>>|undefined;
-      try { result = await api.prepareLivePreview(projectPath, latest.source, latest.previewFrameTime); }
+      try { result = await api.prepareLivePreview(projectPath, latest.source, latest.previewFrameTime, requestId, 'Subscribe'); }
       catch (helperError) { previewDiag('subscribe','DISCARD',request,{requestId,helper:'prepareLivePreview',error:String(helperError)}); }
       previewDiag('subscribe','FINISH',request,{requestId,exactPath});
       if (request !== previewRequest.current) { previewDiag('subscribe','DISCARD',request,{requestId,latest:previewRequest.current}); return; }

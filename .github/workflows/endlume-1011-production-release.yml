@@ -17,6 +17,7 @@ concurrency:
   group: endlume-1011-production-hotfix-final
   cancel-in-progress: false
 
+# Final 10.0.11 gate: WKWebView helper Preview + Subscribe chroma-safe compositor.
 env:
   VERSION: "10.0.11"
   RELEASE_BASE_SHA: "8c43319fea61ca0e7f25b8fbdce8f38307d4b97f"

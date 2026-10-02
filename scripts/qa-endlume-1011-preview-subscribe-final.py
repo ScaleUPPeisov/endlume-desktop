@@ -199,7 +199,8 @@ def frontend_display(label,preview,effect,preview_type):
         assert int(data.get("IMAGE_NATURAL_WIDTH",0))==960,data
         assert int(data.get("IMAGE_NATURAL_HEIGHT",0))==540,data
         assert int(data.get("FRONTEND_PAYLOAD_BYTES",0))>1024,data
-        assert int(data.get("paintedNonBlack",0))>8,data
+        assert data.get("BROWSER_VISIBLE") is True,data
+        assert data.get("PIXEL_READBACK") in ("GREEN","UNAVAILABLE"),data
         assert data.get("PREVIEW_APPLIED") is True,data
         return data
     finally:

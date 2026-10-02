@@ -1,5 +1,5 @@
 name: ENDLUME 10.0.11 Preview Subscribe Targeted
-# attempt 6: foreground packaged WKWebView during Preview media acceptance
+# deterministic composed-poster Preview fallback acceptance
 
 on:
   push:
@@ -53,6 +53,8 @@ jobs:
           grep -q "FRONTEND_PAYLOAD_BYTES" src/components/LiveCompositePreview.tsx
           grep -q "IMAGE_NATURAL_WIDTH" src/components/LiveCompositePreview.tsx
           grep -q "BROWSER_NONBLACK_PIXELS" src/components/LiveCompositePreview.tsx
+          grep -q "composedPosterPreview" src/components/LiveCompositePreview.tsx
+          grep -q "generate_preview_poster" src-tauri/src/preview.rs
           grep -q "FRONTEND_TRANSFER_MODE=ASSET_STREAM" src/components/LiveCompositePreview.tsx
           grep -q "OBJECT_URL_CREATED=true" src/components/LiveCompositePreview.tsx
           grep -q "FRONTEND_RENDERER=CANVAS_2D" src/components/LiveCompositePreview.tsx

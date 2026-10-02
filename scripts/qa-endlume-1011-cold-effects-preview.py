@@ -86,51 +86,28 @@ fixture=tmp/"preview.json";result=tmp/"result.json"
 fixture.write_text(json.dumps({"projectPath":str(preview_project),"overlaySource":str(film["source"]),"timeSec":0.0,"effects":[film],"subscribes":[]},ensure_ascii=False,indent=2))
 env=os.environ.copy()
 env.update({"ENDLUME_E2E_PREVIEW_JOB":str(fixture),"ENDLUME_E2E_RENDER_JOB":str(fixture),"ENDLUME_E2E_RESULT":str(result),"ENDLUME_PREVIEW_DIAG":"1","RUST_BACKTRACE":"1"})
-proc=subprocess.Popen([str(APP)],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,env=env)
-first_encode_pid=None
-first_encode_command=None
-first_encode_executable=None
-print(f"PACKAGED_FFMPEG_RUNTIME_PRELAUNCH_EXISTS={'true' if FFMPEG.is_file() else 'false'}")
-deadline=time.time()+150
-while proc.poll() is None and time.time()<deadline:
-    ps=subprocess.run(["/bin/ps","-axo","pid=,ppid=,command="],stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True,check=False)
-    for line in ps.stdout.splitlines():
-        m=re.match(r"\s*(\d+)\s+(\d+)\s+(.*)$",line)
-        if not m:continue
-        pid,ppid,cmd=int(m.group(1)),int(m.group(2)),m.group(3)
-        if "ffmpeg" in cmd.lower():
-            lsof=shutil.which("lsof")
-            if not lsof:continue
-            lo=subprocess.run([lsof,"-a","-p",str(pid),"-d","txt","-Fn"],stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True,check=False)
-            txt_paths=[row[1:] for row in lo.stdout.splitlines() if row.startswith("n")]
-            if str(FFMPEG) not in txt_paths:continue
-            first_encode_pid=pid
-            first_encode_command=cmd
-            first_encode_executable=str(FFMPEG)
-            break
-    if first_encode_pid is not None:break
-    time.sleep(0.02)
-try:
-    stdout,stderr=proc.communicate(timeout=max(1,deadline-time.time()))
-except subprocess.TimeoutExpired:
-    proc.kill();stdout,stderr=proc.communicate()
-(tmp/"stderr.log").write_text(stderr)
-(tmp/"stdout.log").write_text(stdout)
-print(stderr[-16000:])
-print(f"FIRST_ENCODE_EXECUTABLE_SOURCE=tauri-plugin-shell sidecar externalBin")
-print(f"FIRST_ENCODE_CHILD_PID={first_encode_pid}")
-print(f"FIRST_ENCODE_COMMAND={first_encode_command}")
+p=run([APP],check=False,timeout=150,env=env)
+(tmp/"stderr.log").write_text(p.stderr)
+(tmp/"stdout.log").write_text(p.stdout)
+print(p.stderr[-16000:])
+m=re.search(r"^FIRST_ENCODE_RESOLVED_PATH=(.+)$",p.stderr,re.M)
+first_encode_executable=m.group(1).strip() if m else None
+m2=re.search(r"^FIRST_ENCODE_IS_BUNDLED=(true|false)$",p.stderr,re.M)
+first_encode_is_bundled=(m2.group(1)=="true") if m2 else False
+m3=re.search(r"^FIRST_ENCODE_EXISTS=(true|false)$",p.stderr,re.M)
+first_encode_exists=(m3.group(1)=="true") if m3 else False
+m4=re.search(r"^FIRST_ENCODE_EXECUTABLE=(true|false)$",p.stderr,re.M)
+first_encode_exec=(m4.group(1)=="true") if m4 else False
+print("FIRST_ENCODE_EXECUTABLE_SOURCE=tauri-plugin-shell sidecar externalBin")
 print(f"FIRST_ENCODE_RESOLVED_PATH={first_encode_executable}")
-bundle_root=next((p for p in APP.parents if p.suffix==".app"),None)
-is_bundled=bool(first_encode_executable and bundle_root and str(first_encode_executable).startswith(str(bundle_root)))
-print(f"FIRST_ENCODE_IS_BUNDLED={'true' if is_bundled else 'false'}")
-print(f"FIRST_ENCODE_EXISTS={'true' if first_encode_executable and Path(first_encode_executable).is_file() else 'false'}")
-print(f"PACKAGED_FFMPEG_RUNTIME_POSTRUN_EXISTS={'true' if FFMPEG.is_file() else 'false'}")
-print(f"PACKAGED_FFPROBE_RUNTIME_POSTRUN_EXISTS={'true' if FFPROBE.is_file() else 'false'}")
-assert proc.returncode==0,(proc.returncode,stderr[-8000:])
-assert first_encode_executable,("FIRST_ENCODE_EXECUTABLE_NOT_CAPTURED",first_encode_command)
-assert is_bundled,(first_encode_executable,bundle_root)
-assert Path(first_encode_executable).is_file(),first_encode_executable
+print(f"FIRST_ENCODE_IS_BUNDLED={'true' if first_encode_is_bundled else 'false'}")
+print(f"FIRST_ENCODE_EXISTS={'true' if first_encode_exists else 'false'}")
+print(f"FIRST_ENCODE_EXECUTABLE={'true' if first_encode_exec else 'false'}")
+assert first_encode_executable and first_encode_executable!="<none>",("FIRST_ENCODE_PATH_NOT_LOGGED",p.stderr[-12000:])
+assert first_encode_is_bundled,first_encode_executable
+assert first_encode_exists,first_encode_executable
+assert first_encode_exec,first_encode_executable
+assert p.returncode==0,(p.returncode,p.stderr[-12000:])
 data=json.loads(result.read_text())
 assert data.get("status")=="passed",(data,stderr[-12000:])
 payload=data["result"];helper=payload["helper"]

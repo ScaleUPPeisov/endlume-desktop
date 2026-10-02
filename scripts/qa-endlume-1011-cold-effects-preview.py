@@ -85,7 +85,7 @@ shutil.rmtree(cache_root/"previews-v3",ignore_errors=True)
 fixture=tmp/"preview.json";result=tmp/"result.json"
 fixture.write_text(json.dumps({"projectPath":str(preview_project),"overlaySource":str(film["source"]),"timeSec":0.0,"effects":[film],"subscribes":[]},ensure_ascii=False,indent=2))
 env=os.environ.copy()
-env.update({"ENDLUME_E2E_PREVIEW_JOB":str(fixture),"ENDLUME_E2E_RESULT":str(result),"ENDLUME_PREVIEW_DIAG":"1","RUST_BACKTRACE":"1"})
+env.update({"ENDLUME_E2E_PREVIEW_JOB":str(fixture),"ENDLUME_E2E_RENDER_JOB":str(fixture),"ENDLUME_E2E_RESULT":str(result),"ENDLUME_PREVIEW_DIAG":"1","RUST_BACKTRACE":"1"})
 proc=subprocess.Popen([str(APP)],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,env=env)
 first_encode_pid=None
 first_encode_command=None
@@ -98,15 +98,15 @@ while proc.poll() is None and time.time()<deadline:
         m=re.match(r"\s*(\d+)\s+(\d+)\s+(.*)$",line)
         if not m:continue
         pid,ppid,cmd=int(m.group(1)),int(m.group(2)),m.group(3)
-        if str(FFMPEG) in cmd:
+        if "ffmpeg" in cmd.lower():
+            lsof=shutil.which("lsof")
+            if not lsof:continue
+            lo=subprocess.run([lsof,"-a","-p",str(pid),"-d","txt","-Fn"],stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True,check=False)
+            txt_paths=[row[1:] for row in lo.stdout.splitlines() if row.startswith("n")]
+            if str(FFMPEG) not in txt_paths:continue
             first_encode_pid=pid
             first_encode_command=cmd
             first_encode_executable=str(FFMPEG)
-            lsof=shutil.which("lsof")
-            if lsof:
-                lo=subprocess.run([lsof,"-a","-p",str(pid),"-d","txt","-Fn"],stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True,check=False)
-                txt_paths=[row[1:] for row in lo.stdout.splitlines() if row.startswith("n")]
-                if str(FFMPEG) not in txt_paths:first_encode_executable=None
             break
     if first_encode_pid is not None:break
     time.sleep(0.02)

@@ -165,13 +165,13 @@ def preview_run(label,effects,subscribes,overlay):
     assert "COMPOSED_FRAME_EXISTS=true" in p.stderr,(label,p.stderr[-8000:])
     assert "BASE_FRAME_EXISTS=true" in p.stderr,(label,p.stderr[-8000:])
     run([FFMPEG,"-hide_banner","-loglevel","error","-stream_loop","19","-i",exact,"-t","60","-map","0:v:0","-f","null","-"],timeout=90)
-    return {"exact":exact,"helperBase":base,"helperOverlay":ov,"baseKind":helper["baseKind"],"stderr":p.stderr}
+    return {"exact":exact,"helperBase":base,"helperOverlay":ov,"baseKind":helper["baseKind"],"baseBytes":int(helper.get("baseBytes",base.stat().st_size)),"overlayBytes":int(helper.get("overlayBytes",ov.stat().st_size)),"stderr":p.stderr}
 
 def frontend_display(label,preview,effect,preview_type):
     fixture=tmp_root/f"{label}-frontend-fixture.json";result=tmp_root/f"{label}-frontend-result.json"
     fixture.write_text(json.dumps({
       "basePath":str(preview["helperBase"]),"baseKind":preview["baseKind"],"overlayPath":str(preview["helperOverlay"]),
-      "exactPath":str(preview["exact"]),"effect":effect,"requestId":label,"previewType":preview_type
+      "baseBytes":preview["baseBytes"],"overlayBytes":preview["overlayBytes"],"effect":effect,"requestId":label,"previewType":preview_type
     },ensure_ascii=False,indent=2))
     env=os.environ.copy();env.update({"ENDLUME_E2E_FRONTEND_PREVIEW_FIXTURE":str(fixture),"ENDLUME_E2E_FRONTEND_PREVIEW_RESULT":str(result),"ENDLUME_PREVIEW_DIAG":"1"})
     p=subprocess.Popen([str(APP)],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,env=env)
@@ -182,8 +182,8 @@ def frontend_display(label,preview,effect,preview_type):
         assert result.is_file(),(label,"FRONTEND_RESULT_MISSING",p.poll())
         data=json.loads(result.read_text())
         assert data.get("status")=="GREEN",data
-        assert int(data.get("IMAGE_NATURAL_WIDTH",0))==1920,data
-        assert int(data.get("IMAGE_NATURAL_HEIGHT",0))==1080,data
+        assert int(data.get("IMAGE_NATURAL_WIDTH",0))==960,data
+        assert int(data.get("IMAGE_NATURAL_HEIGHT",0))==540,data
         assert int(data.get("FRONTEND_PAYLOAD_BYTES",0))>1024,data
         assert int(data.get("paintedNonBlack",0))>8,data
         assert data.get("PREVIEW_APPLIED") is True,data

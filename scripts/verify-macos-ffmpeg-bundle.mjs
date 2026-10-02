@@ -84,8 +84,11 @@ try{
   }
 }finally{fs.rmSync(tmp,{recursive:true,force:true})}
 
-const sign=spawnSync('/usr/bin/codesign',['--verify','--deep','--strict','--verbose=2',app],{encoding:'utf8'});
-if(sign.status!==0)throw new Error(`codesign verification failed: ${sign.stderr||sign.stdout}`);
+const requireCodesign=process.env.ENDLUME_REQUIRE_CODESIGN==='1';
+if(requireCodesign){
+  const sign=spawnSync('/usr/bin/codesign',['--verify','--deep','--strict','--verbose=2',app],{encoding:'utf8'});
+  if(sign.status!==0)throw new Error(`codesign verification failed: ${sign.stderr||sign.stdout}`);
+}
 if(process.env.ENDLUME_REQUIRE_GATEKEEPER==='1'){const gate=spawnSync('/usr/sbin/spctl',['-a','-vv',app],{encoding:'utf8'});if(gate.status!==0)throw new Error(`Gatekeeper verification failed: ${gate.stderr||gate.stdout}`)}
 
-console.log(JSON.stringify({kind:'ENDLUME_MACOS_FFMPEG_RUNTIME_PASS',app,target,runtimeMode,frameworks:dylibs.length,ffmpeg:true,ffprobe:true,codesign:true}));
+console.log(JSON.stringify({kind:'ENDLUME_MACOS_FFMPEG_RUNTIME_PASS',app,target,runtimeMode,frameworks:dylibs.length,ffmpeg:true,ffprobe:true,codesign:requireCodesign?'verified':'deferred-to-release-step'}));

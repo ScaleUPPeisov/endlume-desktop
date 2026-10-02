@@ -1375,12 +1375,45 @@ fn subscribe_first_sec(s:&SubscribePreset)->f64{
   }
 }
 
+fn normalize_subscribe_1011(mut s:SubscribePreset)->SubscribePreset{
+  let (similarity,blend)=cache::subscribe_chromakey_params_1011(&s.effect);
+  s.effect.similarity=similarity;
+  s.effect.blend=blend;
+  s
+}
+fn log_subscribe_recipe_1011(job:&QueueJob,source:&SubscribePreset,effective:&SubscribePreset,included:bool){
+  let path=Path::new(&source.effect.source);
+  diag_line(json!({
+    "kind":"subscribe-final-1011",
+    "projectId":job.project.id,
+    "SUBSCRIBE_ENABLED":source.effect.enabled,
+    "SUBSCRIBE_ASSET":source.effect.source,
+    "SUBSCRIBE_ASSET_EXISTS":path.is_file(),
+    "SUBSCRIBE_SCHEDULE":subscribe_usage_mode(source),
+    "SUBSCRIBE_INTERVAL":subscribe_interval_sec(source),
+    "SUBSCRIBE_DURATION":source.show_duration_sec.unwrap_or(8.0),
+    "SUBSCRIBE_X":source.effect.x,
+    "SUBSCRIBE_Y":source.effect.y,
+    "SUBSCRIBE_SCALE":source.effect.scale,
+    "SUBSCRIBE_OPACITY":source.effect.opacity.unwrap_or(1.0),
+    "SUBSCRIBE_CHROMAKEY":{
+      "keyColor":source.effect.key_color,
+      "similarity":source.effect.similarity,
+      "blend":source.effect.blend,
+      "despill":source.effect.despill,
+      "effectiveSimilarity":effective.effect.similarity,
+      "effectiveBlend":effective.effect.blend
+    },
+    "SUBSCRIBE_INCLUDED_IN_RECIPE":included
+  }));
+}
+
 async fn prepare_overlays(app:&AppHandle,job:&QueueJob,started:i64,timer:&Instant,encoder:&str,attempt:u32)->Result<(Vec<EffectPreset>,Vec<SubscribePreset>),String>{
   if smart_repeat_project(job){
     emit_progress(app,job,started,timer,26.0,"10.0.8: Effects встроены в visual master",encoder,attempt,None);
     let mark=Instant::now();
     let fx=job.effects.iter().filter(|e|effect_usage_mode(e)!="off"&&!e.source.trim().is_empty()).map(|e|resolve_effect_for_project(&job.project,e)).collect::<Vec<_>>();
-    let subs=job.subscribes.iter().filter(|s|subscribe_usage_mode(s)!="off").cloned().map(|mut s|{s.effect=resolve_effect_for_project(&job.project,&s.effect);s}).collect::<Vec<_>>();
+    let subs=job.subscribes.iter().filter(|s|subscribe_usage_mode(s)!="off").cloned().map(|mut s|{let original=s.clone();s.effect=resolve_effect_for_project(&job.project,&s.effect);let effective=normalize_subscribe_1011(s);log_subscribe_recipe_1011(job,&original,&effective,true);effective}).collect::<Vec<_>>();
     let effects_sec=mark.elapsed().as_secs_f64();
     emit_timing(app,&job.project.id,"effects-cache",effects_sec);
     emit_timing(app,&job.project.id,"effects",effects_sec);
@@ -1396,8 +1429,12 @@ async fn prepare_overlays(app:&AppHandle,job:&QueueJob,started:i64,timer:&Instan
   }
   emit_timing(app,&job.project.id,"effects",effects_mark.elapsed().as_secs_f64());let subscribe_mark=Instant::now();
   for s in &job.subscribes{
-    if subscribe_usage_mode(s)=="off"{continue}
-    match cache::prepare(app,&s.effect,job.settings.fps).await{Ok(effect)=>{let mut p=s.clone();p.effect=resolve_effect_for_project(&job.project,&effect);subs.push(p)},Err(err)=>emit_warning(app,&job.project.id,&format!("Subscribe '{}' пропущен: {}",s.effect.name,err))}
+    if subscribe_usage_mode(s)=="off"{log_subscribe_recipe_1011(job,s,s,false);continue}
+    let effective=normalize_subscribe_1011(s.clone());
+    match cache::prepare(app,&effective.effect,job.settings.fps).await{
+      Ok(effect)=>{let mut p=effective.clone();p.effect=resolve_effect_for_project(&job.project,&effect);log_subscribe_recipe_1011(job,s,&p,true);subs.push(p)},
+      Err(err)=>{log_subscribe_recipe_1011(job,s,&effective,false);emit_warning(app,&job.project.id,&format!("Subscribe '{}' пропущен: {}",s.effect.name,err))}
+    }
   }
   emit_timing(app,&job.project.id,"subscribe",subscribe_mark.elapsed().as_secs_f64());emit_timing(app,&job.project.id,"effects-cache",mark.elapsed().as_secs_f64());emit_progress(app,job,started,timer,31.0,"Кэш Effects и Subscribe готов",encoder,attempt,None);Ok((fx,subs))
 }
@@ -1501,7 +1538,7 @@ async fn copy_segment(app:&AppHandle,job:&QueueJob,variant:&Path,variant_duratio
 async fn render_sub_segment(app:&AppHandle,job:&QueueJob,variant:&Path,variant_duration:f64,start:f64,len:f64,active:&[SubEvent],out:&Path,encoder:&str,attempt:u32,cancel:&AtomicBool,base:f64,span:f64,started:i64,timer:&Instant)->Result<(),String>{
   let phase=(start%variant_duration.max(0.1)).max(0.0);let mut args:Vec<String>=vec!["-hide_banner","-loglevel","error","-filter_complex_threads","2","-stream_loop","-1","-ss",&phase.to_string(),"-i",variant.to_string_lossy().as_ref()].into_iter().map(String::from).collect();
   for ev in active{let offset=(start-ev.event_start).max(0.0);args.extend(vec!["-ss",&offset.to_string(),"-i",ev.sub.effect.source.as_str()].into_iter().map(String::from));}
-  let sub_effects=active.iter().map(|e|e.sub.effect.clone()).collect::<Vec<_>>();let (graph,last)=apply_effects_filter("[0:v]setpts=PTS-STARTPTS[b0]".into(),"b0".into(),&sub_effects,&job.settings,1);let graph=format!("{graph};[{last}]format=yuv420p[outv]");
+  let sub_effects=active.iter().map(|e|normalize_subscribe_1011(e.sub.clone()).effect).collect::<Vec<_>>();let (graph,last)=apply_effects_filter("[0:v]setpts=PTS-STARTPTS[b0]".into(),"b0".into(),&sub_effects,&job.settings,1);let graph=format!("{graph};[{last}]format=yuv420p[outv]");
   args.extend(vec!["-filter_complex",&graph,"-map","[outv]","-t",&len.to_string(),"-an"].into_iter().map(String::from));if smart_repeat_project(job){args.extend(hybrid_fidelity_args(&job.settings,encoder,len));}else{args.extend(encoder_args(encoder,&job.settings,false));}args.extend(vec!["-progress","pipe:1","-y",out.to_string_lossy().as_ref()].into_iter().map(String::from));run_ffmpeg(app,job,started,timer,args,"Добавляю Subscribe",base,span,len,encoder,attempt,cancel).await
 }
 
@@ -1864,7 +1901,9 @@ async fn render_interval_half_sub_1008(app:&AppHandle,job:&QueueJob,master:&Path
   let physical_frames=logical_frames/2;let phase=start_logical_frame as f64/60.0;let key=format!("{}-half30",subscribe_master_key_1000(master,sub,start_logical_frame,logical_frames,encoder)?);
   let root=cache_root_1000(app,"subscribe-master-v10")?;let out=root.join(format!("{key}.mp4"));let lookup=Instant::now();
   if out.is_file()&&probe_video_packets_857(app,&out).await.ok()==Some(physical_frames)&&probe_all_video_packets_key_1008(app,&out,physical_frames).await.is_ok(){
-    let sec=lookup.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"subscribe-cache",sec);return Ok((out,physical_frames))
+    let sec=lookup.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"subscribe-cache",sec);
+    diag_line(json!({"kind":"subscribe-master-1011","projectId":job.project.id,"SUBSCRIBE_MASTER_CREATED":true,"SUBSCRIBE_MASTER_CACHE":"HIT","SUBSCRIBE_MASTER_PATH":out,"SUBSCRIBE_MASTER_BYTES":std::fs::metadata(&out).map(|m|m.len()).unwrap_or(0),"SUBSCRIBE_COMPOSITOR_INCLUDED":true}));
+    return Ok((out,physical_frames))
   }
   let _=std::fs::remove_file(&out);let tmp=root.join(format!(".{key}-{}.tmp.mp4",uuid::Uuid::new_v4()));let mut ws=job.settings.clone();ws.fps=30;
   let mut args:Vec<String>=vec!["-hide_banner","-loglevel","error","-filter_complex_threads","4","-stream_loop","-1","-ss",&phase.to_string(),"-i",master.to_string_lossy().as_ref(),"-i",sub.effect.source.as_str()].into_iter().map(String::from).collect();
@@ -1874,7 +1913,9 @@ async fn render_interval_half_sub_1008(app:&AppHandle,job:&QueueJob,master:&Path
   let packets=probe_video_packets_857(app,&tmp).await?;if packets!=physical_frames{let _=std::fs::remove_file(&tmp);return Err(format!("10.0.8 half Subscribe packets={packets}/{physical_frames}"))}
   probe_all_video_packets_key_1008(app,&tmp,physical_frames).await?;
   if out.exists(){let _=std::fs::remove_file(&tmp);}else{std::fs::rename(&tmp,&out).map_err(|e|format!("10.0.8 half Subscribe cache commit: {e}"))?}
-  let sec=mark.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"subscribe-cache",sec);prune_cache_1000(&root,&out);let _=work;Ok((out,physical_frames))
+  let sec=mark.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"subscribe-cache",sec);prune_cache_1000(&root,&out);
+  diag_line(json!({"kind":"subscribe-master-1011","projectId":job.project.id,"SUBSCRIBE_MASTER_CREATED":true,"SUBSCRIBE_MASTER_CACHE":"MISS","SUBSCRIBE_MASTER_PATH":out,"SUBSCRIBE_MASTER_BYTES":std::fs::metadata(&out).map(|m|m.len()).unwrap_or(0),"SUBSCRIBE_COMPOSITOR_INCLUDED":true}));
+  let _=work;Ok((out,physical_frames))
 }
 
 async fn concat_interval_half_pool_1008(app:&AppHandle,job:&QueueJob,parts:&[PathBuf],out:&Path,expected_frames:usize,work:&Path,encoder:&str,attempt:u32,cancel:&AtomicBool,started:i64,timer:&Instant)->Result<(),String>{
@@ -1887,7 +1928,7 @@ async fn concat_interval_half_pool_1008(app:&AppHandle,job:&QueueJob,parts:&[Pat
 }
 
 fn subscribe_master_key_1000(master:&Path,sub:&SubscribePreset,start_frame:usize,frames:usize,encoder:&str)->Result<String,String>{
-  let mut h=Sha256::new();h.update(b"ENDLUME-10-SUBSCRIBE-v1");h.update(file_stamp_1000(master).as_bytes());h.update(serde_json::to_vec(sub).map_err(|e|e.to_string())?);h.update(start_frame.to_le_bytes());h.update(frames.to_le_bytes());h.update(encoder.as_bytes());Ok(hex::encode(h.finalize()))
+  let mut h=Sha256::new();h.update(b"ENDLUME-10.0.11-SUBSCRIBE-v2-CHROMA-SAFE");h.update(file_stamp_1000(master).as_bytes());h.update(serde_json::to_vec(sub).map_err(|e|e.to_string())?);h.update(start_frame.to_le_bytes());h.update(frames.to_le_bytes());h.update(encoder.as_bytes());Ok(hex::encode(h.finalize()))
 }
 
 async fn build_periodic_master_852(app:&AppHandle,job:&QueueJob,effects:&[EffectPreset],plan:&Periodic852Plan,work:&Path,encoder:&str,attempt:u32,cancel:&AtomicBool,started:i64,timer:&Instant)->Result<PathBuf,String>{
@@ -1902,13 +1943,13 @@ async fn copy_head_frames_852(app:&AppHandle,job:&QueueJob,src:&Path,frames:usiz
 
 async fn render_periodic_sub_852(app:&AppHandle,job:&QueueJob,master:&Path,sub:&SubscribePreset,start_frame:usize,frames:usize,_work:&Path,label:&str,encoder:&str,attempt:u32,cancel:&AtomicBool,started:i64,timer:&Instant)->Result<PathBuf,String>{
   let fps=job.settings.fps.max(1);let work_fps=if fps>=50{30}else{fps};let phase=start_frame as f64/fps as f64;let key=subscribe_master_key_1000(master,sub,start_frame,frames,encoder)?;let root=cache_root_1000(app,"subscribe-master-v10")?;let out=root.join(format!("{key}.mp4"));
-  let lookup=Instant::now();if out.is_file()&&probe_video_packets_857(app,&out).await.ok()==Some(frames){let sec=lookup.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"subscribe-cache",sec);let _=app.emit("engine-profile",json!({"id":job.project.id,"subscribeCache":"HIT","subscribeCacheKey":key}));diag_line(json!({"kind":"cache","projectId":job.project.id,"subscribeCache":"HIT","subscribeCacheKey":key}));return Ok(out)}
+  let lookup=Instant::now();if out.is_file()&&probe_video_packets_857(app,&out).await.ok()==Some(frames){let sec=lookup.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"subscribe-cache",sec);let _=app.emit("engine-profile",json!({"id":job.project.id,"subscribeCache":"HIT","subscribeCacheKey":key}));diag_line(json!({"kind":"cache","projectId":job.project.id,"subscribeCache":"HIT","subscribeCacheKey":key}));diag_line(json!({"kind":"subscribe-master-1011","projectId":job.project.id,"SUBSCRIBE_MASTER_CREATED":true,"SUBSCRIBE_MASTER_CACHE":"HIT","SUBSCRIBE_MASTER_PATH":out,"SUBSCRIBE_MASTER_BYTES":std::fs::metadata(&out).map(|m|m.len()).unwrap_or(0),"SUBSCRIBE_COMPOSITOR_INCLUDED":true}));return Ok(out)}
   let _=std::fs::remove_file(&out);let _=app.emit("engine-profile",json!({"id":job.project.id,"subscribeCache":"MISS","subscribeCacheKey":key}));diag_line(json!({"kind":"cache","projectId":job.project.id,"subscribeCache":"MISS","subscribeCacheKey":key}));let tmp=root.join(format!(".{key}-{}.tmp.mp4",uuid::Uuid::new_v4()));let mut ws=job.settings.clone();ws.fps=work_fps;
   let mut args:Vec<String>=vec!["-hide_banner","-loglevel","error","-stream_loop","-1","-ss",&phase.to_string(),"-i",master.to_string_lossy().as_ref(),"-i",sub.effect.source.as_str()].into_iter().map(String::from).collect();
   let one=vec![sub.effect.clone()];let (graph,last)=apply_effects_filter(format!("[0:v]fps={work_fps},setpts=PTS-STARTPTS[b0]"),"b0".into(),&one,&ws,1);let graph=graph.replace(":shortest=1:eof_action=repeat",":shortest=0:eof_action=pass");let graph=format!("{graph};[{last}]fps={fps},format=yuv420p[outv]");
   let duration=frames as f64/fps as f64;args.extend(vec!["-filter_complex",&graph,"-map","[outv]","-frames:v",&frames.to_string(),"-an"].into_iter().map(String::from));args.extend(periodic_fidelity_args(&job.settings,encoder,duration));args.extend(vec!["-fps_mode","cfr","-r",&fps.to_string(),"-video_track_timescale","60000","-progress","pipe:1","-y",tmp.to_string_lossy().as_ref()].into_iter().map(String::from));
   let mark=Instant::now();run_ffmpeg(app,job,started,timer,args,&format!("10.0: SUBSCRIBE_MASTER {label}"),69.0,4.0,duration,encoder,attempt,cancel).await?;let packets=probe_video_packets_857(app,&tmp).await?;if packets!=frames{let _=std::fs::remove_file(&tmp);return Err(format!("10.0 Subscribe master packets={packets}/{frames}"))}
-  if out.exists(){let _=std::fs::remove_file(&tmp);}else{std::fs::rename(&tmp,&out).map_err(|e|format!("10.0 subscribe cache commit: {e}"))?}let sec=mark.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"subscribe-cache",sec);prune_cache_1000(&root,&out);Ok(out)
+  if out.exists(){let _=std::fs::remove_file(&tmp);}else{std::fs::rename(&tmp,&out).map_err(|e|format!("10.0 subscribe cache commit: {e}"))?}let sec=mark.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"subscribe-cache",sec);prune_cache_1000(&root,&out);diag_line(json!({"kind":"subscribe-master-1011","projectId":job.project.id,"SUBSCRIBE_MASTER_CREATED":true,"SUBSCRIBE_MASTER_CACHE":"MISS","SUBSCRIBE_MASTER_PATH":out,"SUBSCRIBE_MASTER_BYTES":std::fs::metadata(&out).map(|m|m.len()).unwrap_or(0),"SUBSCRIBE_COMPOSITOR_INCLUDED":true}));Ok(out)
 }
 
 async fn concat_video_parts_852(app:&AppHandle,job:&QueueJob,parts:&[PathBuf],out:&Path,expected_frames:usize,work:&Path,encoder:&str,attempt:u32,cancel:&AtomicBool,started:i64,timer:&Instant)->Result<(),String>{

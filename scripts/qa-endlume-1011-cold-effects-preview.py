@@ -106,6 +106,7 @@ v=next(x for x in meta["streams"] if x.get("codec_type")=="video")
 assert v["width"]==1920 and v["height"]==1080 and v["avg_frame_rate"]=="60/1",v
 run([FFMPEG,"-hide_banner","-loglevel","error","-stream_loop","19","-i",exact,"-t","60","-map","0:v:0","-f","null","-"],timeout=90)
 print("COLD_EFFECTS_PREVIEW=GREEN")
+print("BUNDLED_FFMPEG_RESOLVER=GREEN")
 print("REAL_FFMPEG_FRAME_DECODE=GREEN")
 print("PREVIEW_60S_DECODE_SOAK=GREEN")
 print("NO_GREEN_CORRUPTION=GREEN")

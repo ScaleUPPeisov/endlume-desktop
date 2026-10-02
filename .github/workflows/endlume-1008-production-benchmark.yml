@@ -144,7 +144,7 @@ jobs:
                       candidates.append((score,d,media,songs))
           if not candidates: raise SystemExit("BREWROOM_JAZZ_REAL_PROJECT_NOT_FOUND")
           _,project,media,songs=max(candidates,key=lambda x:x[0])
-          if len(songs)<10: raise SystemExit(f"BREWROOM_JAZZ_NEEDS_10_TRACKS_FOUND_{len(songs)}")
+          if not songs: raise SystemExit("BREWROOM_JAZZ_HAS_NO_AUDIO")
           songs=songs[:15]
 
           libs=[]

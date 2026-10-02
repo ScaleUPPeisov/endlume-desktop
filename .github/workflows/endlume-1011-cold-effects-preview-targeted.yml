@@ -53,7 +53,8 @@ jobs:
           npm run build
           cargo test --manifest-path src-tauri/Cargo.toml live_preview::tests -- --nocapture
           grep -q "ENDLUME_PREVIEW_REAL_FRAME_DECODE_GREEN" src-tauri/src/live_preview.rs
-          grep -q "direct_decode_proxy_frame" src-tauri/src/live_preview.rs
+          grep -q "resolve_bundled_ffmpeg" src-tauri/src/live_preview.rs
+          grep -q "RESOLVED_FFMPEG_PATH" src-tauri/src/live_preview.rs
           echo TARGETED_COMPILE_GREEN
 
       - name: Build packaged QA app
@@ -77,7 +78,10 @@ jobs:
           /usr/bin/codesign --force --deep --sign - --timestamp=none "$APP"
           EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
           test -x "$APP/Contents/MacOS/$EXE"
-          test -x "$APP/Contents/MacOS/ffmpeg"
+          echo "PACKAGED_APP_BUNDLE=$APP"
+          echo "PACKAGED_FFMPEG_CANDIDATES_BEGIN"
+          find "$APP/Contents" -maxdepth 6 -type f \( -name 'ffmpeg' -o -name 'ffmpeg-*' \) -perm -111 -print || true
+          echo "PACKAGED_FFMPEG_CANDIDATES_END"
           printf '%s' "$APP/Contents/MacOS/$EXE" > "$RUNNER_TEMP/e1011-targeted-bin.txt"
           echo TARGETED_PACKAGED_APP_GREEN
 

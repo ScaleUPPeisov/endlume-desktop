@@ -175,6 +175,10 @@ def frontend_display(label,preview,effect,preview_type):
     },ensure_ascii=False,indent=2))
     env=os.environ.copy();env.update({"ENDLUME_E2E_FRONTEND_PREVIEW_FIXTURE":str(fixture),"ENDLUME_E2E_FRONTEND_PREVIEW_RESULT":str(result),"ENDLUME_PREVIEW_DIAG":"1"})
     p=subprocess.Popen([str(APP)],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,env=env)
+    # WKWebView may defer media decode for a background app. Production Preview is
+    # user-visible/foreground, so make the packaged QA app foreground too.
+    time.sleep(0.8)
+    subprocess.run(["/usr/bin/osascript","-e",'tell application id "studio.endlume.desktop" to activate'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=False,timeout=8)
     deadline=time.time()+35
     try:
         while time.time()<deadline and not result.is_file() and p.poll() is None:

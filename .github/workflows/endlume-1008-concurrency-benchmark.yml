@@ -118,7 +118,7 @@ jobs:
           PY
           }
 
-          for enc in aac_at aac; do
+          for enc in aac_at; do
             for vt in 6 8; do
               for at in 1 2 4; do
                 run_case "$vt" "$at" "$enc"

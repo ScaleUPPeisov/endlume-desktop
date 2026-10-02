@@ -1809,11 +1809,11 @@ async fn build_cached_visual_master_1000(app:&AppHandle,job:&QueueJob,effects:&[
 
 fn interval_half_fidelity_args_1008(encoder:&str)->Vec<String>{
   match encoder{
-    "hevc_videotoolbox"=>vec!["-c:v","hevc_videotoolbox","-realtime","1","-prio_speed","1","-power_efficient","0","-constant_bit_rate","1","-b:v","22M","-g","1","-bf","0","-tag:v","hvc1","-pix_fmt","yuv420p"].into_iter().map(String::from).collect(),
-    "hevc_nvenc"=>vec!["-c:v","hevc_nvenc","-preset","p4","-rc","cbr","-b:v","22M","-maxrate","22M","-bufsize","44M","-g","1","-bf","0","-tag:v","hvc1","-pix_fmt","yuv420p"].into_iter().map(String::from).collect(),
-    "hevc_qsv"=>vec!["-c:v","hevc_qsv","-b:v","22M","-maxrate","22M","-bufsize","44M","-g","1","-bf","0","-tag:v","hvc1","-pix_fmt","nv12"].into_iter().map(String::from).collect(),
-    "hevc_amf"=>vec!["-c:v","hevc_amf","-quality","speed","-rc","cbr","-b:v","22M","-maxrate","22M","-g","1","-bf","0","-tag:v","hvc1","-pix_fmt","yuv420p"].into_iter().map(String::from).collect(),
-    _=>vec!["-c:v","libx265","-preset","ultrafast","-x265-params","keyint=1:min-keyint=1:scenecut=0:bframes=0","-b:v","22M","-maxrate","22M","-bufsize","44M","-tag:v","hvc1","-pix_fmt","yuv420p"].into_iter().map(String::from).collect(),
+    "hevc_videotoolbox"=>vec!["-c:v","hevc_videotoolbox","-realtime","1","-prio_speed","1","-power_efficient","0","-constant_bit_rate","1","-b:v","25M","-g","1","-bf","0","-tag:v","hvc1","-pix_fmt","yuv420p"].into_iter().map(String::from).collect(),
+    "hevc_nvenc"=>vec!["-c:v","hevc_nvenc","-preset","p4","-rc","cbr","-b:v","25M","-maxrate","25M","-bufsize","50M","-g","1","-bf","0","-tag:v","hvc1","-pix_fmt","yuv420p"].into_iter().map(String::from).collect(),
+    "hevc_qsv"=>vec!["-c:v","hevc_qsv","-b:v","25M","-maxrate","25M","-bufsize","50M","-g","1","-bf","0","-tag:v","hvc1","-pix_fmt","nv12"].into_iter().map(String::from).collect(),
+    "hevc_amf"=>vec!["-c:v","hevc_amf","-quality","speed","-rc","cbr","-b:v","25M","-maxrate","25M","-g","1","-bf","0","-tag:v","hvc1","-pix_fmt","yuv420p"].into_iter().map(String::from).collect(),
+    _=>vec!["-c:v","libx265","-preset","ultrafast","-x265-params","keyint=1:min-keyint=1:scenecut=0:bframes=0","-b:v","25M","-maxrate","25M","-bufsize","50M","-tag:v","hvc1","-pix_fmt","yuv420p"].into_iter().map(String::from).collect(),
   }
 }
 
@@ -1831,7 +1831,7 @@ async fn build_interval_half_master_1008(app:&AppHandle,job:&QueueJob,effects:&[
   let logical_fps=job.settings.fps.max(1);
   if logical_fps!=60||logical_frames%2!=0{return Err("10.0.8 half-rate master requires even 60 FPS logical frame count".into())}
   let physical_fps=30u32;let physical_frames=logical_frames/2;let duration=logical_frames as f64/logical_fps as f64;
-  let profile="interval-half30-allintra-v6-22m-eq-fast2x";let key=visual_master_key_1000(job,effects,logical_frames,encoder,profile)?;
+  let profile="interval-half30-allintra-v7-25m-eq-fast2x";let key=visual_master_key_1000(job,effects,logical_frames,encoder,profile)?;
   let root=cache_root_1000(app,"visual-master-v10")?;let out=root.join(format!("{key}.mp4"));let lookup=Instant::now();
   if out.is_file()&&probe_video_packets_857(app,&out).await.ok()==Some(physical_frames)&&probe_all_video_packets_key_1008(app,&out,physical_frames).await.is_ok(){
     let sec=lookup.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"cache-lookup",sec);emit_timing(app,&job.project.id,"base-visual-cache",sec);

@@ -10,7 +10,7 @@ const VIDEO:&[&str]=&["mp4","mov","m4v","mkv","webm","avi","wmv","flv","ts","mts
 
 #[derive(Serialize)]
 #[serde(rename_all="camelCase")]
-pub struct LivePreviewAssets{base_path:String,base_kind:String,overlay_path:String}
+pub struct LivePreviewAssets{base_path:String,base_kind:String,overlay_path:String,base_bytes:u64,overlay_bytes:u64}
 
 fn ext(p:&Path)->String{p.extension().and_then(|x|x.to_str()).unwrap_or("").to_ascii_lowercase()}
 fn is_macos_sidecar(p:&Path)->bool{let n=p.file_name().and_then(|x|x.to_str()).unwrap_or("");n==".DS_Store"||n.starts_with("._")||n.starts_with(".Spotlight-")||n.starts_with(".Trashes")||n.starts_with('.')}
@@ -353,7 +353,7 @@ pub async fn prepare_live_preview(app:AppHandle,project_path:String,overlay_sour
     eprintln!("OVERLAY_PROXY_EXISTS={}",overlay_out.is_file());
     eprintln!("OVERLAY_PROXY_BYTES={overlay_bytes}");
   }
-  Ok(LivePreviewAssets{base_path:base_out.to_string_lossy().into_owned(),base_kind,overlay_path:overlay_out.to_string_lossy().into_owned()})
+  Ok(LivePreviewAssets{base_path:base_out.to_string_lossy().into_owned(),base_kind,overlay_path:overlay_out.to_string_lossy().into_owned(),base_bytes:fs::metadata(&base_out).map(|m|m.len()).unwrap_or(0),overlay_bytes:fs::metadata(&overlay_out).map(|m|m.len()).unwrap_or(0)})
 }
 
 #[cfg(test)]

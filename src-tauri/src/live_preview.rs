@@ -50,7 +50,45 @@ fn cache_dir(app:&AppHandle)->Result<PathBuf,String>{let dir=app.path().app_cach
 fn fingerprint(path:&Path,seek:f64,kind:&str)->String{let meta=fs::metadata(path).ok();let size=meta.as_ref().map(|m|m.len()).unwrap_or(0);let modified=meta.as_ref().and_then(|m|m.modified().ok()).and_then(|t|t.duration_since(UNIX_EPOCH).ok()).map(|d|d.as_secs()).unwrap_or(0);let mut h=Sha256::new();h.update(format!("{}|{}|{}|{:.2}|{}",path.to_string_lossy(),size,modified,seek,kind));hex::encode(h.finalize())[..24].to_string()}
 fn first_media(project:&Path)->Option<PathBuf>{let mut files=WalkDir::new(project).max_depth(3).into_iter().filter_map(Result::ok).map(|e|e.into_path()).filter(|p|p.is_file()&&!rejected_macos_input(p)&&is_media(p)&&ready_file(p)).collect::<Vec<_>>();files.sort_by(|a,b|natural_name(a).cmp(&natural_name(b)));files.into_iter().next()}
 
-async fn run(app:&AppHandle,args:Vec<String>)->Result<(),String>{let out=app.shell().sidecar("ffmpeg").map_err(|e|e.to_string())?.args(args).output().await.map_err(|e|e.to_string())?;if out.status.success(){Ok(())}else{Err(String::from_utf8_lossy(&out.stderr).trim().to_string())}}
+#[cfg(feature="e2e-render")]
+fn qa_log_first_encode_sidecar(){
+  static ONCE:std::sync::Once=std::sync::Once::new();
+  if std::env::var_os("ENDLUME_PREVIEW_DIAG").is_none(){return}
+  ONCE.call_once(||{
+    let exe=std::env::current_exe().ok();
+    let path=exe.as_ref().and_then(|p|p.parent()).map(|d|{
+      #[cfg(target_os="windows")]
+      {d.join("ffmpeg.exe")}
+      #[cfg(not(target_os="windows"))]
+      {d.join("ffmpeg")}
+    });
+    let exists=path.as_ref().map(|p|p.is_file()).unwrap_or(false);
+    #[cfg(unix)]
+    let executable=path.as_ref().and_then(|p|std::fs::metadata(p).ok()).map(|m|{
+      use std::os::unix::fs::PermissionsExt;
+      m.permissions().mode()&0o111!=0
+    }).unwrap_or(false);
+    #[cfg(not(unix))]
+    let executable=exists;
+    let resolved=path.as_ref().and_then(|p|std::fs::canonicalize(p).ok()).or(path.clone());
+    let bundled=match (&exe,&resolved){
+      (Some(e),Some(r))=>e.parent().map(|d|r.starts_with(d)).unwrap_or(false),
+      _=>false
+    };
+    eprintln!("FIRST_ENCODE_EXECUTABLE_SOURCE=tauri-plugin-shell sidecar externalBin");
+    eprintln!("FIRST_ENCODE_RESOLVED_PATH={}",resolved.as_ref().map(|p|p.display().to_string()).unwrap_or_else(||"<none>".into()));
+    eprintln!("FIRST_ENCODE_IS_BUNDLED={}",bundled);
+    eprintln!("FIRST_ENCODE_EXISTS={}",exists);
+    eprintln!("FIRST_ENCODE_EXECUTABLE={}",executable);
+  });
+}
+
+async fn run(app:&AppHandle,args:Vec<String>)->Result<(),String>{
+  #[cfg(feature="e2e-render")]
+  qa_log_first_encode_sidecar();
+  let out=app.shell().sidecar("ffmpeg").map_err(|e|e.to_string())?.args(args).output().await.map_err(|e|e.to_string())?;
+  if out.status.success(){Ok(())}else{Err(String::from_utf8_lossy(&out.stderr).trim().to_string())}
+}
 
 fn executable_file(p:&Path)->bool{
   if !p.is_file(){return false}

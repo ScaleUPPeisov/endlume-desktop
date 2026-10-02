@@ -25,9 +25,6 @@ env:
   MAC_ZIP: "ENDLUME-YT-Studio-PEISOV-10.0.11-macOS-ARM64.zip"
   MAC_UPDATER: "ENDLUME-YT-Studio-PEISOV-10.0.11-macOS-ARM64.app.tar.gz"
   WIN_EXE: "ENDLUME-YT-Studio-PEISOV-Setup-10.0.11-x64.exe"
-  SOURCE_REPO: "ScaleUPPeisov/endlume-desktop"
-  LEGACY_TAG: "endlume-v10.0.11"
-  LEGACY_MANIFEST_BRANCH: "release"
 
 jobs:
   macos:
@@ -66,7 +63,7 @@ jobs:
           t=json.loads(Path('src-tauri/tauri.conf.json').read_text())
           assert t['version']==v and t['identifier']=='studio.endlume.desktop'
           assert t['app']['windows'] and any(w.get('label')=='main' for w in t['app']['windows'])
-          assert re.search(r'^version\s*=\s*"10[.]0[.]10"$',Path('src-tauri/Cargo.toml').read_text(),re.M)
+          assert re.search(r'^version\s*=\s*"10[.]0[.]11"$',Path('src-tauri/Cargo.toml').read_text(),re.M)
           assert 'name = "endlume"\nversion = "10.0.11"' in Path('src-tauri/Cargo.lock').read_text()
           print('ENDLUME_1011_RELEASE_SOURCE_GREEN')
           PY
@@ -192,20 +189,6 @@ jobs:
           gh release upload "$STABLE_TAG" "$E1011_MAC_STAGE/$MAC_ZIP" "$E1011_MAC_STAGE/$MAC_ZIP.sha256" --clobber --repo "$STABLE_REPO"
           curl -fsIL --retry 5 "https://github.com/$STABLE_REPO/releases/download/$STABLE_TAG/$MAC_ZIP" >/dev/null
           echo ENDLUME_1011_MAC_CLEAN_PUBLIC_GREEN
-
-      - name: Publish macOS package for Settings updater channel
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.ENDLUME_RELEASE_TOKEN }}
-        run: |
-          set -Eeuo pipefail
-          gh release view "$LEGACY_TAG" --repo "$SOURCE_REPO" >/dev/null 2>&1 || gh release create "$LEGACY_TAG" --repo "$SOURCE_REPO" --title "ENDLUME 10.0.11" --notes "ENDLUME 10.0.11 production update."
-          gh release upload "$LEGACY_TAG" "$E1011_MAC_STAGE/$MAC_ZIP" "$E1011_MAC_STAGE/$MAC_ZIP.sha256" --clobber --repo "$SOURCE_REPO"
-          VERIFY="$RUNNER_TEMP/e1011-settings-channel"
-          rm -rf "$VERIFY"; mkdir -p "$VERIFY"
-          gh release download "$LEGACY_TAG" --repo "$SOURCE_REPO" --dir "$VERIFY" --pattern "$MAC_ZIP" --pattern "$MAC_ZIP.sha256" --clobber
-          (cd "$VERIFY" && /usr/bin/shasum -a 256 -c "$MAC_ZIP.sha256")
-          echo ENDLUME_1011_SETTINGS_MAC_ASSET_GREEN
 
   windows:
     name: Windows x64 • Self-hosted Mac cross-build • Production
@@ -387,7 +370,7 @@ jobs:
           base='https://github.com/ScaleUPPeisov/scaleup-site/releases/download/endlume-stable/'
           d={
             'version':'10.0.11',
-            'notes':'ENDLUME 10.0.11: cold Effects/Subscribe Preview fix with bundled FFmpeg validation, final Effects parity, cache invalidation, real progress/ETA, fast HEVC/AAC production render.',
+            'notes':'ENDLUME 10.0.11: cold Effects/Subscribe Preview, final Effects parity, cache invalidation, real progress/ETA, fast 400–600 MiB HEVC/AAC render.',
             'pub_date':datetime.datetime.now(datetime.timezone.utc).isoformat().replace('+00:00','Z'),
             'platforms':{
               'darwin-aarch64':{'url':base+'ENDLUME-YT-Studio-PEISOV-10.0.11-macOS-ARM64.app.tar.gz','signature':mac_sig,'sha256':mac_sha},
@@ -460,158 +443,3 @@ jobs:
           test "$(shasum -a 256 "$PUB/$MAC_UPDATER" | awk '{print $1}')" = "$(shasum -a 256 "$W/$MAC_UPDATER" | awk '{print $1}')"
           test "$(shasum -a 256 "$PUB/$WIN_EXE" | awk '{print $1}')" = "$(shasum -a 256 "$W/$WIN_EXE" | awk '{print $1}')"
           echo ENDLUME_1011_PUBLIC_RELEASE_GREEN
-
-      - name: Publish Settings updater manifest LAST
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.ENDLUME_RELEASE_TOKEN }}
-        run: |
-          set -Eeuo pipefail
-          WORK="$E1011_UPDATER_WORK"
-          LEGACY="$WORK/settings-latest.json"
-          python3 - "$LEGACY" "$MAC_ZIP" <<'PY'
-import json,sys
-out,asset=sys.argv[1:]
-d={
-  "version":"10.0.11",
-  "date":"02.10.2026",
-  "channel":"remote-binary",
-  "candidateRevision":11,
-  "builder":"endlume-1011-production",
-  "ciBuilder":"endlume-1011-production",
-  "releaseTag":"endlume-v10.0.11",
-  "asset":asset,
-  "checksumAsset":asset+".sha256",
-  "notes":"ENDLUME 10.0.11: cold Preview, final Effects, cache invalidation, progress/ETA and production render acceptance."
-}
-json.dump(d,open(out,"w"),ensure_ascii=False,indent=2)
-PY
-          SHA="$(gh api "repos/$SOURCE_REPO/contents/updates/latest.json?ref=$LEGACY_MANIFEST_BRANCH" --jq .sha)"
-          B64="$(python3 - "$LEGACY" <<'PY'
-import base64,sys
-print(base64.b64encode(open(sys.argv[1],"rb").read()).decode())
-PY
-)"
-          gh api --method PUT "repos/$SOURCE_REPO/contents/updates/latest.json" -f message="release: ENDLUME 10.0.11 updater manifest" -f content="$B64" -f sha="$SHA" -f branch="$LEGACY_MANIFEST_BRANCH" >/dev/null
-          gh api -H "Accept: application/vnd.github.raw+json" "repos/$SOURCE_REPO/contents/updates/latest.json?ref=$LEGACY_MANIFEST_BRANCH" > "$WORK/settings-latest-public.json"
-          python3 - "$WORK/settings-latest-public.json" <<'PY'
-import json,sys
-d=json.load(open(sys.argv[1]));assert d["version"]=="10.0.11";assert d["releaseTag"]=="endlume-v10.0.11";assert d["channel"]=="remote-binary"
-print("ENDLUME_1011_SETTINGS_MANIFEST_GREEN")
-PY
-
-  post_update:
-    name: macOS • real Settings 10.0.10 → 10.0.11
-    needs: updater
-    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
-    timeout-minutes: 35
-    env:
-      RELEASE_TOKEN: ${{ secrets.ENDLUME_RELEASE_TOKEN }}
-    steps:
-      - name: Install exact public 10.0.10 baseline
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-          test -n "${RELEASE_TOKEN:-}"
-          gh auth status -h github.com >/dev/null
-          BASE="https://github.com/$STABLE_REPO/releases/download/$STABLE_TAG"
-          OLD_ZIP="ENDLUME-YT-Studio-PEISOV-10.0.10-macOS-ARM64.zip"
-          ROOT="$RUNNER_TEMP/e1011-real-update"
-          rm -rf "$ROOT"; mkdir -p "$ROOT/old"
-          curl -fsSL --retry 5 "$BASE/$OLD_ZIP" -o "$ROOT/$OLD_ZIP"
-          /usr/bin/ditto -x -k "$ROOT/$OLD_ZIP" "$ROOT/old"
-          OLD_APP="$(find "$ROOT/old" -maxdepth 2 -type d -name '*.app' -print -quit)"
-          test -n "$OLD_APP" -a -d "$OLD_APP"
-          test "$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$OLD_APP/Contents/Info.plist")" = "10.0.10"
-          DEST="/Applications/ENDLUME YT Studio PEISOV.app"
-          /usr/bin/pkill -x "ENDLUME YT Studio PEISOV" >/dev/null 2>&1 || true
-          /bin/sleep 1
-          rm -rf "$DEST"
-          /usr/bin/ditto "$OLD_APP" "$DEST"
-          /usr/bin/codesign --verify --deep --strict "$DEST"
-          test "$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$DEST/Contents/Info.plist")" = "10.0.10"
-          echo "E1011_UPDATE_DEST=$DEST" >> "$GITHUB_ENV"
-          echo "E1011_UPDATE_ROOT=$ROOT" >> "$GITHUB_ENV"
-          echo ENDLUME_1011_OLD_BASELINE_GREEN
-
-      - name: Verify Settings UI can drive the signed update
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          ACCESS="$(/usr/bin/osascript -e 'tell application "System Events" to return UI elements enabled' 2>/dev/null || true)"
-          if [ "$ACCESS" != "true" ]; then echo "ENDLUME_REAL_BLOCKER=MACOS_ACCESSIBILITY_DISABLED"; exit 73; fi
-          /usr/bin/open -n "$E1011_UPDATE_DEST"
-          for I in $(seq 1 80); do /usr/bin/pgrep -x "ENDLUME YT Studio PEISOV" >/dev/null 2>&1 && break; /bin/sleep 0.25; done
-          /bin/sleep 4
-          cat > "$RUNNER_TEMP/e1011-click.applescript" <<'APPLESCRIPT'
-on clickNamed(targetName)
-  tell application "System Events"
-    tell process "ENDLUME YT Studio PEISOV"
-      set frontmost to true
-      repeat with itemRef in entire contents
-        try
-          if (name of itemRef as text) is targetName then
-            click itemRef
-            return true
-          end if
-        end try
-      end repeat
-    end tell
-  end tell
-  return false
-end clickNamed
-
-tell application "ENDLUME YT Studio PEISOV" to activate
-delay 1
-set settingsOk to clickNamed("Настройки")
-if settingsOk is false then error "SETTINGS_BUTTON_NOT_FOUND"
-delay 1
-set updatesOk to clickNamed("ОБНОВЛЕНИЯ")
-if updatesOk is false then error "UPDATES_TAB_NOT_FOUND"
-delay 1
-set checkOk to clickNamed("ПРОВЕРИТЬ ОБНОВЛЕНИЯ")
-if checkOk is false then error "CHECK_UPDATE_BUTTON_NOT_FOUND"
-delay 3
--- Settings dispatches the found update into the same signed UpdateExperience used by automatic checks.
-set updateOk to clickNamed("ОБНОВИТЬ")
-if updateOk is false then error "UPDATE_BUTTON_NOT_FOUND"
-APPLESCRIPT
-          /usr/bin/osascript "$RUNNER_TEMP/e1011-click.applescript"
-          STATE="$HOME/Library/Caches/studio.endlume.desktop/update-center/state.json"
-          for I in $(seq 1 240); do
-            if [ -s "$STATE" ]; then
-              S="$(python3 - "$STATE" <<'PY'
-import json,sys
-try: print(str(json.load(open(sys.argv[1])).get("state","")).lower())
-except Exception: print("")
-PY
-)"
-              [ "$S" = "success" ] && break
-              [ "$S" = "failed" ] && { cat "$STATE"; cat "$HOME/Library/Caches/studio.endlume.desktop/update-center/update.log" || true; exit 74; }
-            fi
-            /bin/sleep 0.5
-          done
-          test -s "$STATE"
-          python3 - "$STATE" <<'PY'
-import json,sys
-d=json.load(open(sys.argv[1]));assert str(d.get("state","")).lower()=="success",d
-print("ENDLUME_1011_SETTINGS_INSTALL_GREEN")
-PY
-
-      - name: Verify relaunch is 10.0.11
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          DEST="$E1011_UPDATE_DEST"
-          for I in $(seq 1 80); do
-            V="$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$DEST/Contents/Info.plist" 2>/dev/null || true)"
-            [ "$V" = "10.0.11" ] && break
-            /bin/sleep 0.25
-          done
-          test "$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$DEST/Contents/Info.plist")" = "10.0.11"
-          /usr/bin/codesign --verify --deep --strict "$DEST"
-          for I in $(seq 1 80); do /usr/bin/pgrep -x "ENDLUME YT Studio PEISOV" >/dev/null 2>&1 && break; /bin/sleep 0.25; done
-          /usr/bin/pgrep -x "ENDLUME YT Studio PEISOV" >/dev/null
-          echo ENDLUME_1011_REAL_UPDATE_RELAUNCH_GREEN
-

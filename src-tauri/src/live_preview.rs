@@ -119,7 +119,7 @@ async fn make_base(app:&AppHandle,src:&Path,seek:f64,out:&Path)->Result<String,S
   if is_image(src){
     if ready_file(out){return Ok("image".into())}
     let name=out.file_name().and_then(|x|x.to_str()).unwrap_or("base.png");
-    let tmp=out.with_file_name(format!(".{name}-{}.tmp.png",uuid::Uuid::new_v4()));
+    let tmp=out.with_file_name(format!("{name}-{}.tmp.png",uuid::Uuid::new_v4()));
     let args=vec!["-hide_banner","-loglevel","error","-i",src.to_string_lossy().as_ref(),"-vf","scale=960:540:force_original_aspect_ratio=decrease,pad=960:540:(ow-iw)/2:(oh-ih)/2","-frames:v","1","-compression_level","1","-y",tmp.to_string_lossy().as_ref()].into_iter().map(String::from).collect::<Vec<_>>();
     let output=app.shell().sidecar("ffmpeg").map_err(|e|format!("FFmpeg Live Preview недоступен: {e}"))?.args(args).output().await.map_err(|e|format!("Не удалось запустить FFmpeg Live Preview: {e}"))?;
     let stderr=String::from_utf8_lossy(&output.stderr).trim().to_string();

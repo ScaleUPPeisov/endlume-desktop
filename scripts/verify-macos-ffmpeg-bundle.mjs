@@ -92,3 +92,4 @@ if(requireCodesign){
 if(process.env.ENDLUME_REQUIRE_GATEKEEPER==='1'){const gate=spawnSync('/usr/sbin/spctl',['-a','-vv',app],{encoding:'utf8'});if(gate.status!==0)throw new Error(`Gatekeeper verification failed: ${gate.stderr||gate.stdout}`)}
 
 console.log(JSON.stringify({kind:'ENDLUME_MACOS_FFMPEG_RUNTIME_PASS',app,target,runtimeMode,frameworks:dylibs.length,ffmpeg:true,ffprobe:true,codesign:requireCodesign?'verified':'deferred-to-release-step'}));
+// ENDLUME 10.0.9 production release trigger; no runtime behavior change.

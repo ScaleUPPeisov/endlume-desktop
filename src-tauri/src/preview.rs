@@ -33,7 +33,7 @@ fn overlay_geometry(e:&EffectPreset,w:u32,h:u32)->(String,String,String){
 }
 
 fn effect_opacity(e:&EffectPreset)->f64{e.opacity.unwrap_or(1.0).clamp(0.0,1.0)}
-fn overlay_effect(graph:&mut String,base:&mut String,input:usize,e:&EffectPreset,w:u32,h:u32){
+fn overlay_effect(graph:&mut String,base:&mut String,input:usize,e:&EffectPreset,w:u32,h:u32,is_subscribe:bool){
   let fx=format!("fx{input}");let next=format!("b{input}");let (scale,x,y)=overlay_geometry(e,w,h);let opacity=effect_opacity(e);
   if e.mode=="screen"||e.mode=="screen-cache"{
     graph.push_str(&format!(";[{base}]format=gbrp[base{input}];[{input}:v]fps=30,format=gbrp,{scale},pad={w}:{h}:'{x}':'{y}':color=black,setsar=1[{fx}];[base{input}][{fx}]blend=all_mode=screen:all_opacity={opacity}[{next}]"));
@@ -41,7 +41,7 @@ fn overlay_effect(graph:&mut String,base:&mut String,input:usize,e:&EffectPreset
     let prep=if e.mode=="luma"{
       format!("[{input}:v]fps=30,format=rgba,lumakey=threshold={}:tolerance={}:softness=0.08",e.luma_threshold,e.luma_tolerance)
     }else{
-      let (similarity,blend)=cache::chromakey_params_859(e);
+      let (similarity,blend)=if is_subscribe{cache::subscribe_chromakey_params_1011(e)}else{cache::chromakey_params_859(e)};
       let kind=cache::despill_type(&e.key_color);
       let mix=e.despill.clamp(0.0,1.0);
       if cache::is_round_equalizer_859(e){
@@ -89,8 +89,8 @@ pub async fn generate_preview(app:AppHandle,project_path:String,time_sec:f64,eff
   for e in &enabled_fx{base_args.extend(vec!["-stream_loop","-1","-ss",&e.preview_frame_time.max(0.0).to_string(),"-i",e.source.as_str()].into_iter().map(String::from));}
   for s in &enabled_sub{base_args.extend(vec!["-stream_loop","-1","-ss",&s.effect.preview_frame_time.max(0.0).to_string(),"-i",s.effect.source.as_str()].into_iter().map(String::from));}
   let (w,h)=(1920u32,1080u32);let mut graph=format!("[0:v]scale={w}:{h}:force_original_aspect_ratio=increase:flags=lanczos+accurate_rnd,crop={w}:{h}:(iw-ow)/2:(ih-oh)/2,fps=30,setsar=1[b0]");let mut base="b0".to_string();let mut idx=1usize;
-  for e in &enabled_fx{overlay_effect(&mut graph,&mut base,idx,e,w,h);idx+=1;}
-  for s in &enabled_sub{overlay_effect(&mut graph,&mut base,idx,&s.effect,w,h);idx+=1;}
+  for e in &enabled_fx{overlay_effect(&mut graph,&mut base,idx,e,w,h,false);idx+=1;}
+  for s in &enabled_sub{overlay_effect(&mut graph,&mut base,idx,&s.effect,w,h,true);idx+=1;}
   graph.push_str(&format!(";[{base}]fps=60,format=yuv420p[outv]"));
   base_args.extend(vec!["-filter_complex",&graph,"-map","[outv]","-t","3.0","-an"].into_iter().map(String::from));
 
@@ -115,6 +115,21 @@ pub async fn generate_preview(app:AppHandle,project_path:String,time_sec:f64,eff
   let size=std::fs::metadata(&tmp).map_err(|e|format!("Preview temp metadata: {e}"))?.len();
   if size<1024{let _=std::fs::remove_file(&tmp);return Err(format!("Preview temp слишком мал: {size} bytes"))}
   std::fs::rename(&tmp,&out).map_err(|e|format!("Preview atomic publish: {e}"))?;
-  eprintln!("ENDLUME_PREVIEW REQUEST_ID={request} PHASE=FINISH TEMP_FILE={} PUBLISHED_FILE={} WIDTH=1920 HEIGHT=1080 PIX_FMT=yuv420p BUFFER_SIZE={} ELAPSED_MS={}",tmp.display(),out.display(),size,started.elapsed().as_millis());
+  crate::live_preview::validate_video_proxy(&app,&out).await.map_err(|e|format!("Exact Preview decode validation: {e}"))?;
+  let (frame_width,frame_height,_)=crate::live_preview::frame_probe_diag(&app,&out).await;
+  let preview_type=if !enabled_sub.is_empty(){"Subscribe"}else if !enabled_fx.is_empty(){"Effects"}else{"Baseline"};
+  if cfg!(debug_assertions)||std::env::var_os("ENDLUME_PREVIEW_DIAG").is_some(){
+    eprintln!("PREVIEW_REQUEST_ID={request}");
+    eprintln!("PREVIEW_TYPE={preview_type}");
+    eprintln!("SOURCE_IMAGE={}",src.display());
+    eprintln!("COMPOSED_FRAME_PATH={}",out.display());
+    eprintln!("COMPOSED_FRAME_EXISTS={}",out.is_file());
+    eprintln!("COMPOSED_FRAME_BYTES={size}");
+    eprintln!("FFMPEG_EXIT=0");
+    eprintln!("DECODE_VALIDATION=GREEN");
+    eprintln!("FRAME_WIDTH={frame_width}");
+    eprintln!("FRAME_HEIGHT={frame_height}");
+  }
+  eprintln!("ENDLUME_PREVIEW REQUEST_ID={request} PHASE=FINISH TEMP_FILE={} PUBLISHED_FILE={} WIDTH={} HEIGHT={} PIX_FMT=yuv420p BUFFER_SIZE={} ELAPSED_MS={}",tmp.display(),out.display(),frame_width,frame_height,size,started.elapsed().as_millis());
   Ok(out.to_string_lossy().into_owned())
 }

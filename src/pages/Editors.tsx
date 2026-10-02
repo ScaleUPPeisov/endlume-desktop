@@ -186,8 +186,10 @@ function EffectsEditor() {
       if (request !== previewRequest.current) { previewDiag('effects','DISCARD',request,{requestId,latest:previewRequest.current}); return; }
       setAssets({
         basePath: api.previewUrl(result.basePath),
+        baseFilePath: result.basePath,
         baseKind: result.baseKind,
         overlayPath: api.previewUrl(result.overlayPath),
+        overlayFilePath: result.overlayPath,
         baseBytes: result.baseBytes,
         overlayBytes: result.overlayBytes,
         requestId,
@@ -355,8 +357,10 @@ function SubscribeEditor() {
       if (request !== previewRequest.current) { previewDiag('subscribe','DISCARD',request,{requestId,latest:previewRequest.current}); return; }
       setAssets({
         basePath: api.previewUrl(result.basePath),
+        baseFilePath: result.basePath,
         baseKind: result.baseKind,
         overlayPath: api.previewUrl(result.overlayPath),
+        overlayFilePath: result.overlayPath,
         baseBytes: result.baseBytes,
         overlayBytes: result.overlayBytes,
         requestId,

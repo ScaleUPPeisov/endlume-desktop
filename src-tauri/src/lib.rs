@@ -46,8 +46,9 @@ fn maybe_start_preview_e2e(app:tauri::AppHandle){
       let effects=serde_json::from_value::<Vec<model::EffectPreset>>(value.get("effects").cloned().unwrap_or_else(||serde_json::json!([]))).map_err(|e|format!("preview effects: {e}"))?;
       let subscribes=serde_json::from_value::<Vec<model::SubscribePreset>>(value.get("subscribes").cloned().unwrap_or_else(||serde_json::json!([]))).map_err(|e|format!("preview subscribes: {e}"))?;
       let helper=live_preview::prepare_live_preview(app.clone(),project_path.clone(),overlay_source,time_sec,Some("e1011-cold-preview".into()),Some(if subscribes.is_empty(){"Effects".into()}else{"Subscribe".into()})).await?;
+      let poster=preview::generate_preview_poster(app.clone(),project_path.clone(),time_sec,effects.clone(),subscribes.clone(),Some("e1011-cold-preview-poster".into())).await?;
       let exact=preview::generate_preview(app.clone(),project_path,time_sec,effects,subscribes,Some("e1011-cold-preview".into())).await?;
-      Ok(serde_json::json!({"helper":serde_json::to_value(helper).map_err(|e|e.to_string())?,"exactPath":exact}))
+      Ok(serde_json::json!({"helper":serde_json::to_value(helper).map_err(|e|e.to_string())?,"posterPath":poster,"exactPath":exact}))
     }.await;
     let (ok,payload)=match result{Ok(v)=>(true,serde_json::json!({"status":"passed","result":v})),Err(e)=>(false,serde_json::json!({"status":"failed","error":e}))};
     let _=std::fs::write(&result_path,serde_json::to_vec_pretty(&payload).unwrap_or_default());
@@ -144,7 +145,7 @@ pub fn run(){
     .invoke_handler(tauri::generate_handler![
       scan::scan_root,
       queue::enqueue_projects,queue::queue_snapshot,queue::reorder_queue,queue::cancel_project,queue::resume_recovery,queue::resume_license_queue,
-      preview::generate_preview,preview::preview_frontend_fixture,preview::preview_frontend_report,live_preview::prepare_live_preview,assets::import_library_asset,
+      preview::generate_preview,preview::generate_preview_poster,preview::preview_frontend_fixture,preview::preview_frontend_report,live_preview::prepare_live_preview,assets::import_library_asset,
       persistence::load_library,persistence::save_library,persistence::load_recovery,persistence::dismiss_recovery,
       benchmark::benchmark_engine,
       license::activate_license,license::license_status,license::set_license_screen,license::set_license_queue_depth,

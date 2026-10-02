@@ -1,12 +1,12 @@
 {
-  "version": "10.0.6",
-  "date": "01.10.2026",
+  "version": "10.0.11",
+  "date": "02.10.2026",
   "channel": "remote-binary",
-  "candidateRevision": 6,
-  "builder": "public-hosted-macos-legacy-updater",
-  "ciBuilder": "public-hosted-macos-legacy-updater",
-  "releaseTag": "endlume-v10.0.6",
-  "asset": "ENDLUME-YT-Studio-PEISOV-10.0.6-macOS-ARM64.zip",
-  "checksumAsset": "ENDLUME-YT-Studio-PEISOV-10.0.6-macOS-ARM64.zip.sha256",
-  "notes": "ENDLUME 10.0.6 production: FFmpeg Operation not permitted fix, finite concat audio, Crossfade, AAC 320 kbps / 48 kHz / stereo, duration-aware validation, Effects/Subscribe Preview, Delete Effect and correct failed queue state."
+  "candidateRevision": 11,
+  "builder": "endlume-1011-production",
+  "ciBuilder": "endlume-1011-production",
+  "releaseTag": "endlume-v10.0.11",
+  "asset": "ENDLUME-YT-Studio-PEISOV-10.0.11-macOS-ARM64-settings-updater.zip",
+  "checksumAsset": "ENDLUME-YT-Studio-PEISOV-10.0.11-macOS-ARM64-settings-updater.zip.sha256",
+  "notes": "ENDLUME 10.0.11: cold Preview, final Effects, cache invalidation, progress/ETA and production render acceptance."
 }

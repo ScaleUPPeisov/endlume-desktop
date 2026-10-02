@@ -50,10 +50,10 @@ fn effect_opacity(e:&EffectPreset)->f64{e.opacity.unwrap_or(1.0).clamp(0.0,1.0)}
 fn overlay_effect(graph:&mut String,base:&mut String,input:usize,e:&EffectPreset,w:u32,h:u32,is_subscribe:bool){
   let fx=format!("fx{input}");let next=format!("b{input}");let (scale,x,y)=overlay_geometry(e,w,h);let opacity=effect_opacity(e);
   if e.mode=="screen"||e.mode=="screen-cache"{
-    graph.push_str(&format!(";[{base}]format=gbrp[base{input}];[{input}:v]fps=30,format=gbrp,{scale},pad={w}:{h}:'{x}':'{y}':color=black,setsar=1[{fx}];[base{input}][{fx}]blend=all_mode=screen:all_opacity={opacity}[{next}]"));
+    graph.push_str(&format!(";[{base}]format=gbrp[base{input}];[{input}:v]setpts=PTS-STARTPTS,fps=30,format=gbrp,{scale},pad={w}:{h}:'{x}':'{y}':color=black,setsar=1[{fx}];[base{input}][{fx}]blend=all_mode=screen:all_opacity={opacity}[{next}]"));
   }else{
     let prep=if e.mode=="luma"{
-      format!("[{input}:v]fps=30,format=rgba,lumakey=threshold={}:tolerance={}:softness=0.08",e.luma_threshold,e.luma_tolerance)
+      format!("[{input}:v]setpts=PTS-STARTPTS,fps=30,format=rgba,lumakey=threshold={}:tolerance={}:softness=0.08",e.luma_threshold,e.luma_tolerance)
     }else{
       let (similarity,blend)=if is_subscribe{cache::subscribe_chromakey_params_1011(e)}else{cache::chromakey_params_859(e)};
       let kind=cache::despill_type(&e.key_color);
@@ -61,9 +61,9 @@ fn overlay_effect(graph:&mut String,base:&mut String,input:usize,e:&EffectPreset
       if cache::is_round_equalizer_859(e){
         let pre_target_w=((((w as f64)*e.scale.clamp(0.05,1.5)).round().max(2.0) as u32).saturating_mul(2)).max(2);
         let pre_target_w=if pre_target_w%2==0{pre_target_w}else{pre_target_w+1};
-        format!("[{input}:v]fps=30,scale={pre_target_w}:-2:flags=neighbor,format=rgba,colorkey={}:{}:{},{scale},despill=type={kind}:mix={mix}:expand=0.20",color(&e.key_color),similarity,blend)
+        format!("[{input}:v]setpts=PTS-STARTPTS,fps=30,scale={pre_target_w}:-2:flags=neighbor,format=rgba,colorkey={}:{}:{},{scale},despill=type={kind}:mix={mix}:expand=0.20",color(&e.key_color),similarity,blend)
       }else{
-        format!("[{input}:v]fps=30,format=rgba,colorkey={}:{}:{},despill=type={kind}:mix={mix}:expand=0.20",color(&e.key_color),similarity,blend)
+        format!("[{input}:v]setpts=PTS-STARTPTS,fps=30,format=rgba,colorkey={}:{}:{},despill=type={kind}:mix={mix}:expand=0.20",color(&e.key_color),similarity,blend)
       }
     };
     let prepared=if cache::is_round_equalizer_859(e){prep}else{format!("{prep},{scale}")};

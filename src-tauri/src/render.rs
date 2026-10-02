@@ -1117,43 +1117,66 @@ async fn localize_processed_audio_inputs_1008(app:&AppHandle,job:&QueueJob,cance
 async fn build_lossless_processed_audio_cycle(app:&AppHandle,job:&QueueJob,started:i64,timer:&Instant,work:&Path,encoder:&str,attempt:u32,cancel:&AtomicBool)->Result<(PathBuf,Vec<f64>,f64),String>{
   if job.project.audio.is_empty(){return Err("Нет песен".into())}
   let (local_tracks,local_ambient)=localize_processed_audio_inputs_1008(app,job,cancel).await?;
-  let mut durations=Vec::new();let probe_mark=Instant::now();
-  let mut args:Vec<String>=vec!["-hide_banner","-loglevel","error"].into_iter().map(String::from).collect();
-  for a in &local_tracks{
-    let a_str=a.to_string_lossy();
-    durations.push(probe_duration(app,a_str.as_ref()).await.unwrap_or(180.0).max(0.2));
-    args.extend(vec!["-i",a_str.as_ref()].into_iter().map(String::from));
-  }
-  let ambient_index=local_tracks.len();let ambient_enabled=local_ambient.is_some();
-  if let Some(a)=local_ambient.as_ref(){args.extend(vec!["-stream_loop","-1","-i",a.to_string_lossy().as_ref()].into_iter().map(String::from));}
+  let probe_mark=Instant::now();
+  let local_track_strings=local_tracks.iter().map(|p|p.to_string_lossy().into_owned()).collect::<Vec<_>>();
+  let metas=probe_original_audio_batch(app,&local_track_strings).await?;
+  let durations=metas.iter().map(|m|m.duration.max(0.2)).collect::<Vec<_>>();
   emit_timing(app,&job.project.id,"probe",probe_mark.elapsed().as_secs_f64());
+
   let min_track=durations.iter().copied().fold(f64::INFINITY,f64::min);
   let cf=job.settings.crossfade_sec.clamp(0.0,10.0).min((min_track*0.40).max(0.0));
+  let first_sig=metas.first().map(|m|(m.codec.as_str(),m.sample_rate,m.channels));
+  let fast_concat=cf<=0.01&&!job.settings.normalize_lufs&&first_sig.is_some()&&metas.iter().all(|m|{
+    m.codec=="mp3"&&first_sig.map(|sig|sig==(m.codec.as_str(),m.sample_rate,m.channels)).unwrap_or(false)
+  });
+
+  let mut args:Vec<String>=vec!["-hide_banner","-loglevel","error"].into_iter().map(String::from).collect();
   let mut graph=String::new();
-  for i in 0..job.project.audio.len(){
-    if i>0{graph.push(';')}
-    graph.push_str(&format!("[{i}:a]aresample=48000:async=1:first_pts=0,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,asetpts=N/SR/TB[a{i}]"));
-  }
-  let last=if job.project.audio.len()==1{"a0".to_string()}else if cf>0.01{
-    let mut cur="a0".to_string();
-    for i in 1..job.project.audio.len(){
-      let out=format!("xf{i}");
-      graph.push_str(&format!(";[{cur}][a{i}]acrossfade=d={cf}:c1=tri:c2=tri[{out}]"));
-      cur=out;
+  let ambient_index:usize;
+
+  if fast_concat{
+    let list=work.join("audio-processed-fast-concat.txt");
+    let body=local_tracks.iter().map(|p|format!("file {}",ffconcat_escape(p))).collect::<Vec<_>>().join("\n");
+    std::fs::write(&list,body).map_err(|e|format!("10.0.8 processed fast concat list: {e}"))?;
+    args.extend(vec!["-f","concat","-safe","0","-fflags","+genpts","-i",list.to_string_lossy().as_ref()].into_iter().map(String::from));
+    ambient_index=1;
+    graph.push_str("[0:a]aresample=48000:async=1:first_pts=0,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,asetpts=N/SR/TB[processed_music]");
+    diag_line(json!({"kind":"audio-fast-path-1008","projectId":job.project.id,"mode":"COMPATIBLE_MP3_CONCAT_DEMUX","tracks":local_tracks.len()}));
+  }else{
+    for a in &local_tracks{
+      args.extend(vec!["-i",a.to_string_lossy().as_ref()].into_iter().map(String::from));
     }
-    cur
-  }else{
-    let inputs=(0..job.project.audio.len()).map(|i|format!("[a{i}]")).collect::<String>();
-    graph.push_str(&format!(";{inputs}concat=n={}:v=0:a=1[joined]",job.project.audio.len()));
-    "joined".to_string()
-  };
-  let music="processed_music";
-  if job.settings.normalize_lufs{graph.push_str(&format!(";[{last}]loudnorm=I=-14:TP=-1.5:LRA=11[{music}]"));}else{graph.push_str(&format!(";[{last}]anull[{music}]"));}
-  if ambient_enabled{
-    graph.push_str(&format!(";[{ambient_index}:a]aresample=48000:async=1:first_pts=0,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,volume=0.18[amb];[{music}][amb]amix=inputs=2:duration=first:weights='1 1':normalize=0,alimiter=limit=0.98[outa]"));
-  }else{
-    graph.push_str(&format!(";[{music}]aresample=48000:async=1:first_pts=0,alimiter=limit=0.98[outa]"));
+    ambient_index=local_tracks.len();
+    for i in 0..local_tracks.len(){
+      if i>0{graph.push(';')}
+      graph.push_str(&format!("[{i}:a]aresample=48000:async=1:first_pts=0,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,asetpts=N/SR/TB[a{i}]"));
+    }
+    let last=if local_tracks.len()==1{"a0".to_string()}else if cf>0.01{
+      let mut cur="a0".to_string();
+      for i in 1..local_tracks.len(){
+        let out=format!("xf{i}");
+        graph.push_str(&format!(";[{cur}][a{i}]acrossfade=d={cf}:c1=tri:c2=tri[{out}]"));
+        cur=out;
+      }
+      cur
+    }else{
+      let inputs=(0..local_tracks.len()).map(|i|format!("[a{i}]")).collect::<String>();
+      graph.push_str(&format!(";{inputs}concat=n={}:v=0:a=1[joined]",local_tracks.len()));
+      "joined".to_string()
+    };
+    if job.settings.normalize_lufs{graph.push_str(&format!(";[{last}]loudnorm=I=-14:TP=-1.5:LRA=11[processed_music]"));}else{graph.push_str(&format!(";[{last}]anull[processed_music]"));}
   }
+
+  let ambient_enabled=local_ambient.is_some();
+  if let Some(a)=local_ambient.as_ref(){
+    args.extend(vec!["-stream_loop","-1","-i",a.to_string_lossy().as_ref()].into_iter().map(String::from));
+  }
+  if ambient_enabled{
+    graph.push_str(&format!(";[{ambient_index}:a]aresample=48000:async=1:first_pts=0,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,volume=0.18[amb];[processed_music][amb]amix=inputs=2:duration=first:weights='1 1':normalize=0,alimiter=limit=0.98[outa]"));
+  }else{
+    graph.push_str(";[processed_music]aresample=48000:async=1:first_pts=0,alimiter=limit=0.98[outa]");
+  }
+
   let cycle=work.join("audio-crossfade-gapless.m4a");
   let expected=(durations.iter().sum::<f64>()-cf*((durations.len().saturating_sub(1)) as f64)).max(0.2);
   let audio_encoder=choose_audio_encoder(app).await;

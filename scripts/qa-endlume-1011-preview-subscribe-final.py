@@ -220,18 +220,17 @@ baseline=preview_run("baseline",[],[],film["source"])
 eq_prev=preview_run("round-equalizer",[eq],[],eq["source"])
 third_prev=preview_run("third-effect",[third],[],third["source"])
 
-base_frame=frame(baseline["exact"])
-fx_frame=frame(cold_fx["exact"]);sub_frame=frame(cold_sub["exact"]);eq_frame=frame(eq_prev["exact"]);third_frame=frame(third_prev["exact"])
-base_poster=poster_frame(baseline["poster"]);fx_poster=poster_frame(cold_fx["poster"]);sub_poster=poster_frame(cold_sub["poster"])
-poster_diffs={"effects":diff_stats(base_poster,fx_poster),"subscribe":diff_stats(base_poster,sub_poster)}
-for name,st in poster_diffs.items():
-    assert st["changed"]>=120 and st["meanMaxDiff"]>=0.8,(name,st)
-preview_diffs={
+base_frame=poster_frame(baseline["poster"])
+fx_frame=poster_frame(cold_fx["poster"]);sub_frame=poster_frame(cold_sub["poster"]);eq_frame=poster_frame(eq_prev["poster"]);third_frame=poster_frame(third_prev["poster"])
+poster_diffs={
     "effects":diff_stats(base_frame,fx_frame),
     "subscribe":diff_stats(base_frame,sub_frame),
     "equalizer":diff_stats(base_frame,eq_frame),
     "third":diff_stats(base_frame,third_frame),
 }
+for name,st in poster_diffs.items():
+    assert st["changed"]>=120 and st["meanMaxDiff"]>=0.8,(name,st)
+preview_diffs=dict(poster_diffs)
 for name,st in preview_diffs.items():
     assert st["changed"]>=120 and st["meanMaxDiff"]>=0.8,(name,st)
 

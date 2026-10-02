@@ -69,7 +69,7 @@ export function LiveCompositePreview({assets,effect,active=true,busy,overlayRef,
 
   useEffect(()=>()=>{if(brushRaf.current!=null)cancelAnimationFrame(brushRaf.current)},[]);
   if(!assets)return <div className="livePreviewEmpty"><span>{busy?'Подготавливаю Live Preview…':'Выберите проект на основном экране'}</span></div>;
-  const base=exactComposite?<video className="livePreviewBase exactCompositePreview" src={assets.compositePath} autoPlay loop muted playsInline/>:assets.baseKind==='video'?<video className="livePreviewBase" src={assets.basePath} autoPlay loop muted playsInline/>:<img className="livePreviewBase" src={assets.basePath} draggable={false}/>;
+  const base=exactComposite?<video key={assets.compositePath} className="livePreviewBase exactCompositePreview" src={assets.compositePath} preload="auto" autoPlay loop muted playsInline/>:assets.baseKind==='video'?<video key={assets.basePath} className="livePreviewBase" src={assets.basePath} preload="auto" autoPlay loop muted playsInline/>:<img className="livePreviewBase" src={assets.basePath} draggable={false}/>;
   const exactOverlayStyle:React.CSSProperties=effect.fullscreen?overlayStyle:{...overlayStyle,aspectRatio:String(Math.max(.05,overlayAspect)),height:'auto'};
   return <div className={`liveComposite ${picker?'chromaPicking':''} ${anchorMode?'anchorPicking':''}`} onPointerDownCapture={pickAnchor}>
     {base}

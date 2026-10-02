@@ -53,7 +53,7 @@ jobs:
           # against a synthetic blue base so any Subscribe pixel is measurable.
           x=float(s.get("x",.5));y=float(s.get("y",.5));opacity=float(s.get("opacity",1))
           xpos=f"max(0,min(W-w,W*{x}-w/2))";ypos=f"max(0,min(H-h,H*{y}-h/2))"
-          graph=f"[0:v]format=rgba[b];[1:v]fps=30,format=rgba,colorkey=0x{key}:0.10:0.06,despill=type=green:mix={float(s.get('despill',1))}:expand=0.20,scale={tw}:-2:flags=lanczos,colorchannelmixer=aa={opacity}[fx];[b][fx]overlay=x='{xpos}':y='{ypos}':shortest=1:eof_action=repeat:format=auto,format=rgb24[out]"
+          graph=f"[0:v]format=rgba[b];[1:v]setpts=PTS-STARTPTS,fps=30,format=rgba,colorkey=0x{key}:0.10:0.06,despill=type=green:mix={float(s.get('despill',1))}:expand=0.20,scale={tw}:-2:flags=lanczos,colorchannelmixer=aa={opacity}[fx];[b][fx]overlay=x='{xpos}':y='{ypos}':shortest=1:eof_action=repeat:format=auto,format=rgb24[out]"
           p=subprocess.run(["ffmpeg","-hide_banner","-loglevel","error","-f","lavfi","-i","color=blue:s=960x540:r=30:d=1","-stream_loop","-1","-ss","0.75","-i",src,"-filter_complex",graph,"-map","[out]","-frames:v","1","-f","rawvideo","-pix_fmt","rgb24","-"],stdout=subprocess.PIPE,stderr=subprocess.PIPE,check=True)
           raw=p.stdout;n=len(raw)//3
           # pure blue is 0,0,254/255 depending conversion

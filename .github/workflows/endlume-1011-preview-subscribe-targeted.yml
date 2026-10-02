@@ -1,5 +1,5 @@
 name: ENDLUME 10.0.11 Preview Subscribe Targeted
-# attempt 4: keep WKWebView Preview decoder video in render tree
+# attempt 5: Tauri asset stream for WKWebView overlay video
 
 on:
   push:

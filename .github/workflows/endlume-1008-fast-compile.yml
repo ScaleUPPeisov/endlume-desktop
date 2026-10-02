@@ -54,11 +54,15 @@ jobs:
           python3 - <<'PY'
           import json,re
           from pathlib import Path
-          v="10.0.9"
+          v="10.0.10"
           assert json.loads(Path("package.json").read_text())["version"]==v
           assert json.loads(Path("package-lock.json").read_text())["version"]==v
           assert json.loads(Path("src-tauri/tauri.conf.json").read_text())["version"]==v
-          assert re.search(r'^version\s*=\s*"10\.0\.9"$',Path("src-tauri/Cargo.toml").read_text(),re.M)
+          assert re.search(r'^version\s*=\s*"10\.0\.10"
+          assert 'name = "endlume"\nversion = "10.0.10"' in Path("src-tauri/Cargo.lock").read_text()
+          print("ENDLUME_1010_CANDIDATE_COMPILE_GREEN")
+          PY
+,Path("src-tauri/Cargo.toml").read_text(),re.M)
           assert 'name = "endlume"\nversion = "10.0.9"' in Path("src-tauri/Cargo.lock").read_text()
           print("ENDLUME_1010_CANDIDATE_COMPILE_GREEN")
           PY

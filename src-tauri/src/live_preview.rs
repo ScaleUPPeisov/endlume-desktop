@@ -52,29 +52,105 @@ fn first_media(project:&Path)->Option<PathBuf>{let mut files=WalkDir::new(projec
 
 async fn run(app:&AppHandle,args:Vec<String>)->Result<(),String>{let out=app.shell().sidecar("ffmpeg").map_err(|e|e.to_string())?.args(args).output().await.map_err(|e|e.to_string())?;if out.status.success(){Ok(())}else{Err(String::from_utf8_lossy(&out.stderr).trim().to_string())}}
 
-fn packaged_ffmpeg_path()->Result<PathBuf,String>{
-  let exe=std::env::current_exe().map_err(|e|format!("Live Preview current_exe: {e}"))?;
-  let dir=exe.parent().ok_or("Live Preview executable directory missing")?;
-  #[cfg(target_os="windows")]
-  let p=dir.join("ffmpeg.exe");
-  #[cfg(not(target_os="windows"))]
-  let p=dir.join("ffmpeg");
-  if p.is_file(){Ok(p)}else{Err(format!("Packaged FFmpeg sidecar not found: {}",p.display()))}
+fn executable_file(p:&Path)->bool{
+  if !p.is_file(){return false}
+  #[cfg(unix)]
+  {
+    use std::os::unix::fs::PermissionsExt;
+    return fs::metadata(p).map(|m|m.permissions().mode()&0o111!=0).unwrap_or(false)
+  }
+  #[cfg(not(unix))]
+  {true}
 }
 
-fn direct_decode_proxy_frame(out:&Path)->Result<(),String>{
-  let ffmpeg=packaged_ffmpeg_path()?;
+fn ffmpeg_candidate_name(p:&Path)->bool{
+  let name=p.file_name().and_then(|x|x.to_str()).unwrap_or("").to_ascii_lowercase();
+  #[cfg(target_os="windows")]
+  {name=="ffmpeg.exe"||(name.starts_with("ffmpeg-")&&name.ends_with(".exe"))}
+  #[cfg(not(target_os="windows"))]
+  {name=="ffmpeg"||name.starts_with("ffmpeg-")}
+}
+
+fn app_bundle_root(exe:&Path)->Option<PathBuf>{
+  #[cfg(target_os="macos")]
+  {
+    exe.ancestors().find(|p|p.extension().and_then(|x|x.to_str()).map(|x|x.eq_ignore_ascii_case("app")).unwrap_or(false)).map(Path::to_path_buf)
+  }
+  #[cfg(not(target_os="macos"))]
+  {exe.parent().map(Path::to_path_buf)}
+}
+
+fn resolve_bundled_ffmpeg(app:&AppHandle)->Result<PathBuf,String>{
+  let exe=std::env::current_exe().map_err(|e|format!("Live Preview current_exe: {e}"))?;
+  let exe_dir=exe.parent().map(Path::to_path_buf).ok_or("Live Preview executable directory missing")?;
+  let resource_dir=app.path().resource_dir().ok();
+  let bundle=app_bundle_root(&exe);
+  if live_preview_diag_enabled(){
+    eprintln!("ENDLUME_PREVIEW_FFMPEG_CONTEXT APP_BUNDLE_PATH={} RESOURCE_DIR={} EXECUTABLE_DIR={}",
+      bundle.as_ref().map(|p|p.display().to_string()).unwrap_or_else(||"<none>".into()),
+      resource_dir.as_ref().map(|p|p.display().to_string()).unwrap_or_else(||"<none>".into()),
+      exe_dir.display());
+  }
+
+  let mut roots=Vec::<PathBuf>::new();
+  if let Some(p)=bundle.clone(){roots.push(p);}
+  if let Some(p)=resource_dir.clone(){roots.push(p);}
+  roots.push(exe_dir);
+  let mut seen=std::collections::HashSet::<PathBuf>::new();
+  let mut candidates=Vec::<PathBuf>::new();
+  for root in roots{
+    if !root.exists(){continue}
+    for entry in WalkDir::new(&root).max_depth(6).follow_links(false).into_iter().filter_map(Result::ok){
+      let p=entry.path();
+      if !ffmpeg_candidate_name(p)||!executable_file(p){continue}
+      let canonical=fs::canonicalize(p).unwrap_or_else(|_|p.to_path_buf());
+      if seen.insert(canonical.clone()){
+        if live_preview_diag_enabled(){eprintln!("ENDLUME_PREVIEW_FFMPEG_CANDIDATE path={} EXISTS=true EXECUTABLE=true",canonical.display());}
+        candidates.push(canonical);
+      }
+    }
+  }
+  candidates.sort();
+  if candidates.is_empty(){return Err("Bundled FFmpeg resolver found no executable candidate inside packaged app/resources".into())}
+  if candidates.len()==1{
+    let p=candidates.remove(0);
+    if live_preview_diag_enabled(){eprintln!("RESOLVED_FFMPEG_PATH={} FILE_EXISTS=true EXECUTABLE=true",p.display());}
+    return Ok(p)
+  }
+  let exact=candidates.iter().filter(|p|{
+    let n=p.file_name().and_then(|x|x.to_str()).unwrap_or("");
+    #[cfg(target_os="windows")]
+    {n.eq_ignore_ascii_case("ffmpeg.exe")}
+    #[cfg(not(target_os="windows"))]
+    {n=="ffmpeg"}
+  }).cloned().collect::<Vec<_>>();
+  if exact.len()==1{
+    let p=exact[0].clone();
+    if live_preview_diag_enabled(){eprintln!("RESOLVED_FFMPEG_PATH={} FILE_EXISTS=true EXECUTABLE=true",p.display());}
+    return Ok(p)
+  }
+  Err(format!("Bundled FFmpeg resolver is ambiguous: {}",candidates.iter().map(|p|p.display().to_string()).collect::<Vec<_>>().join(" | ")))
+}
+
+fn direct_decode_proxy_frame(app:&AppHandle,out:&Path)->Result<(),String>{
+  let ffmpeg=resolve_bundled_ffmpeg(app)?;
+  let version=std::process::Command::new(&ffmpeg).arg("-version").output().map_err(|e|format!("bundled FFmpeg -version spawn: {e}"))?;
+  if !version.status.success(){return Err(format!("bundled FFmpeg -version failed: {}",String::from_utf8_lossy(&version.stderr).trim()))}
+  if live_preview_diag_enabled(){
+    let first=String::from_utf8_lossy(&version.stdout).lines().next().unwrap_or("").to_string();
+    eprintln!("ENDLUME_PREVIEW_FFMPEG_VERSION_GREEN path={} version={:?}",ffmpeg.display(),first);
+  }
   let result=std::process::Command::new(&ffmpeg)
     .args(["-hide_banner","-loglevel","error","-ss","0","-i"])
     .arg(out)
     .args(["-map","0:v:0","-frames:v","1","-f","null","-"])
     .output()
-    .map_err(|e|format!("direct packaged FFmpeg decode spawn: {e}"))?;
+    .map_err(|e|format!("direct bundled FFmpeg decode spawn: {e}"))?;
   if !result.status.success(){
     let err=String::from_utf8_lossy(&result.stderr).trim().to_string();
-    return Err(if err.is_empty(){"direct packaged FFmpeg decode failed".into()}else{err})
+    return Err(if err.is_empty(){"direct bundled FFmpeg decode failed".into()}else{err})
   }
-  if live_preview_diag_enabled(){eprintln!("ENDLUME_PREVIEW_REAL_FRAME_DECODE_GREEN mode=direct-packaged-ffmpeg path={} ffmpeg={}",out.display(),ffmpeg.display());}
+  if live_preview_diag_enabled(){eprintln!("ENDLUME_PREVIEW_REAL_FRAME_DECODE_GREEN mode=resolved-bundled-ffmpeg path={} ffmpeg={}",out.display(),ffmpeg.display());}
   Ok(())
 }
 
@@ -93,12 +169,12 @@ async fn decode_proxy_frame(app:&AppHandle,out:&Path)->Result<(),String>{
       },
       Err(spawn_error)=>{
         if live_preview_diag_enabled(){eprintln!("ENDLUME_PREVIEW_DECODE_DIRECT_FALLBACK reason=spawn-error error={:?} path={}",spawn_error,out.display());}
-        direct_decode_proxy_frame(out)
+        direct_decode_proxy_frame(app,out)
       }
     },
     Err(resolve_error)=>{
       if live_preview_diag_enabled(){eprintln!("ENDLUME_PREVIEW_DECODE_DIRECT_FALLBACK reason=sidecar-resolve error={:?} path={}",resolve_error,out.display());}
-      direct_decode_proxy_frame(out)
+      direct_decode_proxy_frame(app,out)
     }
   }
 }

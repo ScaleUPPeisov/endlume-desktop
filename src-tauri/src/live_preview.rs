@@ -21,7 +21,7 @@ fn is_media(p:&Path)->bool{is_image(p)||VIDEO.contains(&ext(p).as_str())}
 fn natural_name(p:&Path)->String{p.file_name().and_then(|x|x.to_str()).unwrap_or("").to_lowercase()}
 fn ready_file(p:&Path)->bool{!is_macos_sidecar(p)&&fs::metadata(p).map(|m|m.is_file()&&m.len()>1024).unwrap_or(false)}
 fn live_preview_diag_enabled()->bool{cfg!(debug_assertions)||std::env::var_os("ENDLUME_PREVIEW_DIAG").is_some()}
-async fn frame_probe_diag(app:&AppHandle,p:&Path)->(String,String,String){
+pub(crate) async fn frame_probe_diag(app:&AppHandle,p:&Path)->(String,String,String){
   if !p.is_file(){return ("0".into(),"0".into(),"unknown".into())}
   let args=vec!["-v","error","-select_streams","v:0","-show_entries","stream=width,height,pix_fmt","-of","json",p.to_string_lossy().as_ref()].into_iter().map(String::from).collect::<Vec<_>>();
   let Ok(cmd)=app.shell().sidecar("ffprobe") else{return ("0".into(),"0".into(),"unknown".into())};
@@ -217,7 +217,7 @@ async fn decode_proxy_frame(app:&AppHandle,out:&Path)->Result<(),String>{
   }
 }
 
-async fn validate_video_proxy(app:&AppHandle,out:&Path)->Result<(),String>{
+pub(crate) async fn validate_video_proxy(app:&AppHandle,out:&Path)->Result<(),String>{
   if !ready_file(out){return Err("proxy-файл отсутствует или слишком мал".into())}
   // A real decoded frame is mandatory. Prefer Tauri's sidecar launcher; if the
   // packaged launcher cannot resolve/spawn a second process, execute the bundled

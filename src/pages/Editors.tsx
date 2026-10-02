@@ -178,11 +178,6 @@ function EffectsEditor() {
     const latest = useApp.getState().effects.find((e) => e.id === selected);
     if (!projectPath || !latest) return;
     const requestId=`effects-${request}`;
-    const renderEffect = sceneAnchor ? {
-      ...latest,
-      x: clamp01(sceneAnchor.x + (latest.offsetX ?? 0)),
-      y: clamp01(sceneAnchor.y + (latest.offsetY ?? 0)),
-    } : latest;
     previewDiag('effects','START',request,{requestId});
     setPreviewBusy(true);
     try {

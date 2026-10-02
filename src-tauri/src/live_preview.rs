@@ -51,11 +51,18 @@ async fn validate_video_proxy(app:&AppHandle,out:&Path)->Result<(),String>{
 }
 
 async fn proxy_attempt(app:&AppHandle,prefix:&[String],codec:Vec<String>,out:&Path)->Result<(),String>{
-  let _=fs::remove_file(out);
-  let mut args=prefix.to_vec();args.extend(codec);args.extend(vec!["-movflags","+faststart","-y",out.to_string_lossy().as_ref()].into_iter().map(String::from));
+  let name=out.file_name().and_then(|x|x.to_str()).unwrap_or("preview.mp4");
+  let tmp=out.with_file_name(format!(".{name}-{}.tmp.mp4",uuid::Uuid::new_v4()));
+  let mut args=prefix.to_vec();args.extend(codec);args.extend(vec!["-movflags","+faststart","-y",tmp.to_string_lossy().as_ref()].into_iter().map(String::from));
   let process=run(app,args).await;
-  let validation=if process.is_ok(){validate_video_proxy(app,out).await}else{Err("FFmpeg process failed".into())};
-  if accept_proxy_attempt(process.is_ok(),validation.is_ok()){return Ok(())}
+  let validation=if process.is_ok(){validate_video_proxy(app,&tmp).await}else{Err("FFmpeg process failed".into())};
+  if accept_proxy_attempt(process.is_ok(),validation.is_ok()){
+    if validate_video_proxy(app,out).await.is_ok(){let _=fs::remove_file(&tmp);return Ok(())}
+    let _=fs::remove_file(out);
+    fs::rename(&tmp,out).map_err(|e|format!("Live Preview atomic proxy publish {}: {e}",out.display()))?;
+    return Ok(())
+  }
+  let _=fs::remove_file(&tmp);
   let process_error=process.err().unwrap_or_else(||"FFmpeg exit=0".into());
   let validation_error=validation.err().unwrap_or_else(||"proxy validation passed".into());
   Err(format!("{process_error}; validation: {validation_error}"))
@@ -63,11 +70,11 @@ async fn proxy_attempt(app:&AppHandle,prefix:&[String],codec:Vec<String>,out:&Pa
 
 fn hardware_codec_args()->Vec<String>{
   #[cfg(target_os="macos")]
-  {vec!["-c:v","h264_videotoolbox","-realtime","1","-q:v","72","-pix_fmt","yuv420p"].into_iter().map(String::from).collect()}
+  {vec!["-c:v","h264_videotoolbox","-realtime","1","-q:v","72","-g","1","-bf","0","-pix_fmt","yuv420p"].into_iter().map(String::from).collect()}
   #[cfg(not(target_os="macos"))]
   {vec!["-c:v","libx264","-preset","ultrafast","-crf","18","-pix_fmt","yuv420p"].into_iter().map(String::from).collect()}
 }
-fn software_codec_args()->Vec<String>{vec!["-c:v","libx264","-preset","ultrafast","-crf","18","-pix_fmt","yuv420p"].into_iter().map(String::from).collect()}
+fn software_codec_args()->Vec<String>{vec!["-c:v","libx264","-preset","ultrafast","-crf","18","-g","1","-keyint_min","1","-sc_threshold","0","-bf","0","-pix_fmt","yuv420p"].into_iter().map(String::from).collect()}
 
 async fn encode_proxy(app:&AppHandle,prefix:Vec<String>,safe_prefix:Option<Vec<String>>,out:&Path)->Result<(),String>{
   let hw=proxy_attempt(app,&prefix,hardware_codec_args(),out).await;
@@ -98,9 +105,13 @@ async fn encode_proxy(app:&AppHandle,prefix:Vec<String>,safe_prefix:Option<Vec<S
 async fn make_base(app:&AppHandle,src:&Path,seek:f64,out:&Path)->Result<String,String>{
   if is_image(src){
     if ready_file(out){return Ok("image".into())}
-    let _=fs::remove_file(out);
-    let args=vec!["-hide_banner","-loglevel","error","-i",src.to_string_lossy().as_ref(),"-vf","scale=960:540:force_original_aspect_ratio=decrease,pad=960:540:(ow-iw)/2:(oh-ih)/2","-frames:v","1","-q:v","2","-y",out.to_string_lossy().as_ref()].into_iter().map(String::from).collect();
-    run(app,args).await?;if !ready_file(out){return Err("Не удалось создать базовый кадр Live Preview".into())}Ok("image".into())
+    let name=out.file_name().and_then(|x|x.to_str()).unwrap_or("base.jpg");
+    let tmp=out.with_file_name(format!(".{name}-{}.tmp.jpg",uuid::Uuid::new_v4()));
+    let args=vec!["-hide_banner","-loglevel","error","-i",src.to_string_lossy().as_ref(),"-vf","scale=960:540:force_original_aspect_ratio=decrease,pad=960:540:(ow-iw)/2:(oh-ih)/2","-frames:v","1","-q:v","2","-y",tmp.to_string_lossy().as_ref()].into_iter().map(String::from).collect();
+    run(app,args).await?;
+    if !ready_file(&tmp){let _=fs::remove_file(&tmp);return Err("Не удалось создать базовый кадр Live Preview".into())}
+    if ready_file(out){let _=fs::remove_file(&tmp);}else{let _=fs::remove_file(out);fs::rename(&tmp,out).map_err(|e|format!("Live Preview atomic base publish: {e}"))?;}
+    Ok("image".into())
   }else{
     if validate_video_proxy(app,out).await.is_ok(){return Ok("video".into())}
     let _=fs::remove_file(out);

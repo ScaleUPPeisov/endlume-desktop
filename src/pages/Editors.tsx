@@ -199,6 +199,7 @@ function EffectsEditor() {
         baseKind: result?.baseKind ?? 'video',
         overlayPath: result ? api.previewUrl(result.overlayPath) : api.previewUrl(latest.source),
         compositePath: api.previewUrl(exactPath),
+        compositeFilePath: exactPath,
         requestId,
         previewType:'Effects',
       });
@@ -370,6 +371,7 @@ function SubscribeEditor() {
         baseKind: result?.baseKind ?? 'video',
         overlayPath: result ? api.previewUrl(result.overlayPath) : api.previewUrl(latest.source),
         compositePath: api.previewUrl(exactPath),
+        compositeFilePath: exactPath,
         requestId,
         previewType:'Subscribe',
       });

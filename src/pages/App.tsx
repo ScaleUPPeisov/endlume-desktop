@@ -188,7 +188,7 @@ function FrontendPreviewHarness({fixture}:{fixture:any}){
   return <div style={{position:'fixed',inset:0,background:'#05070d'}}>
     <LiveCompositePreview assets={assets} effect={effect} active={true} busy={false} overlayRef={overlayRef} overlayStyle={overlayStyle}
       onDragStart={()=>{}} onResizeStart={()=>{}} onPickColor={()=>{}}
-      onFrameState={payload=>{if(reported.current)return;reported.current=true;void api.previewFrontendReport({...payload,PREVIEW_APPLIED:payload.status==='GREEN',IMAGE_LOAD:payload.status,IMAGE_NATURAL_WIDTH:payload.width,IMAGE_NATURAL_HEIGHT:payload.height,FRONTEND_PAYLOAD_BYTES:payload.payloadBytes})}}/>
+      onFrameState={payload=>{if(reported.current)return;reported.current=true;void api.previewFrontendReport({...payload,PREVIEW_APPLIED:payload.status==='GREEN',IMAGE_LOAD:payload.status,IMAGE_NATURAL_WIDTH:payload.width,IMAGE_NATURAL_HEIGHT:payload.height,FRONTEND_PAYLOAD_BYTES:payload.payloadBytes,BROWSER_VISIBLE:payload.browserVisible,PIXEL_READBACK:payload.pixelReadback})}}/>
   </div>;
 }
 

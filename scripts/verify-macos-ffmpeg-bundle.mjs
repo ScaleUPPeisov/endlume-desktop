@@ -27,7 +27,10 @@ const app=apps[0],macos=path.join(app,'Contents','MacOS'),frameworksDir=path.joi
 const ffmpeg=path.join(macos,'ffmpeg'),ffprobe=path.join(macos,'ffprobe');
 for(const p of[ffmpeg,ffprobe])if(!fs.existsSync(p))throw new Error(`Bundled sidecar missing: ${p}`);
 const dylibs=fs.existsSync(frameworksDir)?fs.readdirSync(frameworksDir).filter(n=>n.endsWith('.dylib')).map(n=>path.join(frameworksDir,n)):[];
-if(!dylibs.length)throw new Error('No bundled FFmpeg dylibs found in Contents/Frameworks');
+// Portable ENDLUME FFmpeg may legitimately be self-contained apart from Apple system frameworks.
+// In that case Contents/Frameworks has zero FFmpeg dylibs. The dependency loop below is the real gate:
+// every non-system dependency is still rejected, and both sidecars must launch in a clean environment.
+const runtimeMode=dylibs.length?'bundled-dylibs':'system-only-self-contained';
 
 for(const file of[ffmpeg,ffprobe,...dylibs]){
   const info=run('/usr/bin/file',[file]);if(!info.includes(expectedArch))throw new Error(`Architecture mismatch: ${info.trim()}`);
@@ -85,4 +88,4 @@ const sign=spawnSync('/usr/bin/codesign',['--verify','--deep','--strict','--verb
 if(sign.status!==0)throw new Error(`codesign verification failed: ${sign.stderr||sign.stdout}`);
 if(process.env.ENDLUME_REQUIRE_GATEKEEPER==='1'){const gate=spawnSync('/usr/sbin/spctl',['-a','-vv',app],{encoding:'utf8'});if(gate.status!==0)throw new Error(`Gatekeeper verification failed: ${gate.stderr||gate.stdout}`)}
 
-console.log(JSON.stringify({kind:'ENDLUME_MACOS_FFMPEG_RUNTIME_PASS',app,target,frameworks:dylibs.length,ffmpeg:true,ffprobe:true,codesign:true}));
+console.log(JSON.stringify({kind:'ENDLUME_MACOS_FFMPEG_RUNTIME_PASS',app,target,runtimeMode,frameworks:dylibs.length,ffmpeg:true,ffprobe:true,codesign:true}));

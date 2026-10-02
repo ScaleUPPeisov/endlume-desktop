@@ -1,0 +1,54 @@
+name: ENDLUME 10.0.11 Performance Targeted
+
+on:
+  push:
+    branches: [hotfix/endlume-10.0.11-cold-preview-decode]
+    paths:
+      - ".github/workflows/endlume-1011-performance-targeted.yml"
+      - "scripts/qa-endlume-1011-performance-targeted.py"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-1011-performance-targeted
+  cancel-in-progress: true
+
+jobs:
+  performance-targeted:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Reuse proven packaged continuation app
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ROOT="$HOME/.endlume-build-cache/target-1011-post-preview/aarch64-apple-darwin/release/bundle/macos"
+          APP="$(find "$ROOT" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          test -n "$APP" -a -d "$APP"
+          /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP"
+          EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
+          test -x "$APP/Contents/MacOS/$EXE"
+          test -x "$APP/Contents/MacOS/ffmpeg"
+          test -x "$APP/Contents/MacOS/ffprobe"
+          printf '%s' "$APP/Contents/MacOS/$EXE" > "$RUNNER_TEMP/e1011-perf-bin.txt"
+          printf '%s' "$APP/Contents/MacOS/ffmpeg" > "$RUNNER_TEMP/e1011-perf-ffmpeg.txt"
+          printf '%s' "$APP/Contents/MacOS/ffprobe" > "$RUNNER_TEMP/e1011-perf-ffprobe.txt"
+          echo PERFORMANCE_PACKAGED_APP_REUSE_GREEN
+
+      - name: Exact production-render performance regression
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          BIN="$(cat "$RUNNER_TEMP/e1011-perf-bin.txt")"
+          FFMPEG="$(cat "$RUNNER_TEMP/e1011-perf-ffmpeg.txt")"
+          FFPROBE="$(cat "$RUNNER_TEMP/e1011-perf-ffprobe.txt")"
+          python3 scripts/qa-endlume-1011-performance-targeted.py "$BIN" "$FFMPEG" "$FFPROBE" "$RUNNER_TEMP/perf-unused-report.json"

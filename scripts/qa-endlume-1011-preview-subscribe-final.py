@@ -235,7 +235,8 @@ poster_diffs={
 # The real 80s film preset is intentionally sparse dust: prove high-delta dust pixels,
 # while Subscribe / Equalizer / synthetic third effect must have broad visible coverage.
 assert poster_diffs["effects"]["changed"]>=20 and poster_diffs["effects"]["maxDiff"]>=100,poster_diffs["effects"]
-for name in ("subscribe","equalizer","third"):
+assert poster_diffs["equalizer"]["changed"]>=120 and poster_diffs["equalizer"]["maxDiff"]>=100,poster_diffs["equalizer"]
+for name in ("subscribe","third"):
     st=poster_diffs[name]
     assert st["changed"]>=120 and st["meanMaxDiff"]>=0.8,(name,st)
 preview_diffs=dict(poster_diffs)

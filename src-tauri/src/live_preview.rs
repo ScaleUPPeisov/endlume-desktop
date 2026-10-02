@@ -65,7 +65,7 @@ async fn validate_video_proxy(app:&AppHandle,out:&Path)->Result<(),String>{
 
 async fn proxy_attempt(app:&AppHandle,prefix:&[String],codec:Vec<String>,out:&Path)->Result<(),String>{
   let name=out.file_name().and_then(|x|x.to_str()).unwrap_or("preview.mp4");
-  let tmp=out.with_file_name(format!(".{name}-{}.tmp.mp4",uuid::Uuid::new_v4()));
+  let tmp=out.with_file_name(format!("{name}-{}.tmp.mp4",uuid::Uuid::new_v4()));
   let mut args=prefix.to_vec();args.extend(codec);args.extend(vec!["-movflags","+faststart","-y",tmp.to_string_lossy().as_ref()].into_iter().map(String::from));
   let process=run(app,args).await;
   let validation=if process.is_ok(){validate_video_proxy(app,&tmp).await}else{Err("FFmpeg process failed".into())};

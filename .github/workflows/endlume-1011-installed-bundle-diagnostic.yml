@@ -1,4 +1,5 @@
 name: ENDLUME 10.0.11 Installed Bundle Diagnostic
+# final persistence check after successful real Settings update
 on:
   push:
     branches: [release-endlume-10.0.11]

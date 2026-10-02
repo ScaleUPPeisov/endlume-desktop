@@ -1,0 +1,130 @@
+name: ENDLUME 10.0.11 Preview Subscribe Targeted
+
+on:
+  push:
+    branches: [hotfix/endlume-10.0.11-preview-subscribe-final]
+    paths:
+      - ".github/workflows/endlume-1011-preview-subscribe-targeted.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-1011-preview-subscribe-targeted
+  cancel-in-progress: true
+
+jobs:
+  targeted:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Stage proven Apple Silicon FFmpeg
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+          TMP="$(mktemp -d)"
+          curl -fL --retry 4 "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffmpeg.zip" -o "$TMP/ffmpeg.zip"
+          curl -fL --retry 4 "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffprobe.zip" -o "$TMP/ffprobe.zip"
+          mkdir -p "$TMP/fm" "$TMP/fp" src-tauri/binaries
+          ditto -x -k "$TMP/ffmpeg.zip" "$TMP/fm"
+          ditto -x -k "$TMP/ffprobe.zip" "$TMP/fp"
+          cp "$(find "$TMP/fm" -type f -name ffmpeg -print -quit)" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp "$(find "$TMP/fp" -type f -name ffprobe -print -quit)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          chmod 755 src-tauri/binaries/ffmpeg-aarch64-apple-darwin src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          echo SIDECARS_GREEN
+
+      - name: Compile targeted Preview Subscribe paths
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+          npm ci
+          npm run check
+          npm run build
+          cargo test --manifest-path src-tauri/Cargo.toml cache::tests -- --nocapture
+          cargo test --manifest-path src-tauri/Cargo.toml live_preview::tests -- --nocapture
+          cargo check --manifest-path src-tauri/Cargo.toml --features e2e-render
+          grep -q "FRONTEND_PAYLOAD_BYTES" src/components/LiveCompositePreview.tsx
+          grep -q "IMAGE_NATURAL_WIDTH" src/components/LiveCompositePreview.tsx
+          grep -q "BROWSER_NONBLACK_PIXELS" src/components/LiveCompositePreview.tsx
+          grep -q "subscribe_chromakey_params_1011" src-tauri/src/render.rs
+          grep -q "ENDLUME-10.0.11-SUBSCRIBE-v2-CHROMA-SAFE" src-tauri/src/render.rs
+          echo TARGETED_COMPILE_GREEN
+
+      - name: Build packaged targeted app
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+          export CARGO_TARGET_DIR="$HOME/.endlume-build-cache/target-1011-preview-subscribe-final"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path("src-tauri/tauri.conf.json")
+          d=json.loads(p.read_text())
+          d["bundle"]["createUpdaterArtifacts"]=False
+          p.write_text(json.dumps(d,ensure_ascii=False,indent=2)+"\n")
+          PY
+          ENDLUME_TAURI_TARGET=aarch64-apple-darwin node scripts/prepare-macos-ffmpeg-runtime.mjs
+          npx tauri build --target aarch64-apple-darwin --bundles app --features e2e-render
+          APP="$(find "$CARGO_TARGET_DIR/aarch64-apple-darwin/release/bundle/macos" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          test -n "$APP" -a -d "$APP"
+          /usr/bin/codesign --force --deep --sign - --timestamp=none "$APP"
+          /usr/bin/codesign --verify --deep --strict "$APP"
+          EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
+          FFMPEG="$(find "$APP/Contents" -maxdepth 6 -type f -name 'ffmpeg' -perm -111 -print -quit)"
+          FFPROBE="$(find "$APP/Contents" -maxdepth 6 -type f -name 'ffprobe' -perm -111 -print -quit)"
+          test -x "$APP/Contents/MacOS/$EXE"
+          test -x "$FFMPEG"
+          test -x "$FFPROBE"
+          printf '%s' "$APP/Contents/MacOS/$EXE" > "$RUNNER_TEMP/e1011-targeted-bin.txt"
+          printf '%s' "$FFMPEG" > "$RUNNER_TEMP/e1011-targeted-ffmpeg.txt"
+          printf '%s' "$FFPROBE" > "$RUNNER_TEMP/e1011-targeted-ffprobe.txt"
+          echo TARGETED_PACKAGED_APP_GREEN
+
+      - name: Cold Preview Subscribe final targeted acceptance
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/usr/bin:/bin:/usr/sbin:/sbin"
+          ROOT="$RUNNER_TEMP/endlume-1011-preview-subscribe-final"
+          rm -rf "$ROOT"; mkdir -p "$ROOT/tmp"
+          export TMPDIR="$ROOT/tmp"
+          BIN="$(cat "$RUNNER_TEMP/e1011-targeted-bin.txt")"
+          FFMPEG="$(cat "$RUNNER_TEMP/e1011-targeted-ffmpeg.txt")"
+          FFPROBE="$(cat "$RUNNER_TEMP/e1011-targeted-ffprobe.txt")"
+          python3 scripts/qa-endlume-1011-preview-subscribe-final.py "$BIN" "$FFMPEG" "$FFPROBE" "$ROOT/report.json"
+          python3 - "$ROOT/report.json" <<'PY'
+          import json,sys
+          d=json.load(open(sys.argv[1]))
+          assert d["status"]=="GREEN",d
+          assert d["preview"]["effectsBackend"]=="GREEN"
+          assert d["preview"]["effectsFrontend"]["status"]=="GREEN"
+          assert d["preview"]["subscribeBackend"]=="GREEN"
+          assert d["preview"]["subscribeFrontend"]["status"]=="GREEN"
+          assert d["subscribeState"]=="GREEN"
+          assert d["subscribeRecipe"]=="GREEN"
+          assert d["subscribeMaster"]=="GREEN"
+          assert d["subscribeFinal"]=="GREEN"
+          assert d["roundEqualizer"]=="GREEN"
+          assert d["cacheInvalidation"]=="GREEN"
+          assert d["render"]["e1011-sub-warm"]["wall"]<=20
+          print("TARGETED_ACCEPTANCE_GREEN")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ENDLUME-10.0.11-PREVIEW-SUBSCRIBE-TARGETED
+          path: |
+            ${{ runner.temp }}/endlume-1011-preview-subscribe-final/**
+          if-no-files-found: warn
+          retention-days: 7

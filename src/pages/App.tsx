@@ -170,8 +170,8 @@ function FrontendPreviewHarness({fixture}:{fixture:any}){
     basePath:api.previewUrl(String(fixture.basePath)),
     baseKind:fixture.baseKind==='video'?'video':'image',
     overlayPath:api.previewUrl(String(fixture.overlayPath)),
-    compositePath:api.previewUrl(String(fixture.exactPath)),
-    compositeFilePath:String(fixture.exactPath),
+    baseBytes:Number(fixture.baseBytes||0),
+    overlayBytes:Number(fixture.overlayBytes||0),
     requestId:String(fixture.requestId||'frontend-e2e'),
     previewType:fixture.previewType==='Subscribe'?'Subscribe':'Effects',
   };

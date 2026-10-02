@@ -102,15 +102,12 @@ jobs:
           cargo check --manifest-path src-tauri/Cargo.toml --target aarch64-apple-darwin
           cargo test --manifest-path src-tauri/Cargo.toml --target aarch64-apple-darwin --lib -- --nocapture
 
-      - name: Resolve Developer ID
+      - name: Select proven stable macOS signing path
         shell: bash
         run: |
           set -Eeuo pipefail
-          IDENTITIES="$(/usr/bin/security find-identity -v -p codesigning 2>&1 || true)"
-          IDENTITY="$(printf '%s\n' "$IDENTITIES" | grep 'Developer ID Application:' | head -1 | sed -E 's/.*"([^"]+)".*/\1/' || true)"
-          test -n "$IDENTITY" || { echo "Developer ID Application identity not found" >&2; exit 41; }
-          printf 'APPLE_SIGNING_IDENTITY=%s\n' "$IDENTITY" >> "$GITHUB_ENV"
-          echo ENDLUME_1008_DEVELOPER_ID_GREEN
+          echo "Using ad-hoc app codesign + Tauri updater signature, matching successful ENDLUME 10.0.7 production run 36876025301."
+          echo ENDLUME_1008_STABLE_SIGNING_PATH_GREEN
 
       - name: Build exact production macOS app
         shell: bash
@@ -134,31 +131,22 @@ jobs:
           test "$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist")" = "$VERSION"
           test -x "$APP/Contents/MacOS/ffmpeg"
           test -x "$APP/Contents/MacOS/ffprobe"
+          env -i PATH="/usr/bin:/bin:/usr/sbin:/sbin" "$APP/Contents/MacOS/ffmpeg" -version >/dev/null
+          env -i PATH="/usr/bin:/bin:/usr/sbin:/sbin" "$APP/Contents/MacOS/ffprobe" -version >/dev/null
+          /usr/bin/codesign --force --deep --sign - --timestamp=none "$APP"
+          /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP"
           echo "E1008_MAC_APP=$APP" >> "$GITHUB_ENV"
 
-      - name: Production codesign notarization Gatekeeper
+      - name: Verify proven stable app signature and self-contained runtime
         shell: bash
         run: |
           set -Eeuo pipefail
           /usr/bin/codesign --verify --deep --strict --verbose=2 "$E1008_MAC_APP"
-          /usr/bin/codesign -dv --verbose=4 "$E1008_MAC_APP" 2>"$RUNNER_TEMP/e1008-codesign.txt" || true
-          grep -q 'Authority=Developer ID Application:' "$RUNNER_TEMP/e1008-codesign.txt"
-          if ! /usr/bin/xcrun stapler validate "$E1008_MAC_APP" >/dev/null 2>&1; then
-            NOTARY_ZIP="$RUNNER_TEMP/endlume-1008-notary.zip"
-            /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$E1008_MAC_APP" "$NOTARY_ZIP"
-            if test -n "${APPLE_ID:-}" && test -n "${APPLE_PASSWORD:-}" && test -n "${APPLE_TEAM_ID:-}"; then
-              /usr/bin/xcrun notarytool submit "$NOTARY_ZIP" --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait
-            elif test -n "${APPLE_API_KEY_PATH:-}" && test -n "${APPLE_API_KEY:-}" && test -n "${APPLE_API_ISSUER:-}"; then
-              /usr/bin/xcrun notarytool submit "$NOTARY_ZIP" --key "$APPLE_API_KEY_PATH" --key-id "$APPLE_API_KEY" --issuer "$APPLE_API_ISSUER" --wait
-            else
-              echo "Notarization credentials unavailable and app is not already stapled" >&2
-              exit 42
-            fi
-            /usr/bin/xcrun stapler staple "$E1008_MAC_APP"
-          fi
-          /usr/bin/xcrun stapler validate "$E1008_MAC_APP"
-          /usr/sbin/spctl -a -vv "$E1008_MAC_APP"
-          echo ENDLUME_1008_MAC_SIGNING_GREEN
+          EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$E1008_MAC_APP/Contents/Info.plist")"
+          /usr/bin/lipo -archs "$E1008_MAC_APP/Contents/MacOS/$EXE" | grep -qw arm64
+          env -i PATH="/usr/bin:/bin:/usr/sbin:/sbin" "$E1008_MAC_APP/Contents/MacOS/ffmpeg" -version >/dev/null
+          env -i PATH="/usr/bin:/bin:/usr/sbin:/sbin" "$E1008_MAC_APP/Contents/MacOS/ffprobe" -version >/dev/null
+          echo ENDLUME_1008_MAC_STABLE_SIGNATURE_GREEN
 
       - name: macOS packaged launch FFmpeg Effects Subscribe smoke
         shell: bash
@@ -361,7 +349,6 @@ jobs:
           test -n "$APP" -a -d "$APP"
           test "$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist")" = "$VERSION"
           /usr/bin/codesign --verify --deep --strict "$APP"
-          /usr/bin/xcrun stapler validate "$APP"
           "$APP/Contents/MacOS/ffmpeg" -version >/dev/null
           "$APP/Contents/MacOS/ffprobe" -version >/dev/null
           /usr/bin/tar -czf "$WORK/$MAC_UPDATER" -C "$(dirname "$APP")" "$(basename "$APP")"

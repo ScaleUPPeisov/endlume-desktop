@@ -165,13 +165,17 @@ def preview_run(label,effects,subscribes,overlay):
     assert ov.is_file() and ov.stat().st_size>1024,(label,ov)
     assert poster.is_file() and poster.stat().st_size>1024,(label,poster)
     assert exact.is_file() and exact.stat().st_size>1024,(label,exact)
+    # App startup cache cleanup can rotate previews-v3 between isolated QA launches.
+    # Preserve the already-validated poster in the QA temp root before launching the next app.
+    poster_keep=tmp_root/f"{label}.poster.png"
+    shutil.copy2(poster,poster_keep)
     meta=probe(exact);v=next(x for x in meta["streams"] if x.get("codec_type")=="video")
     assert v["width"]==1920 and v["height"]==1080 and v["avg_frame_rate"]=="60/1",(label,v)
     assert "DECODE_VALIDATION=GREEN" in p.stderr,(label,p.stderr[-8000:])
     assert "COMPOSED_FRAME_EXISTS=true" in p.stderr,(label,p.stderr[-8000:])
     assert "BASE_FRAME_EXISTS=true" in p.stderr,(label,p.stderr[-8000:])
     run([FFMPEG,"-hide_banner","-loglevel","error","-stream_loop","19","-i",exact,"-t","60","-map","0:v:0","-f","null","-"],timeout=90)
-    return {"exact":exact,"poster":poster,"helperBase":base,"helperOverlay":ov,"baseKind":helper["baseKind"],"baseBytes":int(helper.get("baseBytes",base.stat().st_size)),"overlayBytes":int(helper.get("overlayBytes",ov.stat().st_size)),"stderr":p.stderr}
+    return {"exact":exact,"poster":poster_keep,"helperBase":base,"helperOverlay":ov,"baseKind":helper["baseKind"],"baseBytes":int(helper.get("baseBytes",base.stat().st_size)),"overlayBytes":int(helper.get("overlayBytes",ov.stat().st_size)),"stderr":p.stderr}
 
 def frontend_display(label,preview,effect,preview_type):
     fixture=tmp_root/f"{label}-frontend-fixture.json";result=tmp_root/f"{label}-frontend-result.json"

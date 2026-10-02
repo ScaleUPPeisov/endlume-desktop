@@ -168,8 +168,10 @@ function FrontendPreviewHarness({fixture}:{fixture:any}){
   const effect=fixture.effect;
   const assets:LivePreviewAssets={
     basePath:api.previewUrl(String(fixture.basePath)),
+    baseFilePath:String(fixture.basePath),
     baseKind:fixture.baseKind==='video'?'video':'image',
     overlayPath:api.previewUrl(String(fixture.overlayPath)),
+    overlayFilePath:String(fixture.overlayPath),
     baseBytes:Number(fixture.baseBytes||0),
     overlayBytes:Number(fixture.overlayBytes||0),
     requestId:String(fixture.requestId||'frontend-e2e'),

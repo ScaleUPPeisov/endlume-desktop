@@ -17,9 +17,9 @@ concurrency:
 jobs:
   bench:
     runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
-      - name: Measure real concurrent audio + Round Equalizer
+      - name: Benchmark AAC encoder and audio filter concurrency
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -69,12 +69,14 @@ jobs:
           PY
           source "$ROOT/v.env"
           TARGET="$(python3 -c 'import sys;x=round(1920*float(sys.argv[1]));print(max(2,x if x%2==0 else x+1))' "$SCALE")"
-          VGRAPH="[0:v]fps=30,setsar=1[b0];[1:v]format=rgba,colorkey=0x$KEY:0.18:0.03,despill=type=green:mix=$DSP:expand=0.20,scale=$TARGET:-2:flags=lanczos,colorchannelmixer=aa=$OP[fx];[b0][fx]overlay=x='max(0,min(W-w,W*$X-w/2))':y='max(0,min(H-h,H*$Y-h/2))':shortest=1:eof_action=repeat:format=auto,format=yuv420p[outv]"
+          VGRAPH="[0:v]fps=30,setsar=1[b0];[1:v]fps=30,format=rgba,colorkey=0x$KEY:0.6:0.35,despill=type=green:mix=$DSP:expand=0.20,scale=$TARGET:-2:flags=lanczos,colorchannelmixer=aa=$OP[fx];[b0]format=rgba[base0];[base0][fx]overlay=x='max(0,min(W-w,W*$X-w/2))':y='max(0,min(H-h,H*$Y-h/2))':shortest=1:eof_action=repeat:format=auto,format=yuv420p[outv]"
 
-          python3 - "$ROOT/audio.sh" "${TRACKS[@]}" -- "$AMB" <<'PY'
+          make_audio(){
+            at="$1"; enc="$2"; out="$ROOT/audio-${at}t-${enc}.sh"
+            python3 - "$out" "$at" "$enc" "${TRACKS[@]}" -- "$AMB" <<'PY'
           import sys,shlex
-          out=sys.argv[1];args=sys.argv[2:];sep=args.index("--");tracks=args[:sep];amb=args[sep+1]
-          cmd=["ffmpeg","-hide_banner","-loglevel","error"]
+          out=sys.argv[1];threads=sys.argv[2];enc=sys.argv[3];args=sys.argv[4:];sep=args.index("--");tracks=args[:sep];amb=args[sep+1]
+          cmd=["ffmpeg","-hide_banner","-loglevel","error","-filter_complex_threads",threads]
           for p in tracks:cmd += ["-i",p]
           cmd += ["-stream_loop","-1","-i",amb]
           graph=[]
@@ -83,31 +85,44 @@ jobs:
           graph.append(f"{ins}concat=n={len(tracks)}:v=0:a=1[joined]")
           graph.append("[joined]anull[processed_music]")
           graph.append(f"[{len(tracks)}:a]aresample=48000:async=1:first_pts=0,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,volume=0.18[amb];[processed_music][amb]amix=inputs=2:duration=first:weights='1 1':normalize=0,alimiter=limit=0.98[outa]")
-          cmd += ["-filter_complex",";".join(graph),"-map","[outa]","-t","7200","-c:a","aac_at","-b:a","320k","-aac_at_mode","cvbr","-aac_at_quality","2","-ar","48000","-ac","2","-f","null","-"]
+          cmd += ["-filter_complex",";".join(graph),"-map","[outa]","-t","7200"]
+          if enc=="aac_at":cmd += ["-c:a","aac_at","-b:a","320k","-aac_at_mode","cvbr","-aac_at_quality","2"]
+          else:cmd += ["-c:a","aac","-b:a","320k"]
+          cmd += ["-ar","48000","-ac","2","-f","null","-"]
           open(out,"w").write("#!/bin/bash\nexec "+" ".join(shlex.quote(x) for x in cmd)+"\n")
           PY
-          chmod +x "$ROOT/audio.sh"
+            chmod +x "$out"
+          }
 
           run_case(){
-            t="$1"; VOUT="$ROOT/v-$t.mp4"
-            START="$(python3 -c 'import time;print(time.time())')"
-            VSTART="$START"
-            "$FF" -hide_banner -loglevel error -filter_complex_threads "$t" -loop 1 -framerate 30 -i "$ROOT/base.png" -stream_loop -1 -i "$SRC"               -filter_complex "$VGRAPH" -map "[outv]" -t 40 -an               -c:v hevc_videotoolbox -realtime 1 -prio_speed 1 -power_efficient 0 -constant_bit_rate 1 -b:v 22M -g 1 -bf 0 -tag:v hvc1 -pix_fmt yuv420p               -fps_mode cfr -r 30 -video_track_timescale 60000 -y "$VOUT" &
+            vt="$1"; at="$2"; enc="$3"
+            make_audio "$at" "$enc"
+            VOUT="$ROOT/v-${vt}v-${at}a-${enc}.mp4"
+            START="$(python3 -c 'import time;print(time.time())')"; VSTART="$START"
+            "$FF" -hide_banner -loglevel error -filter_complex_threads "$vt" -loop 1 -framerate 30 -i "$ROOT/base.png" -stream_loop -1 -i "$SRC" \
+              -filter_complex "$VGRAPH" -map "[outv]" -t 40 -an \
+              -c:v hevc_videotoolbox -realtime 1 -prio_speed 1 -power_efficient 0 -constant_bit_rate 1 -b:v 22M -g 1 -bf 0 -tag:v hvc1 -pix_fmt yuv420p \
+              -fps_mode cfr -r 30 -video_track_timescale 60000 -y "$VOUT" &
             VPID=$!
             ASTART="$(python3 -c 'import time;print(time.time())')"
-            "$ROOT/audio.sh" &
+            "$ROOT/audio-${at}t-${enc}.sh" &
             APID=$!
             wait "$VPID"; VEND="$(python3 -c 'import time;print(time.time())')"
             wait "$APID"; AEND="$(python3 -c 'import time;print(time.time())')"
             END="$(python3 -c 'import time;print(time.time())')"
-            python3 - "$t" "$VSTART" "$VEND" "$ASTART" "$AEND" "$START" "$END" <<'PY'
+            python3 - "$vt" "$at" "$enc" "$VSTART" "$VEND" "$ASTART" "$AEND" "$START" "$END" <<'PY'
           import sys
-          t,vs,ve,as_,ae,s,e=sys.argv[1:]
+          vt,at,enc,vs,ve,as_,ae,s,e=sys.argv[1:]
           v=float(ve)-float(vs);a=float(ae)-float(as_);wall=float(e)-float(s)
-          print(f"CONCURRENCY_{t}T_VISUAL={v:.3f}")
-          print(f"CONCURRENCY_{t}T_AUDIO={a:.3f}")
-          print(f"CONCURRENCY_{t}T_WALL={wall:.3f}")
+          print(f"AAC_CONCURRENCY|videoThreads={vt}|audioFilterThreads={at}|encoder={enc}|visual={v:.3f}|audio={a:.3f}|wall={wall:.3f}")
           PY
           }
-          for t in 2 4 6 8; do run_case "$t"; done
-          echo ENDLUME_1008_CONCURRENCY_BENCH_GREEN
+
+          for enc in aac_at aac; do
+            for vt in 6 8; do
+              for at in 1 2 4; do
+                run_case "$vt" "$at" "$enc"
+              done
+            done
+          done
+          echo ENDLUME_1008_AAC_CONCURRENCY_GREEN

@@ -1,4 +1,5 @@
 name: ENDLUME 10.0.11 Preview Subscribe Targeted
+# attempt 2: includes frontend blob CSP fix
 
 on:
   push:

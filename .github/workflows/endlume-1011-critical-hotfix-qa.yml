@@ -1,0 +1,142 @@
+name: ENDLUME 10.0.11 Critical Hotfix Full QA
+
+on:
+  push:
+    branches: [hotfix/endlume-10.0.11-critical-preview-effects-progress]
+    paths:
+      - ".github/workflows/endlume-1011-critical-hotfix-qa.yml"
+      - "scripts/qa-endlume-1011-critical-hotfix.py"
+      - "src-tauri/src/live_preview.rs"
+      - "src-tauri/src/preview.rs"
+      - "src-tauri/src/cache.rs"
+      - "src-tauri/src/render.rs"
+      - "src-tauri/src/lib.rs"
+      - "src/pages/Editors.tsx"
+      - "src/components/LiveCompositePreview.tsx"
+      - "src/pages/RenderPage.tsx"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-1011-critical-full-qa
+  cancel-in-progress: true
+
+jobs:
+  full-qa:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 100
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Stage proven Apple Silicon FFmpeg
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
+          TMP="$(mktemp -d)"
+          curl -fL --retry 4 "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffmpeg.zip" -o "$TMP/ffmpeg.zip"
+          curl -fL --retry 4 "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffprobe.zip" -o "$TMP/ffprobe.zip"
+          mkdir -p "$TMP/fm" "$TMP/fp" src-tauri/binaries
+          ditto -x -k "$TMP/ffmpeg.zip" "$TMP/fm"
+          ditto -x -k "$TMP/ffprobe.zip" "$TMP/fp"
+          cp "$(find "$TMP/fm" -type f -name ffmpeg -print -quit)" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp "$(find "$TMP/fp" -type f -name ffprobe -print -quit)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          chmod 755 src-tauri/binaries/ffmpeg-aarch64-apple-darwin src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          echo ENDLUME_1011_FFMPEG_GREEN
+
+      - name: Compile and focused regression
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
+          npm ci
+          npm run check
+          npm run build
+          cargo test --manifest-path src-tauri/Cargo.toml live_preview::tests -- --nocapture
+          cargo test --manifest-path src-tauri/Cargo.toml cache::tests -- --nocapture
+          cargo test --manifest-path src-tauri/Cargo.toml -- --nocapture
+          grep -q "await api.generatePreview" src/pages/Editors.tsx
+          grep -q "helper:'prepareLivePreview'" src/pages/Editors.tsx
+          grep -q "ENDLUME_PREVIEW_BASE SOURCE_IMAGE=" src-tauri/src/live_preview.rs
+          grep -q 'job_bg=(\*job).clone()' src-tauri/src/render.rs
+          ! grep -q 'job_bg.project.id=format!("{}::visual-prewarm"' src-tauri/src/render.rs
+          echo ENDLUME_1011_COMPILE_REGRESSION_GREEN
+
+      - name: Build packaged QA app
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
+          export CARGO_TARGET_DIR="$HOME/.endlume-build-cache/target-1011-critical-qa"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path("src-tauri/tauri.conf.json")
+          d=json.loads(p.read_text())
+          d["bundle"]["createUpdaterArtifacts"]=False
+          p.write_text(json.dumps(d,ensure_ascii=False,indent=2)+"\n")
+          PY
+          ENDLUME_TAURI_TARGET=aarch64-apple-darwin node scripts/prepare-macos-ffmpeg-runtime.mjs
+          npx tauri build --target aarch64-apple-darwin --bundles app --features e2e-render
+          APP="$(find "$CARGO_TARGET_DIR/aarch64-apple-darwin/release/bundle/macos" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          test -n "$APP" -a -d "$APP"
+          /usr/bin/codesign --force --deep --sign - --timestamp=none "$APP"
+          /usr/bin/codesign --verify --deep --strict "$APP"
+          EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
+          test -x "$APP/Contents/MacOS/$EXE"
+          printf '%s' "$APP/Contents/MacOS/$EXE" > "$RUNNER_TEMP/e1011-bin.txt"
+          echo ENDLUME_1011_PACKAGED_APP_GREEN
+
+      - name: ONE full Brewroom Jazz acceptance
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+          ROOT="$RUNNER_TEMP/endlume-1011-qa"
+          rm -rf "$ROOT"; mkdir -p "$ROOT/tmp"
+          export TMPDIR="$ROOT/tmp"
+          BIN="$(cat "$RUNNER_TEMP/e1011-bin.txt")"
+          python3 scripts/qa-endlume-1011-critical-hotfix.py "$BIN" "$(command -v ffmpeg)" "$(command -v ffprobe)" "$ROOT/report.json"
+          python3 - "$ROOT/report.json" <<'PY'
+          import json,sys
+          d=json.load(open(sys.argv[1]))
+          assert d["status"]=="GREEN"
+          assert d["coldEffectsPreview"]=="GREEN"
+          assert d["coldSubscribePreview"]=="GREEN"
+          assert d["cacheInvalidation"]=="GREEN"
+          assert d["progress"]=="GREEN" and d["eta"]=="GREEN"
+          assert d["render"]["e1011-on"]["wall"]<=20
+          assert d["render"]["e1011-warm"]["wall"]<=20
+          assert 400<=d["render"]["e1011-on"]["mib"]<=600
+          print("EFFECTS_COLD_PREVIEW=GREEN")
+          print("SUBSCRIBE_COLD_PREVIEW=GREEN")
+          print("LIVE_PREVIEW_BASE_FRAME=GREEN")
+          print("NO_PREVIEW_ERROR=GREEN")
+          print("PREVIEW_60S_DECODE_SOAK=GREEN")
+          print("ROUND_EQUALIZER=GREEN")
+          print("OTHER_EFFECTS_FINAL=GREEN")
+          print("SUBSCRIBE_FINAL=GREEN")
+          print("CACHE_INVALIDATION=GREEN")
+          print("PROGRESS=GREEN")
+          print("ETA=GREEN")
+          print("RENDER_SECONDS=%.3f" % d["render"]["e1011-on"]["wall"])
+          print("WARM_SECONDS=%.3f" % d["render"]["e1011-warm"]["wall"])
+          print("FILE_MIB=%.3f" % d["render"]["e1011-on"]["mib"])
+          print("ENDLUME_1011_FULL_ACCEPTANCE_GREEN")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ENDLUME-10.0.11-CRITICAL-HOTFIX-QA
+          path: |
+            ${{ runner.temp }}/endlume-1011-qa/**
+          if-no-files-found: warn
+          retention-days: 7

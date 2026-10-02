@@ -17,7 +17,7 @@ type Props={
   anchor?:AnchorPoint;
   anchorMode?:boolean;
   onAnchorPick?:(x:number,y:number)=>void;
-  onFrameState?:(payload:{status:'GREEN'|'RED';requestId:string;previewType:string;width:number;height:number;payloadBytes:number})=>void;
+  onFrameState?:(payload:{status:'GREEN'|'RED';requestId:string;previewType:string;width:number;height:number;payloadBytes:number;paintedNonBlack:number})=>void;
 };
 
 function hexRgb(hex:string){const raw=hex.replace('#','').trim();const v=Number.parseInt(raw.length===3?raw.split('').map(x=>x+x).join(''):raw,16);return [((v>>16)&255)/255,((v>>8)&255)/255,(v&255)/255] as const}
@@ -68,16 +68,25 @@ export function LiveCompositePreview({assets,effect,active=true,busy,overlayRef,
     const requestId=assets?.requestId||'<unknown>';
     const previewType=assets?.previewType||'Effects';
     const w=video.videoWidth||0,h=video.videoHeight||0;
-    console.info(`[ENDLUME_PREVIEW] PREVIEW_REQUEST_ID=${requestId} PREVIEW_TYPE=${previewType} IMAGE_LOAD=${w>0&&h>0?'GREEN':'RED'} IMAGE_NATURAL_WIDTH=${w} IMAGE_NATURAL_HEIGHT=${h}`);
+    let paintedNonBlack=0;
     if(w>0&&h>0){
+      try{
+        const probe=document.createElement('canvas');probe.width=64;probe.height=36;
+        const ctx=probe.getContext('2d',{willReadFrequently:true});
+        if(ctx){ctx.drawImage(video,0,0,probe.width,probe.height);const px=ctx.getImageData(0,0,probe.width,probe.height).data;for(let i=0;i<px.length;i+=4){if(px[i]+px[i+1]+px[i+2]>18)paintedNonBlack++;}}
+      }catch{}
+    }
+    const green=w>0&&h>0&&paintedNonBlack>8;
+    console.info(`[ENDLUME_PREVIEW] PREVIEW_REQUEST_ID=${requestId} PREVIEW_TYPE=${previewType} IMAGE_LOAD=${green?'GREEN':'RED'} IMAGE_NATURAL_WIDTH=${w} IMAGE_NATURAL_HEIGHT=${h} BROWSER_NONBLACK_PIXELS=${paintedNonBlack}`);
+    if(green){
       setExactReady(true);
       void video.play().catch(()=>undefined);
       console.info(`[ENDLUME_PREVIEW] PREVIEW_REQUEST_ID=${requestId} PREVIEW_TYPE=${previewType} PREVIEW_APPLIED=true`);
-      onFrameState?.({status:'GREEN',requestId,previewType,width:w,height:h,payloadBytes:exactPayloadBytes.current});
+      onFrameState?.({status:'GREEN',requestId,previewType,width:w,height:h,payloadBytes:exactPayloadBytes.current,paintedNonBlack});
     }else{
       setExactReady(false);
       console.error(`[ENDLUME_PREVIEW] PREVIEW_REQUEST_ID=${requestId} PREVIEW_TYPE=${previewType} PREVIEW_APPLIED=false`);
-      onFrameState?.({status:'RED',requestId,previewType,width:w,height:h,payloadBytes:exactPayloadBytes.current});
+      onFrameState?.({status:'RED',requestId,previewType,width:w,height:h,payloadBytes:exactPayloadBytes.current,paintedNonBlack});
     }
   };
   const exactFailed=()=>{
@@ -85,7 +94,7 @@ export function LiveCompositePreview({assets,effect,active=true,busy,overlayRef,
     const previewType=assets?.previewType||'Effects';
     setExactReady(false);
     console.error(`[ENDLUME_PREVIEW] PREVIEW_REQUEST_ID=${requestId} PREVIEW_TYPE=${previewType} IMAGE_LOAD=RED IMAGE_NATURAL_WIDTH=0 IMAGE_NATURAL_HEIGHT=0 PREVIEW_APPLIED=false`);
-    onFrameState?.({status:'RED',requestId,previewType,width:0,height:0,payloadBytes:exactPayloadBytes.current});
+    onFrameState?.({status:'RED',requestId,previewType,width:0,height:0,payloadBytes:exactPayloadBytes.current,paintedNonBlack:0});
   };
 
   const sampleAt=(clientX:number,clientY:number)=>{

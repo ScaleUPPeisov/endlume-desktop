@@ -1,0 +1,59 @@
+name: ENDLUME 10.0.11 Settings UI Diagnostic
+on:
+  push:
+    branches: [release-endlume-10.0.11]
+    paths: [".github/workflows/endlume-1011-settings-ui-diagnostic.yml"]
+permissions:
+  contents: read
+concurrency:
+  group: endlume-1011-settings-ui-diagnostic
+  cancel-in-progress: true
+jobs:
+  inspect:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 8
+    steps:
+      - name: Inspect installed 10.0.10 accessibility tree
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          APP="/Applications/ENDLUME YT Studio PEISOV.app"
+          test -d "$APP"
+          echo "INSTALLED_VERSION=$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist")"
+          /usr/bin/open -n "$APP" || true
+          /bin/sleep 2
+          /usr/bin/osascript -e 'tell application id "studio.endlume.desktop" to activate'
+          /bin/sleep 2
+          /usr/bin/osascript <<'APPLESCRIPT'
+          tell application "System Events"
+            set ps to application processes whose bundle identifier is "studio.endlume.desktop"
+            if (count of ps) is 0 then error "PROCESS_NOT_FOUND"
+            tell item 1 of ps
+              set frontmost to true
+              set n to 0
+              repeat with itemRef in entire contents
+                set n to n + 1
+                if n > 350 then exit repeat
+                set rr to ""
+                set nn to ""
+                set dd to ""
+                set vv to ""
+                try
+                  set rr to role of itemRef as text
+                end try
+                try
+                  set nn to name of itemRef as text
+                end try
+                try
+                  set dd to description of itemRef as text
+                end try
+                try
+                  set vv to value of itemRef as text
+                end try
+                if nn is not "" or dd is not "" or vv is not "" then
+                  log ("AX|" & n & "|role=" & rr & "|name=" & nn & "|desc=" & dd & "|value=" & vv)
+                end if
+              end repeat
+            end tell
+          end tell
+          APPLESCRIPT

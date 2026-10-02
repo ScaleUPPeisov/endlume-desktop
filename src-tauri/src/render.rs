@@ -1272,9 +1272,14 @@ fn apply_effects_filter(mut graph:String,mut base:String,effects:&[EffectPreset]
         let mix=e.despill.clamp(0.0,1.0);
         if e.fullscreen{
           format!("[{idx}:v]fps={},format=rgba,colorkey={}:{}:{},despill=type={kind}:mix={mix}:expand=0.20,{scale}",s.fps,color_ffmpeg(&e.key_color),similarity,blend)
+        }else if cache::is_round_equalizer_859(e){
+          // 10.0.9: protect the Equalizer's thin white lines from green/white
+          // resampling bleed. Key at native resolution, then Lanczos-scale the
+          // alpha result; keep despill after scaling so the expensive color cleanup
+          // still runs only on the small target overlay.
+          format!("[{idx}:v]fps={},format=rgba,colorkey={}:{}:{},{scale},despill=type={kind}:mix={mix}:expand=0.20",s.fps,color_ffmpeg(&e.key_color),similarity,blend)
         }else{
-          // 10.0.8: scale the overlay before chroma-key/despill. Real M1 benchmark:
-          // ~2x faster for Round Equalizer, with preview/final parity gate GREEN.
+          // Keep the measured 10.0.8 fast path for every other chroma overlay.
           format!("[{idx}:v]fps={},{scale},format=rgba,colorkey={}:{}:{},despill=type={kind}:mix={mix}:expand=0.20",s.fps,color_ffmpeg(&e.key_color),similarity,blend)
         }
       };

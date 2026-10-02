@@ -7,6 +7,7 @@ on:
     paths:
       - ".github/workflows/endlume-1008-production-release.yml"
       - "scripts/verify-macos-ffmpeg-bundle.mjs"
+      - "scripts/tauri-cli.mjs"
   workflow_dispatch: {}
 
 permissions:

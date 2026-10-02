@@ -1,0 +1,65 @@
+name: ENDLUME 10.0.11 Post Update Smoke
+
+on:
+  push:
+    branches: [release-endlume-10.0.11]
+    paths:
+      - ".github/workflows/endlume-1011-post-update-smoke.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-1011-post-update-smoke
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify installed 10.0.11 then offline runtime smoke
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          APP="/Applications/ENDLUME YT Studio PEISOV.app"
+          test -d "$APP"
+          test "$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist")" = "10.0.11"
+          /usr/bin/codesign --verify --deep --strict "$APP"
+          test -x "$APP/Contents/MacOS/ffmpeg"
+          test -x "$APP/Contents/MacOS/ffprobe"
+          env -i PATH="/usr/bin:/bin:/usr/sbin:/sbin" "$APP/Contents/MacOS/ffmpeg" -version | head -1
+          env -i PATH="/usr/bin:/bin:/usr/sbin:/sbin" "$APP/Contents/MacOS/ffprobe" -version | head -1
+          /usr/bin/osascript -e 'tell application id "studio.endlume.desktop" to quit' >/dev/null 2>&1 || true
+          /bin/sleep 1
+          python3 - <<'PY'
+          import os,subprocess,sys
+          env=os.environ.copy()
+          env["ENDLUME_APP_PATH"]="/Applications/ENDLUME YT Studio PEISOV.app"
+          p=subprocess.run(["node","scripts/verify-macos-ffmpeg-bundle.mjs"],env=env,text=True,capture_output=True,timeout=120)
+          print(p.stdout,end="")
+          print(p.stderr,end="",file=sys.stderr)
+          if p.returncode!=0:
+              raise SystemExit(p.returncode)
+          assert "EFFECTS_LIVE_PREVIEW_RUNTIME_PASS" in p.stdout
+          assert "SUBSCRIBE_LIVE_PREVIEW_RUNTIME_PASS" in p.stdout
+          assert "ENDLUME_MACOS_FFMPEG_RUNTIME_PASS" in p.stdout
+          PY
+          /usr/bin/open -n "$APP"
+          for I in $(seq 1 80); do
+            /usr/bin/osascript -e 'tell application "System Events" to exists (first application process whose bundle identifier is "studio.endlume.desktop")' 2>/dev/null | grep -q true && break
+            /bin/sleep 0.25
+          done
+          /usr/bin/osascript -e 'tell application "System Events" to exists (first application process whose bundle identifier is "studio.endlume.desktop")' | grep -q true
+          echo VERSION_10_0_11_GREEN
+          echo POST_UPDATE_EFFECTS_RUNTIME_GREEN
+          echo POST_UPDATE_SUBSCRIBE_RUNTIME_GREEN
+          echo POST_UPDATE_RELAUNCH_GREEN

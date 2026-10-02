@@ -16,6 +16,7 @@ concurrency:
 
 jobs:
   bench:
+    if: false
     runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
     timeout-minutes: 25
     steps:

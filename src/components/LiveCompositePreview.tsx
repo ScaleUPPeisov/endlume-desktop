@@ -108,7 +108,7 @@ export function LiveCompositePreview({assets,effect,active=true,busy,overlayRef,
         try{
           ctx.clearRect(0,0,w,h);ctx.drawImage(video,0,0,w,h);
           const e=effectRef.current;
-          if(e.mode!=='screen'&&e.mode!=='screen-cache'){
+          if(e.mode!=='screen'){
             const im=ctx.getImageData(0,0,w,h),d=im.data,[kr,kg,kb]=hexRgb(e.keyColor);
             const eq=e.id==='825dd7a4-f0cf-4032-a3c9-64290cb5756d'&&e.mode==='chromakey';
             const destructiveSubscribe=assets?.previewType==='Subscribe'&&e.mode==='chromakey'&&Math.abs(e.similarity-.60)<.000001&&Math.abs(e.blend-.35)<.000001;

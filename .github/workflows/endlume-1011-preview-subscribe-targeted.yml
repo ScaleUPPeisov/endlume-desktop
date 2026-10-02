@@ -106,7 +106,21 @@ jobs:
           BIN="$(cat "$RUNNER_TEMP/e1011-targeted-bin.txt")"
           FFMPEG="$(cat "$RUNNER_TEMP/e1011-targeted-ffmpeg.txt")"
           FFPROBE="$(cat "$RUNNER_TEMP/e1011-targeted-ffprobe.txt")"
+          set +e
           python3 scripts/qa-endlume-1011-preview-subscribe-final.py "$BIN" "$FFMPEG" "$FFPROBE" "$ROOT/report.json"
+          QA_RC=$?
+          set -e
+          if [ "$QA_RC" -ne 0 ]; then
+            echo "===== TARGETED ACCEPTANCE FAILURE DIAGNOSTICS ====="
+            find "$ROOT" -maxdepth 3 -type f -print | sort || true
+            for f in "$ROOT"/tmp/endlume1011-qa-*/*.stderr "$ROOT"/tmp/endlume1011-qa-*/*.stdout; do
+              [ -f "$f" ] || continue
+              echo "===== $f ====="
+              tail -n 180 "$f" || true
+            done
+            [ -f "$ROOT/report.json" ] && { echo "===== report.json ====="; cat "$ROOT/report.json"; } || true
+            exit "$QA_RC"
+          fi
           python3 - "$ROOT/report.json" <<'PY'
           import json,sys
           d=json.load(open(sys.argv[1]))

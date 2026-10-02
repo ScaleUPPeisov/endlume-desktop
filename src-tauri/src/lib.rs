@@ -30,6 +30,33 @@ static E2E_RENDER_ACTIVE:AtomicBool=AtomicBool::new(false);
 use tauri::Manager;
 
 #[cfg(feature="e2e-render")]
+fn maybe_start_preview_e2e(app:tauri::AppHandle){
+  E2E_RENDER_ACTIVE.store(true,Ordering::SeqCst);
+  let Ok(fixture_path)=std::env::var("ENDLUME_E2E_PREVIEW_JOB") else{return};
+  let Ok(result_path)=std::env::var("ENDLUME_E2E_RESULT") else{return};
+  tauri::async_runtime::spawn(async move{
+    let parsed=std::fs::read(&fixture_path)
+      .map_err(|e|format!("preview fixture read: {e}"))
+      .and_then(|bytes|serde_json::from_slice::<serde_json::Value>(&bytes).map_err(|e|format!("preview fixture json: {e}")));
+    let result:Result<serde_json::Value,String>=async{
+      let value=parsed?;
+      let project_path=value.get("projectPath").and_then(|x|x.as_str()).ok_or("preview projectPath missing")?.to_string();
+      let overlay_source=value.get("overlaySource").and_then(|x|x.as_str()).ok_or("preview overlaySource missing")?.to_string();
+      let time_sec=value.get("timeSec").and_then(|x|x.as_f64()).unwrap_or(0.0);
+      let effects=serde_json::from_value::<Vec<model::EffectPreset>>(value.get("effects").cloned().unwrap_or_else(||serde_json::json!([]))).map_err(|e|format!("preview effects: {e}"))?;
+      let subscribes=serde_json::from_value::<Vec<model::SubscribePreset>>(value.get("subscribes").cloned().unwrap_or_else(||serde_json::json!([]))).map_err(|e|format!("preview subscribes: {e}"))?;
+      let helper=live_preview::prepare_live_preview(app.clone(),project_path.clone(),overlay_source,time_sec).await?;
+      let exact=preview::generate_preview(app.clone(),project_path,time_sec,effects,subscribes,Some("e1011-cold-preview".into())).await?;
+      Ok(serde_json::json!({"helper":serde_json::to_value(helper).map_err(|e|e.to_string())?,"exactPath":exact}))
+    }.await;
+    let (ok,payload)=match result{Ok(v)=>(true,serde_json::json!({"status":"passed","result":v})),Err(e)=>(false,serde_json::json!({"status":"failed","error":e}))};
+    let _=std::fs::write(&result_path,serde_json::to_vec_pretty(&payload).unwrap_or_default());
+    E2E_RENDER_ACTIVE.store(false,Ordering::SeqCst);
+    app.exit(if ok{0}else{32});
+  });
+}
+
+#[cfg(feature="e2e-render")]
 fn maybe_start_render_e2e(app:tauri::AppHandle){
   E2E_RENDER_ACTIVE.store(true,Ordering::SeqCst);
   let Ok(fixture_path)=std::env::var("ENDLUME_E2E_RENDER_JOB") else{return};
@@ -141,6 +168,11 @@ pub fn run(){
     .setup(|app|{
       persistence::mark_session_open(&app.handle().clone())?;
       render::cleanup_runtime_caches_1003(&app.handle().clone());
+      #[cfg(feature="e2e-render")]
+      if std::env::var_os("ENDLUME_E2E_PREVIEW_JOB").is_some(){
+        maybe_start_preview_e2e(app.handle().clone());
+        return Ok(())
+      }
       #[cfg(feature="e2e-render")]
       if std::env::var_os("ENDLUME_E2E_RENDER_JOB").is_some(){
         maybe_start_render_e2e(app.handle().clone());

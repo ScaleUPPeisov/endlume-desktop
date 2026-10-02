@@ -44,9 +44,14 @@ fn overlay_effect(graph:&mut String,base:&mut String,input:usize,e:&EffectPreset
       let (similarity,blend)=cache::chromakey_params_859(e);
       let kind=cache::despill_type(&e.key_color);
       let mix=e.despill.clamp(0.0,1.0);
-      format!("[{input}:v]fps=30,format=rgba,colorkey={}:{}:{},despill=type={kind}:mix={mix}:expand=0.20",color(&e.key_color),similarity,blend)
+      if cache::is_round_equalizer_859(e){
+        format!("[{input}:v]fps=30,format=rgba,colorkey={}:{}:{},{scale},despill=type={kind}:mix={mix}:expand=0.20",color(&e.key_color),similarity,blend)
+      }else{
+        format!("[{input}:v]fps=30,format=rgba,colorkey={}:{}:{},despill=type={kind}:mix={mix}:expand=0.20,{scale}",color(&e.key_color),similarity,blend)
+      }
     };
-    graph.push_str(&format!(";{prep},{scale},colorchannelmixer=aa={opacity}[{fx}];[{base}]format=rgba[base{input}];[base{input}][{fx}]overlay=x='{x}':y='{y}':shortest=1:eof_action=repeat:format=auto[{next}]"));
+    let prepared=if cache::is_round_equalizer_859(e)&&e.mode!="luma"{prep}else{format!("{prep},{scale}")};
+    graph.push_str(&format!(";{prepared},colorchannelmixer=aa={opacity}[{fx}];[{base}]format=rgba[base{input}];[base{input}][{fx}]overlay=x='{x}':y='{y}':shortest=1:eof_action=repeat:format=auto[{next}]"));
   }
   *base=next;
 }

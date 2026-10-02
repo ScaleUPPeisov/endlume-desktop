@@ -58,6 +58,7 @@ jobs:
           grep -q "BROWSER_NONBLACK_PIXELS" src/components/LiveCompositePreview.tsx
           grep -q "FRONTEND_TRANSFER_MODE=ASSET_STREAM" src/components/LiveCompositePreview.tsx
           grep -q "OBJECT_URL_CREATED=true" src/components/LiveCompositePreview.tsx
+          grep -q "img-src.*blob:" src-tauri/tauri.conf.json
           grep -q "readFile" src/components/LiveCompositePreview.tsx
           grep -q "Live GPU Preview" src/pages/Editors.tsx
           grep -q "subscribe_chromakey_params_1011" src-tauri/src/render.rs

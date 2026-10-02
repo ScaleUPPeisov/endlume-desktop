@@ -1117,66 +1117,43 @@ async fn localize_processed_audio_inputs_1008(app:&AppHandle,job:&QueueJob,cance
 async fn build_lossless_processed_audio_cycle(app:&AppHandle,job:&QueueJob,started:i64,timer:&Instant,work:&Path,encoder:&str,attempt:u32,cancel:&AtomicBool)->Result<(PathBuf,Vec<f64>,f64),String>{
   if job.project.audio.is_empty(){return Err("Нет песен".into())}
   let (local_tracks,local_ambient)=localize_processed_audio_inputs_1008(app,job,cancel).await?;
-  let probe_mark=Instant::now();
-  let local_track_strings=local_tracks.iter().map(|p|p.to_string_lossy().into_owned()).collect::<Vec<_>>();
-  let metas=probe_original_audio_batch(app,&local_track_strings).await?;
-  let durations=metas.iter().map(|m|m.duration.max(0.2)).collect::<Vec<_>>();
+  let mut durations=Vec::new();let probe_mark=Instant::now();
+  let mut args:Vec<String>=vec!["-hide_banner","-loglevel","error","-filter_complex_threads","4"].into_iter().map(String::from).collect();
+  for a in &local_tracks{
+    let a_str=a.to_string_lossy();
+    durations.push(probe_duration(app,a_str.as_ref()).await.unwrap_or(180.0).max(0.2));
+    args.extend(vec!["-i",a_str.as_ref()].into_iter().map(String::from));
+  }
+  let ambient_index=local_tracks.len();let ambient_enabled=local_ambient.is_some();
+  if let Some(a)=local_ambient.as_ref(){args.extend(vec!["-stream_loop","-1","-i",a.to_string_lossy().as_ref()].into_iter().map(String::from));}
   emit_timing(app,&job.project.id,"probe",probe_mark.elapsed().as_secs_f64());
-
   let min_track=durations.iter().copied().fold(f64::INFINITY,f64::min);
   let cf=job.settings.crossfade_sec.clamp(0.0,10.0).min((min_track*0.40).max(0.0));
-  let first_sig=metas.first().map(|m|(m.codec.as_str(),m.sample_rate,m.channels));
-  let fast_concat=cf<=0.01&&!job.settings.normalize_lufs&&first_sig.is_some()&&metas.iter().all(|m|{
-    m.codec=="mp3"&&first_sig.map(|sig|sig==(m.codec.as_str(),m.sample_rate,m.channels)).unwrap_or(false)
-  });
-
-  let mut args:Vec<String>=vec!["-hide_banner","-loglevel","error"].into_iter().map(String::from).collect();
   let mut graph=String::new();
-  let ambient_index:usize;
-
-  if fast_concat{
-    let list=work.join("audio-processed-fast-concat.txt");
-    let body=local_tracks.iter().map(|p|format!("file {}",ffconcat_escape(p))).collect::<Vec<_>>().join("\n");
-    std::fs::write(&list,body).map_err(|e|format!("10.0.8 processed fast concat list: {e}"))?;
-    args.extend(vec!["-f","concat","-safe","0","-fflags","+genpts","-i",list.to_string_lossy().as_ref()].into_iter().map(String::from));
-    ambient_index=1;
-    graph.push_str("[0:a]aresample=48000:async=1:first_pts=0,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,asetpts=N/SR/TB[processed_music]");
-    diag_line(json!({"kind":"audio-fast-path-1008","projectId":job.project.id,"mode":"COMPATIBLE_MP3_CONCAT_DEMUX","tracks":local_tracks.len()}));
+  for i in 0..job.project.audio.len(){
+    if i>0{graph.push(';')}
+    graph.push_str(&format!("[{i}:a]aresample=48000:async=1:first_pts=0,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,asetpts=N/SR/TB[a{i}]"));
+  }
+  let last=if job.project.audio.len()==1{"a0".to_string()}else if cf>0.01{
+    let mut cur="a0".to_string();
+    for i in 1..job.project.audio.len(){
+      let out=format!("xf{i}");
+      graph.push_str(&format!(";[{cur}][a{i}]acrossfade=d={cf}:c1=tri:c2=tri[{out}]"));
+      cur=out;
+    }
+    cur
   }else{
-    for a in &local_tracks{
-      args.extend(vec!["-i",a.to_string_lossy().as_ref()].into_iter().map(String::from));
-    }
-    ambient_index=local_tracks.len();
-    for i in 0..local_tracks.len(){
-      if i>0{graph.push(';')}
-      graph.push_str(&format!("[{i}:a]aresample=48000:async=1:first_pts=0,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,asetpts=N/SR/TB[a{i}]"));
-    }
-    let last=if local_tracks.len()==1{"a0".to_string()}else if cf>0.01{
-      let mut cur="a0".to_string();
-      for i in 1..local_tracks.len(){
-        let out=format!("xf{i}");
-        graph.push_str(&format!(";[{cur}][a{i}]acrossfade=d={cf}:c1=tri:c2=tri[{out}]"));
-        cur=out;
-      }
-      cur
-    }else{
-      let inputs=(0..local_tracks.len()).map(|i|format!("[a{i}]")).collect::<String>();
-      graph.push_str(&format!(";{inputs}concat=n={}:v=0:a=1[joined]",local_tracks.len()));
-      "joined".to_string()
-    };
-    if job.settings.normalize_lufs{graph.push_str(&format!(";[{last}]loudnorm=I=-14:TP=-1.5:LRA=11[processed_music]"));}else{graph.push_str(&format!(";[{last}]anull[processed_music]"));}
-  }
-
-  let ambient_enabled=local_ambient.is_some();
-  if let Some(a)=local_ambient.as_ref(){
-    args.extend(vec!["-stream_loop","-1","-i",a.to_string_lossy().as_ref()].into_iter().map(String::from));
-  }
+    let inputs=(0..job.project.audio.len()).map(|i|format!("[a{i}]")).collect::<String>();
+    graph.push_str(&format!(";{inputs}concat=n={}:v=0:a=1[joined]",job.project.audio.len()));
+    "joined".to_string()
+  };
+  let music="processed_music";
+  if job.settings.normalize_lufs{graph.push_str(&format!(";[{last}]loudnorm=I=-14:TP=-1.5:LRA=11[{music}]"));}else{graph.push_str(&format!(";[{last}]anull[{music}]"));}
   if ambient_enabled{
-    graph.push_str(&format!(";[{ambient_index}:a]aresample=48000:async=1:first_pts=0,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,volume=0.18[amb];[processed_music][amb]amix=inputs=2:duration=first:weights='1 1':normalize=0,alimiter=limit=0.98[outa]"));
+    graph.push_str(&format!(";[{ambient_index}:a]aresample=48000:async=1:first_pts=0,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,volume=0.18[amb];[{music}][amb]amix=inputs=2:duration=first:weights='1 1':normalize=0,alimiter=limit=0.98[outa]"));
   }else{
-    graph.push_str(";[processed_music]aresample=48000:async=1:first_pts=0,alimiter=limit=0.98[outa]");
+    graph.push_str(&format!(";[{music}]aresample=48000:async=1:first_pts=0,alimiter=limit=0.98[outa]"));
   }
-
   let cycle=work.join("audio-crossfade-gapless.m4a");
   let expected=(durations.iter().sum::<f64>()-cf*((durations.len().saturating_sub(1)) as f64)).max(0.2);
   let audio_encoder=choose_audio_encoder(app).await;
@@ -1814,7 +1791,7 @@ async fn build_interval_half_master_1008(app:&AppHandle,job:&QueueJob,effects:&[
   let logical_fps=job.settings.fps.max(1);
   if logical_fps!=60||logical_frames%2!=0{return Err("10.0.8 half-rate master requires even 60 FPS logical frame count".into())}
   let physical_fps=30u32;let physical_frames=logical_frames/2;let duration=logical_frames as f64/logical_fps as f64;
-  let profile="interval-half30-allintra-v2-8t";let key=visual_master_key_1000(job,effects,logical_frames,encoder,profile)?;
+  let profile="interval-half30-allintra-v3-combined-6t";let key=visual_master_key_1000(job,effects,logical_frames,encoder,profile)?;
   let root=cache_root_1000(app,"visual-master-v10")?;let out=root.join(format!("{key}.mp4"));let lookup=Instant::now();
   if out.is_file()&&probe_video_packets_857(app,&out).await.ok()==Some(physical_frames)&&probe_all_video_packets_key_1008(app,&out,physical_frames).await.is_ok(){
     let sec=lookup.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"cache-lookup",sec);emit_timing(app,&job.project.id,"base-visual-cache",sec);
@@ -1827,7 +1804,7 @@ async fn build_interval_half_master_1008(app:&AppHandle,job:&QueueJob,effects:&[
   let vf=base_filter(&ws,"0:v").trim_start_matches("[0:v]").to_string();
   let prep=vec!["-hide_banner","-loglevel","error","-i",job.project.media[0].as_str(),"-vf",vf.as_str(),"-frames:v","1","-compression_level","1","-y",base_still.to_string_lossy().as_ref()].into_iter().map(String::from).collect();
   output(app,"ffmpeg",prep).await.map_err(|e|format!("10.0.8 half base preprocess: {e}"))?;emit_timing(app,&job.project.id,"image-preprocess",prep_mark.elapsed().as_secs_f64());
-  let tmp=root.join(format!(".{key}-{}.tmp.mp4",uuid::Uuid::new_v4()));let mut args:Vec<String>=vec!["-hide_banner","-loglevel","error","-filter_complex_threads","8","-loop","1","-framerate","30","-i",base_still.to_string_lossy().as_ref()].into_iter().map(String::from).collect();
+  let tmp=root.join(format!(".{key}-{}.tmp.mp4",uuid::Uuid::new_v4()));let mut args:Vec<String>=vec!["-hide_banner","-loglevel","error","-filter_complex_threads","6","-loop","1","-framerate","30","-i",base_still.to_string_lossy().as_ref()].into_iter().map(String::from).collect();
   for e in effects.iter().filter(|x|effect_usage_mode(x)!="off"&&!x.source.trim().is_empty()){args.extend(vec!["-stream_loop","-1","-i",e.source.as_str()].into_iter().map(String::from));}
   let base="[0:v]fps=30,setsar=1[b0]".to_string();let (graph,last)=apply_effects_filter(base,"b0".into(),effects,&ws,1);let graph=format!("{graph};[{last}]format=yuv420p[outv]");
   args.extend(vec!["-filter_complex",&graph,"-map","[outv]","-frames:v",&physical_frames.to_string(),"-an"].into_iter().map(String::from));
@@ -1838,6 +1815,71 @@ async fn build_interval_half_master_1008(app:&AppHandle,job:&QueueJob,effects:&[
   probe_all_video_packets_key_1008(app,&tmp,physical_frames).await?;
   if out.exists(){let _=std::fs::remove_file(&tmp);}else{std::fs::rename(&tmp,&out).map_err(|e|format!("10.0.8 half visual cache commit: {e}"))?}
   let sec=mark.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"base-visual-cache",sec);emit_timing(app,&job.project.id,"visual-preparation",sec);prune_cache_1000(&root,&out);Ok((out,physical_frames))
+}
+
+
+fn append_single_effect_filter_1008(graph:&mut String,base:&str,e:&EffectPreset,s:&RenderSettings,idx:usize,prefix:&str,subscribe_eof_pass:bool)->String{
+  let fx=format!("{prefix}_fx");let base_fmt=format!("{prefix}_base");let next=format!("{prefix}_out");let opacity=effect_opacity(e);
+  let target=((s.width as f64)*e.scale.clamp(0.05,1.5)).round().max(2.0) as u32;let target=if target%2==0{target}else{target+1};
+  let scale=if e.fullscreen{format!("scale={}:{}:force_original_aspect_ratio=decrease,pad={}:{}:(ow-iw)/2:(oh-ih)/2:color=black@0",s.width,s.height,s.width,s.height)}else{format!("scale={}:-2:flags=lanczos",target)};
+  let x=if e.fullscreen{"0".into()}else{format!("max(0,min(W-w,W*{}-w/2))",e.x.clamp(0.0,1.0))};
+  let y=if e.fullscreen{"0".into()}else{format!("max(0,min(H-h,H*{}-h/2))",e.y.clamp(0.0,1.0))};
+  if e.mode=="strict-prealpha"{
+    graph.push_str(&format!(";[{idx}:v]fps={},setpts=PTS-STARTPTS,format=rgba,colorchannelmixer=aa={opacity}[{fx}];[{base}]format=rgba[{base_fmt}];[{base_fmt}][{fx}]overlay=x='{x}':y='{y}':shortest=0:repeatlast=1:eof_action=repeat:format=auto[{next}]",s.fps));return next
+  }
+  if e.mode=="strict-screen-cache"{
+    let px=if e.fullscreen{"0".into()}else{format!("max(0,min(ow-iw,ow*{}-iw/2))",e.x.clamp(0.0,1.0))};let py=if e.fullscreen{"0".into()}else{format!("max(0,min(oh-ih,oh*{}-ih/2))",e.y.clamp(0.0,1.0))};
+    graph.push_str(&format!(";[{base}]format=gbrp[{base_fmt}];[{idx}:v]fps={},format=gbrp,pad={}:{}:'{px}':'{py}':color=black[{fx}];[{base_fmt}][{fx}]blend=all_mode=screen:all_opacity={opacity}[{next}]",s.fps,s.width,s.height));return next
+  }
+  if e.mode=="screen"||e.mode=="screen-cache"{
+    let px=if e.fullscreen{"0".into()}else{format!("max(0,min(ow-iw,ow*{}-iw/2))",e.x.clamp(0.0,1.0))};
+    let py=if e.fullscreen{"0".into()}else{format!("max(0,min(oh-ih,oh*{}-ih/2))",e.y.clamp(0.0,1.0))};
+    graph.push_str(&format!(";[{base}]format=gbrp[{base_fmt}];[{idx}:v]fps={},format=gbrp,{scale},pad={}:{}:'{px}':'{py}':color=black,setsar=1[{fx}];[{base_fmt}][{fx}]blend=all_mode=screen:all_opacity={opacity}[{next}]",s.fps,s.width,s.height));return next
+  }
+  let prep=if e.mode=="prealpha"{
+    format!("[{idx}:v]fps={},format=rgba",s.fps)
+  }else if e.mode=="luma"{
+    format!("[{idx}:v]fps={},format=rgba,lumakey=threshold={}:tolerance={}:softness=0.08",s.fps,e.luma_threshold,e.luma_tolerance)
+  }else{
+    let (similarity,blend)=cache::chromakey_params_859(e);let kind=cache::despill_type(&e.key_color);let mix=e.despill.clamp(0.0,1.0);
+    format!("[{idx}:v]fps={},format=rgba,colorkey={}:{}:{},despill=type={kind}:mix={mix}:expand=0.20",s.fps,color_ffmpeg(&e.key_color),similarity,blend)
+  };
+  let eof=if subscribe_eof_pass{"shortest=0:eof_action=pass"}else{"shortest=1:eof_action=repeat"};
+  graph.push_str(&format!(";{prep},{scale},colorchannelmixer=aa={opacity}[{fx}];[{base}]format=rgba[{base_fmt}];[{base_fmt}][{fx}]overlay=x='{x}':y='{y}':{eof}:format=auto[{next}]"));next
+}
+
+async fn build_interval_half_combined_pool_1008(app:&AppHandle,job:&QueueJob,effects:&[EffectPreset],sub:&SubscribePreset,master_logical_frames:usize,phase_logical_frames:usize,sub_logical_frames:usize,work:&Path,encoder:&str,attempt:u32,cancel:&AtomicBool,started:i64,timer:&Instant)->Result<(PathBuf,usize,usize),String>{
+  if job.settings.fps!=60||master_logical_frames%2!=0||sub_logical_frames%2!=0{return Err("10.0.8 combined pool requires even 60 FPS logical frame counts".into())}
+  let master_physical=master_logical_frames/2;let sub_physical=sub_logical_frames/2;let pool_frames=master_physical+sub_physical;
+  let profile="interval-half30-combined-pool-v1-6t";let base_key=visual_master_key_1000(job,effects,master_logical_frames,encoder,profile)?;
+  let mut h=Sha256::new();h.update(b"ENDLUME-10.0.8-COMBINED-POOL-v1|");h.update(base_key.as_bytes());h.update(serde_json::to_vec(sub).map_err(|e|e.to_string())?);h.update(phase_logical_frames.to_le_bytes());h.update(sub_logical_frames.to_le_bytes());
+  let key=hex::encode(h.finalize());let root=cache_root_1000(app,"interval-half-pool-v1008")?;let out=root.join(format!("{key}.mp4"));let lookup=Instant::now();
+  if out.is_file()&&probe_video_packets_857(app,&out).await.ok()==Some(pool_frames)&&probe_all_video_packets_key_1008(app,&out,pool_frames).await.is_ok(){
+    let sec=lookup.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"combined-visual-pool",sec);diag_line(json!({"kind":"cache","projectId":job.project.id,"combinedVisualPool":"HIT","combinedVisualPoolKey":key}));return Ok((out,master_physical,sub_physical))
+  }
+  let _=std::fs::remove_file(&out);diag_line(json!({"kind":"cache","projectId":job.project.id,"combinedVisualPool":"MISS","combinedVisualPoolKey":key}));
+  let mut ws=job.settings.clone();ws.fps=30;
+  let base_still=work.join(format!("combined-base-{key}.png"));let prep_mark=Instant::now();let vf=base_filter(&ws,"0:v").trim_start_matches("[0:v]").to_string();
+  let prep=vec!["-hide_banner","-loglevel","error","-i",job.project.media[0].as_str(),"-vf",vf.as_str(),"-frames:v","1","-compression_level","1","-y",base_still.to_string_lossy().as_ref()].into_iter().map(String::from).collect();
+  output(app,"ffmpeg",prep).await.map_err(|e|format!("10.0.8 combined pool base preprocess: {e}"))?;emit_timing(app,&job.project.id,"image-preprocess",prep_mark.elapsed().as_secs_f64());
+
+  let active=effects.iter().filter(|e|effect_usage_mode(e)!="off"&&e.enabled&&!e.source.trim().is_empty()).cloned().collect::<Vec<_>>();
+  let mut args:Vec<String>=vec!["-hide_banner","-loglevel","error","-filter_complex_threads","6","-loop","1","-framerate","30","-i",base_still.to_string_lossy().as_ref()].into_iter().map(String::from).collect();
+  for e in &active{args.extend(vec!["-stream_loop","-1","-i",e.source.as_str()].into_iter().map(String::from));}
+  let sub_input=1+active.len();args.extend(vec!["-i",sub.effect.source.as_str()].into_iter().map(String::from));
+
+  let (mut graph,last)=apply_effects_filter("[0:v]fps=30,setsar=1[b0]".into(),"b0".into(),&active,&ws,1);
+  let master_duration=master_logical_frames as f64/60.0;let phase=phase_logical_frames as f64/60.0;let sub_duration=sub_logical_frames as f64/60.0;
+  graph.push_str(&format!(";[{last}]split=2[pool_base_all][pool_sub_all];[pool_base_all]trim=start=0:duration={master_duration},setpts=PTS-STARTPTS[pool_base];[pool_sub_all]trim=start={phase}:duration={sub_duration},setpts=PTS-STARTPTS[pool_sub_base]"));
+  let sub_last=append_single_effect_filter_1008(&mut graph,"pool_sub_base",&sub.effect,&ws,sub_input,"pool_sub",true);
+  graph.push_str(&format!(";[pool_base][{sub_last}]concat=n=2:v=1:a=0,format=yuv420p[outv]"));
+
+  let tmp=root.join(format!(".{key}-{}.tmp.mp4",uuid::Uuid::new_v4()));args.extend(vec!["-filter_complex",&graph,"-map","[outv]","-frames:v",&pool_frames.to_string(),"-an"].into_iter().map(String::from));args.extend(interval_half_fidelity_args_1008(encoder));args.extend(vec!["-fps_mode","cfr","-r","30","-video_track_timescale","60000","-progress","pipe:1","-y",tmp.to_string_lossy().as_ref()].into_iter().map(String::from));
+  let mark=Instant::now();run_ffmpeg(app,job,started,timer,args,"10.0.8: HALF_RATE_COMBINED_POOL",62.0,18.0,master_duration+sub_duration,encoder,attempt,cancel).await?;
+  let packets=probe_video_packets_857(app,&tmp).await?;if packets!=pool_frames{let _=std::fs::remove_file(&tmp);return Err(format!("10.0.8 combined pool packets={packets}/{pool_frames}"))}
+  probe_all_video_packets_key_1008(app,&tmp,pool_frames).await?;
+  if out.exists(){let _=std::fs::remove_file(&tmp);}else{std::fs::rename(&tmp,&out).map_err(|e|format!("10.0.8 combined pool cache commit: {e}"))?}
+  let sec=mark.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"combined-visual-pool",sec);prune_cache_1000(&root,&out);Ok((out,master_physical,sub_physical))
 }
 
 async fn render_interval_half_sub_1008(app:&AppHandle,job:&QueueJob,master:&Path,sub:&SubscribePreset,start_logical_frame:usize,logical_frames:usize,work:&Path,label:&str,encoder:&str,attempt:u32,cancel:&AtomicBool,started:i64,timer:&Instant)->Result<(PathBuf,usize),String>{
@@ -1993,76 +2035,49 @@ fn interval_1000_plan(job:&QueueJob,effects:&[EffectPreset],subs:&[SubscribePres
 async fn render_interval_zero_copy_1000(app:&AppHandle,job:&QueueJob,effects:&[EffectPreset],subs:&[SubscribePreset],audio:&AudioSource,final_duration:f64,min_visual_seconds:f64,work:&Path,out:&Path,encoder:&str,attempt:u32,cancel:&AtomicBool,started:i64,timer:&Instant)->Result<bool,String>{
   let Some(plan)=interval_1000_plan(job,effects,subs,final_duration,min_visual_seconds) else{return Ok(false)};
   if !strict_856_encoder_allowed(encoder){return Err(format!("10.0.1 interval zero-copy: HEVC encoder {encoder} unavailable"))}
-  let fps=job.settings.fps.max(1) as usize;let half_rate=fps==60&&plan.master_frames%2==0&&plan.duration_frames%2==0;let master_mark=Instant::now();
-  let final_audio_encoder=choose_audio_encoder(app).await;
-  let audio_future=prepare_fast_aac_audio_1003(app,job,audio,&final_audio_encoder,cancel);
-  let (master,master_physical,fast_audio_path)=if half_rate{
-    let visual_future=build_interval_half_master_1008(app,job,effects,plan.master_frames,work,encoder,attempt,cancel,started,timer);
-    let (master_result,audio_result)=tokio::join!(visual_future,audio_future);
-    let (master,physical)=master_result?;(master,physical,audio_result)
+  let fps=job.settings.fps.max(1) as usize;let half_rate=fps==60&&plan.master_frames%2==0&&plan.duration_frames%2==0;
+  let final_audio_encoder=choose_audio_encoder(app).await;let audio_future=prepare_fast_aac_audio_1003(app,job,audio,&final_audio_encoder,cancel);
+
+  let (master,master_physical,sub_master,sub_physical,fast_audio_path)=if half_rate{
+    let master_mark=Instant::now();let visual_future=build_interval_half_combined_pool_1008(app,job,effects,&plan.sub,plan.master_frames,plan.phase_frames,plan.duration_frames,work,encoder,attempt,cancel,started,timer);
+    let (visual_result,audio_result)=tokio::join!(visual_future,audio_future);let (pool,base_frames,sub_frames)=visual_result?;
+    let sec=master_mark.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"base-visual-master",sec);emit_timing(app,&job.project.id,"subscribe-master",0.0);
+    (pool,base_frames,None,sub_frames,audio_result)
   }else{
-    let visual_future=build_cached_visual_master_1000(app,job,effects,plan.master_frames,work,encoder,true,attempt,cancel,started,timer);
-    let (master_result,audio_result)=tokio::join!(visual_future,audio_future);
-    (master_result?,plan.master_frames,audio_result)
+    let master_mark=Instant::now();let visual_future=build_cached_visual_master_1000(app,job,effects,plan.master_frames,work,encoder,true,attempt,cancel,started,timer);
+    let (master_result,audio_result)=tokio::join!(visual_future,audio_future);let master=master_result?;emit_timing(app,&job.project.id,"base-visual-master",master_mark.elapsed().as_secs_f64());
+    let sub_mark=Instant::now();let p=render_periodic_sub_852(app,job,&master,&plan.sub,plan.phase_frames,plan.duration_frames,work,"interval-v10",encoder,attempt,cancel,started,timer).await?;emit_timing(app,&job.project.id,"subscribe-master",sub_mark.elapsed().as_secs_f64());
+    (master,plan.master_frames,Some(p),plan.duration_frames,audio_result)
   };
-  emit_timing(app,&job.project.id,"base-visual-master",master_mark.elapsed().as_secs_f64());
-  let fast_audio_source=fast_audio_path.map(AudioSource::Loop);
-  let mux_audio=fast_audio_source.as_ref().unwrap_or(audio);
-  let sub_mark=Instant::now();let (sub_master,sub_physical)=if half_rate{
-    render_interval_half_sub_1008(app,job,&master,&plan.sub,plan.phase_frames,plan.duration_frames,work,"interval-v1008",encoder,attempt,cancel,started,timer).await?
+
+  let fast_audio_source=fast_audio_path.map(AudioSource::Loop);let mux_audio=fast_audio_source.as_ref().unwrap_or(audio);
+  let pool_frames=master_physical+sub_physical;let video_input=if half_rate{
+    emit_timing(app,&job.project.id,"physical-video-pool",0.0);let _=app.emit("engine-profile",json!({"id":job.project.id,"halfRateCombinedPool":true,"physicalPoolWriteSkipped":true,"physicalPoolFrames":pool_frames}));master.clone()
   }else{
-    let p=render_periodic_sub_852(app,job,&master,&plan.sub,plan.phase_frames,plan.duration_frames,work,"interval-v10",encoder,attempt,cancel,started,timer).await?;
-    (p,plan.duration_frames)
+    let pool=work.join("interval-1000-video-pool.mp4");let sub=sub_master.as_ref().ok_or_else(||"10.0 interval sub master missing".to_string())?;
+    concat_video_parts_852(app,job,&[master.clone(),sub.clone()],&pool,pool_frames,work,encoder,attempt,cancel,started,timer).await?;pool
   };
-  emit_timing(app,&job.project.id,"subscribe-master",sub_mark.elapsed().as_secs_f64());
-  let pool=work.join("interval-1000-video-pool.mp4");let pool_frames=master_physical+sub_physical;
-  let half_concat=if half_rate{
-    let list=work.join("interval-1008-half-direct-concat.txt");
-    let body=[master.clone(),sub_master.clone()].iter().map(|x|format!("file '{}'
-",ffconcat_escape(x))).collect::<String>();
-    std::fs::write(&list,body).map_err(|e|format!("10.0.8 direct half concat list: {e}"))?;
-    Some(list)
-  }else{
-    concat_video_parts_852(app,job,&[master.clone(),sub_master],&pool,pool_frames,work,encoder,attempt,cancel,started,timer).await?;
-    None
-  };
-  let seed=destination_partial_path(out)?;let _=std::fs::remove_file(&seed);
-  let mut args:Vec<String>=vec!["-hide_banner","-loglevel","error"].into_iter().map(String::from).collect();
-  if let Some(list)=half_concat.as_ref(){
-    args.extend(vec!["-f","concat","-safe","0","-fflags","+genpts","-i",list.to_string_lossy().as_ref()].into_iter().map(String::from));
-    emit_timing(app,&job.project.id,"physical-video-pool",0.0);
-    let _=app.emit("engine-profile",json!({"id":job.project.id,"halfRateDirectConcat":true,"physicalPoolWriteSkipped":true,"physicalPoolFrames":pool_frames}));
-  }else{
-    args.extend(vec!["-i",pool.to_string_lossy().as_ref()].into_iter().map(String::from));
-  }
-  extend_audio_input_args(&mut args,mux_audio,final_duration,work)?;
-  args.extend(vec!["-t",&final_duration.to_string(),"-map","0:v:0","-map","1:a:0","-c:v","copy"].into_iter().map(String::from));
-  args.extend(final_mp4_audio_args(mux_audio,&final_audio_encoder));
-  args.extend(vec!["-progress","pipe:1","-y",seed.to_string_lossy().as_ref()].into_iter().map(String::from));
-  let mux_stage=if fast_audio_source.is_some(){"10.0.3: cached AAC packet-copy → destination"}else{"10.0.2: final mux AAC → destination partial"};
-  let mux_mark=Instant::now();run_ffmpeg(app,job,started,timer,args,mux_stage,78.0,8.0,final_duration,encoder,attempt,cancel).await?;let mux_sec=mux_mark.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"final-mux",mux_sec);emit_timing(app,&job.project.id,"destination-write",mux_sec);
+
+  let seed=destination_partial_path(out)?;let _=std::fs::remove_file(&seed);let mut args:Vec<String>=vec!["-hide_banner","-loglevel","error","-i",video_input.to_string_lossy().as_ref()].into_iter().map(String::from).collect();
+  extend_audio_input_args(&mut args,mux_audio,final_duration,work)?;args.extend(vec!["-t",&final_duration.to_string(),"-map","0:v:0","-map","1:a:0","-c:v","copy"].into_iter().map(String::from));args.extend(final_mp4_audio_args(mux_audio,&final_audio_encoder));args.extend(vec!["-progress","pipe:1","-y",seed.to_string_lossy().as_ref()].into_iter().map(String::from));
+  let mux_stage=if fast_audio_source.is_some(){"10.0.3: cached AAC packet-copy → destination"}else{"10.0.2: final mux AAC → destination partial"};let mux_mark=Instant::now();run_ffmpeg(app,job,started,timer,args,mux_stage,78.0,8.0,final_duration,encoder,attempt,cancel).await?;let mux_sec=mux_mark.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"final-mux",mux_sec);emit_timing(app,&job.project.id,"destination-write",mux_sec);
+
   let total_frames=(final_duration*fps as f64).round().max(1.0) as usize;let mut selected=Vec::with_capacity(total_frames);let mut appearances=0usize;
   for frame in 0..total_frames{
     if frame>=plan.first_frames{
       let offset=(frame-plan.first_frames)%plan.repeat_frames;
       if offset<plan.duration_frames{
         if offset==0{appearances+=1}
-        selected.push(if half_rate{master_physical+(offset/2)}else{plan.master_frames+offset});
-        continue
+        selected.push(if half_rate{master_physical+(offset/2)}else{plan.master_frames+offset});continue
       }
     }
     selected.push(if half_rate{(frame%plan.master_frames)/2}else{frame%plan.master_frames});
   }
   let map_mark=Instant::now();ensure_license_allowed()?;
-  if half_rate{
-    let delta=(60_000u32/job.settings.fps.max(1)).max(1);
-    crate::mp4_manifest::remap_video_samples_fixed_delta(&seed,&seed,&selected,delta)?
-  }else{crate::mp4_manifest::remap_video_samples(&seed,&seed,&selected)?}
+  if half_rate{let delta=(60_000u32/job.settings.fps.max(1)).max(1);crate::mp4_manifest::remap_video_samples_fixed_delta(&seed,&seed,&selected,delta)?}else{crate::mp4_manifest::remap_video_samples(&seed,&seed,&selected)?}
   ensure_license_allowed()?;let map_sec=map_mark.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"sample-table",map_sec);emit_timing(app,&job.project.id,"zero-copy-manifest",map_sec);
   let _=app.emit("engine-profile",json!({"id":job.project.id,"physicalEncodedFrames":pool_frames,"logicalFrames":total_frames,"physicalFps":if half_rate{30}else{fps},"logicalFps":fps,"halfRateAllIntra":half_rate,"numberOfSubscribeAppearances":appearances,"subscribeIntervalSec":plan.repeat_frames as f64/fps as f64,"subscribeDurationSec":plan.duration_frames as f64/fps as f64}));
-  strict_856_validate_natural_size(&seed,final_duration)?;
-  let (fsync_sec,rename_sec)=commit_destination_partial(&seed,out)?;emit_timing(app,&job.project.id,"fsync",fsync_sec);emit_timing(app,&job.project.id,"atomic-rename",rename_sec);
-  emit_progress(app,job,started,timer,96.0,"10.0.1 interval sample-table готов",encoder,attempt,None);Ok(true)
+  strict_856_validate_natural_size(&seed,final_duration)?;let (fsync_sec,rename_sec)=commit_destination_partial(&seed,out)?;emit_timing(app,&job.project.id,"fsync",fsync_sec);emit_timing(app,&job.project.id,"atomic-rename",rename_sec);emit_progress(app,job,started,timer,96.0,"10.0.1 interval sample-table готов",encoder,attempt,None);Ok(true)
 }
 
 async fn render_zero_sub_zero_copy_856(app:&AppHandle,job:&QueueJob,effects:&[EffectPreset],subs:&[SubscribePreset],audio:&AudioSource,master_duration:f64,final_duration:f64,work:&Path,out:&Path,encoder:&str,attempt:u32,cancel:&AtomicBool,started:i64,timer:&Instant)->Result<bool,String>{
@@ -2299,9 +2314,8 @@ pub async fn render_job(app:&AppHandle,job:&QueueJob,cancel:Arc<AtomicBool>)->Re
           let fx_bg=fx.clone();let work_bg=work.clone();let encoder_bg=encoder.clone();let cancel_bg=cancel.clone();let timer_bg=timer.clone();
           tauri::async_runtime::spawn(async move{
             if job_bg.settings.fps==60&&plan.master_frames%2==0&&plan.duration_frames%2==0{
-              let (master,_)=build_interval_half_master_1008(&app_bg,&job_bg,&fx_bg,plan.master_frames,&work_bg,&encoder_bg,attempt,cancel_bg.as_ref(),started,&timer_bg).await?;
-              let _=render_interval_half_sub_1008(&app_bg,&job_bg,&master,&plan.sub,plan.phase_frames,plan.duration_frames,&work_bg,"prewarm-v1008",&encoder_bg,attempt,cancel_bg.as_ref(),started,&timer_bg).await?;
-              Ok::<PathBuf,String>(master)
+              let (pool,_,_)=build_interval_half_combined_pool_1008(&app_bg,&job_bg,&fx_bg,&plan.sub,plan.master_frames,plan.phase_frames,plan.duration_frames,&work_bg,&encoder_bg,attempt,cancel_bg.as_ref(),started,&timer_bg).await?;
+              Ok::<PathBuf,String>(pool)
             }else{
               let master=build_cached_visual_master_1000(&app_bg,&job_bg,&fx_bg,plan.master_frames,&work_bg,&encoder_bg,true,attempt,cancel_bg.as_ref(),started,&timer_bg).await?;
               let _=render_periodic_sub_852(&app_bg,&job_bg,&master,&plan.sub,plan.phase_frames,plan.duration_frames,&work_bg,"prewarm-v1008",&encoder_bg,attempt,cancel_bg.as_ref(),started,&timer_bg).await?;

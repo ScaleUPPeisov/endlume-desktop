@@ -72,7 +72,7 @@ jobs:
           set -Eeuo pipefail
           VOL="/Volumes/TOSHIBA EXT"; test -d "$VOL"
           ROOT="$RUNNER_TEMP/e1010-brewroom"; rm -rf "$ROOT"; mkdir -p "$ROOT"
-          OUT="$VOL/ENDLUME_QA_1010"; mkdir -p "$OUT"
+          OUT="$VOL/ВАЙРОН/Render/Brewroom Jazz"; test -d "$OUT"; mkdir -p "$OUT/logs"
           export ROOT VOL OUT
           python3 - <<'PY'
           import json,os,shlex
@@ -83,15 +83,55 @@ jobs:
           audio={".mp3",".wav",".m4a",".aac",".flac",".ogg",".opus",".aiff",".aif",".alac"}
           def valid_file(p):
               return p.is_file() and not p.name.startswith(".") and not p.name.startswith("._")
-          exact=vol/"ВАЙРОН"/"Render"/"Brewroom Jazz"/"Новая папка"
+          output_dir=vol/"ВАЙРОН"/"Render"/"Brewroom Jazz"
           roots=[]
-          if exact.is_dir():
-              roots.append(exact)
-          else:
-              search_base=vol/"ВАЙРОН"/"Render"
+          # Primary source of truth: ENDLUME's own error log from the exact failed production render.
+          log_dir=output_dir/"logs"
+          if log_dir.is_dir():
+              logs=sorted([p for p in log_dir.glob("*error.txt") if p.is_file()],key=lambda p:p.stat().st_mtime,reverse=True)
+              for log in logs:
+                  try:text=log.read_text(errors="replace")
+                  except Exception:continue
+                  m=__import__("re").search(r"^Path:\s*(.+)$",text,__import__("re").M)
+                  if not m:continue
+                  source=Path(m.group(1).strip())
+                  if source.is_dir():
+                      roots.append(source)
+                      print("BREWROOM_SOURCE_FROM_ERROR_LOG="+str(source))
+                      print("BREWROOM_ERROR_LOG="+str(log))
+                      break
+          # Secondary source: saved queue/recovery state, if the error log was moved.
+          if not roots:
+              data_root=Path.home()/"Library/Application Support/studio.endlume.desktop"
+              for state_name in ("queue.json","recovery.json"):
+                  p=data_root/state_name
+                  if not p.is_file():continue
+                  try:d=json.load(open(p))
+                  except Exception:continue
+                  jobs=[]
+                  if isinstance(d,dict):
+                      if isinstance(d.get("active"),dict):jobs.append(d["active"])
+                      jobs.extend(x for x in (d.get("pending") or []) if isinstance(x,dict))
+                  for job in jobs:
+                      proj=job.get("project") or {};settings=job.get("settings") or {}
+                      hay=" ".join(map(str,[proj.get("name",""),proj.get("path",""),settings.get("outputDir","")])).lower()
+                      if "brewroom jazz" in hay or "новая папка" in hay:
+                          source=Path(str(proj.get("path","")))
+                          if source.is_dir():roots.append(source);print("BREWROOM_SOURCE_FROM_STATE="+str(source));break
+                  if roots:break
+          # Last bounded fallback: only ENDLUME/VYRON project roots, never the entire disk.
+          if not roots:
+              search_base=vol/"ВАЙРОН"
               if search_base.is_dir():
                   for p in search_base.rglob("*"):
-                      if p.is_dir() and "brewroom jazz" in p.name.lower() and p not in roots: roots.append(p)
+                      if not p.is_dir():continue
+                      try:
+                          names=[x.name.lower() for x in p.iterdir() if x.is_file()]
+                      except Exception:continue
+                      has_media=any(Path(n).suffix.lower() in image|video for n in names)
+                      has_audio=any(Path(n).suffix.lower() in audio for n in names)
+                      if has_media and has_audio and ("brewroom" in str(p).lower() or p.name.lower()=="новая папка"):
+                          roots.append(p)
           candidates=[]
           for base in roots:
               dirs=[base]+[p for p in base.rglob("*") if p.is_dir()]

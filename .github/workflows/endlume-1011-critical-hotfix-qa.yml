@@ -65,6 +65,7 @@ jobs:
           grep -q "await api.generatePreview" src/pages/Editors.tsx
           grep -q "helper:'prepareLivePreview'" src/pages/Editors.tsx
           grep -q "ENDLUME_PREVIEW_BASE SOURCE_IMAGE=" src-tauri/src/live_preview.rs
+          grep -q "ENDLUME_PREVIEW_FFPROBE_FALLBACK" src-tauri/src/live_preview.rs
           grep -q 'job_bg=(\*job).clone()' src-tauri/src/render.rs
           ! grep -q 'job_bg.project.id=format!("{}::visual-prewarm"' src-tauri/src/render.rs
           echo ENDLUME_1011_COMPILE_REGRESSION_GREEN

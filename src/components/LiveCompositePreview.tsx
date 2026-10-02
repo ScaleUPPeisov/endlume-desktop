@@ -45,12 +45,11 @@ export function LiveCompositePreview({assets,effect,active=true,busy,overlayRef,
         if(baseBytes.byteLength<1024||overlayBytes.byteLength<1024)throw new Error(`helper payload too small: base=${baseBytes.byteLength} overlay=${overlayBytes.byteLength}`);
         transportBytesRef.current=baseBytes.byteLength+overlayBytes.byteLength;
         const baseRaw=baseBytes.buffer.slice(baseBytes.byteOffset,baseBytes.byteOffset+baseBytes.byteLength) as ArrayBuffer;
-        const overlayRaw=overlayBytes.buffer.slice(overlayBytes.byteOffset,overlayBytes.byteOffset+overlayBytes.byteLength) as ArrayBuffer;
         baseObjectUrl=URL.createObjectURL(new Blob([baseRaw],{type:assets.baseKind==='image'?'image/png':'video/mp4'}));
-        overlayObjectUrl=URL.createObjectURL(new Blob([overlayRaw],{type:'video/mp4'}));
-        console.info(`[ENDLUME_PREVIEW] PREVIEW_REQUEST_ID=${requestId} PREVIEW_TYPE=${previewType} FRONTEND_PAYLOAD_BYTES=${transportBytesRef.current} OBJECT_URL_CREATED=true`);
-        if(disposed){URL.revokeObjectURL(baseObjectUrl);URL.revokeObjectURL(overlayObjectUrl);baseObjectUrl=undefined;overlayObjectUrl=undefined;return}
-        setBaseSrc(baseObjectUrl);setOverlaySrc(overlayObjectUrl);
+        const resolvedOverlay=assets.overlayPath;
+        console.info(`[ENDLUME_PREVIEW] PREVIEW_REQUEST_ID=${requestId} PREVIEW_TYPE=${previewType} FRONTEND_PAYLOAD_BYTES=${transportBytesRef.current} OBJECT_URL_CREATED=true FRONTEND_TRANSFER_MODE=BASE_BLOB_OVERLAY_ASSET`);
+        if(disposed){URL.revokeObjectURL(baseObjectUrl);baseObjectUrl=undefined;return}
+        setBaseSrc(baseObjectUrl);setOverlaySrc(resolvedOverlay);
       }catch(error){
         console.error(`[ENDLUME_PREVIEW] PREVIEW_REQUEST_ID=${requestId} PREVIEW_TYPE=${previewType} OBJECT_URL_CREATED=false IMAGE_LOAD=RED PREVIEW_APPLIED=false ERROR=${String(error)}`);
         if(frameStateRef.current&&!reportedFrameRef.current){reportedFrameRef.current=true;frameStateRef.current({status:'RED',requestId,previewType,width:0,height:0,payloadBytes:transportBytesRef.current,paintedNonBlack:0})}
@@ -96,6 +95,7 @@ export function LiveCompositePreview({assets,effect,active=true,busy,overlayRef,
   useEffect(()=>{
     if(!active)return;
     const canvas=canvasRef.current,video=videoRef.current;if(!canvas||!video||!overlaySrc)return;
+    video.preload='auto';try{video.load()}catch{}
     const gl=canvas.getContext('webgl',{alpha:true,premultipliedAlpha:false,antialias:false,preserveDrawingBuffer:false});
     if(!gl){
       const ctx=canvas.getContext('2d',{alpha:true,willReadFrequently:true});
@@ -167,7 +167,7 @@ export function LiveCompositePreview({assets,effect,active=true,busy,overlayRef,
       onPointerMove={e=>{if(picker&&brushDown.current){e.preventDefault();e.stopPropagation();scheduleSample(e.clientX,e.clientY)}}}
       onPointerUp={e=>{if(picker){e.preventDefault();e.stopPropagation();brushDown.current=false;sampleAt(e.clientX,e.clientY)}}}
       onPointerCancel={()=>{brushDown.current=false}}>
-      <><video ref={videoRef} className="liveOverlaySource" src={overlaySrc} autoPlay loop muted playsInline onError={()=>reportRed('overlay-video-load')}/>
+      <><video ref={videoRef} className="liveOverlaySource" src={overlaySrc} preload="auto" autoPlay loop muted playsInline onError={()=>reportRed('overlay-video-load')}/>
       <canvas ref={canvasRef} className="liveOverlayCanvas" style={{mixBlendMode:effect.mode==='screen'?'screen':'normal',opacity:Math.max(0,Math.min(1,effect.opacity??1))}}/></>
       {!effect.fullscreen&&!picker&&<><i className="corner nw"/><i className="corner ne"/><i className="corner sw"/><i className="corner se" onPointerDown={onResizeStart}/></>}
     </div>}

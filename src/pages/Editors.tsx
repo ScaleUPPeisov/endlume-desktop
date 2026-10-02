@@ -20,6 +20,7 @@ const toggleSubscribeEnabled = (item: SubscribePreset): SubscribePreset => {
   return { ...item, enabled, usageMode: enabled && item.usageMode === 'off' ? 'interval' : item.usageMode };
 };
 const previewEnabled = (item: EffectPreset) => item.enabled && effectiveUsageMode(item) !== 'off';
+const previewDiag = (scope:'effects'|'subscribe',phase:'START'|'FINISH'|'APPLY'|'DISCARD',request:number,extra:Record<string,unknown>={}) => console.info('[ENDLUME_PREVIEW]',{scope,phase,request,...extra});
 
 const emptyEffect = (source = ''): EffectPreset => ({
   id: crypto.randomUUID(),
@@ -130,6 +131,7 @@ function EffectsEditor() {
   };
 
   useEffect(() => () => {
+    previewRequest.current += 1;
     if (persistTimer.current) window.clearTimeout(persistTimer.current);
   }, []);
 
@@ -172,30 +174,34 @@ function EffectsEditor() {
     setDeleteConfirm(false);
   };
 
-  const loadLive = async () => {
+  const loadLive = async (request = ++previewRequest.current) => {
     const latest = useApp.getState().effects.find((e) => e.id === selected);
     if (!projectPath || !latest) return;
-    const request = ++previewRequest.current;
+    const requestId=`effects-${request}`;
     const renderEffect = sceneAnchor ? {
       ...latest,
       x: clamp01(sceneAnchor.x + (latest.offsetX ?? 0)),
       y: clamp01(sceneAnchor.y + (latest.offsetY ?? 0)),
     } : latest;
+    previewDiag('effects','START',request,{requestId});
     setPreviewBusy(true);
     try {
       const [result, exactPath] = await Promise.all([
         api.prepareLivePreview(projectPath, latest.source, latest.previewFrameTime),
-        api.generatePreview(projectPath, latest.previewFrameTime, [renderEffect], []),
+        api.generatePreview(projectPath, latest.previewFrameTime, [renderEffect], [], requestId),
       ]);
-      if (request !== previewRequest.current) return;
+      previewDiag('effects','FINISH',request,{requestId,exactPath});
+      if (request !== previewRequest.current) { previewDiag('effects','DISCARD',request,{requestId,latest:previewRequest.current}); return; }
       setAssets({
         basePath: api.previewUrl(result.basePath),
         baseKind: result.baseKind,
         overlayPath: api.previewUrl(result.overlayPath),
         compositePath: api.previewUrl(exactPath),
       });
+      previewDiag('effects','APPLY',request,{requestId});
     } catch (error) {
-      if (request === previewRequest.current) await api.showError(`Не удалось подготовить Live Preview эффекта.\n${String(error)}`);
+      if (request !== previewRequest.current) { previewDiag('effects','DISCARD',request,{requestId,error:String(error)}); return; }
+      await api.showError(`Не удалось подготовить Live Preview эффекта.\n${String(error)}`);
     } finally {
       if (request === previewRequest.current) setPreviewBusy(false);
     }
@@ -203,7 +209,8 @@ function EffectsEditor() {
 
   useEffect(() => {
     if (!current || !projectPath) return;
-    const timer = window.setTimeout(() => void loadLive(), 180);
+    const request=++previewRequest.current;
+    const timer = window.setTimeout(() => void loadLive(request), 180);
     return () => window.clearTimeout(timer);
   }, [
     selected, projectPath, sceneAnchor?.x, sceneAnchor?.y,
@@ -316,6 +323,7 @@ function SubscribeEditor() {
   };
 
   useEffect(() => () => {
+    previewRequest.current += 1;
     if (persistTimer.current) window.clearTimeout(persistTimer.current);
   }, []);
 
@@ -340,25 +348,29 @@ function SubscribeEditor() {
     setAssets(undefined);
   };
 
-  const loadLive = async () => {
+  const loadLive = async (request = ++previewRequest.current) => {
     const latest = useApp.getState().subscribes.find((item) => item.id === selected);
     if (!projectPath || !latest) return;
-    const request = ++previewRequest.current;
+    const requestId=`subscribe-${request}`;
+    previewDiag('subscribe','START',request,{requestId});
     setPreviewBusy(true);
     try {
       const [result, exactPath] = await Promise.all([
         api.prepareLivePreview(projectPath, latest.source, latest.previewFrameTime),
-        api.generatePreview(projectPath, latest.previewFrameTime, [], [latest]),
+        api.generatePreview(projectPath, latest.previewFrameTime, [], [latest], requestId),
       ]);
-      if (request !== previewRequest.current) return;
+      previewDiag('subscribe','FINISH',request,{requestId,exactPath});
+      if (request !== previewRequest.current) { previewDiag('subscribe','DISCARD',request,{requestId,latest:previewRequest.current}); return; }
       setAssets({
         basePath: api.previewUrl(result.basePath),
         baseKind: result.baseKind,
         overlayPath: api.previewUrl(result.overlayPath),
         compositePath: api.previewUrl(exactPath),
       });
+      previewDiag('subscribe','APPLY',request,{requestId});
     } catch (error) {
-      if (request === previewRequest.current) await api.showError(`Не удалось подготовить Live Preview Subscribe.\n${String(error)}`);
+      if (request !== previewRequest.current) { previewDiag('subscribe','DISCARD',request,{requestId,error:String(error)}); return; }
+      await api.showError(`Не удалось подготовить Live Preview Subscribe.\n${String(error)}`);
     } finally {
       if (request === previewRequest.current) setPreviewBusy(false);
     }
@@ -366,7 +378,8 @@ function SubscribeEditor() {
 
   useEffect(() => {
     if (!current || !projectPath) return;
-    const timer = window.setTimeout(() => void loadLive(), 180);
+    const request=++previewRequest.current;
+    const timer = window.setTimeout(() => void loadLive(request), 180);
     return () => window.clearTimeout(timer);
   }, [
     selected, projectPath, current?.source, current?.previewFrameTime, current?.enabled,

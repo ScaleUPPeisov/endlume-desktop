@@ -17,7 +17,9 @@ pub(crate) fn despill_type(hex:&str)->&'static str{
 }
 
 pub(crate) fn is_round_equalizer_859(e:&EffectPreset)->bool{
-  e.id==ROUND_EQUALIZER_859_ID && e.mode=="chromakey"
+  if e.mode!="chromakey"{return false}
+  let name=e.name.trim().to_lowercase();
+  e.id==ROUND_EQUALIZER_859_ID || name=="эквалайзер круглый"
 }
 
 pub(crate) fn chromakey_params_859(e:&EffectPreset)->(f64,f64){
@@ -47,7 +49,7 @@ fn fingerprint(e:&EffectPreset,fps:u32)->String{
   let mut h=Sha256::new();
   // Geometry is deliberately absent from the key: x/y/scale/fullscreen do not
   // change source pixels and therefore must not invalidate the chroma cache.
-  let eq859=if e.id==ROUND_EQUALIZER_859_ID && e.mode=="chromakey"{"|round-equalizer-859-s018-b003"}else{""};
+  let eq859=if is_round_equalizer_859(e){"|round-equalizer-859-s018-b003-name-safe"}else{""};
   h.update(format!("aspect-safe-v6-motion|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}{}",e.source,size,modified,fps,e.mode,e.key_color,e.similarity,e.blend,e.luma_threshold,e.luma_tolerance,e.saturation,e.despill,eq859));
   hex::encode(h.finalize())[..24].to_string()
 }

@@ -28,6 +28,11 @@ def frame(path,pos=1.0):
     assert len(p.stdout)==1920*1080*3,(path,len(p.stdout))
     return p.stdout
 
+def poster_frame(path):
+    p=subprocess.run([str(FFMPEG),"-hide_banner","-loglevel","error","-i",str(path),"-vf","scale=1920:1080:flags=neighbor","-frames:v","1","-f","rawvideo","-pix_fmt","rgb24","-"],check=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=60)
+    assert len(p.stdout)==1920*1080*3,(path,len(p.stdout))
+    return p.stdout
+
 def diff_stats(a,b,step_pixels=4,threshold=8):
     assert len(a)==len(b)
     changed=0;total=0;sumd=0;maxd=0
@@ -154,10 +159,11 @@ def preview_run(label,effects,subscribes,overlay):
     (tmp_root/f"{label}.backend.stdout").write_text(p.stdout)
     assert p.returncode==0,(label,p.returncode,p.stderr[-8000:])
     data=json.loads(result.read_text());assert data.get("status")=="passed",data
-    payload=data["result"];helper=payload["helper"];exact=Path(payload["exactPath"])
+    payload=data["result"];helper=payload["helper"];poster=Path(payload["posterPath"]);exact=Path(payload["exactPath"])
     base=Path(helper["basePath"]);ov=Path(helper["overlayPath"])
     assert base.is_file() and base.stat().st_size>1024,(label,base)
     assert ov.is_file() and ov.stat().st_size>1024,(label,ov)
+    assert poster.is_file() and poster.stat().st_size>1024,(label,poster)
     assert exact.is_file() and exact.stat().st_size>1024,(label,exact)
     meta=probe(exact);v=next(x for x in meta["streams"] if x.get("codec_type")=="video")
     assert v["width"]==1920 and v["height"]==1080 and v["avg_frame_rate"]=="60/1",(label,v)
@@ -165,12 +171,12 @@ def preview_run(label,effects,subscribes,overlay):
     assert "COMPOSED_FRAME_EXISTS=true" in p.stderr,(label,p.stderr[-8000:])
     assert "BASE_FRAME_EXISTS=true" in p.stderr,(label,p.stderr[-8000:])
     run([FFMPEG,"-hide_banner","-loglevel","error","-stream_loop","19","-i",exact,"-t","60","-map","0:v:0","-f","null","-"],timeout=90)
-    return {"exact":exact,"helperBase":base,"helperOverlay":ov,"baseKind":helper["baseKind"],"baseBytes":int(helper.get("baseBytes",base.stat().st_size)),"overlayBytes":int(helper.get("overlayBytes",ov.stat().st_size)),"stderr":p.stderr}
+    return {"exact":exact,"poster":poster,"helperBase":base,"helperOverlay":ov,"baseKind":helper["baseKind"],"baseBytes":int(helper.get("baseBytes",base.stat().st_size)),"overlayBytes":int(helper.get("overlayBytes",ov.stat().st_size)),"stderr":p.stderr}
 
 def frontend_display(label,preview,effect,preview_type):
     fixture=tmp_root/f"{label}-frontend-fixture.json";result=tmp_root/f"{label}-frontend-result.json"
     fixture.write_text(json.dumps({
-      "basePath":str(preview["helperBase"]),"baseKind":preview["baseKind"],"overlayPath":str(preview["helperOverlay"]),
+      "basePath":str(preview["helperBase"]),"baseKind":preview["baseKind"],"overlayPath":str(preview["helperOverlay"]),"posterPath":str(preview["poster"]),
       "baseBytes":preview["baseBytes"],"overlayBytes":preview["overlayBytes"],"effect":effect,"requestId":label,"previewType":preview_type
     },ensure_ascii=False,indent=2))
     env=os.environ.copy();env.update({"ENDLUME_E2E_FRONTEND_PREVIEW_FIXTURE":str(fixture),"ENDLUME_E2E_FRONTEND_PREVIEW_RESULT":str(result),"ENDLUME_PREVIEW_DIAG":"1"})
@@ -216,6 +222,10 @@ third_prev=preview_run("third-effect",[third],[],third["source"])
 
 base_frame=frame(baseline["exact"])
 fx_frame=frame(cold_fx["exact"]);sub_frame=frame(cold_sub["exact"]);eq_frame=frame(eq_prev["exact"]);third_frame=frame(third_prev["exact"])
+base_poster=poster_frame(baseline["poster"]);fx_poster=poster_frame(cold_fx["poster"]);sub_poster=poster_frame(cold_sub["poster"])
+poster_diffs={"effects":diff_stats(base_poster,fx_poster),"subscribe":diff_stats(base_poster,sub_poster)}
+for name,st in poster_diffs.items():
+    assert st["changed"]>=120 and st["meanMaxDiff"]>=0.8,(name,st)
 preview_diffs={
     "effects":diff_stats(base_frame,fx_frame),
     "subscribe":diff_stats(base_frame,sub_frame),
@@ -313,7 +323,7 @@ for name,st in presence.items():
 report={
   "status":"GREEN",
   "project":str(project),"library":str(lib_path),"baseMedia":str(base_media),
-  "preview":{"effectsBackend":"GREEN","effectsFrontend":fx_front,"subscribeBackend":"GREEN","subscribeFrontend":sub_front,"diffs":preview_diffs},
+  "preview":{"effectsBackend":"GREEN","effectsFrontend":fx_front,"subscribeBackend":"GREEN","subscribeFrontend":sub_front,"diffs":preview_diffs,"posterDiffs":poster_diffs},
   "subscribeState":"GREEN","subscribeRecipe":"GREEN","subscribeMaster":"GREEN","subscribeFinal":"GREEN",
   "roundEqualizer":"GREEN","otherEffect":"GREEN","cacheInvalidation":"GREEN",
   "render":render_meta,"subscribeFinalDelta":sub_final_delta,"presence":presence,"appWallSeconds":app_wall,

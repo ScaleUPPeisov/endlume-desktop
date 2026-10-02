@@ -15,6 +15,7 @@ import { LibraryPage } from './LibraryPage';
 import { SettingsPage } from './SettingsPage';
 import { EditorRouter } from './Editors';
 import { PostUpdateNotice, StartupSplash, UpdateExperience } from '../components/EndlumeUpdateExperience';
+import { LiveCompositePreview, type LivePreviewAssets } from '../components/LiveCompositePreview';
 
 function syncQueueSnapshot(snapshot:any){
   useApp.setState(state=>({projects:applyQueueSnapshot(state.projects,snapshot)}));
@@ -44,9 +45,11 @@ export function App(){
   const [availableUpdate,setAvailableUpdate]=useState<any>(null);
   const [postUpdateVersion,setPostUpdateVersion]=useState<string>();
   const [startupMinElapsed,setStartupMinElapsed]=useState(false);
+  const [frontendPreviewFixture,setFrontendPreviewFixture]=useState<any|null|undefined>(undefined);
   const snoozeUntil=useRef(0),checkingUpdate=useRef(false),lastUpdateCheck=useRef(0);
 
   useEffect(()=>installMotionRuntime(),[]);
+  useEffect(()=>{api.previewFrontendFixture().then(v=>setFrontendPreviewFixture(v??null)).catch(()=>setFrontendPreviewFixture(null))},[]);
   useEffect(()=>{const timer=window.setTimeout(()=>setStartupMinElapsed(true),1150);return()=>window.clearTimeout(timer)},[]);
 
   useEffect(()=>{
@@ -144,7 +147,8 @@ export function App(){
     }).catch(()=>{});
   },[license?.valid]);
 
-  if(!startupMinElapsed||!license)return <StartupSplash/>;
+  if(frontendPreviewFixture)return <FrontendPreviewHarness fixture={frontendPreviewFixture}/>;
+    if(!startupMinElapsed||!license)return <StartupSplash/>;
   if(!license.valid)return <ActivationScreen onActivated={setLicense}/>;
 
   const pageView=page==='project'?<ProjectPage/>:page==='render'?<RenderPage/>:page==='library'?<LibraryPage/>:<SettingsPage/>;
@@ -157,3 +161,30 @@ function ActivationScreen({onActivated}:{onActivated:(v:LicenseStatus)=>void}){
   const product='ENDLUME YT Studio PEISOV';
   return <div className="activationScreen"><div className="activationCard"><div className="activationBrand"><span className="activationInfinity">∞</span><div><b>ENDLUME</b><small>YT STUDIO PEISOV</small></div></div><h1>Активация {product}</h1><p>Для запуска введите ключ лицензии. После активации рендер работает локально; при временном отсутствии сети действует ограниченный offline grace.</p><input autoFocus placeholder="ENDLUME-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX" value={key} onChange={e=>setKey(e.target.value)} onKeyDown={e=>e.key==='Enter'&&document.getElementById('activate')?.click()}/>{error&&<div className="activationError">{error}</div>}<button id="activate" disabled={busy||!key.trim()} onClick={async()=>{setBusy(true);setError('');try{onActivated(await api.activate(key))}catch(e){setError(String(e))}finally{setBusy(false)}}}>{busy?'ПРОВЕРЯЮ КЛЮЧ…':'АКТИВИРОВАТЬ →'}</button><small className="activationFoot">ENDLUME YT Studio PEISOV • {windows?'Windows x64':'macOS Apple Silicon'}</small></div></div>
 }
+
+function FrontendPreviewHarness({fixture}:{fixture:any}){
+  const overlayRef=useRef<HTMLDivElement>(null);
+  const reported=useRef(false);
+  const effect=fixture.effect;
+  const assets:LivePreviewAssets={
+    basePath:api.previewUrl(String(fixture.basePath)),
+    baseKind:fixture.baseKind==='video'?'video':'image',
+    overlayPath:api.previewUrl(String(fixture.overlayPath)),
+    compositePath:api.previewUrl(String(fixture.exactPath)),
+    compositeFilePath:String(fixture.exactPath),
+    requestId:String(fixture.requestId||'frontend-e2e'),
+    previewType:fixture.previewType==='Subscribe'?'Subscribe':'Effects',
+  };
+  const overlayStyle:React.CSSProperties=effect.fullscreen?{left:'0%',top:'0%',width:'100%',height:'100%',transform:'none'}:{
+    left:`${Number(effect.x||0.5)*100}%`,
+    top:`${Number(effect.y||0.5)*100}%`,
+    width:`${Math.max(5,Number(effect.scale||0.32)*100)}%`,
+    transform:'translate(-50%, -50%)',
+  };
+  return <div style={{position:'fixed',inset:0,background:'#05070d'}}>
+    <LiveCompositePreview assets={assets} effect={effect} active={true} busy={false} overlayRef={overlayRef} overlayStyle={overlayStyle}
+      onDragStart={()=>{}} onResizeStart={()=>{}} onPickColor={()=>{}}
+      onFrameState={payload=>{if(reported.current)return;reported.current=true;void api.previewFrontendReport({...payload,PREVIEW_APPLIED:payload.status==='GREEN',IMAGE_LOAD:payload.status,IMAGE_NATURAL_WIDTH:payload.width,IMAGE_NATURAL_HEIGHT:payload.height,FRONTEND_PAYLOAD_BYTES:payload.payloadBytes})}}/>
+  </div>;
+}
+

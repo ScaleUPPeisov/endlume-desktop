@@ -45,7 +45,9 @@ fn overlay_effect(graph:&mut String,base:&mut String,input:usize,e:&EffectPreset
       let kind=cache::despill_type(&e.key_color);
       let mix=e.despill.clamp(0.0,1.0);
       if cache::is_round_equalizer_859(e){
-        format!("[{input}:v]fps=30,format=rgba,colorkey={}:{}:{},{scale},despill=type={kind}:mix={mix}:expand=0.20",color(&e.key_color),similarity,blend)
+        let pre_target_w=((((w as f64)*e.scale.clamp(0.05,1.5)).round().max(2.0) as u32).saturating_mul(2)).max(2);
+        let pre_target_w=if pre_target_w%2==0{pre_target_w}else{pre_target_w+1};
+        format!("[{input}:v]fps=30,scale={pre_target_w}:-2:flags=neighbor,format=rgba,colorkey={}:{}:{},{scale},despill=type={kind}:mix={mix}:expand=0.20",color(&e.key_color),similarity,blend)
       }else{
         format!("[{input}:v]fps=30,format=rgba,colorkey={}:{}:{},despill=type={kind}:mix={mix}:expand=0.20",color(&e.key_color),similarity,blend)
       }

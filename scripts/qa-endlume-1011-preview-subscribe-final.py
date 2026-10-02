@@ -175,7 +175,7 @@ def preview_run(label,effects,subscribes,overlay):
     assert "COMPOSED_FRAME_EXISTS=true" in p.stderr,(label,p.stderr[-8000:])
     assert "BASE_FRAME_EXISTS=true" in p.stderr,(label,p.stderr[-8000:])
     run([FFMPEG,"-hide_banner","-loglevel","error","-stream_loop","19","-i",exact,"-t","60","-map","0:v:0","-f","null","-"],timeout=90)
-    return {"exact":exact,"poster":poster_keep,"helperBase":base,"helperOverlay":ov,"baseKind":helper["baseKind"],"baseBytes":int(helper.get("baseBytes",base.stat().st_size)),"overlayBytes":int(helper.get("overlayBytes",ov.stat().st_size)),"stderr":p.stderr}
+    return {"exact":exact,"poster":poster,"posterKeep":poster_keep,"helperBase":base,"helperOverlay":ov,"baseKind":helper["baseKind"],"baseBytes":int(helper.get("baseBytes",base.stat().st_size)),"overlayBytes":int(helper.get("overlayBytes",ov.stat().st_size)),"stderr":p.stderr}
 
 def frontend_display(label,preview,effect,preview_type):
     fixture=tmp_root/f"{label}-frontend-fixture.json";result=tmp_root/f"{label}-frontend-result.json"
@@ -224,8 +224,8 @@ baseline=preview_run("baseline",[],[],film["source"])
 eq_prev=preview_run("round-equalizer",[eq],[],eq["source"])
 third_prev=preview_run("third-effect",[third],[],third["source"])
 
-base_frame=poster_frame(baseline["poster"])
-fx_frame=poster_frame(cold_fx["poster"]);sub_frame=poster_frame(cold_sub["poster"]);eq_frame=poster_frame(eq_prev["poster"]);third_frame=poster_frame(third_prev["poster"])
+base_frame=poster_frame(baseline["posterKeep"])
+fx_frame=poster_frame(cold_fx["posterKeep"]);sub_frame=poster_frame(cold_sub["posterKeep"]);eq_frame=poster_frame(eq_prev["posterKeep"]);third_frame=poster_frame(third_prev["posterKeep"])
 poster_diffs={
     "effects":diff_stats(base_frame,fx_frame),
     "subscribe":diff_stats(base_frame,sub_frame),

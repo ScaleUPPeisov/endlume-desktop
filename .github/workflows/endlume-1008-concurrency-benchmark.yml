@@ -85,27 +85,32 @@ jobs:
           PY
           chmod +x "$ROOT/audio.sh"
 
-          run_case(){
-            delay="$1"; VOUT="$ROOT/v-$delay.mp4"
+          run_audio_file(){
+            mode="$1"; out="$ROOT/audio-$mode.m4a"
             START="$(python3 -c 'import time;print(time.time())')"
-            ASTART="$START"; "$ROOT/audio.sh" & APID=$!
-            sleep "$delay"
-            VSTART="$(python3 -c 'import time;print(time.time())')"
-            "$FF" -hide_banner -loglevel error -filter_complex_threads 6 -loop 1 -framerate 30 -i "$ROOT/base.png" -stream_loop -1 -i "$SRC" \
-              -filter_complex "$VGRAPH" -map "[outv]" -frames:v 1200 -an \
-              -c:v hevc_videotoolbox -realtime 1 -prio_speed 1 -power_efficient 0 -constant_bit_rate 1 -b:v 22M -g 1 -bf 0 -tag:v hvc1 -pix_fmt yuv420p \
-              -fps_mode cfr -r 30 -video_track_timescale 60000 -y "$VOUT" &
-            VPID=$!
-            wait "$VPID"; VEND="$(python3 -c 'import time;print(time.time())')"
-            wait "$APID"; AEND="$(python3 -c 'import time;print(time.time())')"
+            ARGS=( -hide_banner -loglevel error -filter_complex_threads 4 )
+            for p in "${TRACKS[@]}"; do ARGS+=( -i "$p" ); done
+            ARGS+=( -stream_loop -1 -i "$AMB" )
+            GRAPH=""
+            for i in $(seq 0 11); do
+              [ -n "$GRAPH" ] && GRAPH="$GRAPH;"
+              GRAPH="$GRAPH[$i:a]aresample=48000:async=1:first_pts=0,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,asetpts=N/SR/TB[a$i]"
+            done
+            INS=""; for i in $(seq 0 11); do INS="$INS[a$i]"; done
+            GRAPH="$GRAPH;$INS""concat=n=12:v=0:a=1[joined];[joined]anull[processed_music];[12:a]aresample=48000:async=1:first_pts=0,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,volume=0.18[amb];[processed_music][amb]amix=inputs=2:duration=first:weights='1 1':normalize=0,alimiter=limit=0.98[outa]"
+            ARGS+=( -filter_complex "$GRAPH" -map "[outa]" -c:a aac_at -b:a 320k -aac_at_mode cvbr -aac_at_quality 2 -ar 48000 -ac 2 )
+            if [ "$mode" = faststart ]; then ARGS+=( -movflags +faststart ); fi
+            ARGS+=( -y "$out" )
+            "$FF" "${ARGS[@]}"
             END="$(python3 -c 'import time;print(time.time())')"
-            python3 - "$delay" "$ASTART" "$AEND" "$VSTART" "$VEND" "$START" "$END" <<'PY'
+            P1="$(python3 -c 'import time;print(time.time())')"; "$FF" -v error -i "$out" -map 0:a:0 -t 1.0 -f null -; P2="$(python3 -c 'import time;print(time.time())')"
+            D1="$(python3 -c 'import time;print(time.time())')"; ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 "$out" >/dev/null; D2="$(python3 -c 'import time;print(time.time())')"
+            python3 - "$mode" "$START" "$END" "$P1" "$P2" "$D1" "$D2" "$(stat -f%z "$out")" <<'PY'
           import sys
-          d,as_,ae,vs,ve,s,e=sys.argv[1:]
-          a=float(ae)-float(as_);v=float(ve)-float(vs);wall=float(e)-float(s)
-          print(f"STAGGER|audioFirstDelay={d}|audio={a:.3f}|visual={v:.3f}|wall={wall:.3f}")
+          m,s,e,p1,p2,d1,d2,b=sys.argv[1:]
+          print(f"AUDIO_FILE|mode={m}|encode={float(e)-float(s):.3f}|decodeProbe={float(p2)-float(p1):.3f}|durationProbe={float(d2)-float(d1):.3f}|bytes={b}")
           PY
           }
-
-          for d in 0 1 2 3 4 5 6; do run_case "$d"; done
-          echo ENDLUME_1008_STAGGER_GREEN
+          run_audio_file faststart
+          run_audio_file nofaststart
+          echo ENDLUME_1008_AUDIO_FILE_GREEN

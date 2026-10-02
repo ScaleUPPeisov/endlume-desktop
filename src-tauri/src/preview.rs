@@ -62,42 +62,57 @@ async fn run_preview(app:&AppHandle,args:Vec<String>)->Result<Vec<u8>,String>{
 }
 
 #[tauri::command]
-pub async fn generate_preview(app:AppHandle,project_path:String,time_sec:f64,effects:Vec<EffectPreset>,subscribes:Vec<SubscribePreset>)->Result<String,String>{
+pub async fn generate_preview(app:AppHandle,project_path:String,time_sec:f64,effects:Vec<EffectPreset>,subscribes:Vec<SubscribePreset>,request_id:Option<String>)->Result<String,String>{
+  let request=request_id.unwrap_or_else(||uuid::Uuid::new_v4().to_string());
+  let started=std::time::Instant::now();
   let dir=PathBuf::from(&project_path);if !dir.is_dir(){return Err("Сначала выберите папку проекта".into())}
   let mut media:Vec<PathBuf>=std::fs::read_dir(&dir).map_err(|e|e.to_string())?.flatten().map(|e|e.path()).filter(|p|p.is_file()&&(IMAGE.contains(&ext(p).as_str())||VIDEO.contains(&ext(p).as_str()))).collect();
   media.sort_by(|a,b|natural_name(a).cmp(&natural_name(b)));
   let (src,local_time)=pick_preview_media(&media,time_sec).ok_or("В проекте нет изображения или видео")?;
   let preview_dir=app.path().app_cache_dir().map_err(|e|e.to_string())?.join("previews-v3");std::fs::create_dir_all(&preview_dir).map_err(|e|e.to_string())?;
-  if let Ok(rd)=std::fs::read_dir(&preview_dir){let mut files=rd.flatten().filter_map(|e|e.metadata().ok().and_then(|m|m.modified().ok().map(|t|(t,e.path())))).collect::<Vec<_>>();files.sort_by_key(|x|x.0);if files.len()>12{let remove=files.len()-12;for (_,p) in files.into_iter().take(remove){let _=std::fs::remove_file(p);}}}
-  let out=preview_dir.join(format!("endlume-preview-{}.mp4",uuid::Uuid::new_v4()));
-  let mut args:Vec<String>=vec!["-hide_banner","-loglevel","error"].into_iter().map(String::from).collect();
-  if is_image(src){args.extend(vec!["-loop","1","-framerate","60","-i",src.to_string_lossy().as_ref()].into_iter().map(String::from));}else{args.extend(vec!["-stream_loop","-1","-ss",&local_time.max(0.0).to_string(),"-i",src.to_string_lossy().as_ref()].into_iter().map(String::from));}
+  if let Ok(rd)=std::fs::read_dir(&preview_dir){
+    for entry in rd.flatten(){
+      let old=entry.metadata().ok().and_then(|m|m.modified().ok()).and_then(|t|t.elapsed().ok()).map(|x|x.as_secs()>600).unwrap_or(false);
+      if old{let _=std::fs::remove_file(entry.path());}
+    }
+  }
+  let id=uuid::Uuid::new_v4();
+  let out=preview_dir.join(format!("endlume-preview-{id}.mp4"));
+  let tmp=preview_dir.join(format!(".endlume-preview-{id}.tmp.mp4"));
+  eprintln!("ENDLUME_PREVIEW REQUEST_ID={request} PHASE=START TEMP_FILE={} WIDTH=1920 HEIGHT=1080 PIX_FMT=yuv420p",tmp.display());
+  let mut base_args:Vec<String>=vec!["-hide_banner","-loglevel","error"].into_iter().map(String::from).collect();
+  if is_image(src){base_args.extend(vec!["-loop","1","-framerate","60","-i",src.to_string_lossy().as_ref()].into_iter().map(String::from));}else{base_args.extend(vec!["-stream_loop","-1","-ss",&local_time.max(0.0).to_string(),"-i",src.to_string_lossy().as_ref()].into_iter().map(String::from));}
   let enabled_fx:Vec<EffectPreset>=effects.into_iter().filter(ready_overlay).collect();
   let enabled_sub:Vec<SubscribePreset>=subscribes.into_iter().filter(|s|ready_overlay(&s.effect)).collect();
-  for e in &enabled_fx{args.extend(vec!["-stream_loop","-1","-ss",&e.preview_frame_time.max(0.0).to_string(),"-i",e.source.as_str()].into_iter().map(String::from));}
-  for s in &enabled_sub{args.extend(vec!["-stream_loop","-1","-ss",&s.effect.preview_frame_time.max(0.0).to_string(),"-i",s.effect.source.as_str()].into_iter().map(String::from));}
+  for e in &enabled_fx{base_args.extend(vec!["-stream_loop","-1","-ss",&e.preview_frame_time.max(0.0).to_string(),"-i",e.source.as_str()].into_iter().map(String::from));}
+  for s in &enabled_sub{base_args.extend(vec!["-stream_loop","-1","-ss",&s.effect.preview_frame_time.max(0.0).to_string(),"-i",s.effect.source.as_str()].into_iter().map(String::from));}
   let (w,h)=(1920u32,1080u32);let mut graph=format!("[0:v]scale={w}:{h}:force_original_aspect_ratio=increase:flags=lanczos+accurate_rnd,crop={w}:{h}:(iw-ow)/2:(ih-oh)/2,fps=30,setsar=1[b0]");let mut base="b0".to_string();let mut idx=1usize;
   for e in &enabled_fx{overlay_effect(&mut graph,&mut base,idx,e,w,h);idx+=1;}
   for s in &enabled_sub{overlay_effect(&mut graph,&mut base,idx,&s.effect,w,h);idx+=1;}
   graph.push_str(&format!(";[{base}]fps=60,format=yuv420p[outv]"));
-  args.extend(vec!["-filter_complex",&graph,"-map","[outv]","-t","3.0","-an"].into_iter().map(String::from));
+  base_args.extend(vec!["-filter_complex",&graph,"-map","[outv]","-t","3.0","-an"].into_iter().map(String::from));
+
   #[cfg(target_os="macos")]
-  args.extend(vec!["-c:v","h264_videotoolbox","-realtime","1","-q:v","100","-b:v","35M","-maxrate","50M","-pix_fmt","yuv420p"].into_iter().map(String::from));
+  let primary_codec=vec!["-c:v","h264_videotoolbox","-realtime","1","-q:v","100","-b:v","35M","-maxrate","50M","-g","1","-bf","0","-pix_fmt","yuv420p"].into_iter().map(String::from).collect::<Vec<_>>();
   #[cfg(not(target_os="macos"))]
-  args.extend(vec!["-c:v","libx264","-preset","veryfast","-crf","8","-pix_fmt","yuv420p"].into_iter().map(String::from));
-  args.extend(vec!["-movflags","+faststart","-y",out.to_string_lossy().as_ref()].into_iter().map(String::from));
-  if let Err(hw)=run_preview(&app,args.clone()).await{
+  let primary_codec=vec!["-c:v","libx264","-preset","veryfast","-crf","8","-g","1","-keyint_min","1","-sc_threshold","0","-bf","0","-pix_fmt","yuv420p"].into_iter().map(String::from).collect::<Vec<_>>();
+
+  let mut primary=base_args.clone();primary.extend(primary_codec);primary.extend(vec!["-fps_mode","cfr","-r","60","-video_track_timescale","60000","-movflags","+faststart","-y",tmp.to_string_lossy().as_ref()].into_iter().map(String::from));
+  if let Err(hw)=run_preview(&app,primary).await{
     #[cfg(target_os="macos")]
     {
-      let mut fallback=args;
-      if let Some(pos)=fallback.iter().position(|v|v=="-c:v"){
-        let end=(pos+8).min(fallback.len());
-        fallback.splice(pos..end,vec!["-c:v".into(),"libx264".into(),"-preset".into(),"ultrafast".into(),"-crf".into(),"18".into(),"-pix_fmt".into(),"yuv420p".into()]);
-      }
-      let _=std::fs::remove_file(&out);run_preview(&app,fallback).await.map_err(|sw|format!("VideoToolbox preview: {hw}; libx264 fallback: {sw}"))?;
+      let _=std::fs::remove_file(&tmp);
+      let mut fallback=base_args;
+      fallback.extend(vec!["-c:v","libx264","-preset","ultrafast","-crf","12","-g","1","-keyint_min","1","-sc_threshold","0","-bf","0","-pix_fmt","yuv420p"].into_iter().map(String::from));
+      fallback.extend(vec!["-fps_mode","cfr","-r","60","-video_track_timescale","60000","-movflags","+faststart","-y",tmp.to_string_lossy().as_ref()].into_iter().map(String::from));
+      run_preview(&app,fallback).await.map_err(|sw|{let _=std::fs::remove_file(&tmp);format!("VideoToolbox preview: {hw}; libx264 fallback: {sw}")})?;
     }
     #[cfg(not(target_os="macos"))]
-    {return Err(hw)}
+    {let _=std::fs::remove_file(&tmp);return Err(hw)}
   }
+  let size=std::fs::metadata(&tmp).map_err(|e|format!("Preview temp metadata: {e}"))?.len();
+  if size<1024{let _=std::fs::remove_file(&tmp);return Err(format!("Preview temp слишком мал: {size} bytes"))}
+  std::fs::rename(&tmp,&out).map_err(|e|format!("Preview atomic publish: {e}"))?;
+  eprintln!("ENDLUME_PREVIEW REQUEST_ID={request} PHASE=FINISH TEMP_FILE={} PUBLISHED_FILE={} WIDTH=1920 HEIGHT=1080 PIX_FMT=yuv420p BUFFER_SIZE={} ELAPSED_MS={}",tmp.display(),out.display(),size,started.elapsed().as_millis());
   Ok(out.to_string_lossy().into_owned())
 }

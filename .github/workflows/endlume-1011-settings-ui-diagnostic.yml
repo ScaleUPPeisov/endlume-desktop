@@ -13,7 +13,7 @@ jobs:
     runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
     timeout-minutes: 8
     steps:
-      - name: Probe Settings keyboard focus path
+      - name: Probe current 10.0.10 update modal focus order
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -21,7 +21,7 @@ jobs:
           test -d "$APP"
           echo "INSTALLED_VERSION=$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist")"
           /usr/bin/open -n "$APP" || true
-          /bin/sleep 2
+          /bin/sleep 3
           /usr/bin/osascript -e 'tell application id "studio.endlume.desktop" to activate'
           /bin/sleep 1
           /usr/bin/osascript <<'APPLESCRIPT'
@@ -51,18 +51,11 @@ jobs:
           tell application "System Events"
             set ps to application processes whose bundle identifier is "studio.endlume.desktop"
             tell item 1 of ps to set frontmost to true
-            repeat with i from 1 to 4
+            log my focusedInfo("START")
+            repeat with i from 1 to 70
               key code 48
-              delay 0.1
-            end repeat
-            log my focusedInfo("SETTINGS_FOCUS")
-            key code 36
-            delay 0.5
-            log my focusedInfo("AFTER_SETTINGS_ENTER")
-            repeat with i from 1 to 12
-              key code 48
-              delay 0.12
-              log my focusedInfo("S_TAB" & i)
+              delay 0.08
+              log my focusedInfo("TAB" & i)
             end repeat
           end tell
           APPLESCRIPT

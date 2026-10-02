@@ -1,5 +1,5 @@
 name: ENDLUME 10.0.11 Preview Subscribe Targeted
-# attempt 5: Tauri asset stream for WKWebView overlay video
+# attempt 6: foreground packaged WKWebView during Preview media acceptance
 
 on:
   push:

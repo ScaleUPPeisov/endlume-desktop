@@ -1,10 +1,10 @@
-name: ENDLUME 10.0.8 TOSHIBA Cold Warm Production Benchmark
+name: ENDLUME 10.0.9 TOSHIBA Cold Warm Production Benchmark
 
 on:
   push:
-    branches: [hotfix/endlume-10.0.8-performance-visual]
+    branches: [hotfix/endlume-10.0.9-visual]
     paths:
-      - ".github/workflows/endlume-1008-production-benchmark.yml"
+      - ".github/workflows/endlume-1009-production-benchmark.yml"
       - "src-tauri/src/render.rs"
       - "src-tauri/src/mp4_manifest.rs"
   workflow_dispatch: {}
@@ -13,11 +13,11 @@ permissions:
   contents: read
 
 concurrency:
-  group: endlume-1008-production-benchmark
+  group: endlume-1009-production-benchmark
   cancel-in-progress: true
 
 env:
-  VERSION: "10.0.8"
+  VERSION: "10.0.9"
 
 jobs:
   benchmark:
@@ -64,8 +64,8 @@ jobs:
           test "$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist")" = "$VERSION"
           /usr/bin/codesign --force --deep --sign - --timestamp=none "$APP"
           /usr/bin/codesign --verify --deep --strict "$APP"
-          printf '%s' "$APP" > "$RUNNER_TEMP/e1008-app.txt"
-          echo ENDLUME_1008_BENCH_APP_GREEN
+          printf '%s' "$APP" > "$RUNNER_TEMP/e1009-app.txt"
+          echo ENDLUME_1009_BENCH_APP_GREEN
 
       - name: Prepare representative 12-track project without touching user data
         shell: bash
@@ -73,7 +73,7 @@ jobs:
           set -Eeuo pipefail
           export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
           VOL="/Volumes/TOSHIBA EXT"; test -d "$VOL"
-          ROOT="$RUNNER_TEMP/e1008-prod"; rm -rf "$ROOT"; mkdir -p "$ROOT/project" "$ROOT/audio" "$VOL/ENDLUME_PERF_1008"
+          ROOT="$RUNNER_TEMP/e1009-prod"; rm -rf "$ROOT"; mkdir -p "$ROOT/project" "$ROOT/audio" "$VOL/ENDLUME_PERF_1009"
           export ROOT VOL
 
           # Unique static image guarantees a visual-cache MISS without clearing any user cache.
@@ -146,17 +146,17 @@ jobs:
           if subs:
             sub=dict(subs[0])
           else:
-            sub=dict(effect);sub["id"]="e1008-sub";sub["name"]="ENDLUME QA Subscribe";sub["scale"]=min(float(sub.get("scale",.18) or .18),.18)
+            sub=dict(effect);sub["id"]="e1009-sub";sub["name"]="ENDLUME QA Subscribe";sub["scale"]=min(float(sub.get("scale",.18) or .18),.18)
           sub.update({"enabled":True,"usageMode":"interval","intervalSec":240.0,"usageDurationSec":8.0,
                       "firstAtSec":0.0,"secondAtSec":240.0,"repeatEverySec":240.0,
                       "firstAppearance":"immediate","customFirstAtSec":0.0,"showDurationSec":8.0})
 
           job={
-            "project":{"id":"e1008-toshiba-prod","name":"ENDLUME 10.0.8 TOSHIBA PERF","path":str(root/"project"),
+            "project":{"id":"e1009-toshiba-prod","name":"ENDLUME 10.0.9 TOSHIBA PERF","path":str(root/"project"),
                        "media":[str(root/"project"/"cover.png")],"audio":audio,"valid":True,"error":None,"anchors":{}},
             "settings":{"width":1920,"height":1080,"fps":60,"codec":"h265","bitrateMbps":8.0,
                         "durationHours":2.0,"durationMode":"whole-track","loopMode":"image","crossfadeSec":0.0,
-                        "normalizeLufs":False,"outputDir":str(vol/"ENDLUME_PERF_1008"),"preset":"fast","encoderPreference":"auto"},
+                        "normalizeLufs":False,"outputDir":str(vol/"ENDLUME_PERF_1009"),"preset":"fast","encoderPreference":"auto"},
             "effects":[effect],"subscribes":[sub],"ambient":str(ambient)
           }
           json.dump(job,open(root/"job.json","w"),ensure_ascii=False,indent=2)
@@ -166,14 +166,14 @@ jobs:
           print("BENCH_SUBSCRIBE="+sub.get("name",""))
           print("BENCH_AMBIENT="+Path(str(ambient)).name)
           PY
-          echo "$ROOT" > "$RUNNER_TEMP/e1008-root.txt"
-          echo ENDLUME_1008_FIXTURE_GREEN
+          echo "$ROOT" > "$RUNNER_TEMP/e1009-root.txt"
+          echo ENDLUME_1009_FIXTURE_GREEN
 
       - name: COLD render to TOSHIBA
         shell: bash
         run: |
           set -Eeuo pipefail
-          ROOT="$(cat "$RUNNER_TEMP/e1008-root.txt")";APP="$(cat "$RUNNER_TEMP/e1008-app.txt")"
+          ROOT="$(cat "$RUNNER_TEMP/e1009-root.txt")";APP="$(cat "$RUNNER_TEMP/e1009-app.txt")"
           EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
           BIN="$APP/Contents/MacOS/$EXE"
           rm -f "$ROOT/cold-result.json" "$ROOT/cold.stderr" "$ROOT/cold.stdout"
@@ -209,7 +209,7 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-          ROOT="$(cat "$RUNNER_TEMP/e1008-root.txt")";APP="$(cat "$RUNNER_TEMP/e1008-app.txt")"
+          ROOT="$(cat "$RUNNER_TEMP/e1009-root.txt")";APP="$(cat "$RUNNER_TEMP/e1009-app.txt")"
           EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")";BIN="$APP/Contents/MacOS/$EXE"
           START="$(python3 -c 'import time;print(time.time())')"
           ENDLUME_E2E_RENDER_JOB="$ROOT/job.json" ENDLUME_E2E_RESULT="$ROOT/warm-result.json"             "$BIN" >"$ROOT/warm.stdout" 2>"$ROOT/warm.stderr"
@@ -242,7 +242,7 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-          ROOT="$(cat "$RUNNER_TEMP/e1008-root.txt")"
+          ROOT="$(cat "$RUNNER_TEMP/e1009-root.txt")"
           python3 - "$ROOT" <<'PY'
           import json,subprocess,sys,os,re
           from pathlib import Path
@@ -303,19 +303,19 @@ jobs:
             d=json.load(open(root/f"{label}-summary.json"))
             p=Path(d["result"]["outputPath"])
             stem=p.stem
-            if p.is_file() and "ENDLUME 10.0.8 TOSHIBA PERF" in p.name:p.unlink()
+            if p.is_file() and "ENDLUME 10.0.9 TOSHIBA PERF" in p.name:p.unlink()
             for side in p.parent.glob(stem+" — *"):
               if side.is_file():side.unlink()
           PY
-          echo ENDLUME_1008_TOSHIBA_BENCHMARK_COMPLETE
+          echo ENDLUME_1009_TOSHIBA_BENCHMARK_COMPLETE
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: ENDLUME-10.0.8-TOSHIBA-BENCHMARK
+          name: ENDLUME-10.0.9-TOSHIBA-BENCHMARK
           path: |
-            ${{ runner.temp }}/e1008-prod/*summary.json
-            ${{ runner.temp }}/e1008-prod/benchmark-report.json
+            ${{ runner.temp }}/e1009-prod/*summary.json
+            ${{ runner.temp }}/e1009-prod/benchmark-report.json
           if-no-files-found: warn
           retention-days: 7
 # rerun-head: a8336e90217659bd86ab37575cfae9a085a3f33a

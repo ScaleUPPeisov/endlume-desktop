@@ -186,14 +186,14 @@ jobs:
           delay 0.4
           -- The global auto-update watcher may already have opened the update modal.
           -- Dismiss it if present, then explicitly exercise Settings -> Updates -> Check.
-          if my focusAndPress("ПОЗЖЕ", 36) then delay 0.25
-          if my focusAndPress("Настройки", 36) is false then error "SETTINGS_FOCUS_NOT_FOUND"
+          if my focusAndPress("ПОЗЖЕ", 70) then delay 0.25
+          if my focusAndPress("Настройки", 70) is false then error "SETTINGS_FOCUS_NOT_FOUND"
           delay 0.35
-          if my focusAndPress("ОБНОВЛЕНИЯ", 24) is false then error "UPDATES_TAB_FOCUS_NOT_FOUND"
+          if my focusAndPress("ОБНОВЛЕНИЯ", 70) is false then error "UPDATES_TAB_FOCUS_NOT_FOUND"
           delay 0.25
-          if my focusAndPress("ПРОВЕРИТЬ ОБНОВЛЕНИЯ", 24) is false then error "CHECK_UPDATE_FOCUS_NOT_FOUND"
+          if my focusAndPress("ПРОВЕРИТЬ ОБНОВЛЕНИЯ", 70) is false then error "CHECK_UPDATE_FOCUS_NOT_FOUND"
           delay 1.2
-          if my focusAndPress("ОБНОВИТЬ", 48) is false then error "UPDATE_MODAL_FOCUS_NOT_FOUND"
+          if my focusAndPress("ОБНОВИТЬ", 70) is false then error "UPDATE_MODAL_FOCUS_NOT_FOUND"
           APPLESCRIPT
           /usr/bin/osascript "$RUNNER_TEMP/e1011-settings.applescript"
           STATE="$HOME/Library/Caches/studio.endlume.desktop/update-center/state.json"

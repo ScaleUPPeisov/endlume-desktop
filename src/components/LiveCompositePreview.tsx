@@ -2,7 +2,7 @@ import React,{useEffect,useRef,useState} from 'react';
 import {readFile} from '@tauri-apps/plugin-fs';
 import type {AnchorPoint,EffectPreset} from '../types';
 
-export type LivePreviewAssets={basePath:string;baseFilePath?:string;baseKind:'image'|'video';overlayPath:string;overlayFilePath?:string;baseBytes?:number;overlayBytes?:number;requestId?:string;previewType?:'Effects'|'Subscribe'};
+export type LivePreviewAssets={basePath:string;baseFilePath?:string;baseKind:'image'|'video';overlayPath:string;overlayFilePath?:string;posterPath?:string;posterFilePath?:string;baseBytes?:number;overlayBytes?:number;requestId?:string;previewType?:'Effects'|'Subscribe'};
 
 type Props={
   assets?:LivePreviewAssets;
@@ -25,43 +25,63 @@ function rgbHex(r:number,g:number,b:number){return `#${[r,g,b].map(v=>Math.max(0
 
 export function LiveCompositePreview({assets,effect,active=true,busy,overlayRef,overlayStyle,onDragStart,onResizeStart,onPickColor,anchor,anchorMode,onAnchorPick,onFrameState}:Props){
   const canvasRef=useRef<HTMLCanvasElement>(null),videoRef=useRef<HTMLVideoElement>(null),rafRef=useRef<number|undefined>(undefined),effectRef=useRef(effect),brushRaf=useRef<number|undefined>(undefined),lastBrushPoint=useRef<{x:number;y:number}|undefined>(undefined),brushDown=useRef(false);
-  const baseReadyRef=useRef(false),baseSizeRef=useRef({w:0,h:0}),reportedFrameRef=useRef(false),transportBytesRef=useRef(0),frameStateRef=useRef(onFrameState);
+  const baseReadyRef=useRef(false),baseSizeRef=useRef({w:0,h:0}),reportedFrameRef=useRef(false),transportBytesRef=useRef(0),frameStateRef=useRef(onFrameState),liveReadyRef=useRef(false);
   frameStateRef.current=onFrameState;
   const [picker,setPicker]=useState(false),[overlayAspect,setOverlayAspect]=useState<number>(1);
-  const [baseSrc,setBaseSrc]=useState<string>(),[overlaySrc,setOverlaySrc]=useState<string>();
+  const [baseSrc,setBaseSrc]=useState<string>(),[overlaySrc,setOverlaySrc]=useState<string>(),[posterSrc,setPosterSrc]=useState<string>(),[liveReady,setLiveReady]=useState(false);
   const syncOverlayAspect=(video:HTMLVideoElement)=>{if(video.videoWidth>0&&video.videoHeight>0)setOverlayAspect(video.videoWidth/video.videoHeight)};
   effectRef.current=effect;
 
-  useEffect(()=>{baseReadyRef.current=false;baseSizeRef.current={w:0,h:0};reportedFrameRef.current=false;transportBytesRef.current=0;setBaseSrc(undefined);setOverlaySrc(undefined)},[assets?.basePath,assets?.overlayPath,assets?.requestId]);
+  useEffect(()=>{baseReadyRef.current=false;baseSizeRef.current={w:0,h:0};reportedFrameRef.current=false;transportBytesRef.current=0;liveReadyRef.current=false;setLiveReady(false);setBaseSrc(undefined);setOverlaySrc(undefined);setPosterSrc(undefined)},[assets?.basePath,assets?.overlayPath,assets?.posterPath,assets?.requestId]);
 
   useEffect(()=>{
     if(!assets)return;
     const requestId=assets.requestId||'<unknown>',previewType=assets.previewType||'Effects';
-    let disposed=false,baseObjectUrl:string|undefined,overlayObjectUrl:string|undefined;
+    let disposed=false,baseObjectUrl:string|undefined,posterObjectUrl:string|undefined;
     (async()=>{
       try{
-        if(!assets.baseFilePath||!assets.overlayFilePath)throw new Error('helper file path missing');
-        const [baseBytes,overlayBytes]=await Promise.all([readFile(assets.baseFilePath),readFile(assets.overlayFilePath)]);
-        if(baseBytes.byteLength<1024||overlayBytes.byteLength<1024)throw new Error(`helper payload too small: base=${baseBytes.byteLength} overlay=${overlayBytes.byteLength}`);
-        transportBytesRef.current=baseBytes.byteLength+overlayBytes.byteLength;
+        if(!assets.baseFilePath||!assets.overlayFilePath||!assets.posterFilePath)throw new Error('Preview helper/poster file path missing');
+        const [baseBytes,overlayBytes,posterBytes]=await Promise.all([readFile(assets.baseFilePath),readFile(assets.overlayFilePath),readFile(assets.posterFilePath)]);
+        if(baseBytes.byteLength<1024||overlayBytes.byteLength<1024||posterBytes.byteLength<1024)throw new Error(`Preview payload too small: base=${baseBytes.byteLength} overlay=${overlayBytes.byteLength} poster=${posterBytes.byteLength}`);
+        transportBytesRef.current=baseBytes.byteLength+overlayBytes.byteLength+posterBytes.byteLength;
         const baseRaw=baseBytes.buffer.slice(baseBytes.byteOffset,baseBytes.byteOffset+baseBytes.byteLength) as ArrayBuffer;
+        const posterRaw=posterBytes.buffer.slice(posterBytes.byteOffset,posterBytes.byteOffset+posterBytes.byteLength) as ArrayBuffer;
         baseObjectUrl=URL.createObjectURL(new Blob([baseRaw],{type:assets.baseKind==='image'?'image/png':'video/mp4'}));
+        posterObjectUrl=URL.createObjectURL(new Blob([posterRaw],{type:'image/png'}));
         const resolvedOverlay=assets.overlayPath;
-        console.info(`[ENDLUME_PREVIEW] PREVIEW_REQUEST_ID=${requestId} PREVIEW_TYPE=${previewType} FRONTEND_PAYLOAD_BYTES=${transportBytesRef.current} OBJECT_URL_CREATED=true FRONTEND_TRANSFER_MODE=BASE_BLOB_OVERLAY_ASSET`);
-        if(disposed){URL.revokeObjectURL(baseObjectUrl);baseObjectUrl=undefined;return}
-        setBaseSrc(baseObjectUrl);setOverlaySrc(resolvedOverlay);
+        console.info(`[ENDLUME_PREVIEW] PREVIEW_REQUEST_ID=${requestId} PREVIEW_TYPE=${previewType} FRONTEND_PAYLOAD_BYTES=${transportBytesRef.current} OBJECT_URL_CREATED=true FRONTEND_TRANSFER_MODE=POSTER_BLOB_OVERLAY_ASSET`);
+        if(disposed){URL.revokeObjectURL(baseObjectUrl);URL.revokeObjectURL(posterObjectUrl);baseObjectUrl=undefined;posterObjectUrl=undefined;return}
+        setBaseSrc(baseObjectUrl);setOverlaySrc(resolvedOverlay);setPosterSrc(posterObjectUrl);
       }catch(error){
         console.error(`[ENDLUME_PREVIEW] PREVIEW_REQUEST_ID=${requestId} PREVIEW_TYPE=${previewType} OBJECT_URL_CREATED=false IMAGE_LOAD=RED PREVIEW_APPLIED=false ERROR=${String(error)}`);
         if(frameStateRef.current&&!reportedFrameRef.current){reportedFrameRef.current=true;frameStateRef.current({status:'RED',requestId,previewType,width:0,height:0,payloadBytes:transportBytesRef.current,paintedNonBlack:0})}
       }
     })();
-    return()=>{disposed=true;if(baseObjectUrl)URL.revokeObjectURL(baseObjectUrl);if(overlayObjectUrl)URL.revokeObjectURL(overlayObjectUrl)};
-  },[assets?.baseFilePath,assets?.overlayFilePath,assets?.baseKind,assets?.requestId,assets?.previewType]);
+    return()=>{disposed=true;if(baseObjectUrl)URL.revokeObjectURL(baseObjectUrl);if(posterObjectUrl)URL.revokeObjectURL(posterObjectUrl)};
+  },[assets?.baseFilePath,assets?.overlayFilePath,assets?.posterFilePath,assets?.baseKind,assets?.requestId,assets?.previewType]);
   const baseLoaded=(w:number,h:number)=>{
     if(w<=0||h<=0)return;
     baseReadyRef.current=true;baseSizeRef.current={w,h};
     const requestId=assets?.requestId||'<unknown>',previewType=assets?.previewType||'Effects';
     console.info(`[ENDLUME_PREVIEW] PREVIEW_REQUEST_ID=${requestId} PREVIEW_TYPE=${previewType} BASE_IMAGE_LOAD=GREEN IMAGE_NATURAL_WIDTH=${w} IMAGE_NATURAL_HEIGHT=${h}`);
+  };
+  const posterLoaded=(img:HTMLImageElement)=>{
+    const requestId=assets?.requestId||'<unknown>',previewType=assets?.previewType||'Effects';
+    const w=img.naturalWidth||0,h=img.naturalHeight||0;
+    let paintedNonBlack=0;
+    if(w>0&&h>0){
+      try{
+        const probe=document.createElement('canvas');probe.width=64;probe.height=36;
+        const ctx=probe.getContext('2d',{willReadFrequently:true});
+        if(ctx){ctx.drawImage(img,0,0,64,36);const px=ctx.getImageData(0,0,64,36).data;for(let i=0;i<px.length;i+=4){if(px[i+3]>8&&(px[i]+px[i+1]+px[i+2]>18))paintedNonBlack++;}}
+      }catch{}
+    }
+    const green=w>0&&h>0&&paintedNonBlack>8;
+    console.info(`[ENDLUME_PREVIEW] PREVIEW_REQUEST_ID=${requestId} PREVIEW_TYPE=${previewType} POSTER_LOAD=${green?'GREEN':'RED'} IMAGE_NATURAL_WIDTH=${w} IMAGE_NATURAL_HEIGHT=${h} BROWSER_NONBLACK_PIXELS=${paintedNonBlack} PREVIEW_APPLIED=${green}`);
+    if(green&&frameStateRef.current&&!reportedFrameRef.current){
+      reportedFrameRef.current=true;
+      frameStateRef.current({status:'GREEN',requestId,previewType,width:w,height:h,payloadBytes:transportBytesRef.current,paintedNonBlack});
+    }
   };
   const reportRed=(reason:string)=>{
     if(reportedFrameRef.current)return;
@@ -128,7 +148,7 @@ export function LiveCompositePreview({assets,effect,active=true,busy,overlayRef,
           if(frameStateRef.current&&baseReadyRef.current&&!reportedFrameRef.current){
             const im=ctx.getImageData(0,0,w,h).data;let paintedNonBlack=0;
             for(let i=0;i<im.length;i+=4){if(im[i+3]>8&&(im[i]+im[i+1]+im[i+2]>18))paintedNonBlack++}
-            const green=paintedNonBlack>8,requestId=assets?.requestId||'<unknown>',previewType=assets?.previewType||'Effects',bs=baseSizeRef.current;
+            const green=paintedNonBlack>8,requestId=assets?.requestId||'<unknown>',previewType=assets?.previewType||'Effects',bs=baseSizeRef.current;if(green&&!liveReadyRef.current){liveReadyRef.current=true;setLiveReady(true)}
             reportedFrameRef.current=true;
             console.info(`[ENDLUME_PREVIEW] PREVIEW_REQUEST_ID=${requestId} PREVIEW_TYPE=${previewType} FRONTEND_PAYLOAD_BYTES=${transportBytesRef.current} OBJECT_URL_CREATED=true FRONTEND_RENDERER=CANVAS_2D IMAGE_LOAD=${green?'GREEN':'RED'} IMAGE_NATURAL_WIDTH=${bs.w} IMAGE_NATURAL_HEIGHT=${bs.h} BROWSER_NONBLACK_PIXELS=${paintedNonBlack} PREVIEW_APPLIED=${green}`);
             frameStateRef.current?.({status:green?'GREEN':'RED',requestId,previewType,width:bs.w,height:bs.h,payloadBytes:transportBytesRef.current,paintedNonBlack});
@@ -149,7 +169,7 @@ export function LiveCompositePreview({assets,effect,active=true,busy,overlayRef,
     const uKey=gl.getUniformLocation(program,'key'),uSim=gl.getUniformLocation(program,'sim'),uBlend=gl.getUniformLocation(program,'blend'),uDsp=gl.getUniformLocation(program,'dsp'),uMode=gl.getUniformLocation(program,'mode'),uLthr=gl.getUniformLocation(program,'lthr'),uLtol=gl.getUniformLocation(program,'ltol');
     let lastAspect=0;
     const syncAspect=()=>{if(video.videoWidth>0&&video.videoHeight>0){const next=video.videoWidth/video.videoHeight;if(Math.abs(next-lastAspect)>0.0001){lastAspect=next;setOverlayAspect(next)}}};
-    const draw=()=>{rafRef.current=requestAnimationFrame(draw);if(video.readyState<2||video.videoWidth<2)return;syncAspect();const w=Math.min(640,video.videoWidth),h=Math.max(2,Math.round(w*video.videoHeight/video.videoWidth));if(canvas.width!==w||canvas.height!==h){canvas.width=w;canvas.height=h;gl.viewport(0,0,w,h)}const e=effectRef.current,[r,g,b]=hexRgb(e.keyColor);const eq=e.id==='825dd7a4-f0cf-4032-a3c9-64290cb5756d'&&e.mode==='chromakey';const destructiveSubscribe=assets?.previewType==='Subscribe'&&e.mode==='chromakey'&&Math.abs(e.similarity-.60)<.000001&&Math.abs(e.blend-.35)<.000001;const sim=eq ? 0.18 : destructiveSubscribe ? 0.10 : e.similarity;const blend=eq ? 0.03 : destructiveSubscribe ? 0.06 : e.blend;gl.uniform3f(uKey,r,g,b);gl.uniform1f(uSim,Math.max(.001,Math.min(.6,sim)));gl.uniform1f(uBlend,Math.max(.001,Math.min(.35,blend)));gl.uniform1f(uDsp,Math.max(0,Math.min(1,e.despill||0)));gl.uniform1f(uMode,e.mode==='luma'?1:e.mode==='screen'?2:0);gl.uniform1f(uLthr,e.lumaThreshold);gl.uniform1f(uLtol,e.lumaTolerance);gl.bindTexture(gl.TEXTURE_2D,texture);try{gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,video);gl.drawArrays(gl.TRIANGLES,0,6);if(frameStateRef.current&&baseReadyRef.current&&!reportedFrameRef.current){const px=new Uint8Array(w*h*4);gl.readPixels(0,0,w,h,gl.RGBA,gl.UNSIGNED_BYTE,px);let paintedNonBlack=0;for(let i=0;i<px.length;i+=4){if(px[i+3]>8&&(px[i]+px[i+1]+px[i+2]>18))paintedNonBlack++}const green=paintedNonBlack>8;const requestId=assets?.requestId||'<unknown>',previewType=assets?.previewType||'Effects',payloadBytes=transportBytesRef.current||((assets?.baseBytes||0)+(assets?.overlayBytes||0)),bs=baseSizeRef.current;reportedFrameRef.current=true;console.info(`[ENDLUME_PREVIEW] PREVIEW_REQUEST_ID=${requestId} PREVIEW_TYPE=${previewType} FRONTEND_PAYLOAD_BYTES=${payloadBytes} OBJECT_URL_CREATED=false FRONTEND_TRANSFER_MODE=ASSET_STREAM IMAGE_LOAD=${green?'GREEN':'RED'} IMAGE_NATURAL_WIDTH=${bs.w} IMAGE_NATURAL_HEIGHT=${bs.h} BROWSER_NONBLACK_PIXELS=${paintedNonBlack} PREVIEW_APPLIED=${green}`);frameStateRef.current?.({status:green?'GREEN':'RED',requestId,previewType,width:bs.w,height:bs.h,payloadBytes,paintedNonBlack})}}catch{}};
+    const draw=()=>{rafRef.current=requestAnimationFrame(draw);if(video.readyState<2||video.videoWidth<2)return;syncAspect();const w=Math.min(640,video.videoWidth),h=Math.max(2,Math.round(w*video.videoHeight/video.videoWidth));if(canvas.width!==w||canvas.height!==h){canvas.width=w;canvas.height=h;gl.viewport(0,0,w,h)}const e=effectRef.current,[r,g,b]=hexRgb(e.keyColor);const eq=e.id==='825dd7a4-f0cf-4032-a3c9-64290cb5756d'&&e.mode==='chromakey';const destructiveSubscribe=assets?.previewType==='Subscribe'&&e.mode==='chromakey'&&Math.abs(e.similarity-.60)<.000001&&Math.abs(e.blend-.35)<.000001;const sim=eq ? 0.18 : destructiveSubscribe ? 0.10 : e.similarity;const blend=eq ? 0.03 : destructiveSubscribe ? 0.06 : e.blend;gl.uniform3f(uKey,r,g,b);gl.uniform1f(uSim,Math.max(.001,Math.min(.6,sim)));gl.uniform1f(uBlend,Math.max(.001,Math.min(.35,blend)));gl.uniform1f(uDsp,Math.max(0,Math.min(1,e.despill||0)));gl.uniform1f(uMode,e.mode==='luma'?1:e.mode==='screen'?2:0);gl.uniform1f(uLthr,e.lumaThreshold);gl.uniform1f(uLtol,e.lumaTolerance);gl.bindTexture(gl.TEXTURE_2D,texture);try{gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,video);gl.drawArrays(gl.TRIANGLES,0,6);if(frameStateRef.current&&baseReadyRef.current&&!reportedFrameRef.current){const px=new Uint8Array(w*h*4);gl.readPixels(0,0,w,h,gl.RGBA,gl.UNSIGNED_BYTE,px);let paintedNonBlack=0;for(let i=0;i<px.length;i+=4){if(px[i+3]>8&&(px[i]+px[i+1]+px[i+2]>18))paintedNonBlack++}const green=paintedNonBlack>8;if(green&&!liveReadyRef.current){liveReadyRef.current=true;setLiveReady(true)}const requestId=assets?.requestId||'<unknown>',previewType=assets?.previewType||'Effects',payloadBytes=transportBytesRef.current||((assets?.baseBytes||0)+(assets?.overlayBytes||0)),bs=baseSizeRef.current;reportedFrameRef.current=true;console.info(`[ENDLUME_PREVIEW] PREVIEW_REQUEST_ID=${requestId} PREVIEW_TYPE=${previewType} FRONTEND_PAYLOAD_BYTES=${payloadBytes} OBJECT_URL_CREATED=false FRONTEND_TRANSFER_MODE=ASSET_STREAM IMAGE_LOAD=${green?'GREEN':'RED'} IMAGE_NATURAL_WIDTH=${bs.w} IMAGE_NATURAL_HEIGHT=${bs.h} BROWSER_NONBLACK_PIXELS=${paintedNonBlack} PREVIEW_APPLIED=${green}`);frameStateRef.current?.({status:green?'GREEN':'RED',requestId,previewType,width:bs.w,height:bs.h,payloadBytes,paintedNonBlack})}}catch{}};
     const start=()=>{syncAspect();video.play().catch(()=>{});if(rafRef.current==null)rafRef.current=requestAnimationFrame(draw)};video.addEventListener('loadedmetadata',syncAspect);video.addEventListener('loadeddata',start);if(video.readyState>=1)syncAspect();if(video.readyState>=2)start();
     return()=>{video.removeEventListener('loadedmetadata',syncAspect);video.removeEventListener('loadeddata',start);if(rafRef.current!=null)cancelAnimationFrame(rafRef.current);rafRef.current=undefined;gl.deleteTexture(texture);gl.deleteBuffer(pos);gl.deleteBuffer(tc);gl.deleteProgram(program);gl.deleteShader(vs);gl.deleteShader(fs)};
   },[overlaySrc,assets?.previewType,assets?.requestId,assets?.baseBytes,assets?.overlayBytes,active]);
@@ -157,9 +177,11 @@ export function LiveCompositePreview({assets,effect,active=true,busy,overlayRef,
   useEffect(()=>()=>{if(brushRaf.current!=null)cancelAnimationFrame(brushRaf.current)},[]);
   if(!assets)return <div className="livePreviewEmpty"><span>{busy?'Подготавливаю Live Preview…':'Выберите проект на основном экране'}</span></div>;
   const helperBase=baseSrc?(assets.baseKind==='video'?<video key={baseSrc} className="livePreviewBase helperPreviewBase" src={baseSrc} preload="auto" autoPlay loop muted playsInline onLoadedData={e=>baseLoaded(e.currentTarget.videoWidth,e.currentTarget.videoHeight)} onError={()=>reportRed('base-video-load')}/>:<img className="livePreviewBase helperPreviewBase" src={baseSrc} draggable={false} onLoad={e=>baseLoaded(e.currentTarget.naturalWidth,e.currentTarget.naturalHeight)} onError={()=>reportRed('base-image-load')}/>):null;
+  const posterBase=posterSrc?<img className={`livePreviewBase composedPosterPreview ${liveReady?'liveReady':''}`} src={posterSrc} draggable={false} onLoad={e=>posterLoaded(e.currentTarget)} onError={()=>reportRed('poster-image-load')}/>:null;
   const exactOverlayStyle:React.CSSProperties=effect.fullscreen?overlayStyle:{...overlayStyle,aspectRatio:String(Math.max(.05,overlayAspect)),height:'auto'};
   return <div className={`liveComposite ${picker?'chromaPicking':''} ${anchorMode?'anchorPicking':''}`} onPointerDownCapture={pickAnchor}>
     {helperBase}
+    {posterBase}
     {anchor&&<div aria-hidden="true" style={{position:'absolute',left:`${anchor.x*100}%`,top:`${anchor.y*100}%`,width:18,height:18,border:'2px solid currentColor',borderRadius:'50%',transform:'translate(-50%,-50%)',boxShadow:'0 0 0 1px rgba(0,0,0,.75)',zIndex:12,pointerEvents:'none'}}><i style={{position:'absolute',left:'50%',top:-7,bottom:-7,width:1,background:'currentColor',transform:'translateX(-50%)'}}/><i style={{position:'absolute',top:'50%',left:-7,right:-7,height:1,background:'currentColor',transform:'translateY(-50%)'}}/></div>}
     {active&&effect.mode==='chromakey'&&<button type="button" className={`chromaPickerButton ${picker?'active':''}`} onClick={e=>{e.preventDefault();e.stopPropagation();setPicker(v=>!v)}}>{picker?'✓ ВЫБЕРИ/ПРОВЕДИ ПО ФОНУ':'⌾ ПИПЕТКА / КИСТЬ'}</button>}
     {active&&<div ref={overlayRef} className={`liveGpuOverlay ${effect.fullscreen?'fullscreen':''}`} style={exactOverlayStyle}
@@ -172,6 +194,6 @@ export function LiveCompositePreview({assets,effect,active=true,busy,overlayRef,
       {!effect.fullscreen&&!picker&&<><i className="corner nw"/><i className="corner ne"/><i className="corner sw"/><i className="corner se" onPointerDown={onResizeStart}/></>}
     </div>}
     {!active&&<div className="livePreviewDisabled">OFF • overlay скрыт</div>}
-    {(busy||!baseSrc||!overlaySrc)&&<div className="livePreviewPreparing">Подготавливаю Live Preview…</div>}
+    {(busy||!posterSrc)&&<div className="livePreviewPreparing">Подготавливаю Live Preview…</div>}
   </div>
 }

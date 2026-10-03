@@ -1,0 +1,73 @@
+name: ENDLUME 10.0.11 Exact Steam Asset Gate
+
+on:
+  push:
+    branches:
+      - qa/endlume-10.0.11-exact-steam-visual
+    paths:
+      - ".github/workflows/endlume-1011-exact-steam-asset-gate.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-1011-exact-steam-asset-gate
+  cancel-in-progress: true
+
+jobs:
+  exact-asset:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Download exact upstream 360p asset
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ROOT="$RUNNER_TEMP/endlume-1011-exact-steam"
+          rm -rf "$ROOT"; mkdir -p "$ROOT"
+          curl -fL --retry 4 https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o "$ROOT/yt-dlp"
+          chmod +x "$ROOT/yt-dlp"
+          "$ROOT/yt-dlp" --no-playlist -f 18 -o "$ROOT/steam.mp4" "https://www.youtube.com/watch?v=kMkfJTjkhuQ"
+          test -s "$ROOT/steam.mp4"
+          echo "STEAM_PATH=$ROOT/steam.mp4" >> "$GITHUB_ENV"
+
+      - name: Exact identity and media contract
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          EXPECTED_SHA="d32262025aa7b7ebd2626cfb397b860150104b987957d1c2bf77395016e2cfb0"
+          EXPECTED_BYTES="789147"
+          ACTUAL_SHA="$(shasum -a 256 "$STEAM_PATH" | awk '{print $1}')"
+          ACTUAL_BYTES="$(stat -f '%z' "$STEAM_PATH")"
+          echo "EXPECTED_SHA256=$EXPECTED_SHA"
+          echo "ACTUAL_SHA256=$ACTUAL_SHA"
+          echo "EXPECTED_BYTES=$EXPECTED_BYTES"
+          echo "ACTUAL_BYTES=$ACTUAL_BYTES"
+          ffprobe -v error -count_frames -select_streams v:0             -show_entries stream=codec_name,width,height,r_frame_rate,avg_frame_rate,nb_read_frames             -show_entries format=duration,size             -of default=nw=1 "$STEAM_PATH"
+          test "$ACTUAL_SHA" = "$EXPECTED_SHA"
+          test "$ACTUAL_BYTES" = "$EXPECTED_BYTES"
+          W="$(ffprobe -v error -select_streams v:0 -show_entries stream=width -of csv=p=0 "$STEAM_PATH")"
+          H="$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of csv=p=0 "$STEAM_PATH")"
+          FPS="$(ffprobe -v error -select_streams v:0 -show_entries stream=r_frame_rate -of csv=p=0 "$STEAM_PATH")"
+          FRAMES="$(ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of csv=p=0 "$STEAM_PATH")"
+          DUR="$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$STEAM_PATH")"
+          test "$W" = "640"
+          test "$H" = "360"
+          test "$FPS" = "30/1"
+          test "$FRAMES" = "900"
+          python3 - "$DUR" <<'PY'
+          import sys
+          d=float(sys.argv[1])
+          assert abs(d-30.000181)<0.002,d
+          PY
+          echo "EXACT_STEAM_SOURCE_FOUND=GREEN"
+          echo "EXACT_STEAM_SHA256=GREEN"
+          echo "EXACT_STEAM_MEDIA_CONTRACT=GREEN"

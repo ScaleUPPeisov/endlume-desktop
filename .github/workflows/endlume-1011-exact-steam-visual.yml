@@ -107,6 +107,19 @@ jobs:
           test -x "$BIN"
           test -x "$FFMPEG"
           test -x "$FFPROBE"
+
+          # QA-only launch guard: macOS current_exe can resolve the release binary
+          # rather than the .app path when a packaged executable is started directly.
+          # Mirror the already-packaged sidecars beside that executable too. No source
+          # or product bundle logic is changed.
+          RELEASE_BIN="$CARGO_TARGET_DIR/aarch64-apple-darwin/release/endlume"
+          if [ -x "$RELEASE_BIN" ]; then
+            cp "$FFMPEG" "$(dirname "$RELEASE_BIN")/ffmpeg"
+            cp "$FFPROBE" "$(dirname "$RELEASE_BIN")/ffprobe"
+            chmod 755 "$(dirname "$RELEASE_BIN")/ffmpeg" "$(dirname "$RELEASE_BIN")/ffprobe"
+            echo "QA_RELEASE_SIDECARS_STAGED=GREEN"
+          fi
+
           printf '%s' "$BIN" > "$RUNNER_TEMP/e1011-exact-bin.txt"
           printf '%s' "$FFMPEG" > "$RUNNER_TEMP/e1011-exact-ffmpeg.txt"
           printf '%s' "$FFPROBE" > "$RUNNER_TEMP/e1011-exact-ffprobe.txt"

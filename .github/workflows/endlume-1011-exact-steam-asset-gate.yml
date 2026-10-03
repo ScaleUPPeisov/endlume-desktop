@@ -35,7 +35,7 @@ jobs:
           rm -rf "$ROOT"; mkdir -p "$ROOT"
           curl -fL --retry 4 https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o "$ROOT/yt-dlp"
           chmod +x "$ROOT/yt-dlp"
-          "$ROOT/yt-dlp" --no-playlist -f 18 -o "$ROOT/steam.mp4" "https://www.youtube.com/watch?v=kMkfJTjkhuQ"
+          "$ROOT/yt-dlp" --no-check-certificates --no-playlist -f 18 -o "$ROOT/steam.mp4" "https://www.youtube.com/watch?v=kMkfJTjkhuQ"
           test -s "$ROOT/steam.mp4"
           echo "STEAM_PATH=$ROOT/steam.mp4" >> "$GITHUB_ENV"
 

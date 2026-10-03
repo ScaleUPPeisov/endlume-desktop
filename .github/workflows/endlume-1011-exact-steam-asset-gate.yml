@@ -40,10 +40,13 @@ jobs:
           echo "Searching local Mac by exact byte size + SHA256"
           {
             mdfind 'kMDItemFSSize == 789147' 2>/dev/null || true
-            for base in "$HOME/Downloads" "$HOME/Desktop" "$HOME/Documents" "$HOME/Movies" "$HOME/Library" /Volumes; do
+            for base in "$HOME/Downloads" "$HOME/Desktop" "$HOME/Documents" "$HOME/Movies"; do
               [ -d "$base" ] || continue
-              find "$base" -type f -size 789147c -print 2>/dev/null || true
+              find "$base" -maxdepth 8 -type f -size 789147c -print 2>/dev/null || true
             done
+            if [ -d "/Volumes/TOSHIBA EXT" ]; then
+              find "/Volumes/TOSHIBA EXT" -maxdepth 9 -type f -size 789147c -print 2>/dev/null || true
+            fi
           } | awk 'NF && !seen[$0]++' > "$ROOT/candidates.txt"
 
           while IFS= read -r p; do

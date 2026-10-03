@@ -82,6 +82,22 @@ jobs:
           print("MAGENTA_REGRESSION_GATE=GREEN")
           PY
 
+      - name: Stage proven Apple Silicon FFmpeg sidecars
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+          TMP="$(mktemp -d)"
+          curl -fL --retry 4 "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffmpeg.zip" -o "$TMP/ffmpeg.zip"
+          curl -fL --retry 4 "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffprobe.zip" -o "$TMP/ffprobe.zip"
+          mkdir -p "$TMP/fm" "$TMP/fp" src-tauri/binaries
+          ditto -x -k "$TMP/ffmpeg.zip" "$TMP/fm"
+          ditto -x -k "$TMP/ffprobe.zip" "$TMP/fp"
+          cp "$(find "$TMP/fm" -type f -name ffmpeg -print -quit)" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp "$(find "$TMP/fp" -type f -name ffprobe -print -quit)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          chmod 755 src-tauri/binaries/ffmpeg-aarch64-apple-darwin src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          echo SIDECARS_GREEN
+
       - name: Build gates
         shell: bash
         run: |

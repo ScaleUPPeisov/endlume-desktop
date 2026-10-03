@@ -27,26 +27,60 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Download exact upstream 360p asset
+      - name: Resolve exact uploaded Steam asset
         shell: bash
         run: |
           set -Eeuo pipefail
           ROOT="$RUNNER_TEMP/endlume-1011-exact-steam"
           rm -rf "$ROOT"; mkdir -p "$ROOT"
-          curl -fL --retry 4 https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o "$ROOT/yt-dlp"
-          chmod +x "$ROOT/yt-dlp"
-          URL="https://www.youtube.com/watch?v=kMkfJTjkhuQ"
-          rm -f "$ROOT/steam.mp4"
-          OK=0
-          for CLIENT in tv android_vr web_embedded android; do
-            echo "TRY_PLAYER_CLIENT=$CLIENT"
-            rm -f "$ROOT/steam.mp4" "$ROOT/steam.mp4.part"
-            if "$ROOT/yt-dlp" --no-check-certificates --no-playlist --extractor-args "youtube:player_client=$CLIENT" -f "18/best[height=360][ext=mp4]/best[height<=360]" -o "$ROOT/steam.mp4" "$URL"; then
-              if [ -s "$ROOT/steam.mp4" ]; then OK=1; echo "PLAYER_CLIENT_SUCCESS=$CLIENT"; break; fi
+          EXPECTED_SHA="d32262025aa7b7ebd2626cfb397b860150104b987957d1c2bf77395016e2cfb0"
+          EXPECTED_BYTES="789147"
+          FOUND=""
+
+          echo "Searching local Mac by exact byte size + SHA256"
+          {
+            mdfind 'kMDItemFSSize == 789147' 2>/dev/null || true
+            for base in "$HOME/Downloads" "$HOME/Desktop" "$HOME/Documents" "$HOME/Movies" "$HOME/Library" /Volumes; do
+              [ -d "$base" ] || continue
+              find "$base" -type f -size 789147c -print 2>/dev/null || true
+            done
+          } | awk 'NF && !seen[$0]++' > "$ROOT/candidates.txt"
+
+          while IFS= read -r p; do
+            [ -f "$p" ] || continue
+            sha="$(shasum -a 256 "$p" 2>/dev/null | awk '{print $1}' || true)"
+            if [ "$sha" = "$EXPECTED_SHA" ]; then
+              FOUND="$p"
+              echo "EXACT_LOCAL_SHA_MATCH=$p"
+              break
             fi
-          done
-          test "$OK" = "1"
+          done < "$ROOT/candidates.txt"
+
+          if [ -n "$FOUND" ]; then
+            cp "$FOUND" "$ROOT/steam.mp4"
+            echo "ASSET_SOURCE=LOCAL_SHA_MATCH"
+          else
+            echo "LOCAL_SHA_MATCH=NOT_FOUND"
+            curl -fL --retry 4 https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o "$ROOT/yt-dlp"
+            chmod +x "$ROOT/yt-dlp"
+            URL="https://www.youtube.com/watch?v=kMkfJTjkhuQ"
+            OK=0
+            for CLIENT in tv android_vr web_embedded android; do
+              echo "TRY_PLAYER_CLIENT=$CLIENT"
+              rm -f "$ROOT/steam.mp4" "$ROOT/steam.mp4.part"
+              if "$ROOT/yt-dlp" --no-check-certificates --no-playlist --extractor-args "youtube:player_client=$CLIENT" -f "18/best[height=360][ext=mp4]/best[height<=360]" -o "$ROOT/steam.mp4" "$URL"; then
+                [ -s "$ROOT/steam.mp4" ] && OK=1 && break
+              fi
+            done
+            test "$OK" = "1"
+            echo "ASSET_SOURCE=UPSTREAM"
+          fi
+
           test -s "$ROOT/steam.mp4"
+          ACTUAL_SHA="$(shasum -a 256 "$ROOT/steam.mp4" | awk '{print $1}')"
+          ACTUAL_BYTES="$(stat -f '%z' "$ROOT/steam.mp4")"
+          test "$ACTUAL_SHA" = "$EXPECTED_SHA"
+          test "$ACTUAL_BYTES" = "$EXPECTED_BYTES"
           echo "STEAM_PATH=$ROOT/steam.mp4" >> "$GITHUB_ENV"
 
       - name: Exact identity and media contract

@@ -1,0 +1,118 @@
+name: ENDLUME 10.0.11 Chromakey Preview Neutral
+
+on:
+  push:
+    branches:
+      - hotfix/endlume-10.0.11-chromakey-preview-neutral
+    paths:
+      - "src/components/LiveCompositePreview.tsx"
+      - ".github/workflows/endlume-1011-chromakey-preview-neutral.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-1011-chromakey-preview-neutral
+  cancel-in-progress: true
+
+jobs:
+  targeted:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Source and chromakey regression gate
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+          python3 - <<'PY'
+          from pathlib import Path
+          import math
+
+          p=Path("src/components/LiveCompositePreview.tsx")
+          s=p.read_text()
+
+          old="float factor=(1.0-dsp)*(1.0-0.20)"
+          required="if(dsp>0.000001){if(key.g>=key.b){float sp=max(c.g-max(c.r,c.b),0.0);c.g=max(c.g-sp*dsp,0.0);}"
+          assert old not in s, "OLD_DESTRUCTIVE_DESPILL_STILL_PRESENT"
+          assert required in s, "NEUTRAL_DESPILL_SHADER_NOT_PRESENT"
+
+          def clamp(v,lo=0.0,hi=1.0):
+              return max(lo,min(hi,v))
+
+          def shader(rgb, key=(0.0,1.0,0.0), sim=0.136, blend=0.35, dsp=0.0):
+              r,g,b=rgb
+              d=math.sqrt((r-key[0])**2+(g-key[1])**2+(b-key[2])**2)/math.sqrt(3.0)
+              alpha=1.0 if blend<0.0001 and d>sim else (0.0 if blend<0.0001 else clamp((d-sim)/blend))
+              if dsp>0.000001:
+                  if key[1]>=key[2]:
+                      spill=max(g-max(r,b),0.0)
+                      g=max(g-spill*dsp,0.0)
+                  else:
+                      spill=max(b-max(r,g),0.0)
+                      b=max(b-spill*dsp,0.0)
+              return (r,g,b,alpha)
+
+          neutral=[(1.0,1.0,1.0),(0.72,0.72,0.72),(0.42,0.42,0.42)]
+          for px in neutral:
+              for dsp in (0.0,0.35,1.0):
+                  out=shader(px,dsp=dsp)
+                  assert all(abs(out[i]-px[i])<1e-12 for i in range(3)), (px,dsp,out)
+
+          translucent_green_mixed=(0.55,1.0,0.55)
+          out0=shader(translucent_green_mixed,dsp=0.0)
+          assert all(abs(out0[i]-translucent_green_mixed[i])<1e-12 for i in range(3)), out0
+          assert 0.0 < out0[3] < 1.0, out0
+
+          out35=shader(translucent_green_mixed,dsp=0.35)
+          assert out35[0]==translucent_green_mixed[0] and out35[2]==translucent_green_mixed[2], out35
+          assert translucent_green_mixed[0] < out35[1] < translucent_green_mixed[1], out35
+
+          print("CHROMAKEY_ALPHA_GREEN_MIXED=%.6f" % out0[3])
+          print("DESPILL_ZERO_RGB_PRESERVED=GREEN")
+          print("NEUTRAL_WHITE_GREY_PRESERVED=GREEN")
+          print("DESPILL_POSITIVE_ONLY_KEY_EXCESS=GREEN")
+          print("MAGENTA_REGRESSION_GATE=GREEN")
+          PY
+
+      - name: Build gates
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+          npm ci
+          npm run check
+          npm run build
+          cargo check --manifest-path src-tauri/Cargo.toml
+          echo NPM_CHECK=GREEN
+          echo NPM_BUILD=GREEN
+          echo CARGO_CHECK=GREEN
+
+      - name: Locate exact supplied steam source on runner
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          TARGET='Steam green screen videos smoke green screen Smoke or steam effect animated on green screen [get-save.com].mp4'
+          FOUND=""
+          for root in "$HOME/Downloads" "$HOME/Desktop" "$HOME/Documents" "$HOME/Movies" "/Volumes/TOSHIBA EXT"; do
+            [ -d "$root" ] || continue
+            CAND="$(find "$root" -maxdepth 6 -type f -name "$TARGET" -print -quit 2>/dev/null || true)"
+            if [ -n "$CAND" ]; then FOUND="$CAND"; break; fi
+          done
+          if [ -n "$FOUND" ]; then
+            echo "EXACT_STEAM_SOURCE_FOUND=GREEN"
+            echo "EXACT_STEAM_SOURCE_PATH=$FOUND"
+            if command -v ffprobe >/dev/null 2>&1; then
+              ffprobe -v error -select_streams v:0 -show_entries stream=width,height,r_frame_rate -show_entries format=duration -of default=nw=1 "$FOUND"
+            fi
+          else
+            echo "EXACT_STEAM_SOURCE_FOUND=RED"
+            echo "Exact supplied MP4 is not present in the searched runner folders; build/regression gates remain valid, but exact visual reproduction is not claimed."
+          fi

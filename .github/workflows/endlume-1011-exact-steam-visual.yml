@@ -1,0 +1,154 @@
+name: ENDLUME 10.0.11 Exact Steam Visual Acceptance
+
+on:
+  push:
+    branches:
+      - qa/endlume-10.0.11-exact-steam-visual
+    paths:
+      - ".github/workflows/endlume-1011-exact-steam-visual.yml"
+      - "scripts/qa-endlume-1011-exact-steam-visual.py"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-1011-exact-steam-visual
+  cancel-in-progress: true
+
+jobs:
+  visual:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Resolve exact uploaded Steam asset by SHA
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ROOT="$RUNNER_TEMP/endlume-1011-exact-steam-visual"
+          rm -rf "$ROOT"; mkdir -p "$ROOT"
+          EXPECTED_SHA="d32262025aa7b7ebd2626cfb397b860150104b987957d1c2bf77395016e2cfb0"
+          {
+            mdfind 'kMDItemFSSize == 789147' 2>/dev/null || true
+            for base in "$HOME/Downloads" "$HOME/Desktop" "$HOME/Documents" "$HOME/Movies"; do
+              [ -d "$base" ] || continue
+              find "$base" -maxdepth 8 -type f -size 789147c -print 2>/dev/null || true
+            done
+            if [ -d "/Volumes/TOSHIBA EXT" ]; then
+              find "/Volumes/TOSHIBA EXT" -maxdepth 9 -type f -size 789147c -print 2>/dev/null || true
+            fi
+          } | awk 'NF && !seen[$0]++' > "$ROOT/candidates.txt"
+          FOUND=""
+          while IFS= read -r p; do
+            [ -f "$p" ] || continue
+            sha="$(shasum -a 256 "$p" 2>/dev/null | awk '{print $1}' || true)"
+            if [ "$sha" = "$EXPECTED_SHA" ]; then FOUND="$p"; break; fi
+          done < "$ROOT/candidates.txt"
+          test -n "$FOUND"
+          cp "$FOUND" "$ROOT/steam.mp4"
+          test "$(shasum -a 256 "$ROOT/steam.mp4" | awk '{print $1}')" = "$EXPECTED_SHA"
+          test "$(stat -f '%z' "$ROOT/steam.mp4")" = "789147"
+          echo "EXACT_STEAM_LOCAL_PATH=$FOUND"
+          echo "STEAM_PATH=$ROOT/steam.mp4" >> "$GITHUB_ENV"
+          echo "QA_ROOT=$ROOT" >> "$GITHUB_ENV"
+          echo "EXACT_STEAM_SOURCE_FOUND=GREEN"
+
+      - name: Stage proven Apple Silicon FFmpeg sidecars
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+          TMP="$(mktemp -d)"
+          curl -fL --retry 4 "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffmpeg.zip" -o "$TMP/ffmpeg.zip"
+          curl -fL --retry 4 "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffprobe.zip" -o "$TMP/ffprobe.zip"
+          mkdir -p "$TMP/fm" "$TMP/fp" src-tauri/binaries
+          ditto -x -k "$TMP/ffmpeg.zip" "$TMP/fm"
+          ditto -x -k "$TMP/ffprobe.zip" "$TMP/fp"
+          cp "$(find "$TMP/fm" -type f -name ffmpeg -print -quit)" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp "$(find "$TMP/fp" -type f -name ffprobe -print -quit)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          chmod 755 src-tauri/binaries/ffmpeg-aarch64-apple-darwin src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          echo SIDECARS_GREEN
+
+      - name: Build exact candidate QA app
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+          export CARGO_TARGET_DIR="$HOME/.endlume-build-cache/target-1011-exact-steam-visual"
+          npm ci
+          npm run check
+          npm run build
+          cargo check --manifest-path src-tauri/Cargo.toml
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path("src-tauri/tauri.conf.json")
+          d=json.loads(p.read_text())
+          d["bundle"]["createUpdaterArtifacts"]=False
+          p.write_text(json.dumps(d,ensure_ascii=False,indent=2)+"\n")
+          PY
+          ENDLUME_TAURI_TARGET=aarch64-apple-darwin node scripts/prepare-macos-ffmpeg-runtime.mjs
+          npx tauri build --target aarch64-apple-darwin --bundles app --features e2e-render
+          APP="$(find "$CARGO_TARGET_DIR/aarch64-apple-darwin/release/bundle/macos" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          test -n "$APP" -a -d "$APP"
+          /usr/bin/codesign --force --deep --sign - --timestamp=none "$APP"
+          /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP"
+          EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
+          BIN="$APP/Contents/MacOS/$EXE"
+          FFMPEG="$(find "$APP/Contents" -maxdepth 6 -type f -name 'ffmpeg' -perm -111 -print -quit)"
+          FFPROBE="$(find "$APP/Contents" -maxdepth 6 -type f -name 'ffprobe' -perm -111 -print -quit)"
+          test -x "$BIN"
+          test -x "$FFMPEG"
+          test -x "$FFPROBE"
+          printf '%s' "$BIN" > "$RUNNER_TEMP/e1011-exact-bin.txt"
+          printf '%s' "$FFMPEG" > "$RUNNER_TEMP/e1011-exact-ffmpeg.txt"
+          printf '%s' "$FFPROBE" > "$RUNNER_TEMP/e1011-exact-ffprobe.txt"
+          echo CANDIDATE_BUILD_GREEN
+
+      - name: Capture six real Preview checkpoints and Final Render
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+          BIN="$(cat "$RUNNER_TEMP/e1011-exact-bin.txt")"
+          FFMPEG="$(cat "$RUNNER_TEMP/e1011-exact-ffmpeg.txt")"
+          FFPROBE="$(cat "$RUNNER_TEMP/e1011-exact-ffprobe.txt")"
+          python3 scripts/qa-endlume-1011-exact-steam-visual.py "$BIN" "$FFMPEG" "$FFPROBE" "$STEAM_PATH" "$QA_ROOT"
+          test -s "$QA_ROOT/visual-report.json"
+          test "$(find "$QA_ROOT/preview" -name 'preview-*-a.png' -type f | wc -l | tr -d ' ')" = "6"
+          test "$(find "$QA_ROOT/preview" -name 'preview-*-b.png' -type f | wc -l | tr -d ' ')" = "6"
+          test "$(find "$QA_ROOT/final" -name 'final-*.png' -type f | wc -l | tr -d ' ')" = "6"
+          echo EXACT_VISUAL_CAPTURE_SET=GREEN
+
+      - name: Product diff guard
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git diff -- src/components/LiveCompositePreview.tsx
+          git diff --exit-code fce473fbd754fbcb31aca8555981f27221b0a367 --             src/components/LiveCompositePreview.tsx             src-tauri/src/render.rs             src-tauri/src/cache.rs             src-tauri/src/live_preview.rs             src-tauri/src/preview.rs             src-tauri/tauri.conf.json || {
+              echo "QA workspace may include tauri.conf build-only mutation; checking committed tree instead"
+              git show HEAD:src-tauri/tauri.conf.json > "$RUNNER_TEMP/qa-head-tauri.json"
+              git show fce473fbd754fbcb31aca8555981f27221b0a367:src-tauri/tauri.conf.json > "$RUNNER_TEMP/base-tauri.json"
+              cmp "$RUNNER_TEMP/qa-head-tauri.json" "$RUNNER_TEMP/base-tauri.json"
+              for p in src/components/LiveCompositePreview.tsx src-tauri/src/render.rs src-tauri/src/cache.rs src-tauri/src/live_preview.rs src-tauri/src/preview.rs; do
+                test "$(git rev-parse HEAD:$p)" = "$(git rev-parse fce473fbd754fbcb31aca8555981f27221b0a367:$p)"
+              done
+            }
+          echo PRODUCT_DIFF_CLEAN=GREEN
+
+      - name: Upload exact visual proof
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ENDLUME-10.0.11-EXACT-STEAM-VISUAL-PROOF
+          path: |
+            ${{ runner.temp }}/endlume-1011-exact-steam-visual/**
+          if-no-files-found: warn
+          retention-days: 7

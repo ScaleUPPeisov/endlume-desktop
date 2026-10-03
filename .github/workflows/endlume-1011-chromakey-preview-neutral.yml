@@ -43,6 +43,8 @@ jobs:
           required="if(dsp>0.000001){if(key.g>=key.b){float sp=max(c.g-max(c.r,c.b),0.0);c.g=max(c.g-sp*dsp,0.0);}"
           assert old not in s, "OLD_DESTRUCTIVE_DESPILL_STILL_PRESENT"
           assert required in s, "NEUTRAL_DESPILL_SHADER_NOT_PRESENT"
+          assert "premultipliedAlpha:true" in s, "WEBGL_PREMULTIPLIED_ALPHA_NOT_ENABLED"
+          assert "gl_FragColor=vec4(c*a,a);" in s, "SHADER_OUTPUT_NOT_PREMULTIPLIED"
 
           def clamp(v,lo=0.0,hi=1.0):
               return max(lo,min(hi,v))
@@ -80,6 +82,7 @@ jobs:
           print("NEUTRAL_WHITE_GREY_PRESERVED=GREEN")
           print("DESPILL_POSITIVE_ONLY_KEY_EXCESS=GREEN")
           print("MAGENTA_REGRESSION_GATE=GREEN")
+          print("WEBGL_PREMULTIPLIED_ALPHA=GREEN")
           PY
 
       - name: Stage proven Apple Silicon FFmpeg sidecars

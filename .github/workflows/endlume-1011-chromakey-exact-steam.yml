@@ -1,0 +1,89 @@
+name: ENDLUME 10.0.11 Exact Steam Visual Acceptance
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches: [hotfix/endlume-10.0.11-chromakey-preview-neutral]
+    paths:
+      - "scripts/qa-endlume-1011-chromakey-exact-steam.py"
+      - "qa/fixtures/endlume-1011-exact-steam.mp4.gz.b64"
+      - ".github/workflows/endlume-1011-chromakey-exact-steam.yml"
+      - "src/components/LiveCompositePreview.tsx"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-1011-exact-steam
+  cancel-in-progress: true
+
+jobs:
+  exact-visual:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Stage proven Apple Silicon FFmpeg
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+          TMP="$(mktemp -d)"
+          curl -fL --retry 4 "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffmpeg.zip" -o "$TMP/ffmpeg.zip"
+          curl -fL --retry 4 "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffprobe.zip" -o "$TMP/ffprobe.zip"
+          mkdir -p "$TMP/fm" "$TMP/fp" src-tauri/binaries
+          ditto -x -k "$TMP/ffmpeg.zip" "$TMP/fm"
+          ditto -x -k "$TMP/ffprobe.zip" "$TMP/fp"
+          cp "$(find "$TMP/fm" -type f -name ffmpeg -print -quit)" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp "$(find "$TMP/fp" -type f -name ffprobe -print -quit)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          chmod 755 src-tauri/binaries/ffmpeg-aarch64-apple-darwin src-tauri/binaries/ffprobe-aarch64-apple-darwin
+
+      - name: Build exact candidate QA app
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+          export CARGO_TARGET_DIR="$HOME/.endlume-build-cache/target-1011-exact-steam"
+          npm ci
+          npm run check
+          npm run build
+          cargo check --manifest-path src-tauri/Cargo.toml
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path("src-tauri/tauri.conf.json");d=json.loads(p.read_text());d["bundle"]["createUpdaterArtifacts"]=False;p.write_text(json.dumps(d,ensure_ascii=False,indent=2)+"\n")
+          PY
+          ENDLUME_TAURI_TARGET=aarch64-apple-darwin node scripts/prepare-macos-ffmpeg-runtime.mjs
+          npx tauri build --target aarch64-apple-darwin --bundles app --features e2e-render
+          APP="$(find "$CARGO_TARGET_DIR/aarch64-apple-darwin/release/bundle/macos" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          test -n "$APP" -a -d "$APP"
+          /usr/bin/codesign --force --deep --sign - --timestamp=none "$APP"
+          /usr/bin/codesign --verify --deep --strict "$APP"
+          EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
+          FFMPEG="$(find "$APP/Contents" -maxdepth 6 -type f -name 'ffmpeg' -perm -111 -print -quit)"
+          FFPROBE="$(find "$APP/Contents" -maxdepth 6 -type f -name 'ffprobe' -perm -111 -print -quit)"
+          test -x "$APP/Contents/MacOS/$EXE" -a -x "$FFMPEG" -a -x "$FFPROBE"
+          printf '%s' "$APP/Contents/MacOS/$EXE" > "$RUNNER_TEMP/e1011-exact-bin.txt"
+          printf '%s' "$FFMPEG" > "$RUNNER_TEMP/e1011-exact-ffmpeg.txt"
+          printf '%s' "$FFPROBE" > "$RUNNER_TEMP/e1011-exact-ffprobe.txt"
+
+      - name: Exact Steam visual acceptance
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          OUT="$RUNNER_TEMP/endlume-1011-exact-steam-proof";rm -rf "$OUT";mkdir -p "$OUT"
+          python3 scripts/qa-endlume-1011-chromakey-exact-steam.py             "$(cat "$RUNNER_TEMP/e1011-exact-bin.txt")"             "$(cat "$RUNNER_TEMP/e1011-exact-ffmpeg.txt")"             "$(cat "$RUNNER_TEMP/e1011-exact-ffprobe.txt")"             qa/fixtures/endlume-1011-exact-steam.mp4.gz.b64             "$OUT"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ENDLUME-10.0.11-EXACT-STEAM-VISUAL-PROOF
+          path: ${{ runner.temp }}/endlume-1011-exact-steam-proof/**
+          if-no-files-found: warn
+          retention-days: 7

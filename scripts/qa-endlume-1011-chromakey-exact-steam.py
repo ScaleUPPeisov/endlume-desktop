@@ -29,14 +29,23 @@ print("EXACT_STEAM_SOURCE_FOUND=GREEN",flush=True)
 # QA-only launch guard for the self-hosted macOS runner. Direct execution can
 # resolve current_exe outside the .app bundle, so mirror the already-packaged
 # sidecars beside the QA executable. This does not change product source.
-for _src,_name in ((FFMPEG,"ffmpeg"),(FFPROBE,"ffprobe")):
-    _dst=APP.parent/_name
-    if _src.resolve()!=_dst.resolve():
-        shutil.copy2(_src,_dst)
-        _dst.chmod(0o755)
-assert (APP.parent/"ffmpeg").is_file() and os.access(APP.parent/"ffmpeg",os.X_OK)
-assert (APP.parent/"ffprobe").is_file() and os.access(APP.parent/"ffprobe",os.X_OK)
-print("QA_RELEASE_SIDECARS_STAGED=GREEN",flush=True)
+_qa_sidecar_dirs=[APP.parent]
+try:
+    _release_dir=APP.parents[5]
+    if (_release_dir/"endlume").is_file():
+        _qa_sidecar_dirs.append(_release_dir)
+except IndexError:
+    pass
+for _dir in _qa_sidecar_dirs:
+    for _src,_name in ((FFMPEG,"ffmpeg"),(FFPROBE,"ffprobe")):
+        _dst=_dir/_name
+        if _src.resolve()!=_dst.resolve():
+            shutil.copy2(_src,_dst)
+            _dst.chmod(0o755)
+for _dir in _qa_sidecar_dirs:
+    assert (_dir/"ffmpeg").is_file() and os.access(_dir/"ffmpeg",os.X_OK)
+    assert (_dir/"ffprobe").is_file() and os.access(_dir/"ffprobe",os.X_OK)
+print("QA_RELEASE_SIDECARS_STAGED=GREEN dirs="+",".join(str(x) for x in _qa_sidecar_dirs),flush=True)
 
 def candidate_dirs():
     out=[]

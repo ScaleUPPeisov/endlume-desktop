@@ -172,16 +172,18 @@ def make_overlay_proxy(t):
     out=live_cache/f"qa-exact-steam-{tag}.mp4"
     try:out.unlink()
     except FileNotFoundError:pass
-    # Diagnostic isolation: keep the product WebGL shader unchanged and force a
-    # software H.264 proxy. If WKWebView color becomes correct here, the remaining
-    # defect is proven in the VideoToolbox proxy transport/decode path.
-    sw=run([FFMPEG,"-hide_banner","-loglevel","error","-stream_loop","-1","-ss",str(float(t)),"-i",STEAM,
-            "-t","6","-an","-vf","scale=640:-2:flags=lanczos,fps=60",
-            "-c:v","libx264","-preset","ultrafast","-crf","18","-g","1","-keyint_min","1",
-            "-sc_threshold","0","-bf","0","-pix_fmt","yuv420p","-movflags","+faststart","-y",out],
-           check=False,timeout=120)
-    assert sw.returncode==0,(t,sw.stderr[-4000:])
-    print(f"EXACT_QA_PROXY_ENCODER_LIBX264_{tag}=GREEN")
+    common=[FFMPEG,"-hide_banner","-loglevel","error","-stream_loop","-1","-ss",str(float(t)),"-i",STEAM,
+            "-t","6","-an","-vf",
+            "scale=640:-2:flags=fast_bilinear,minterpolate=fps=60:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1"]
+    hw=run(common+["-c:v","h264_videotoolbox","-realtime","1","-q:v","72","-g","1","-bf","0",
+                   "-pix_fmt","yuv420p","-movflags","+faststart","-y",out],check=False,timeout=120)
+    if hw.returncode!=0:
+        sw=run([FFMPEG,"-hide_banner","-loglevel","error","-stream_loop","-1","-ss",str(float(t)),"-i",STEAM,
+                "-t","6","-an","-vf","scale=640:-2:flags=lanczos,fps=60",
+                "-c:v","libx264","-preset","ultrafast","-crf","18","-g","1","-keyint_min","1",
+                "-sc_threshold","0","-bf","0","-pix_fmt","yuv420p","-movflags","+faststart","-y",out],
+               check=False,timeout=120)
+        assert sw.returncode==0,(t,hw.stderr[-4000:],sw.stderr[-4000:])
     assert out.is_file() and out.stat().st_size>1024,out
     pm=probe(out);pv=next(x for x in pm["streams"] if x.get("codec_type")=="video")
     assert int(pv["width"])==640 and int(pv["height"])==360,pv

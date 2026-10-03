@@ -1,0 +1,311 @@
+name: ENDLUME 10.0.11 Exact Steam Visual Acceptance
+
+on:
+  push:
+    branches:
+      - hotfix/endlume-10.0.11-chromakey-preview-neutral
+    paths:
+      - "src/components/LiveCompositePreview.tsx"
+      - ".github/workflows/endlume-1011-exact-steam-visual.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-1011-exact-steam-visual
+  cancel-in-progress: true
+
+jobs:
+  exact-visual:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Resolve exact user fixtures
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ROOT="$RUNNER_TEMP/endlume-1011-exact-steam-acceptance"
+          rm -rf "$ROOT"
+          mkdir -p "$ROOT/preview" "$ROOT/final" "$ROOT/brewroom-project"
+
+          STEAM="/Users/peisov/Downloads/Steam green screen videos smoke green screen Smoke or steam effect animated on green screen [get-save.com].mp4"
+          if [ ! -f "$STEAM" ]; then
+            STEAM="$(find "/Users/peisov/Downloads" "/Users/peisov/Desktop" "/Users/peisov/Movies" -maxdepth 4 -type f -name 'Steam green screen videos smoke green screen Smoke or steam effect animated on green screen [get-save.com].mp4' -print -quit 2>/dev/null || true)"
+          fi
+          test -n "$STEAM" -a -f "$STEAM"
+          cp "$STEAM" "$ROOT/exact-steam.mp4"
+
+          BREWROOM="/Volumes/TOSHIBA EXT/ВАЙРОН/ProductionManager/Batches/48b662a7-a46b-4160-886c-3a898c138c07/Brewroom Jazz_BATCH_2026-10-01_003/029"
+          if [ ! -d "$BREWROOM" ]; then
+            COVER="$(find "/Volumes/TOSHIBA EXT/ВАЙРОН/ProductionManager/Batches" -type f -path '*Brewroom Jazz*/*/cover.png' -print -quit 2>/dev/null || true)"
+            test -n "$COVER" -a -f "$COVER"
+            BREWROOM="$(dirname "$COVER")"
+          fi
+          test -f "$BREWROOM/cover.png"
+          AUDIO="$(find "$BREWROOM" -maxdepth 1 -type f \( -iname '*.mp3' -o -iname '*.wav' -o -iname '*.m4a' \) -print -quit)"
+          test -n "$AUDIO" -a -f "$AUDIO"
+          cp "$BREWROOM/cover.png" "$ROOT/brewroom-project/001.png"
+
+          shasum -a 256 "$ROOT/exact-steam.mp4" | tee "$ROOT/steam-sha256.txt"
+          EXPECTED="d32262025aa7b7ebd2626cfb397b860150104b987957d1c2bf77395016e2cfb0"
+          ACTUAL="$(shasum -a 256 "$ROOT/exact-steam.mp4" | awk '{print $1}')"
+          test "$ACTUAL" = "$EXPECTED"
+
+          printf '%s' "$ROOT" > "$RUNNER_TEMP/e1011-exact-root.txt"
+          printf '%s' "$AUDIO" > "$RUNNER_TEMP/e1011-exact-audio.txt"
+          printf '%s' "$BREWROOM" > "$RUNNER_TEMP/e1011-brewroom-source.txt"
+          echo EXACT_STEAM_SOURCE_FOUND=GREEN
+          echo EXACT_STEAM_SHA256=GREEN
+          echo BREWROOM_EXACT_PROJECT_FOUND=GREEN
+
+      - name: Stage proven Apple Silicon FFmpeg sidecars
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+          TMP="$(mktemp -d)"
+          curl -fL --retry 4 "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffmpeg.zip" -o "$TMP/ffmpeg.zip"
+          curl -fL --retry 4 "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffprobe.zip" -o "$TMP/ffprobe.zip"
+          mkdir -p "$TMP/fm" "$TMP/fp" src-tauri/binaries
+          ditto -x -k "$TMP/ffmpeg.zip" "$TMP/fm"
+          ditto -x -k "$TMP/ffprobe.zip" "$TMP/fp"
+          cp "$(find "$TMP/fm" -type f -name ffmpeg -print -quit)" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp "$(find "$TMP/fp" -type f -name ffprobe -print -quit)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          chmod 755 src-tauri/binaries/ffmpeg-aarch64-apple-darwin src-tauri/binaries/ffprobe-aarch64-apple-darwin
+
+      - name: Verify exact source properties
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ROOT="$(cat "$RUNNER_TEMP/e1011-exact-root.txt")"
+          src-tauri/binaries/ffprobe-aarch64-apple-darwin -v error -count_frames -select_streams v:0             -show_entries stream=width,height,r_frame_rate,nb_read_frames -show_entries format=duration             -of json "$ROOT/exact-steam.mp4" > "$ROOT/source-probe.json"
+          python3 - "$ROOT/source-probe.json" <<'PY'
+          import json,sys
+          d=json.load(open(sys.argv[1]))
+          s=d["streams"][0]
+          assert int(s["width"])==640,d
+          assert int(s["height"])==360,d
+          assert s["r_frame_rate"]=="30/1",d
+          assert int(s["nb_read_frames"])==900,d
+          assert abs(float(d["format"]["duration"])-30.000181)<0.02,d
+          print("SOURCE_640x360=GREEN")
+          print("SOURCE_30FPS=GREEN")
+          print("SOURCE_900_FRAMES=GREEN")
+          print("SOURCE_30SEC=GREEN")
+          PY
+
+      - name: Build exact candidate app
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+          export CARGO_TARGET_DIR="$HOME/.endlume-build-cache/target-1011-exact-steam-visual"
+          npm ci
+          npm run check
+          npm run build
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path("src-tauri/tauri.conf.json")
+          d=json.loads(p.read_text())
+          d["bundle"]["createUpdaterArtifacts"]=False
+          p.write_text(json.dumps(d,ensure_ascii=False,indent=2)+"\n")
+          PY
+          ENDLUME_TAURI_TARGET=aarch64-apple-darwin node scripts/prepare-macos-ffmpeg-runtime.mjs
+          npx tauri build --target aarch64-apple-darwin --bundles app --features e2e-render
+          APP="$(find "$CARGO_TARGET_DIR/aarch64-apple-darwin/release/bundle/macos" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          test -n "$APP" -a -d "$APP"
+          /usr/bin/codesign --force --deep --sign - --timestamp=none "$APP"
+          /usr/bin/codesign --verify --deep --strict "$APP"
+          EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
+          BIN="$APP/Contents/MacOS/$EXE"
+          FFMPEG="$(find "$APP/Contents" -maxdepth 6 -type f -name 'ffmpeg' -perm -111 -print -quit)"
+          FFPROBE="$(find "$APP/Contents" -maxdepth 6 -type f -name 'ffprobe' -perm -111 -print -quit)"
+          test -x "$BIN"; test -x "$FFMPEG"; test -x "$FFPROBE"
+          printf '%s' "$BIN" > "$RUNNER_TEMP/e1011-exact-bin.txt"
+          printf '%s' "$FFMPEG" > "$RUNNER_TEMP/e1011-exact-ffmpeg.txt"
+          printf '%s' "$FFPROBE" > "$RUNNER_TEMP/e1011-exact-ffprobe.txt"
+          echo EXACT_CANDIDATE_BUILD=GREEN
+
+      - name: Capture six exact Live Preview checkpoints
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ROOT="$(cat "$RUNNER_TEMP/e1011-exact-root.txt")"
+          BIN="$(cat "$RUNNER_TEMP/e1011-exact-bin.txt")"
+          FFMPEG="$(cat "$RUNNER_TEMP/e1011-exact-ffmpeg.txt")"
+          PROJECT="$ROOT/brewroom-project"
+          STEAM="$ROOT/exact-steam.mp4"
+
+          for T in 0 5 10 15 20 25; do
+            TAG="$(printf '%02d' "$T")"
+            BACK_JOB="$ROOT/backend-$TAG.json"
+            BACK_RES="$ROOT/backend-$TAG-result.json"
+            python3 - "$BACK_JOB" "$PROJECT" "$STEAM" "$T" <<'PY'
+          import json,sys
+          out,project,steam,t=sys.argv[1],sys.argv[2],sys.argv[3],float(sys.argv[4])
+          effect={
+            "id":"e1011-exact-steam","name":"Exact Steam Chromakey Acceptance","source":steam,
+            "enabled":True,"mode":"chromakey","keyColor":"#00ff00","similarity":0.136,"blend":0.35,"despill":0.0,
+            "lumaThreshold":0.03,"lumaTolerance":0.08,"saturation":1.0,
+            "x":0.637,"y":0.316,"scale":0.34,"fullscreen":False,"previewFrameTime":t,
+            "startSec":0.0,"endSec":None,"cacheKey":None,"cacheReady":False,
+            "usageMode":"always","intervalSec":240.0,"usageDurationSec":30.0,
+            "target":"CUSTOM","offsetX":0.0,"offsetY":0.0,"opacity":1.0
+          }
+          json.dump({"projectPath":project,"overlaySource":steam,"timeSec":t,"effects":[effect],"subscribes":[]},open(out,"w"),ensure_ascii=False,indent=2)
+          PY
+
+            ENDLUME_PREVIEW_DIAG=1 ENDLUME_E2E_PREVIEW_JOB="$BACK_JOB" ENDLUME_E2E_RESULT="$BACK_RES"               "$BIN" >"$ROOT/backend-$TAG.stdout" 2>"$ROOT/backend-$TAG.stderr"
+            test -s "$BACK_RES"
+
+            FRONT_FIX="$ROOT/frontend-$TAG.json"
+            FRONT_RES="$ROOT/frontend-$TAG-result.json"
+            python3 - "$BACK_JOB" "$BACK_RES" "$FRONT_FIX" "$TAG" <<'PY'
+          import json,sys
+          job=json.load(open(sys.argv[1]))
+          back=json.load(open(sys.argv[2]))
+          assert back["status"]=="passed",back
+          result=back["result"]
+          helper=result["helper"]
+          fixture={
+            "basePath":helper["basePath"],"baseKind":helper["baseKind"],
+            "overlayPath":helper["overlayPath"],"posterPath":result["posterPath"],
+            "baseBytes":helper["baseBytes"],"overlayBytes":helper["overlayBytes"],
+            "requestId":"exact-steam-"+sys.argv[4],"previewType":"Effects",
+            "effect":job["effects"][0]
+          }
+          json.dump(fixture,open(sys.argv[3],"w"),ensure_ascii=False,indent=2)
+          PY
+
+            rm -f "$FRONT_RES"
+            ENDLUME_E2E_FRONTEND_PREVIEW_FIXTURE="$FRONT_FIX" ENDLUME_E2E_FRONTEND_PREVIEW_RESULT="$FRONT_RES"               "$BIN" >"$ROOT/frontend-$TAG.stdout" 2>"$ROOT/frontend-$TAG.stderr" &
+            PID=$!
+            READY=0
+            for I in $(seq 1 100); do
+              if [ -s "$FRONT_RES" ]; then READY=1; break; fi
+              sleep 0.15
+            done
+            test "$READY" = 1
+            sleep 0.45
+            /usr/sbin/screencapture -x "$ROOT/preview/preview-$TAG-a.png"
+            sleep 0.85
+            /usr/sbin/screencapture -x "$ROOT/preview/preview-$TAG-b.png"
+            kill "$PID" 2>/dev/null || true
+            wait "$PID" 2>/dev/null || true
+
+            OVERLAY="$(python3 - "$FRONT_FIX" <<'PY'
+          import json,sys
+          print(json.load(open(sys.argv[1]))["overlayPath"])
+          PY
+          )"
+            "$FFMPEG" -hide_banner -loglevel error -ss 0.4 -i "$OVERLAY" -frames:v 1 -y "$ROOT/preview/proxy-$TAG-a.png"
+            "$FFMPEG" -hide_banner -loglevel error -ss 1.2 -i "$OVERLAY" -frames:v 1 -y "$ROOT/preview/proxy-$TAG-b.png"
+
+            python3 - "$FRONT_RES" <<'PY'
+          import json,sys
+          d=json.load(open(sys.argv[1]))
+          assert d["status"]=="GREEN",d
+          assert d["PREVIEW_APPLIED"] is True,d
+          assert d["PIXEL_READBACK"]=="GREEN",d
+          print("FRONTEND_FRAME_GATE=GREEN")
+          PY
+          done
+          echo SIX_PREVIEW_SCREENSHOTS_CAPTURED=GREEN
+
+      - name: Render exact Brewroom parity project
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ROOT="$(cat "$RUNNER_TEMP/e1011-exact-root.txt")"
+          BIN="$(cat "$RUNNER_TEMP/e1011-exact-bin.txt")"
+          FFMPEG="$(cat "$RUNNER_TEMP/e1011-exact-ffmpeg.txt")"
+          AUDIO="$(cat "$RUNNER_TEMP/e1011-exact-audio.txt")"
+          JOB="$ROOT/render-job.json"
+          RES="$ROOT/render-result.json"
+          python3 - "$JOB" "$ROOT" "$AUDIO" <<'PY'
+          import json,sys
+          out,root,audio=sys.argv[1],sys.argv[2],sys.argv[3]
+          steam=root+"/exact-steam.mp4"
+          project=root+"/brewroom-project"
+          effect={
+            "id":"e1011-exact-steam","name":"Exact Steam Chromakey Acceptance","source":steam,
+            "enabled":True,"mode":"chromakey","keyColor":"#00ff00","similarity":0.136,"blend":0.35,"despill":0.0,
+            "lumaThreshold":0.03,"lumaTolerance":0.08,"saturation":1.0,
+            "x":0.637,"y":0.316,"scale":0.34,"fullscreen":False,"previewFrameTime":0.0,
+            "startSec":0.0,"endSec":None,"cacheKey":None,"cacheReady":False,
+            "usageMode":"always","intervalSec":240.0,"usageDurationSec":30.0,
+            "target":"CUSTOM","offsetX":0.0,"offsetY":0.0,"opacity":1.0
+          }
+          job={
+            "project":{"id":"e1011-exact-steam-final","name":"ENDLUME 10.0.11 Exact Steam Final","path":project,
+              "media":[project+"/001.png"],"audio":[audio],"valid":True,"error":None,"anchors":{}},
+            "settings":{"width":1920,"height":1080,"fps":60,"codec":"h265","bitrateMbps":30.0,
+              "durationHours":30.0/3600.0,"durationMode":"fixed","loopMode":"image","crossfadeSec":0.0,
+              "normalizeLufs":True,"outputDir":root+"/final","preset":"fast","encoderPreference":"auto"},
+            "effects":[effect],"subscribes":[],"ambient":None
+          }
+          json.dump({"jobs":[job]},open(out,"w"),ensure_ascii=False,indent=2)
+          PY
+          ENDLUME_E2E_RENDER_JOB="$JOB" ENDLUME_E2E_RESULT="$RES" "$BIN" >"$ROOT/render.stdout" 2>"$ROOT/render.stderr"
+          python3 - "$RES" "$ROOT" <<'PY'
+          import json,sys,shutil
+          d=json.load(open(sys.argv[1])); assert d["status"]=="passed",d
+          r=d["results"][0]; assert r["status"]=="passed",r
+          shutil.copy2(r["outputPath"],sys.argv[2]+"/final/exact-steam-final.mp4")
+          print("FINAL_RENDER_EXACT=GREEN")
+          PY
+          for T in 0 5 10 15 20 25; do
+            TAG="$(printf '%02d' "$T")"
+            "$FFMPEG" -hide_banner -loglevel error -ss "$T" -i "$ROOT/final/exact-steam-final.mp4" -frames:v 1 -y "$ROOT/final/final-$TAG.png"
+          done
+          echo SIX_FINAL_FRAMES_CAPTURED=GREEN
+
+      - name: Package visual proof
+        if: always()
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ROOT="$(cat "$RUNNER_TEMP/e1011-exact-root.txt")"
+          python3 - "$ROOT" "$(cat "$RUNNER_TEMP/e1011-brewroom-source.txt")" "$(cat "$RUNNER_TEMP/e1011-exact-audio.txt")" <<'PY'
+          import json,sys,os
+          root,brewroom,audio=sys.argv[1:4]
+          cps={}
+          for t in (0,5,10,15,20,25):
+            tag=f"{t:02d}"
+            front_path=f"{root}/frontend-{tag}-result.json"
+            front=json.load(open(front_path)) if os.path.exists(front_path) else None
+            cps[str(t)]={
+              "frontend":front,
+              "shotA":f"preview/preview-{tag}-a.png",
+              "shotB":f"preview/preview-{tag}-b.png",
+              "proxyA":f"preview/proxy-{tag}-a.png",
+              "proxyB":f"preview/proxy-{tag}-b.png",
+              "final":f"final/final-{tag}.png"
+            }
+          report={
+            "candidate":os.environ.get("GITHUB_SHA"),
+            "exactSteam":{"sha256":"d32262025aa7b7ebd2626cfb397b860150104b987957d1c2bf77395016e2cfb0","bytes":789147,"width":640,"height":360,"fps":"30/1","duration":30.000181,"frames":900},
+            "brewroom":{"sourceProject":brewroom,"audio":audio},
+            "effect":{"mode":"chromakey","keyColor":"#00ff00","similarity":0.136,"blend":0.35,"despill":0.0,"x":0.637,"y":0.316,"scale":0.34,"usageMode":"always"},
+            "checkpoints":cps
+          }
+          json.dump(report,open(f"{root}/visual-report.json","w"),ensure_ascii=False,indent=2)
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ENDLUME-10.0.11-EXACT-STEAM-VISUAL
+          path: |
+            ${{ runner.temp }}/endlume-1011-exact-steam-acceptance/**
+          if-no-files-found: warn
+          retention-days: 7

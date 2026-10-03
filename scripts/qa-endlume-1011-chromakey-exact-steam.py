@@ -26,6 +26,18 @@ assert int(v.get("nb_frames") or 0)==900,v
 assert abs(float(meta["format"]["duration"])-30.000181)<0.01,meta["format"]
 print("EXACT_STEAM_SOURCE_FOUND=GREEN",flush=True)
 
+# QA-only launch guard for the self-hosted macOS runner. Direct execution can
+# resolve current_exe outside the .app bundle, so mirror the already-packaged
+# sidecars beside the QA executable. This does not change product source.
+for _src,_name in ((FFMPEG,"ffmpeg"),(FFPROBE,"ffprobe")):
+    _dst=APP.parent/_name
+    if _src.resolve()!=_dst.resolve():
+        shutil.copy2(_src,_dst)
+        _dst.chmod(0o755)
+assert (APP.parent/"ffmpeg").is_file() and os.access(APP.parent/"ffmpeg",os.X_OK)
+assert (APP.parent/"ffprobe").is_file() and os.access(APP.parent/"ffprobe",os.X_OK)
+print("QA_RELEASE_SIDECARS_STAGED=GREEN",flush=True)
+
 def candidate_dirs():
     out=[]
     data=Path.home()/"Library/Application Support/studio.endlume.desktop"

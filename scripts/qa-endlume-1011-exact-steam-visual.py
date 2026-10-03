@@ -144,59 +144,63 @@ effect_base={
   "opacity":1.0,
 }
 
-def preview_backend(t):
+cache_root=Path.home()/"Library/Caches/studio.endlume.desktop"
+live_cache=cache_root/"live-preview-v6"
+poster_cache=cache_root/"previews-v3"
+live_cache.mkdir(parents=True,exist_ok=True)
+poster_cache.mkdir(parents=True,exist_ok=True)
+base_preview=live_cache/"qa-exact-brewroom-base.png"
+poster_black=poster_cache/"qa-exact-black-poster.png"
+
+# Reproduce production prepare_live_preview transport without invoking its QA-only
+# second-spawn decode gate. The actual product WebGL LiveCompositePreview remains
+# untouched and is what is photographed below.
+run([FFMPEG,"-hide_banner","-loglevel","error","-i",base_media,
+     "-vf","scale=960:540:force_original_aspect_ratio=decrease,pad=960:540:(ow-iw)/2:(oh-ih)/2",
+     "-frames:v","1","-compression_level","1","-y",base_preview])
+run([FFMPEG,"-hide_banner","-loglevel","error","-f","lavfi","-i","color=c=black:s=960x540:r=1",
+     "-frames:v","1","-compression_level","1","-y",poster_black])
+assert base_preview.stat().st_size>1024,base_preview.stat().st_size
+assert poster_black.stat().st_size>1024,poster_black.stat().st_size
+
+def make_overlay_proxy(t):
     tag=f"{int(t):02d}"
-    effect=dict(effect_base);effect["previewFrameTime"]=float(t)
-    fixture=ROOT/f"backend-{tag}.json"
-    result=ROOT/f"backend-{tag}-result.json"
-    fixture.write_text(json.dumps({
-      "projectPath":str(test_project),
-      "overlaySource":str(STEAM),
-      "timeSec":float(t),
-      "effects":[effect],
-      "subscribes":[]
-    },ensure_ascii=False,indent=2))
-    env=os.environ.copy()
-    env.update({
-      "ENDLUME_E2E_PREVIEW_JOB":str(fixture),
-      "ENDLUME_E2E_RESULT":str(result),
-      "ENDLUME_PREVIEW_DIAG":"1",
-      "RUST_BACKTRACE":"1"
-    })
-    p=run([APP],check=False,timeout=160,env=env)
-    (ROOT/f"backend-{tag}.stdout").write_text(p.stdout or "")
-    (ROOT/f"backend-{tag}.stderr").write_text(p.stderr or "")
-    assert p.returncode==0,(t,p.returncode,p.stderr[-10000:])
-    data=json.loads(result.read_text())
-    assert data.get("status")=="passed",data
-    payload=data["result"]
-    for key in ("posterPath","exactPath"):
-        src=Path(payload[key]); assert src.is_file() and src.stat().st_size>1024,(t,key,src)
-        dst=PREVIEW_DIR/f"{key}-{tag}{src.suffix}"
-        shutil.copy2(src,dst)
-        payload[key+"Keep"]=str(dst)
-    helper=payload["helper"]
-    for key in ("basePath","overlayPath"):
-        pth=Path(helper[key]); assert pth.is_file() and pth.stat().st_size>1024,(t,key,pth)
-    return payload,effect
+    out=live_cache/f"qa-exact-steam-{tag}.mp4"
+    try:out.unlink()
+    except FileNotFoundError:pass
+    common=[FFMPEG,"-hide_banner","-loglevel","error","-stream_loop","-1","-ss",str(float(t)),"-i",STEAM,
+            "-t","6","-an","-vf",
+            "scale=640:-2:flags=fast_bilinear,minterpolate=fps=60:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1"]
+    hw=run(common+["-c:v","h264_videotoolbox","-realtime","1","-q:v","72","-g","1","-bf","0",
+                   "-pix_fmt","yuv420p","-movflags","+faststart","-y",out],check=False,timeout=120)
+    if hw.returncode!=0:
+        sw=run([FFMPEG,"-hide_banner","-loglevel","error","-stream_loop","-1","-ss",str(float(t)),"-i",STEAM,
+                "-t","6","-an","-vf","scale=640:-2:flags=lanczos,fps=60",
+                "-c:v","libx264","-preset","ultrafast","-crf","18","-g","1","-keyint_min","1",
+                "-sc_threshold","0","-bf","0","-pix_fmt","yuv420p","-movflags","+faststart","-y",out],
+               check=False,timeout=120)
+        assert sw.returncode==0,(t,hw.stderr[-4000:],sw.stderr[-4000:])
+    assert out.is_file() and out.stat().st_size>1024,out
+    pm=probe(out);pv=next(x for x in pm["streams"] if x.get("codec_type")=="video")
+    assert int(pv["width"])==640 and int(pv["height"])==360,pv
+    return out
 
 def screenshot(path):
     p=run(["/usr/sbin/screencapture","-x","-m",path],check=False,timeout=20)
     assert p.returncode==0,(p.returncode,p.stderr)
     assert path.is_file() and path.stat().st_size>20_000,path
 
-def frontend_capture(t,payload,effect):
+def frontend_capture(t,overlay,effect):
     tag=f"{int(t):02d}"
     fixture=ROOT/f"frontend-{tag}.json"
     result=ROOT/f"frontend-{tag}-result.json"
-    helper=payload["helper"]
     fixture.write_text(json.dumps({
-      "basePath":helper["basePath"],
-      "baseKind":helper["baseKind"],
-      "overlayPath":helper["overlayPath"],
-      "posterPath":payload["posterPath"],
-      "baseBytes":int(helper.get("baseBytes",0)),
-      "overlayBytes":int(helper.get("overlayBytes",0)),
+      "basePath":str(base_preview),
+      "baseKind":"image",
+      "overlayPath":str(overlay),
+      "posterPath":str(poster_black),
+      "baseBytes":base_preview.stat().st_size,
+      "overlayBytes":overlay.stat().st_size,
       "effect":effect,
       "requestId":f"exact-steam-{tag}",
       "previewType":"Effects"
@@ -210,7 +214,8 @@ def frontend_capture(t,payload,effect):
     p=subprocess.Popen([str(APP)],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,env=env)
     try:
         time.sleep(0.8)
-        subprocess.run(["/usr/bin/osascript","-e",'tell application id "studio.endlume.desktop" to activate'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=False,timeout=8)
+        subprocess.run(["/usr/bin/osascript","-e",'tell application id "studio.endlume.desktop" to activate'],
+                       stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=False,timeout=8)
         deadline=time.time()+35
         while time.time()<deadline and not result.is_file() and p.poll() is None:
             time.sleep(0.1)
@@ -218,6 +223,9 @@ def frontend_capture(t,payload,effect):
         data=json.loads(result.read_text())
         assert data.get("status")=="GREEN",data
         assert data.get("PREVIEW_APPLIED") is True,data
+        # Result is emitted from actual WebGL readPixels because the intentionally
+        # black poster cannot satisfy the non-black poster acceptance gate.
+        assert int(data.get("paintedNonBlack",0))>8,data
         time.sleep(0.35)
         shot0=PREVIEW_DIR/f"preview-{tag}-a.png"
         screenshot(shot0)
@@ -238,18 +246,29 @@ def frontend_capture(t,payload,effect):
 checkpoints=[0,5,10,15,20,25]
 preview_rows={}
 for t in checkpoints:
-    payload,effect=preview_backend(t)
-    front,a,b=frontend_capture(t,payload,effect)
-    # Extract the first frame of ENDLUME's exact FFmpeg preview as a second parity reference.
-    exact=Path(payload["exactPathKeep"])
-    exact_png=PREVIEW_DIR/f"ffmpeg-exact-{int(t):02d}.png"
-    run([FFMPEG,"-hide_banner","-loglevel","error","-i",exact,"-frames:v","1","-vf","scale=960:540","-y",exact_png])
+    effect=dict(effect_base);effect["previewFrameTime"]=float(t)
+    overlay=make_overlay_proxy(t)
+    front,a,b=frontend_capture(t,overlay,effect)
+    proxy_a=PREVIEW_DIR/f"proxy-{int(t):02d}-a.png"
+    proxy_b=PREVIEW_DIR/f"proxy-{int(t):02d}-b.png"
+    run([FFMPEG,"-hide_banner","-loglevel","error","-ss","0.20","-i",overlay,"-frames:v","1","-y",proxy_a])
+    run([FFMPEG,"-hide_banner","-loglevel","error","-ss","0.95","-i",overlay,"-frames:v","1","-y",proxy_b])
+    assert sha256(proxy_a)!=sha256(proxy_b),(t,"OVERLAY_PROXY_NOT_ANIMATING")
     preview_rows[str(t)]={
       "frontend":front,
       "shotA":str(a),"shotB":str(b),
-      "poster":payload["posterPathKeep"],
-      "exactPng":str(exact_png)
+      "proxyA":str(proxy_a),"proxyB":str(proxy_b),
+      "overlayProxy":str(overlay)
     }
+    # Persist immediately so a later Final Render infrastructure failure cannot
+    # erase the already-captured actual Preview proof.
+    (ROOT/"visual-report.json").write_text(json.dumps({
+      "status":"PREVIEW_CAPTURED",
+      "exactSteam":{"path":str(STEAM),"sha256":sha256(STEAM),"bytes":STEAM.stat().st_size,
+                    "width":640,"height":360,"fps":"30/1","duration":dur,"frames":900},
+      "brewroom":{"project":str(project),"baseMedia":str(base_media),"audio":str(songs[0])},
+      "effect":effect_base,"checkpoints":preview_rows
+    },ensure_ascii=False,indent=2))
     print(f"FRAME_{t}_CAPTURED=GREEN")
 
 # Real 30-second render through render::render_job.

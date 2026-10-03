@@ -126,12 +126,20 @@ jobs:
             if [ -n "$CAND" ]; then FOUND="$CAND"; break; fi
           done
           EXPECTED_SHA256="d32262025aa7b7ebd2626cfb397b860150104b987957d1c2bf77395016e2cfb0"
-          if [ -z "$FOUND" ]; then
-            echo "Exact local copy not found; fetching the original Google/YouTube progressive MP4 and requiring byte-identical SHA-256."
-            python3 -m pip install --user -q yt-dlp
-            export PATH="$HOME/Library/Python/3.9/bin:$HOME/Library/Python/3.10/bin:$HOME/Library/Python/3.11/bin:$HOME/Library/Python/3.12/bin:$HOME/.local/bin:$PATH"
+          if [ -z "$FOUND" ] && [ -f "qa/fixtures/endlume-1011-exact-steam.mp4.gz.b64" ]; then
             FOUND="$RUNNER_TEMP/endlume-exact-steam.mp4"
-            python3 -m yt_dlp --no-check-certificates --no-playlist -f 18 -o "$FOUND" "https://www.youtube.com/watch?v=kMkfJTjkhuQ"
+            python3 - "$FOUND" <<'PY'
+          import base64,gzip,sys
+          from pathlib import Path
+          raw=gzip.decompress(base64.b64decode(Path("qa/fixtures/endlume-1011-exact-steam.mp4.gz.b64").read_text().strip()))
+          Path(sys.argv[1]).write_bytes(raw)
+          PY
+            echo "EXACT_STEAM_SOURCE=COMMITTED_QA_FIXTURE"
+          fi
+          if [ -z "$FOUND" ]; then
+            echo "EXACT_STEAM_SOURCE_FOUND=RED"
+            echo "No byte-identical local or committed QA fixture is available."
+            exit 42
           fi
           test -f "$FOUND"
           ACTUAL_SHA256="$(shasum -a 256 "$FOUND" | awk '{print $1}')"

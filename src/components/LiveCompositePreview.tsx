@@ -126,7 +126,8 @@ export function LiveCompositePreview({assets,effect,active=true,busy,overlayRef,
     if(!active)return;
     const canvas=canvasRef.current,video=videoRef.current;if(!canvas||!video||!overlaySrc)return;
     video.preload='auto';try{video.load()}catch{}
-    const gl=canvas.getContext('webgl',{alpha:true,premultipliedAlpha:true,antialias:false,preserveDrawingBuffer:false});
+    const forceNeutralCanvas2d=/Macintosh|Mac OS X/i.test(navigator.userAgent)&&effectRef.current.mode==='chromakey'&&Math.max(0,Math.min(1,effectRef.current.despill||0))<=0.000001;
+    const gl=forceNeutralCanvas2d?null:canvas.getContext('webgl',{alpha:true,premultipliedAlpha:true,antialias:false,preserveDrawingBuffer:false});
     if(!gl){
       const ctx=canvas.getContext('2d',{alpha:true,willReadFrequently:true});
       if(!ctx){reportRed('canvas-context-unavailable');return}

@@ -119,7 +119,7 @@ effect_base={
   "source":str(STEAM),
   "enabled":True,
   "mode":"chromakey",
-  "keyColor":"#00ff00",
+  "keyColor":"#3ee72f",
   "similarity":0.136,
   "blend":0.35,
   "despill":0.0,

@@ -1,0 +1,60 @@
+name: ENDLUME 10.0.12 Shared Hotfix Preflight
+
+on:
+  push:
+    branches: [hotfix/endlume-10.0.12-windows-audio-cache-reliability]
+    paths:
+      - ".github/workflows/endlume-1012-shared-preflight.yml"
+      - "src-tauri/src/render.rs"
+      - "src-tauri/src/license.rs"
+      - "supabase/functions/endlume-client-api/**"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-1012-shared-preflight
+  cancel-in-progress: true
+
+jobs:
+  shared-preflight:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Stage installed 10.0.11 sidecars for compile
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          APP="/Applications/ENDLUME YT Studio PEISOV.app"
+          test -x "$APP/Contents/MacOS/ffmpeg"
+          test -x "$APP/Contents/MacOS/ffprobe"
+          mkdir -p src-tauri/binaries
+          cp "$APP/Contents/MacOS/ffmpeg" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp "$APP/Contents/MacOS/ffprobe" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          chmod 755 src-tauri/binaries/ffmpeg-aarch64-apple-darwin src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          echo ENDLUME_1012_MAC_SIDECARS_GREEN
+
+      - name: Shared compile and targeted tests
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
+          npm ci
+          npm run check
+          npm run build
+          cargo test --manifest-path src-tauri/Cargo.toml tests_10012_processed_audio_cache -- --nocapture
+          cargo check --manifest-path src-tauri/Cargo.toml
+          deno test supabase/functions/endlume-client-api/render-state.test.ts
+          echo ENDLUME_1012_SHARED_PREFLIGHT_GREEN

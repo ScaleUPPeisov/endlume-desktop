@@ -725,6 +725,49 @@ fn refresh_project_paths(job:&mut QueueJob){
   if job.ambient.as_ref().map(|p|!p.trim().is_empty()&&!Path::new(p).is_file()).unwrap_or(false){job.ambient=None;}
 }
 
+
+fn library_effect_source(library:&Value,collection:&str,id:&str)->Option<String>{
+  library.get(collection)?.as_array()?.iter().find_map(|item|{
+    let same=item.get("id").and_then(Value::as_str)==Some(id);
+    if !same{return None}
+    item.get("source").and_then(Value::as_str).map(str::to_string).filter(|p|!p.trim().is_empty()&&Path::new(p).is_file())
+  })
+}
+
+fn refresh_overlay_paths(app:&AppHandle,job:&mut QueueJob){
+  let library=crate::persistence::read_value(app,"library.json");
+  for effect in &mut job.effects{
+    if effect_usage_mode(effect)=="off"||effect.source.trim().is_empty(){continue}
+    let original=effect.source.clone();
+    if Path::new(&original).is_file(){
+      diag_line(json!({"kind":"render-asset","assetClass":"EFFECT","projectId":job.project.id,"effectId":effect.id,"effectFilename":Path::new(&original).file_name().and_then(|x|x.to_str()),"originalStoredPath":original,"resolvedPath":effect.source,"exists":true,"parentExists":Path::new(&effect.source).parent().map(|p|p.is_dir()).unwrap_or(false),"origin":"library/project snapshot"}));
+      continue
+    }
+    if let Some(recovered)=library_effect_source(&library,"effects",&effect.id){
+      effect.source=recovered.clone();effect.cache_ready=Some(false);effect.cache_key=None;
+      diag_line(json!({"kind":"render-asset-recovered","assetClass":"EFFECT","projectId":job.project.id,"effectId":effect.id,"originalStoredPath":original,"resolvedPath":recovered,"exists":true,"origin":"current library id"}));
+    }else{
+      diag_line(json!({"kind":"render-asset-missing","assetClass":"EFFECT","projectId":job.project.id,"effectId":effect.id,"effectFilename":Path::new(&original).file_name().and_then(|x|x.to_str()),"originalStoredPath":original,"resolvedPath":Value::Null,"exists":false,"parentExists":Path::new(&original).parent().map(|p|p.is_dir()).unwrap_or(false),"origin":"project snapshot"}));
+      effect.enabled=false;effect.usage_mode=Some("off".into());
+    }
+  }
+  for subscribe in &mut job.subscribes{
+    if subscribe_usage_mode(subscribe)=="off"||subscribe.effect.source.trim().is_empty(){continue}
+    let original=subscribe.effect.source.clone();
+    if Path::new(&original).is_file(){
+      diag_line(json!({"kind":"render-asset","assetClass":"SUBSCRIBE","projectId":job.project.id,"effectId":subscribe.effect.id,"effectFilename":Path::new(&original).file_name().and_then(|x|x.to_str()),"originalStoredPath":original,"resolvedPath":subscribe.effect.source,"exists":true,"parentExists":Path::new(&subscribe.effect.source).parent().map(|p|p.is_dir()).unwrap_or(false),"origin":"library/project snapshot"}));
+      continue
+    }
+    if let Some(recovered)=library_effect_source(&library,"subscribes",&subscribe.effect.id){
+      subscribe.effect.source=recovered.clone();subscribe.effect.cache_ready=Some(false);subscribe.effect.cache_key=None;
+      diag_line(json!({"kind":"render-asset-recovered","assetClass":"SUBSCRIBE","projectId":job.project.id,"effectId":subscribe.effect.id,"originalStoredPath":original,"resolvedPath":recovered,"exists":true,"origin":"current library id"}));
+    }else{
+      diag_line(json!({"kind":"render-asset-missing","assetClass":"SUBSCRIBE","projectId":job.project.id,"effectId":subscribe.effect.id,"effectFilename":Path::new(&original).file_name().and_then(|x|x.to_str()),"originalStoredPath":original,"resolvedPath":Value::Null,"exists":false,"parentExists":Path::new(&original).parent().map(|p|p.is_dir()).unwrap_or(false),"origin":"project snapshot"}));
+      subscribe.effect.enabled=false;subscribe.effect.usage_mode=Some("off".into());
+    }
+  }
+}
+
 async fn output(app:&AppHandle,name:&str,args:Vec<String>)->Result<(Vec<u8>,Vec<u8>),String>{
   let launch=if name=="ffmpeg"{FFMPEG_LAUNCHES.fetch_add(1,Ordering::Relaxed)+1}else if name=="ffprobe"{FFPROBE_LAUNCHES.fetch_add(1,Ordering::Relaxed)+1}else{0};
   let argv=args.clone();let mark=Instant::now();
@@ -2341,7 +2384,7 @@ async fn render_pingpong_zero_copy_1002(app:&AppHandle,job:&QueueJob,source_mast
 
 pub async fn render_job(app:&AppHandle,job:&QueueJob,cancel:Arc<AtomicBool>)->Result<RenderOutcome,String>{
   ensure_license_allowed()?;
-  let mut resolved_job=job.clone();refresh_project_paths(&mut resolved_job);
+  let mut resolved_job=job.clone();refresh_project_paths(&mut resolved_job);refresh_overlay_paths(app,&mut resolved_job);
   let decision=fast_path_decision(&resolved_job);
   let requested_audio_processing=audio_processing_requested(&resolved_job);
   let _=app.emit("render-diagnostics",json!({"id":resolved_job.project.id,"fastPathEligible":decision.eligible,"fastPathReason":decision.reason,"mediaCount":resolved_job.project.media.len(),"imageCount":resolved_job.project.media.iter().filter(|m|is_image(m)).count(),"videoCount":resolved_job.project.media.iter().filter(|m|!is_image(m)).count(),"audioProcessingRequested":requested_audio_processing}));
@@ -2356,9 +2399,16 @@ pub async fn render_job(app:&AppHandle,job:&QueueJob,cancel:Arc<AtomicBool>)->Re
     if !requested_audio_processing{resolved_job.settings.duration_mode="whole-track".into();}
   }
   let job=&resolved_job;let scan_mark=Instant::now();
-  for p in &job.project.media{if !Path::new(p).is_file(){return Err(format!("Не найден файл изображения/видео: {}",Path::new(p).file_name().and_then(|x|x.to_str()).unwrap_or(p)));}}
+  for p in &job.project.media{
+    let path=Path::new(p);let exists=path.is_file();
+    diag_line(json!({"kind":"render-asset","assetClass":"MASTER_VISUAL","projectId":job.project.id,"originalStoredPath":p,"resolvedPath":p,"exists":exists,"parentExists":path.parent().map(|x|x.is_dir()).unwrap_or(false),"selectedFolder":job.project.path,"origin":"current project scan"}));
+    if !exists{return Err(format!("Не найден файл изображения/видео: {}",path.file_name().and_then(|x|x.to_str()).unwrap_or(p)))}
+  }
   for p in &job.project.audio{if !Path::new(p).is_file(){return Err(format!("Не найден аудиофайл: {}",Path::new(p).file_name().and_then(|x|x.to_str()).unwrap_or(p)));}}
-  if job.project.media.is_empty(){return Err("В проекте нет изображения или видео".into())}
+  if job.project.media.is_empty(){
+    diag_line(json!({"kind":"render-asset-missing","assetClass":"MASTER_VISUAL","projectId":job.project.id,"selectedFolder":job.project.path,"exists":false,"reason":"current-project-has-no-visual"}));
+    return Err(format!("В текущем проекте '{}' нет корректного изображения или видео",job.project.name))
+  }
   if job.project.audio.is_empty(){return Err("В проекте нет музыки".into())}
   let scan_seconds=scan_mark.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"scan",scan_seconds);emit_timing(app,&job.project.id,"project-scan",scan_seconds);
   let started=chrono::Utc::now().timestamp_millis();let timer=Instant::now();let mut last_error=String::new();

@@ -78,7 +78,7 @@ for project_no in range(40):
         tracks,
         0.0,
         project_path=project_dir,
-        duration_hours=0.001,
+        duration_hours=10/3600,
     ))
 fixture=root/"jobs.json";result=root/"result.json"
 fixture.write_text(json.dumps({"jobs":jobs},ensure_ascii=False,indent=2),encoding="utf-8")

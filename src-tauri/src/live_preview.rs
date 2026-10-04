@@ -123,6 +123,26 @@ fn resolve_bundled_ffmpeg(app:&AppHandle)->Result<PathBuf,String>{
   let exe_dir=exe.parent().map(Path::to_path_buf).ok_or("Live Preview executable directory missing")?;
   let resource_dir=app.path().resource_dir().ok();
   let bundle=app_bundle_root(&exe);
+
+  // In a packaged macOS app Tauri places externalBin next to the main executable:
+  // Contents/MacOS/ffmpeg. Resolve that exact sibling first. This is the same path
+  // used successfully by the initial sidecar encode and avoids relying on a
+  // recursive bundle walk during the second-process validation pass.
+  #[cfg(target_os="windows")]
+  let direct_names=["ffmpeg.exe","ffmpeg-x86_64-pc-windows-msvc.exe"];
+  #[cfg(not(target_os="windows"))]
+  let direct_names=["ffmpeg","ffmpeg-aarch64-apple-darwin"];
+  for name in direct_names{
+    let candidate=exe_dir.join(name);
+    if executable_file(&candidate){
+      let resolved=fs::canonicalize(&candidate).unwrap_or(candidate);
+      if live_preview_diag_enabled(){
+        eprintln!("RESOLVED_FFMPEG_PATH={} FILE_EXISTS=true EXECUTABLE=true RESOLUTION=exact-sibling",resolved.display());
+      }
+      return Ok(resolved)
+    }
+  }
+
   if live_preview_diag_enabled(){
     eprintln!("ENDLUME_PREVIEW_FFMPEG_CONTEXT APP_BUNDLE_PATH={} RESOURCE_DIR={} EXECUTABLE_DIR={}",
       bundle.as_ref().map(|p|p.display().to_string()).unwrap_or_else(||"<none>".into()),

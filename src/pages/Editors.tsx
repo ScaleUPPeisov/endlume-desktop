@@ -124,6 +124,7 @@ function EffectsEditor() {
       effects: next,
       subscribes: useApp.getState().subscribes,
       ambient: useApp.getState().ambient,
+      ambientSettings: useApp.getState().ambientSettings,
     }).catch(() => undefined);
     if (immediate) return persist();
     persistTimer.current = window.setTimeout(persist, 180);
@@ -319,6 +320,7 @@ function SubscribeEditor() {
       effects: useApp.getState().effects,
       subscribes: next,
       ambient: useApp.getState().ambient,
+      ambientSettings: useApp.getState().ambientSettings,
     }).catch(() => undefined);
     if (immediate) return persist();
     persistTimer.current = window.setTimeout(persist, 180);

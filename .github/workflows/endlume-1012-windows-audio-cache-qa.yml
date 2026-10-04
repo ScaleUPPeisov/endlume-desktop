@@ -106,7 +106,7 @@ jobs:
           if($LASTEXITCODE -ne 0){throw 'ENDLUME 10.0.12 Windows audio regression failed'}
           $r=Get-Content windows-qa\audio-cache-report.json -Raw | ConvertFrom-Json
           if($r.status -ne 'GREEN'){throw 'audio cache report not GREEN'}
-          if($r.cachePressure20Wav -ne 'GREEN' -or $r.compatible20Mp3 -ne 'GREEN' -or $r.mixedFallback -ne 'GREEN' -or $r.oneTrack -ne 'GREEN' -or $r.queueHandoff -ne 'GREEN'){throw 'acceptance matrix incomplete'}
+          if($r.cachePressure20Wav -ne 'GREEN' -or $r.compatible20Mp3 -ne 'GREEN' -or $r.mixedFallback -ne 'GREEN' -or $r.oneTrack -ne 'GREEN' -or $r.queueHandoff -ne 'GREEN' -or $r.realistic40ProjectQueue -ne 'GREEN'){throw 'acceptance matrix incomplete'}
           Write-Host ENDLUME_1012_WINDOWS_AUDIO_CACHE_GREEN
 
       - uses: actions/upload-artifact@v4

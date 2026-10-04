@@ -29,21 +29,24 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Stage local FFmpeg sidecars
+      - name: Stage installed production FFmpeg sidecars
         shell: bash
         run: |
           set -Eeuo pipefail
-          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
-          FFMPEG="$(command -v ffmpeg)"
-          FFPROBE="$(command -v ffprobe)"
+          APP="/Applications/ENDLUME YT Studio PEISOV.app"
+          FFMPEG="$APP/Contents/MacOS/ffmpeg"
+          FFPROBE="$APP/Contents/MacOS/ffprobe"
           test -x "$FFMPEG" -a -x "$FFPROBE"
+          env -i PATH="/usr/bin:/bin:/usr/sbin:/sbin" "$FFMPEG" -version >/dev/null
+          env -i PATH="/usr/bin:/bin:/usr/sbin:/sbin" "$FFPROBE" -version >/dev/null
+          "$FFMPEG" -hide_banner -encoders 2>/dev/null | grep -q hevc_videotoolbox
           mkdir -p src-tauri/binaries
           cp "$FFMPEG" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
           cp "$FFPROBE" src-tauri/binaries/ffprobe-aarch64-apple-darwin
           chmod 755 src-tauri/binaries/ffmpeg-aarch64-apple-darwin src-tauri/binaries/ffprobe-aarch64-apple-darwin
           printf '%s' "$FFMPEG" > "$RUNNER_TEMP/e1012-ffmpeg.txt"
           printf '%s' "$FFPROBE" > "$RUNNER_TEMP/e1012-ffprobe.txt"
-          echo ENDLUME_1012_MAC_FFMPEG_GREEN
+          echo ENDLUME_1012_MAC_PRODUCTION_FFMPEG_GREEN
 
       - name: Reuse or build E2E runtime
         shell: bash

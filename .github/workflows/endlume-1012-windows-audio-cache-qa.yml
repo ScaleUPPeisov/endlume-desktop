@@ -1,0 +1,118 @@
+name: ENDLUME 10.0.12 Windows Audio Cache Hotfix QA
+
+on:
+  push:
+    branches: [hotfix/endlume-10.0.12-windows-audio-cache-reliability]
+    paths:
+      - ".github/workflows/endlume-1012-windows-audio-cache-qa.yml"
+      - "scripts/qa-endlume-1012-windows-audio-cache.py"
+      - "scripts/prepare-windows-sidecars.ps1"
+      - "src-tauri/src/render.rs"
+      - "src-tauri/src/license.rs"
+      - "supabase/functions/endlume-client-api/**"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-1012-windows-audio-cache-qa
+  cancel-in-progress: true
+
+jobs:
+  windows-audio-cache:
+    runs-on: windows-2022
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Pre-bump source contract
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $pkg=Get-Content package.json -Raw | ConvertFrom-Json
+          $tauri=Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json
+          if($pkg.version -ne '10.0.11'){throw "package version must remain 10.0.11 before targeted QA: $($pkg.version)"}
+          if($tauri.version -ne '10.0.11'){throw "tauri version must remain 10.0.11 before targeted QA: $($tauri.version)"}
+          $r=Get-Content src-tauri/src/render.rs -Raw
+          if($r -match 'Strict Fidelity: исходную музыку нельзя сохранить bitstream-copy'){throw 'fatal Strict Fidelity path still present'}
+          if($r -notmatch 'ProcessedAudioCacheLease1008'){throw 'processed audio lease missing'}
+          Write-Host ENDLUME_1012_PRE_BUMP_CONTRACT_GREEN
+
+      - name: Stage pinned Windows FFmpeg sidecars
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          ./scripts/prepare-windows-sidecars.ps1
+          "E1012_FFMPEG=$((Resolve-Path 'src-tauri\binaries\ffmpeg-x86_64-pc-windows-msvc.exe').Path)" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "E1012_FFPROBE=$((Resolve-Path 'src-tauri\binaries\ffprobe-x86_64-pc-windows-msvc.exe').Path)" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host ENDLUME_1012_FFMPEG_GREEN
+
+      - name: Compile and focused unit regression
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          npm ci
+          npm run check
+          npm run build
+          cargo test --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-msvc tests_10012_processed_audio_cache -- --nocapture
+          cargo check --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-msvc
+          deno test supabase/functions/endlume-client-api/render-state.test.ts
+          Write-Host ENDLUME_1012_UNIT_REGRESSION_GREEN
+
+      - name: Build exact Windows E2E runtime
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:CARGO_TARGET_DIR=Join-Path $env:RUNNER_TEMP 'e1012-windows'
+          npx tauri build --target x86_64-pc-windows-msvc --bundles nsis --features e2e-render
+          $release=Join-Path $env:CARGO_TARGET_DIR 'x86_64-pc-windows-msvc\release'
+          $exe=Get-ChildItem $release -Filter '*.exe' -File | Where-Object {$_.Name -notmatch 'build-script'} | Sort-Object Length -Descending | Select-Object -First 1
+          if(!$exe){throw 'ENDLUME runtime exe missing'}
+          "E1012_APP=$($exe.FullName)" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          New-Item -ItemType Directory -Force windows-qa | Out-Null
+          $nsis=Get-ChildItem "$release\bundle\nsis" -Filter '*.exe' -File | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+          if(!$nsis){throw 'NSIS candidate missing'}
+          @{installer=$nsis.FullName;bytes=$nsis.Length;sha256=(Get-FileHash $nsis.FullName -Algorithm SHA256).Hash.ToLower()} | ConvertTo-Json | Out-File windows-qa\installer-prebump.json -Encoding utf8
+          Write-Host ENDLUME_1012_BUILD_GREEN
+
+      - name: Windows realistic audio regression
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          python scripts\qa-endlume-1012-windows-audio-cache.py $env:E1012_APP $env:E1012_FFMPEG $env:E1012_FFPROBE windows-qa\audio-cache-report.json
+          if($LASTEXITCODE -ne 0){throw 'ENDLUME 10.0.12 Windows audio regression failed'}
+          $r=Get-Content windows-qa\audio-cache-report.json -Raw | ConvertFrom-Json
+          if($r.status -ne 'GREEN'){throw 'audio cache report not GREEN'}
+          if($r.cachePressure20Wav -ne 'GREEN' -or $r.compatible20Mp3 -ne 'GREEN' -or $r.mixedFallback -ne 'GREEN' -or $r.oneTrack -ne 'GREEN' -or $r.queueHandoff -ne 'GREEN'){throw 'acceptance matrix incomplete'}
+          Write-Host ENDLUME_1012_WINDOWS_AUDIO_CACHE_GREEN
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ENDLUME-10.0.12-Windows-Audio-Cache-QA
+          path: windows-qa/
+          if-no-files-found: warn
+          retention-days: 7

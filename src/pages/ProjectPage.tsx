@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { api } from '../tauri';
 import { useApp } from '../store';
@@ -25,17 +25,22 @@ export function ProjectPage(){
     settings,patchSettings,effects,subscribes,ambient,setAmbient,ambientSettings,patchAmbientSettings,openEditor,setPage,setLastRoot,setPreviewProjectPath
   }=useApp();
   const [busy,setBusy]=useState(false),[scanNote,setScanNote]=useState(''),[features,setFeatures]=useState<FeatureFlags>(loadFeatures);
+  const librarySaveQueue=useRef<Promise<void>>(Promise.resolve());
   const setFeature=(key:keyof FeatureFlags,value:boolean)=>setFeatures(prev=>{const next={...prev,[key]:value};localStorage.setItem(featureKey,JSON.stringify(next));return next});
+  const persistCurrentLibrary=()=>{
+    librarySaveQueue.current=librarySaveQueue.current.catch(()=>undefined).then(()=>{
+      const state=useApp.getState();
+      return api.saveLibrary({effects:state.effects,subscribes:state.subscribes,ambient:state.ambient,ambientSettings:state.ambientSettings});
+    });
+    return librarySaveQueue.current;
+  };
   const saveAmbient=async(next?:string)=>{
     setAmbient(next);
-    const state=useApp.getState();
-    await api.saveLibrary({effects:state.effects,subscribes:state.subscribes,ambient:next,ambientSettings:state.ambientSettings});
+    await persistCurrentLibrary();
   };
   const saveAmbientSettings=async(patch:Partial<typeof ambientSettings>)=>{
-    const next={...useApp.getState().ambientSettings,...patch};
     patchAmbientSettings(patch);
-    const state=useApp.getState();
-    await api.saveLibrary({effects:state.effects,subscribes:state.subscribes,ambient:state.ambient,ambientSettings:next});
+    await persistCurrentLibrary();
   };
 
   const scanRoots=useCallback(async(roots:string[])=>{
@@ -84,7 +89,7 @@ export function ProjectPage(){
       const activeAmbient=features.ambient?ambient:undefined;
       const fastStaticProjects=draftProjects.filter(p=>p.media.length>0&&p.media.every(isImagePath)&&(p.media.length===1||(activeEffects.length===0&&activeSubscribes.length===0)));
       if(fastStaticProjects.length&&(settings.crossfadeSec>0||settings.normalizeLufs)){
-        await api.showInfo(`Processed Audio включён для ${fastStaticProjects.length} статичных проектов. Быстрый visual/manifest pipeline сохраняется, но музыка будет реально декодирована и обработана (crossfade / LUFS / ambient), поэтому MP3 packet-copy отключается и рендер может быть медленнее или больше. Чтобы получить Original MP3 bitstream-copy, выключите audio processing.`);
+        await api.showInfo(`Processed Audio включён для ${fastStaticProjects.length} статичных проектов. Быстрый visual/manifest pipeline сохраняется, но музыка будет реально декодирована и обработана (crossfade / LUFS), поэтому MP3 packet-copy отключается и рендер может быть медленнее или больше. Чтобы получить Original MP3 bitstream-copy, выключите audio processing.`);
       }
       const stamp=Date.now().toString(36);
       const queuedProjects=draftProjects.map((p,i)=>({...p,id:`${p.id}-${stamp}-${i}-${Math.random().toString(36).slice(2,8)}`,status:'queued' as const,progress:0,stage:'Ожидает в очереди',elapsedSec:0}));

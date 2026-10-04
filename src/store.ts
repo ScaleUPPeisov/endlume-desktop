@@ -16,6 +16,7 @@ interface State {
   ambientSettings: BackgroundMusicSettings;
   settings: RenderSettings;
   lastRoot?: string;
+  previewProjectPath?: string;
   libraryLoaded: boolean;
   sceneAnchorsByPath: Record<string, SceneAnchors>;
   setPage:(p:Page)=>void;
@@ -37,6 +38,7 @@ interface State {
   setSceneAnchor:(projectPath:string,target:string,anchor:AnchorPoint)=>void;
   patchSettings:(p:Partial<RenderSettings>)=>void;
   setLastRoot:(v?:string)=>void;
+  setPreviewProjectPath:(v?:string)=>void;
 }
 
 export const defaultBackgroundMusicSettings:BackgroundMusicSettings={volumePct:18,bassDb:0,midDb:0,trebleDb:0};
@@ -80,5 +82,6 @@ export const useApp=create<State>()(persist((set)=>({
     };
   }),
   patchSettings:(patch)=>set(s=>({settings:{...s.settings,...patch}})),
-  setLastRoot:(lastRoot)=>set({lastRoot})
+  setLastRoot:(lastRoot)=>set({lastRoot}),
+  setPreviewProjectPath:(previewProjectPath)=>set({previewProjectPath})
 }),{name:'endlume-1-ui',version:7,migrate:(persisted:any)=>{const p:any=persisted||{};if(p.settings){p.settings={...p.settings,width:1920,height:1080,fps:60,crossfadeSec:3,normalizeLufs:false,codec:'h265'};}p.projects=[];p.sceneAnchorsByPath=p.sceneAnchorsByPath||{};return p;},partialize:(s)=>({settings:s.settings,lastRoot:s.lastRoot,sceneAnchorsByPath:s.sceneAnchorsByPath})}));

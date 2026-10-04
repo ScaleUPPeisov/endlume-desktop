@@ -119,6 +119,11 @@ jobs:
           assert d["coldSubscribePreview"]=="GREEN"
           assert d["cacheInvalidation"]=="GREEN"
           assert d["progress"]=="GREEN" and d["eta"]=="GREEN"
+          assert d["backgroundMusic"]["status"]=="GREEN"
+          assert d["backgroundMusic"]["tempPcm"] is False
+          assert abs(d["backgroundMusic"]["coveredDuration"]-7320.0)<=1.0
+          assert d["effectPathRecovery"]=="GREEN"
+          assert d["render"]["e1011-bg-eq"]["wall"]<=20
           assert d["render"]["e1011-on"]["wall"]<=20
           assert d["render"]["e1011-warm"]["wall"]<=20
           assert 400<=d["render"]["e1011-on"]["mib"]<=600
@@ -133,6 +138,12 @@ jobs:
           print("CACHE_INVALIDATION=GREEN")
           print("PROGRESS=GREEN")
           print("ETA=GREEN")
+          print("BACKGROUND_MUSIC_LOOP=GREEN")
+          print("BACKGROUND_MUSIC_VOLUME=GREEN")
+          print("BACKGROUND_MUSIC_EQ=GREEN")
+          print("BACKGROUND_MUSIC_COVERED_DURATION=%.3f" % d["backgroundMusic"]["coveredDuration"])
+          print("BACKGROUND_MUSIC_AUDIO_DELTA=%.6f" % d["backgroundMusic"]["audioDelta"])
+          print("EFFECT_PATH_RECOVERY=GREEN")
           print("RENDER_SECONDS=%.3f" % d["render"]["e1011-on"]["wall"])
           print("WARM_SECONDS=%.3f" % d["render"]["e1011-warm"]["wall"])
           print("FILE_MIB=%.3f" % d["render"]["e1011-on"]["mib"])

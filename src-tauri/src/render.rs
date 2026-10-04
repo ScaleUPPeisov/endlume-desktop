@@ -19,6 +19,7 @@ static FFPROBE_LAUNCHES:AtomicU64=AtomicU64::new(0);
 static ETA_STAGE_HISTORY:OnceLock<parking_lot::Mutex<HashMap<String,f64>>>=OnceLock::new();
 static ETA_JOB_SMOOTH:OnceLock<parking_lot::Mutex<HashMap<String,f64>>>=OnceLock::new();
 static ETA_CHECKPOINTS:OnceLock<parking_lot::Mutex<HashMap<String,u8>>>=OnceLock::new();
+static PROCESSED_AUDIO_ACTIVE_1008:OnceLock<parking_lot::Mutex<HashMap<PathBuf,usize>>>=OnceLock::new();
 
 #[derive(Clone,Debug)]
 struct AudioProbe{codec:String,sample_rate:u32,channels:u32,duration:f64}
@@ -1120,7 +1121,8 @@ async fn localize_processed_audio_1008(app:&AppHandle,path:&Path)->Result<PathBu
     Ok(())
   }).await.map_err(|e|format!("10.0.8 audio localize join: {e}"))??;
   if out.exists(){let _=std::fs::remove_file(&tmp);}else{std::fs::rename(&tmp,&out).map_err(|e|format!("10.0.8 audio cache commit: {e}"))?}
-  prune_cache_1000(&root,&out);
+  // 10.0.12: never prune localized inputs while any processed-audio cycle owns this cache root.
+  prune_processed_audio_if_idle_1008(&root);
   Ok(out)
 }
 
@@ -1144,6 +1146,7 @@ async fn localize_processed_audio_inputs_1008(app:&AppHandle,job:&QueueJob,cance
 
 async fn build_lossless_processed_audio_cycle(app:&AppHandle,job:&QueueJob,started:i64,timer:&Instant,work:&Path,encoder:&str,attempt:u32,cancel:&AtomicBool)->Result<(PathBuf,Vec<f64>,f64),String>{
   if job.project.audio.is_empty(){return Err("Нет песен".into())}
+  let _processed_audio_cache_lease=ProcessedAudioCacheLease1008::acquire(app)?;
   let (local_tracks,local_ambient)=localize_processed_audio_inputs_1008(app,job,cancel).await?;
   let mut durations=Vec::new();let probe_mark=Instant::now();
   let mut args:Vec<String>=vec!["-hide_banner","-loglevel","error","-filter_complex_threads","4"].into_iter().map(String::from).collect();
@@ -1188,7 +1191,10 @@ async fn build_lossless_processed_audio_cycle(app:&AppHandle,job:&QueueJob,start
   args.extend(vec!["-filter_complex",&graph,"-map","[outa]"].into_iter().map(String::from));
   args.extend(audio_encoder_args(&audio_encoder));
   args.extend(vec!["-movflags","+faststart","-progress","pipe:1","-y",cycle.to_string_lossy().as_ref()].into_iter().map(String::from));
-  run_ffmpeg(app,job,started,timer,args,"Кроссфейд между треками • HQ 320k",35.0,18.0,expected,encoder,attempt,cancel).await?;
+  if let Err(e)=run_ffmpeg(app,job,started,timer,args,"Кроссфейд между треками • HQ 320k",35.0,18.0,expected,encoder,attempt,cancel).await{
+    if e.contains("processed-audio-local-v1008"){return Err(format!("ENDLUME internal processed-audio cache failure (исходные файлы проекта не пропали): {e}"))}
+    return Err(e)
+  }
   if !probe_audio_decodes(app,&cycle).await{return Err("Crossfade Audio: итоговая дорожка не декодируется".into())}
   let cycle_duration=probe_duration(app,cycle.to_string_lossy().as_ref()).await.unwrap_or(expected);
   Ok((cycle,durations,cycle_duration))
@@ -1736,6 +1742,45 @@ fn prune_cache_1000(root:&Path,protect:&Path){
   let Ok(rd)=std::fs::read_dir(root) else{return};let mut items=rd.filter_map(Result::ok).filter_map(|e|{let p=e.path();if p==protect||!p.is_file(){return None}let m=e.metadata().ok()?;let t=m.modified().ok()?.duration_since(UNIX_EPOCH).ok()?.as_secs();Some((p,m.len(),t))}).collect::<Vec<_>>();
   items.sort_by_key(|x|x.2);let mut bytes=items.iter().map(|x|x.1).sum::<u64>();let mut count=items.len()+1;
   for (p,size,_) in items{if bytes<=MAX_BYTES&&count<=MAX_ENTRIES{break}if std::fs::remove_file(&p).is_ok(){bytes=bytes.saturating_sub(size);count=count.saturating_sub(1)}}
+}
+
+fn processed_audio_active_1008()->&'static parking_lot::Mutex<HashMap<PathBuf,usize>>{
+  PROCESSED_AUDIO_ACTIVE_1008.get_or_init(||parking_lot::Mutex::new(HashMap::new()))
+}
+fn prune_processed_audio_idle_locked_1008(root:&Path){
+  let synthetic=root.join(".endlume-no-active-processed-audio");
+  prune_cache_1000(root,&synthetic);
+}
+fn prune_processed_audio_if_idle_1008(root:&Path){
+  let active=processed_audio_active_1008().lock();
+  if active.get(root).copied().unwrap_or(0)==0{prune_processed_audio_idle_locked_1008(root);}
+}
+struct ProcessedAudioCacheLease1008{root:PathBuf}
+impl ProcessedAudioCacheLease1008{
+  fn acquire_root(root:PathBuf)->Self{
+    let mut active=processed_audio_active_1008().lock();
+    let count=active.entry(root.clone()).or_insert(0);
+    if *count==0{prune_processed_audio_idle_locked_1008(&root);}
+    *count+=1;
+    Self{root}
+  }
+  fn acquire(app:&AppHandle)->Result<Self,String>{
+    Ok(Self::acquire_root(cache_root_1000(app,"processed-audio-local-v1008")?))
+  }
+}
+impl Drop for ProcessedAudioCacheLease1008{
+  fn drop(&mut self){
+    let mut active=processed_audio_active_1008().lock();
+    let remove=match active.get_mut(&self.root){
+      Some(count) if *count>1=>{*count-=1;false},
+      Some(_)=>true,
+      None=>false,
+    };
+    if remove{
+      active.remove(&self.root);
+      prune_processed_audio_idle_locked_1008(&self.root);
+    }
+  }
 }
 
 const ENDLUME_RUNTIME_CACHE_MAX_BYTES_1003:u64=6*1024*1024*1024;
@@ -2389,7 +2434,6 @@ pub async fn render_job(app:&AppHandle,job:&QueueJob,cancel:Arc<AtomicBool>)->Re
               (if direct_list{AudioSource::ConcatList{path:cycle,cycle_duration}}else{AudioSource::Loop(cycle)},durations,final_duration,true)
             },
             Err(reason)=>{
-              if !requested_audio_processing{return Err(format!("Strict Fidelity: исходную музыку нельзя сохранить bitstream-copy ({reason}). Используй MP3 с одинаковыми sample rate/channel layout."))}
               let audio_cycle_mark=Instant::now();let (cycle,durations,_cycle_duration)=build_lossless_processed_audio_cycle(app,job,started,&timer,&work,&encoder,attempt,&cancel).await?;emit_timing(app,&job.project.id,"processed-audio-cycle",audio_cycle_mark.elapsed().as_secs_f64());
               let final_duration=smart_final_duration(target,&durations,job.settings.crossfade_sec,&job.settings.duration_mode);
               let audio_materialize_mark=Instant::now();let continuous=materialize_continuous_audio(app,job,started,&timer,&work,&cycle,final_duration,&encoder,attempt,&cancel).await?;emit_timing(app,&job.project.id,"processed-audio-materialize",audio_materialize_mark.elapsed().as_secs_f64());
@@ -2471,4 +2515,28 @@ pub async fn render_job(app:&AppHandle,job:&QueueJob,cancel:Arc<AtomicBool>)->Re
     }
   }
   Err(last_error)
+}
+
+
+#[cfg(test)]
+mod tests_10012_processed_audio_cache {
+  use super::*;
+  fn temp_root(label:&str)->PathBuf{
+    let root=std::env::temp_dir().join(format!("endlume-10012-{label}-{}",uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&root).unwrap();root
+  }
+  fn fill(root:&Path,count:usize){for i in 0..count{std::fs::write(root.join(format!("{i:03}.wav")),vec![i as u8;64]).unwrap();}}
+  fn files(root:&Path)->usize{std::fs::read_dir(root).unwrap().filter_map(Result::ok).filter(|e|e.path().is_file()).count()}
+  #[test]
+  fn active_processed_audio_lease_defers_entry_pressure_prune(){
+    let root=temp_root("active");let lease=ProcessedAudioCacheLease1008::acquire_root(root.clone());fill(&root,30);
+    prune_processed_audio_if_idle_1008(&root);assert_eq!(files(&root),30,"active project inputs were pruned");
+    drop(lease);assert!(files(&root)<=24,"idle cache was not pruned after active cycle");let _=std::fs::remove_dir_all(root);
+  }
+  #[test]
+  fn multiple_processed_audio_leases_prevent_cross_project_prune(){
+    let root=temp_root("multi");let a=ProcessedAudioCacheLease1008::acquire_root(root.clone());let b=ProcessedAudioCacheLease1008::acquire_root(root.clone());fill(&root,30);
+    drop(a);assert_eq!(files(&root),30,"one project pruned another active project's inputs");
+    drop(b);assert!(files(&root)<=24,"cache did not prune when the final active lease ended");let _=std::fs::remove_dir_all(root);
+  }
 }

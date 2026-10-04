@@ -1,0 +1,92 @@
+name: ENDLUME 10.0.12 Cross-Platform Audio E2E
+
+on:
+  push:
+    branches: [hotfix/endlume-10.0.12-windows-audio-cache-reliability]
+    paths:
+      - ".github/workflows/endlume-1012-cross-platform-audio-e2e.yml"
+      - "scripts/qa-endlume-1012-windows-audio-cache.py"
+      - "src-tauri/src/render.rs"
+      - "src-tauri/src/license.rs"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-1012-cross-platform-audio-e2e
+  cancel-in-progress: true
+
+jobs:
+  mac-audio-e2e:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Stage local FFmpeg sidecars
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
+          FFMPEG="$(command -v ffmpeg)"
+          FFPROBE="$(command -v ffprobe)"
+          test -x "$FFMPEG" -a -x "$FFPROBE"
+          mkdir -p src-tauri/binaries
+          cp "$FFMPEG" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp "$FFPROBE" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          chmod 755 src-tauri/binaries/ffmpeg-aarch64-apple-darwin src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          printf '%s' "$FFMPEG" > "$RUNNER_TEMP/e1012-ffmpeg.txt"
+          printf '%s' "$FFPROBE" > "$RUNNER_TEMP/e1012-ffprobe.txt"
+          echo ENDLUME_1012_MAC_FFMPEG_GREEN
+
+      - name: Build E2E runtime
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
+          export CARGO_TARGET_DIR="$HOME/.endlume-build-cache/target-1012-audio-e2e"
+          npm ci
+          npm run build
+          npm run tauri build -- --target aarch64-apple-darwin --bundles app --features e2e-render
+          APP="$(find "$CARGO_TARGET_DIR/aarch64-apple-darwin/release/bundle/macos" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          test -n "$APP" -a -d "$APP"
+          EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
+          test -x "$APP/Contents/MacOS/$EXE"
+          printf '%s' "$APP/Contents/MacOS/$EXE" > "$RUNNER_TEMP/e1012-app.txt"
+          echo ENDLUME_1012_MAC_BUILD_GREEN
+
+      - name: Run exact audio/cache/queue matrix
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          APP="$(cat "$RUNNER_TEMP/e1012-app.txt")"
+          FFMPEG="$(cat "$RUNNER_TEMP/e1012-ffmpeg.txt")"
+          FFPROBE="$(cat "$RUNNER_TEMP/e1012-ffprobe.txt")"
+          mkdir -p mac-qa
+          python3 scripts/qa-endlume-1012-windows-audio-cache.py "$APP" "$FFMPEG" "$FFPROBE" mac-qa/audio-cache-report.json
+          python3 - <<'PY'
+          import json
+          d=json.load(open("mac-qa/audio-cache-report.json"))
+          assert d["status"]=="GREEN"
+          assert d["cachePressure20Wav"]=="GREEN"
+          assert d["compatible20Mp3"]=="GREEN"
+          assert d["mixedFallback"]=="GREEN"
+          assert d["oneTrack"]=="GREEN"
+          assert d["queueHandoff"]=="GREEN"
+          assert d["realistic40ProjectQueue"]=="GREEN"
+          print("ENDLUME_1012_CROSS_PLATFORM_AUDIO_E2E_GREEN")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ENDLUME-10.0.12-Cross-Platform-Audio-E2E
+          path: mac-qa/
+          if-no-files-found: warn
+          retention-days: 7

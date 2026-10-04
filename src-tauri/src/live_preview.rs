@@ -147,12 +147,19 @@ fn qa_log_first_encode_sidecar(){
 }
 
 async fn run(app:&AppHandle,args:Vec<String>)->Result<(),String>{
-  // Capture stable self-contained tool copies before the first Tauri externalBin
-  // spawn. Packaged macOS E2E can resolve the first sidecar and return ENOENT on
-  // later sidecar spawns; the cached executables remain addressable.
+  // Stage a stable self-contained executable before Preview encode. Packaged
+  // macOS can resolve Tauri externalBin metadata yet fail the actual spawn with
+  // ENOENT, so prefer the staged sibling copy and keep sidecar only as fallback.
   ensure_preview_tools_staged(app);
   #[cfg(feature="e2e-render")]
   qa_log_first_encode_sidecar();
+  if let Some(ffmpeg)=staged_ffmpeg(app).filter(|p|executable_file(p)){
+    if live_preview_diag_enabled(){eprintln!("ENDLUME_PREVIEW_FFMPEG_SOURCE=staged-cache path={}",ffmpeg.display());}
+    let out=std::process::Command::new(&ffmpeg).args(&args).output()
+      .map_err(|e|format!("Не удалось запустить staged FFmpeg preview {}: {e}",ffmpeg.display()))?;
+    return if out.status.success(){Ok(())}else{Err(String::from_utf8_lossy(&out.stderr).trim().to_string())}
+  }
+  if live_preview_diag_enabled(){eprintln!("ENDLUME_PREVIEW_FFMPEG_SOURCE=tauri-sidecar-fallback");}
   let out=app.shell().sidecar("ffmpeg").map_err(|e|e.to_string())?.args(args).output().await.map_err(|e|e.to_string())?;
   if out.status.success(){Ok(())}else{Err(String::from_utf8_lossy(&out.stderr).trim().to_string())}
 }

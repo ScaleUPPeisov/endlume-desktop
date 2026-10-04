@@ -22,7 +22,7 @@ function isImagePath(path:string){const clean=path.split(/[?#]/)[0]||'';const ex
 export function ProjectPage(){
   const {
     draftProjects,setDraftProjects,invalidProjects,setInvalidProjects,appendProjects,
-    settings,patchSettings,effects,subscribes,ambient,setAmbient,ambientSettings,patchAmbientSettings,openEditor,setPage,setLastRoot
+    settings,patchSettings,effects,subscribes,ambient,setAmbient,ambientSettings,patchAmbientSettings,openEditor,setPage,setLastRoot,setPreviewProjectPath
   }=useApp();
   const [busy,setBusy]=useState(false),[scanNote,setScanNote]=useState(''),[features,setFeatures]=useState<FeatureFlags>(loadFeatures);
   const setFeature=(key:keyof FeatureFlags,value:boolean)=>setFeatures(prev=>{const next={...prev,[key]:value};localStorage.setItem(featureKey,JSON.stringify(next));return next});
@@ -39,7 +39,7 @@ export function ProjectPage(){
   };
 
   const scanRoots=useCallback(async(roots:string[])=>{
-    if(busy||!roots.length)return;setBusy(true);setScanNote('');setInvalidProjects([]);
+    if(busy||!roots.length)return;setBusy(true);setScanNote('');setInvalidProjects([]);setDraftProjects([]);setPreviewProjectPath(undefined);
     try{
       const all:any[]=[];const bad:any[]=[];
       const savedAnchors=useApp.getState().sceneAnchorsByPath;
@@ -54,10 +54,10 @@ export function ProjectPage(){
         }catch(e){bad.push({name:root.split(/[\\/]/).pop()||root,path:root,error:String(e)});}
       }
       const unique=Array.from(new Map(all.map(x=>[x.path,x])).values()) as RenderProject[];
-      setDraftProjects(unique);setInvalidProjects(bad);
+      setDraftProjects(unique);setPreviewProjectPath(unique[0]?.path);setInvalidProjects(bad);
       setScanNote(`Найдено проектов: ${unique.length}${bad.length?` • ошибок: ${bad.length}`:''}`);
     }catch(e){await api.showError(String(e))}finally{setBusy(false)}
-  },[busy,setDraftProjects,setInvalidProjects,setLastRoot]);
+  },[busy,setDraftProjects,setInvalidProjects,setLastRoot,setPreviewProjectPath]);
 
   const pick=async()=>{const roots=await api.chooseRoots();await scanRoots(roots)};
 
@@ -90,7 +90,7 @@ export function ProjectPage(){
       const queuedProjects=draftProjects.map((p,i)=>({...p,id:`${p.id}-${stamp}-${i}-${Math.random().toString(36).slice(2,8)}`,status:'queued' as const,progress:0,stage:'Ожидает в очереди',elapsedSec:0}));
       await api.enqueue(queuedProjects,settings,activeEffects,activeSubscribes,activeAmbient,ambientSettings);
       appendProjects(queuedProjects);
-      setDraftProjects([]);setInvalidProjects([]);setScanNote('');setPage('render');
+      setDraftProjects([]);setPreviewProjectPath(undefined);setInvalidProjects([]);setScanNote('');setPage('render');
     }catch(e){await api.showError(String(e))}
   };
 

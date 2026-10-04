@@ -1,8 +1,7 @@
-use crate::{cache,model::{EffectPreset,SubscribePreset}};
+use crate::{cache,live_preview,model::{EffectPreset,SubscribePreset}};
 use serde_json::Value;
 use std::path::{Path,PathBuf};
 use tauri::{AppHandle,Manager};
-use tauri_plugin_shell::ShellExt;
 
 const IMAGE:&[&str]=&["jpg","jpeg","png","webp","bmp","tif","tiff","heic","avif"];
 const VIDEO:&[&str]=&["mp4","mov","m4v","mkv","webm","avi","wmv","flv","ts","mts","m2ts","mpg","mpeg","vob","3gp"];
@@ -73,8 +72,9 @@ fn overlay_effect(graph:&mut String,base:&mut String,input:usize,e:&EffectPreset
 }
 
 async fn run_preview(app:&AppHandle,args:Vec<String>)->Result<Vec<u8>,String>{
-  let out=app.shell().sidecar("ffmpeg").map_err(|e|format!("FFmpeg preview недоступен: {e}"))?.args(args).output().await.map_err(|e|format!("Не удалось запустить FFmpeg preview: {e}"))?;
-  if out.status.success(){Ok(out.stderr)}else{Err(String::from_utf8_lossy(&out.stderr).trim().to_string())}
+  let (success,_code,_stdout,stderr)=live_preview::ffmpeg_output(app,args).await
+    .map_err(|e|format!("Не удалось запустить FFmpeg preview: {e}"))?;
+  if success{Ok(stderr)}else{Err(String::from_utf8_lossy(&stderr).trim().to_string())}
 }
 
 #[tauri::command]

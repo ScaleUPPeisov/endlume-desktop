@@ -4,6 +4,7 @@ on:
   push:
     branches: [hotfix/endlume-10.0.11-macos-render-assets-audio]
     paths:
+      - ".github/workflows/endlume-1011-render-assets-audio-qa.yml"
       - ".github/workflows/endlume-1011-critical-hotfix-qa.yml"
       - "scripts/qa-endlume-1011-critical-hotfix.py"
       - "src-tauri/src/live_preview.rs"

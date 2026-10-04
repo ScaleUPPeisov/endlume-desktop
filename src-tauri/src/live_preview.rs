@@ -96,7 +96,7 @@ fn stage_packaged_tool(app:&AppHandle,name:&str)->Option<PathBuf>{
   Some(target)
 }
 
-fn staged_ffmpeg(app:&AppHandle)->Option<PathBuf>{
+pub(crate) fn staged_ffmpeg(app:&AppHandle)->Option<PathBuf>{
   STAGED_FFMPEG.get_or_init(||stage_packaged_tool(app,"ffmpeg")).clone()
 }
 fn staged_ffprobe(app:&AppHandle)->Option<PathBuf>{
@@ -146,10 +146,10 @@ fn qa_log_first_encode_sidecar(){
   });
 }
 
-async fn run(app:&AppHandle,args:Vec<String>)->Result<(),String>{
-  // Stage a stable self-contained executable before Preview encode. Packaged
-  // macOS can resolve Tauri externalBin metadata yet fail the actual spawn with
-  // ENOENT, so prefer the staged sibling copy and keep sidecar only as fallback.
+pub(crate) async fn ffmpeg_output(app:&AppHandle,args:Vec<String>)->Result<(bool,Option<i32>,Vec<u8>,Vec<u8>),String>{
+  // One Preview execution path for poster, base frame and overlay proxy.
+  // Packaged macOS may resolve externalBin metadata but fail sidecar spawn with
+  // ENOENT, so prefer the stable staged executable and keep sidecar as fallback.
   ensure_preview_tools_staged(app);
   #[cfg(feature="e2e-render")]
   qa_log_first_encode_sidecar();
@@ -157,11 +157,16 @@ async fn run(app:&AppHandle,args:Vec<String>)->Result<(),String>{
     if live_preview_diag_enabled(){eprintln!("ENDLUME_PREVIEW_FFMPEG_SOURCE=staged-cache path={}",ffmpeg.display());}
     let out=std::process::Command::new(&ffmpeg).args(&args).output()
       .map_err(|e|format!("Не удалось запустить staged FFmpeg preview {}: {e}",ffmpeg.display()))?;
-    return if out.status.success(){Ok(())}else{Err(String::from_utf8_lossy(&out.stderr).trim().to_string())}
+    return Ok((out.status.success(),out.status.code(),out.stdout,out.stderr))
   }
   if live_preview_diag_enabled(){eprintln!("ENDLUME_PREVIEW_FFMPEG_SOURCE=tauri-sidecar-fallback");}
   let out=app.shell().sidecar("ffmpeg").map_err(|e|e.to_string())?.args(args).output().await.map_err(|e|e.to_string())?;
-  if out.status.success(){Ok(())}else{Err(String::from_utf8_lossy(&out.stderr).trim().to_string())}
+  Ok((out.status.success(),out.status.code(),out.stdout,out.stderr))
+}
+
+async fn run(app:&AppHandle,args:Vec<String>)->Result<(),String>{
+  let (success,_,_,stderr)=ffmpeg_output(app,args).await?;
+  if success{Ok(())}else{Err(String::from_utf8_lossy(&stderr).trim().to_string())}
 }
 
 fn executable_file(p:&Path)->bool{
@@ -416,14 +421,14 @@ async fn make_base(app:&AppHandle,src:&Path,seek:f64,out:&Path)->Result<String,S
     let name=out.file_name().and_then(|x|x.to_str()).unwrap_or("base.png");
     let tmp=out.with_file_name(format!("{name}-{}.tmp.png",uuid::Uuid::new_v4()));
     let args=vec!["-hide_banner","-loglevel","error","-i",src.to_string_lossy().as_ref(),"-vf","scale=960:540:force_original_aspect_ratio=decrease,pad=960:540:(ow-iw)/2:(oh-ih)/2","-frames:v","1","-compression_level","1","-y",tmp.to_string_lossy().as_ref()].into_iter().map(String::from).collect::<Vec<_>>();
-    let output=app.shell().sidecar("ffmpeg").map_err(|e|format!("FFmpeg Live Preview недоступен: {e}"))?.args(args).output().await.map_err(|e|format!("Не удалось запустить FFmpeg Live Preview: {e}"))?;
-    let stderr=String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let (success,code,_stdout,stderr_bytes)=ffmpeg_output(app,args).await.map_err(|e|format!("Не удалось запустить FFmpeg Live Preview: {e}"))?;
+    let stderr=String::from_utf8_lossy(&stderr_bytes).trim().to_string();
     let (width,height,pix_fmt)=frame_probe_diag(app,&tmp).await;
     if live_preview_diag_enabled(){
       let size=fs::metadata(&tmp).map(|m|m.len()).unwrap_or(0);
-      eprintln!("ENDLUME_PREVIEW_BASE SOURCE_IMAGE={} BASE_FRAME_PATH={} BASE_FRAME_EXISTS={} BASE_FRAME_SIZE={} WIDTH={} HEIGHT={} PIX_FMT={} FFMPEG_EXIT={:?} STDERR={:?} CACHE_KEY={} TEMP_PATH={}",src.display(),out.display(),tmp.is_file(),size,width,height,pix_fmt,output.status.code(),stderr,out.file_stem().and_then(|x|x.to_str()).unwrap_or(""),tmp.display());
+      eprintln!("ENDLUME_PREVIEW_BASE SOURCE_IMAGE={} BASE_FRAME_PATH={} BASE_FRAME_EXISTS={} BASE_FRAME_SIZE={} WIDTH={} HEIGHT={} PIX_FMT={} FFMPEG_EXIT={:?} STDERR={:?} CACHE_KEY={} TEMP_PATH={}",src.display(),out.display(),tmp.is_file(),size,width,height,pix_fmt,code,stderr,out.file_stem().and_then(|x|x.to_str()).unwrap_or(""),tmp.display());
     }
-    if !output.status.success(){let _=fs::remove_file(&tmp);return Err(if stderr.is_empty(){"Не удалось создать базовый кадр Live Preview".into()}else{stderr})}
+    if !success{let _=fs::remove_file(&tmp);return Err(if stderr.is_empty(){"Не удалось создать базовый кадр Live Preview".into()}else{stderr})}
     if !ready_file(&tmp){let _=fs::remove_file(&tmp);return Err("Не удалось создать базовый кадр Live Preview".into())}
     if ready_file(out){let _=fs::remove_file(&tmp);}else{let _=fs::remove_file(out);fs::rename(&tmp,out).map_err(|e|format!("Live Preview atomic base publish: {e}"))?;}
     Ok("image".into())

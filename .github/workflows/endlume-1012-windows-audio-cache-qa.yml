@@ -87,7 +87,7 @@ jobs:
         run: |
           $ErrorActionPreference='Stop'
           $env:CARGO_TARGET_DIR=Join-Path $env:RUNNER_TEMP 'e1012-windows'
-          npx tauri build --target x86_64-pc-windows-msvc --bundles nsis --features e2e-render
+          npm run tauri build -- --target x86_64-pc-windows-msvc --bundles nsis --features e2e-render
           $release=Join-Path $env:CARGO_TARGET_DIR 'x86_64-pc-windows-msvc\release'
           $exe=Get-ChildItem $release -Filter '*.exe' -File | Where-Object {$_.Name -notmatch 'build-script'} | Sort-Object Length -Descending | Select-Object -First 1
           if(!$exe){throw 'ENDLUME runtime exe missing'}
@@ -95,6 +95,7 @@ jobs:
           New-Item -ItemType Directory -Force windows-qa | Out-Null
           $nsis=Get-ChildItem "$release\bundle\nsis" -Filter '*.exe' -File | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
           if(!$nsis){throw 'NSIS candidate missing'}
+          if($nsis.Length -lt 50000000){throw "NSIS candidate unexpectedly small: $($nsis.Length)"}
           @{installer=$nsis.FullName;bytes=$nsis.Length;sha256=(Get-FileHash $nsis.FullName -Algorithm SHA256).Hash.ToLower()} | ConvertTo-Json | Out-File windows-qa\installer-prebump.json -Encoding utf8
           Write-Host ENDLUME_1012_BUILD_GREEN
 

@@ -1,0 +1,92 @@
+name: Build MusicForge AI v0.3.1 for Mac M1
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/musicforge-v031-fixed.yml'
+      - 'musicforge-v031/**'
+
+jobs:
+  build-macos-arm64:
+    runs-on: macos-15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rebuild v0.2 source
+        run: |
+          cat musicforge-v02/chunks/*.txt > /tmp/v02.b64
+          python3 - <<'PY'
+          import base64, hashlib, pathlib
+          data=base64.b64decode(pathlib.Path('/tmp/v02.b64').read_text().strip(), validate=True)
+          digest=hashlib.sha256(data).hexdigest(); expected='8a9dc8c16a06c14419a65df74c9307e472cff70eaba1ae89dc0b221742e69f7b'
+          print(digest)
+          assert digest==expected, (digest, expected)
+          pathlib.Path('/tmp/v02.zip').write_bytes(data)
+          PY
+          unzip -q /tmp/v02.zip
+          test -f musicforge-ai/main.js
+
+      - name: Apply v0.3 and v0.3.1 patches
+        run: |
+          python3 - <<'PY'
+          import base64,gzip,pathlib
+          for src,dst in [('musicforge-v03/patch.gz.b64','/tmp/v03.patch'),('musicforge-v031/patch.gz.b64','/tmp/v031.patch')]:
+              pathlib.Path(dst).write_bytes(gzip.decompress(base64.b64decode(pathlib.Path(src).read_text().strip(),validate=True)))
+          PY
+          cd musicforge-ai
+          patch -p1 --forward --batch < /tmp/v03.patch
+          patch -p1 --forward --batch < /tmp/v031.patch
+          grep -q '"version": "0.3.1"' package.json
+          grep -q '10–12 сек' renderer/index.html
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Syntax checks
+        working-directory: musicforge-ai
+        run: |
+          node --check main.js
+          node --check preload.js
+          node --check renderer/app.js
+
+      - name: Install dependencies
+        working-directory: musicforge-ai
+        run: npm install --no-audit --no-fund
+
+      - name: Build icon
+        working-directory: musicforge-ai
+        run: |
+          python3 -m venv /tmp/musicforge-icon-venv
+          /tmp/musicforge-icon-venv/bin/python -m pip install --disable-pip-version-check cairosvg
+          /tmp/musicforge-icon-venv/bin/python scripts/make_icon.py
+          iconutil -c icns assets/AppIcon.iconset -o assets/icon.icns
+
+      - name: Package app
+        working-directory: musicforge-ai
+        run: npm run package:mac
+
+      - name: Verify and sign ARM64 app
+        working-directory: musicforge-ai
+        run: |
+          APP_PATH="dist/MusicForge AI-darwin-arm64/MusicForge AI.app"
+          file "$APP_PATH/Contents/MacOS/MusicForge AI" | grep -q arm64
+          codesign --force --deep --sign - "$APP_PATH"
+          codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+
+      - name: Create ZIP
+        working-directory: musicforge-ai
+        run: |
+          cd "dist/MusicForge AI-darwin-arm64"
+          ditto -c -k --sequesterRsrc --keepParent "MusicForge AI.app" "../MusicForge-AI-v0.3.1-Mac-M1.zip"
+          unzip -t "../MusicForge-AI-v0.3.1-Mac-M1.zip"
+          shasum -a 256 "../MusicForge-AI-v0.3.1-Mac-M1.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MusicForge-AI-v0.3.1-Mac-M1
+          path: musicforge-ai/dist/MusicForge-AI-v0.3.1-Mac-M1.zip
+          retention-days: 14

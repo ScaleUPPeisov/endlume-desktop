@@ -42,6 +42,7 @@ fn proxy_probe_valid(raw:&[u8])->bool{
   let Some(stream)=v.get("streams").and_then(|x|x.as_array()).and_then(|x|x.first()) else{return false};
   if stream.get("codec_type").and_then(|x|x.as_str())!=Some("video"){return false}
   if !json_positive(stream.get("width"))||!json_positive(stream.get("height")){return false}
+  if !json_positive(stream.get("nb_read_frames")){return false}
   json_positive(v.get("format").and_then(|x|x.get("duration")))
 }
 fn accept_proxy_attempt(process_ok:bool,proxy_valid:bool)->bool{process_ok&&proxy_valid}
@@ -239,24 +240,37 @@ async fn decode_proxy_frame(app:&AppHandle,out:&Path)->Result<(),String>{
 
 pub(crate) async fn validate_video_proxy(app:&AppHandle,out:&Path)->Result<(),String>{
   if !ready_file(out){return Err("proxy-файл отсутствует или слишком мал".into())}
-  // A real decoded frame is mandatory. Prefer Tauri's sidecar launcher; if the
-  // packaged launcher cannot resolve/spawn a second process, execute the bundled
-  // sibling FFmpeg directly. Corrupt media still fails because decode exit != 0.
-  decode_proxy_frame(app,out).await.map_err(|e|format!("proxy не декодируется: {e}"))?;
-  let probe_args=vec!["-v","error","-select_streams","v:0","-show_entries","stream=codec_type,width,height:format=duration","-of","json",out.to_string_lossy().as_ref()].into_iter().map(String::from).collect::<Vec<_>>();
-  let Ok(cmd)=app.shell().sidecar("ffprobe") else{
-    if live_preview_diag_enabled(){eprintln!("ENDLUME_PREVIEW_FFPROBE_FALLBACK reason=sidecar-unavailable path={}",out.display());}
-    return Ok(())
+  // Prefer a direct FFmpeg decode. On packaged macOS Tauri can successfully use
+  // externalBin for the encode and still return ENOENT on a second ffmpeg spawn.
+  // In that exact case FFprobe frame counting is the independent decode gate:
+  // it must actually read >0 video frames plus valid geometry and duration.
+  let decode_error=decode_proxy_frame(app,out).await.err();
+  let probe_args=vec![
+    "-v","error","-select_streams","v:0","-count_frames",
+    "-show_entries","stream=codec_type,width,height,nb_read_frames:format=duration",
+    "-of","json",out.to_string_lossy().as_ref()
+  ].into_iter().map(String::from).collect::<Vec<_>>();
+  let cmd=match app.shell().sidecar("ffprobe"){
+    Ok(v)=>v,
+    Err(e)=>{
+      if let Some(decode)=decode_error{return Err(format!("proxy decode failed ({decode}); FFprobe sidecar unavailable: {e}"))}
+      if live_preview_diag_enabled(){eprintln!("ENDLUME_PREVIEW_FFPROBE_FALLBACK reason=sidecar-unavailable path={}",out.display());}
+      return Ok(())
+    }
   };
   let probe=match cmd.args(probe_args).output().await{
     Ok(v)=>v,
     Err(e)=>{
+      if let Some(decode)=decode_error{return Err(format!("proxy decode failed ({decode}); FFprobe spawn failed: {e}"))}
       if live_preview_diag_enabled(){eprintln!("ENDLUME_PREVIEW_FFPROBE_FALLBACK reason=spawn-error error={:?} path={}",e,out.display());}
       return Ok(())
     }
   };
   if !probe.status.success(){return Err(format!("FFprobe не принял proxy: {}",String::from_utf8_lossy(&probe.stderr).trim()))}
-  if !proxy_probe_valid(&probe.stdout){return Err("FFprobe не подтвердил video stream / geometry / duration".into())}
+  if !proxy_probe_valid(&probe.stdout){return Err("FFprobe не подтвердил video stream / geometry / decoded frames / duration".into())}
+  if let Some(decode)=decode_error{
+    if live_preview_diag_enabled(){eprintln!("ENDLUME_PREVIEW_REAL_FRAME_DECODE_GREEN mode=ffprobe-count-frames fallback_reason={:?} path={}",decode,out.display());}
+  }
   Ok(())
 }
 
@@ -398,9 +412,10 @@ mod tests{
 
   #[test]
   fn ffprobe_contract_requires_video_geometry_and_duration(){
-    let good=br#"{"streams":[{"codec_type":"video","width":640,"height":360}],"format":{"duration":"6.000000"}}"#;
+    let good=br#"{"streams":[{"codec_type":"video","width":640,"height":360,"nb_read_frames":"180"}],"format":{"duration":"6.000000"}}"#;
     let no_stream=br#"{"streams":[],"format":{"duration":"6.000000"}}"#;
-    let no_duration=br#"{"streams":[{"codec_type":"video","width":640,"height":360}],"format":{"duration":"0"}}"#;
-    assert!(proxy_probe_valid(good));assert!(!proxy_probe_valid(no_stream));assert!(!proxy_probe_valid(no_duration));
+    let no_frames=br#"{"streams":[{"codec_type":"video","width":640,"height":360,"nb_read_frames":"0"}],"format":{"duration":"6.000000"}}"#;
+    let no_duration=br#"{"streams":[{"codec_type":"video","width":640,"height":360,"nb_read_frames":"180"}],"format":{"duration":"0"}}"#;
+    assert!(proxy_probe_valid(good));assert!(!proxy_probe_valid(no_stream));assert!(!proxy_probe_valid(no_frames));assert!(!proxy_probe_valid(no_duration));
   }
 }

@@ -108,6 +108,25 @@ def load_library():
 
 project,media,songs=resolve_project()
 tmp_root=Path(tempfile.mkdtemp(prefix="endlume1011-qa-"))
+
+def app_bundle_root(exe):
+    for p in [exe,*exe.parents]:
+        if p.suffix.lower()==".app":
+            return p
+    raise AssertionError(f"PACKAGED_APP_ROOT_NOT_FOUND: {exe}")
+
+APP_BUNDLE=app_bundle_root(APP)
+APP_REL=APP.relative_to(APP_BUNDLE)
+PRISTINE_APP=tmp_root/"packaged-pristine.app"
+shutil.copytree(APP_BUNDLE,PRISTINE_APP,symlinks=True)
+
+def fresh_app_binary(label):
+    dst=tmp_root/f"{label}.app"
+    shutil.rmtree(dst,ignore_errors=True)
+    shutil.copytree(PRISTINE_APP,dst,symlinks=True)
+    exe=dst/APP_REL
+    assert exe.is_file(),(label,exe)
+    return exe
 lib_path,lib=load_library()
 fx=[dict(x) for x in lib.get("effects",[]) if isinstance(x,dict) and Path(str(x.get("source",""))).is_file()]
 subs=[dict(x) for x in lib.get("subscribes",[]) if isinstance(x,dict) and Path(str(x.get("source",""))).is_file()]
@@ -188,7 +207,8 @@ def preview_run(label,effects,subscribes,overlay):
     fixture=tmp_root/f"{label}-preview-job.json";result=tmp_root/f"{label}-preview-result.json"
     fixture.write_text(json.dumps({"projectPath":str(preview_project),"overlaySource":str(overlay),"timeSec":0.0,"effects":effects,"subscribes":subscribes},ensure_ascii=False,indent=2))
     env=os.environ.copy();env.update({"ENDLUME_E2E_PREVIEW_JOB":str(fixture),"ENDLUME_E2E_RESULT":str(result),"ENDLUME_PREVIEW_DIAG":"1","RUST_BACKTRACE":"1"})
-    p=run([APP],check=False,timeout=150,env=env)
+    app_bin=fresh_app_binary(label)
+    p=run([app_bin],check=False,timeout=150,env=env)
     (tmp_root/f"{label}.stderr").write_text(p.stderr)
     (tmp_root/f"{label}.stdout").write_text(p.stdout)
     assert p.returncode==0,(label,p.returncode,p.stderr[-5000:])
@@ -254,7 +274,8 @@ jobs=[
 render_fixture=tmp_root/"render-jobs.json";render_result=tmp_root/"render-result.json"
 render_fixture.write_text(json.dumps({"jobs":jobs},ensure_ascii=False,indent=2))
 env=os.environ.copy();env.update({"ENDLUME_E2E_RENDER_JOB":str(render_fixture),"ENDLUME_E2E_RESULT":str(render_result),"ENDLUME_E2E_LIBRARY_PATH":str(e2e_library),"RUST_BACKTRACE":"1"})
-started=time.perf_counter();rp=run([APP],check=False,timeout=300,env=env);app_wall=time.perf_counter()-started
+render_app=fresh_app_binary("render-e2e")
+started=time.perf_counter();rp=run([render_app],check=False,timeout=300,env=env);app_wall=time.perf_counter()-started
 (tmp_root/"render.stderr").write_text(rp.stderr);(tmp_root/"render.stdout").write_text(rp.stdout)
 assert rp.returncode==0,(rp.returncode,rp.stderr[-10000:])
 raw=json.loads(render_result.read_text());assert raw.get("status")=="passed",raw

@@ -109,10 +109,18 @@ export interface RenderSettings {
   encoderPreference: EncoderPreference;
 }
 
+export interface BackgroundMusicSettings {
+  volumePct: number;
+  bassDb: number;
+  midDb: number;
+  trebleDb: number;
+}
+
 export interface LibraryPayload {
   effects: EffectPreset[];
   subscribes: SubscribePreset[];
   ambient?: string;
+  ambientSettings?: Partial<BackgroundMusicSettings>;
 }
 
 export interface RecoveryPayload {
@@ -128,6 +136,7 @@ export interface QueueJob {
   effects: EffectPreset[];
   subscribes: SubscribePreset[];
   ambient?: string;
+  ambientSettings: BackgroundMusicSettings;
 }
 
 export interface BenchmarkResult {

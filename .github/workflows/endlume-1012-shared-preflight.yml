@@ -56,7 +56,7 @@ jobs:
           npm run build
           cargo test --manifest-path src-tauri/Cargo.toml tests_10012_processed_audio_cache -- --nocapture
           cargo check --manifest-path src-tauri/Cargo.toml
-          deno check supabase/functions/endlume-client-api/index.ts
+          deno check --node-modules-dir=auto supabase/functions/endlume-client-api/index.ts
           deno test supabase/functions/endlume-client-api/render-state.test.ts
           grep -Fq '.eq("current_job_id", jobId)' supabase/functions/endlume-client-api/index.ts
           grep -Fq 'terminal_device_repair_failed' supabase/functions/endlume-client-api/index.ts

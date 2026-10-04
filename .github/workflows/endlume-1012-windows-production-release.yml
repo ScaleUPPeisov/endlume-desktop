@@ -1,0 +1,188 @@
+name: ENDLUME 10.0.12 Windows Production Release
+
+on:
+  push:
+    branches: [release-endlume-10.0.12-windows]
+    paths:
+      - ".github/workflows/endlume-1012-windows-production-release.yml"
+      - "package.json"
+      - "package-lock.json"
+      - "src-tauri/Cargo.toml"
+      - "src-tauri/Cargo.lock"
+      - "src-tauri/tauri.conf.json"
+      - "src-tauri/tauri.windows.conf.json"
+      - "src-tauri/src/render.rs"
+      - "src-tauri/src/license.rs"
+      - "supabase/functions/endlume-client-api/**"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-1012-windows-production-release
+  cancel-in-progress: false
+
+env:
+  VERSION: "10.0.12"
+  HOTFIX_PROVEN_SHA: "a3411ba0606f34bdf94439797e7ad56b3cc445d8"
+  STABLE_REPO: "ScaleUPPeisov/scaleup-site"
+  STABLE_TAG: "endlume-stable"
+  WINDOWS_TARGET: "x86_64-pc-windows-msvc"
+  WIN_EXE: "ENDLUME-YT-Studio-PEISOV-Setup-10.0.12-x64.exe"
+
+jobs:
+  windows:
+    name: Windows x64 • Production cross-build • Publish
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 180
+    env:
+      RELEASE_TOKEN: ${{ secrets.ENDLUME_RELEASE_TOKEN }}
+
+    steps:
+      - name: Checkout exact release HEAD
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify exact 10.0.12 release source
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
+          test "$(uname -s)" = Darwin
+          test "$(uname -m)" = arm64
+          test -n "${RELEASE_TOKEN:-}"
+          git merge-base --is-ancestor "$HOTFIX_PROVEN_SHA" "$GITHUB_SHA"
+          python3 - <<'PY'
+          import json,re
+          from pathlib import Path
+          v="10.0.12"
+          assert json.loads(Path("package.json").read_text())["version"]==v
+          assert json.loads(Path("package-lock.json").read_text())["version"]==v
+          assert json.loads(Path("src-tauri/tauri.conf.json").read_text())["version"]==v
+          assert re.search(r'^version\s*=\s*"10[.]0[.]12"$',Path("src-tauri/Cargo.toml").read_text(),re.M)
+          assert 'name = "endlume"\nversion = "10.0.12"' in Path("src-tauri/Cargo.lock").read_text()
+          r=Path("src-tauri/src/render.rs").read_text()
+          assert "ProcessedAudioCacheLease1008" in r
+          assert "Strict Fidelity: исходную музыку нельзя сохранить bitstream-copy" not in r
+          l=Path("src-tauri/src/license.rs").read_text()
+          assert "TERMINAL_JOBS" in l
+          s=Path("supabase/functions/endlume-client-api/index.ts").read_text()
+          assert "render_already_terminal" in s
+          print("ENDLUME_1012_WINDOWS_RELEASE_SOURCE_GREEN")
+          PY
+          test -s "$HOME/.endlume-updater/endlume.key"
+          test -s "$HOME/.endlume-updater/endlume.key.pub"
+
+      - name: Prepare Windows production toolchain and FFmpeg
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
+          brew list nsis >/dev/null 2>&1 || brew install nsis
+          brew list llvm >/dev/null 2>&1 || brew install llvm
+          export PATH="$(brew --prefix llvm)/bin:$HOME/.cargo/bin:$PATH"
+          rustup target add "$WINDOWS_TARGET"
+          command -v cargo-xwin >/dev/null 2>&1 || cargo install --locked cargo-xwin
+          CACHE="$HOME/.endlume-build-cache/windows-sidecars-1012-release"
+          ZIP="$CACHE/ffmpeg-master-latest-win64-gpl.zip"
+          EXTRACT="$CACHE/extract"
+          mkdir -p "$CACHE" src-tauri/binaries
+          test -s "$ZIP" || curl -fL --retry 4 --connect-timeout 20 -o "$ZIP" "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
+          rm -rf "$EXTRACT"; mkdir -p "$EXTRACT"
+          ditto -x -k "$ZIP" "$EXTRACT"
+          FFMPEG="$(find "$EXTRACT" -type f -name ffmpeg.exe -print -quit)"
+          FFPROBE="$(find "$EXTRACT" -type f -name ffprobe.exe -print -quit)"
+          test -n "$FFMPEG" -a -s "$FFMPEG"
+          test -n "$FFPROBE" -a -s "$FFPROBE"
+          cp "$FFMPEG" "src-tauri/binaries/ffmpeg-$WINDOWS_TARGET.exe"
+          cp "$FFPROBE" "src-tauri/binaries/ffprobe-$WINDOWS_TARGET.exe"
+          file "src-tauri/binaries/ffmpeg-$WINDOWS_TARGET.exe" | grep -E 'PE32|MS Windows'
+          echo ENDLUME_1012_WINDOWS_TOOLCHAIN_GREEN
+
+      - name: Frontend and Windows target gate
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="$(brew --prefix llvm)/bin:$HOME/.cargo/bin:/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+          npm ci
+          npm run check
+          npm run build
+          cargo xwin check --manifest-path src-tauri/Cargo.toml --target "$WINDOWS_TARGET"
+          echo ENDLUME_1012_WINDOWS_TARGET_GREEN
+
+      - name: Build exact 10.0.12 Windows NSIS
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="$(brew --prefix llvm)/bin:$HOME/.cargo/bin:/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+          export CARGO_TARGET_DIR="$HOME/.endlume-build-cache/target-1012-production-win"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path("src-tauri/tauri.conf.json")
+          d=json.loads(p.read_text())
+          assert d["version"]=="10.0.12"
+          d["bundle"]["createUpdaterArtifacts"]=False
+          p.write_text(json.dumps(d,ensure_ascii=False,indent=2)+"\n")
+          PY
+          npm run tauri build -- --runner cargo-xwin --target "$WINDOWS_TARGET" --bundles nsis --config src-tauri/tauri.windows.conf.json
+          CAND="$(find "$CARGO_TARGET_DIR/$WINDOWS_TARGET/release/bundle/nsis" -maxdepth 1 -type f -name '*.exe' -print -quit)"
+          test -n "$CAND" -a -s "$CAND"
+          STAGE="$RUNNER_TEMP/endlume-1012-win-release"
+          rm -rf "$STAGE"; mkdir -p "$STAGE"
+          cp "$CAND" "$STAGE/$WIN_EXE"
+          python3 - "$STAGE/$WIN_EXE" <<'PY'
+          import sys,hashlib
+          from pathlib import Path
+          p=Path(sys.argv[1]); b=p.read_bytes()
+          assert len(b)>50_000_000,len(b)
+          assert b[:2]==b"MZ",b[:2]
+          print("ENDLUME_1012_WINDOWS_PE_GREEN",len(b),hashlib.sha256(b).hexdigest())
+          PY
+          shasum -a 256 "$STAGE/$WIN_EXE" > "$STAGE/$WIN_EXE.sha256"
+          export TAURI_SIGNING_PRIVATE_KEY_PATH="$HOME/.endlume-updater/endlume.key"
+          export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
+          unset TAURI_SIGNING_PRIVATE_KEY || true
+          npx --yes @tauri-apps/cli@2.10.1 signer sign "$STAGE/$WIN_EXE"
+          test -s "$STAGE/$WIN_EXE.sig"
+          echo "E1012_WIN_STAGE=$STAGE" >> "$GITHUB_ENV"
+          echo ENDLUME_1012_WINDOWS_BUILD_SIGN_GREEN
+
+      - name: Publish Windows 10.0.12 versioned installer
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.ENDLUME_RELEASE_TOKEN }}
+        run: |
+          set -Eeuo pipefail
+          gh release view "$STABLE_TAG" --repo "$STABLE_REPO" >/dev/null
+          gh release upload "$STABLE_TAG"             "$E1012_WIN_STAGE/$WIN_EXE"             "$E1012_WIN_STAGE/$WIN_EXE.sha256"             "$E1012_WIN_STAGE/$WIN_EXE.sig"             --clobber --repo "$STABLE_REPO"
+          echo ENDLUME_1012_WINDOWS_VERSIONED_UPLOAD_GREEN
+
+      - name: Verify public Windows 10.0.12 release
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          BASE="https://github.com/$STABLE_REPO/releases/download/$STABLE_TAG"
+          TMP="$RUNNER_TEMP/endlume-1012-public"
+          rm -rf "$TMP"; mkdir -p "$TMP"
+          curl -fL --retry 8 --retry-delay 2 "$BASE/$WIN_EXE?run=$GITHUB_RUN_ID" -o "$TMP/$WIN_EXE"
+          curl -fL --retry 8 --retry-delay 2 "$BASE/$WIN_EXE.sha256?run=$GITHUB_RUN_ID" -o "$TMP/$WIN_EXE.sha256"
+          curl -fL --retry 8 --retry-delay 2 "$BASE/$WIN_EXE.sig?run=$GITHUB_RUN_ID" -o "$TMP/$WIN_EXE.sig"
+          test -s "$TMP/$WIN_EXE.sig"
+          python3 - "$TMP/$WIN_EXE" "$TMP/$WIN_EXE.sha256" <<'PY'
+          import sys,hashlib
+          from pathlib import Path
+          p=Path(sys.argv[1]); checksum=Path(sys.argv[2]).read_text().split()[0].lower()
+          b=p.read_bytes()
+          assert len(b)>50_000_000
+          assert b[:2]==b"MZ"
+          actual=hashlib.sha256(b).hexdigest()
+          assert actual==checksum,(actual,checksum)
+          print("ENDLUME_1012_WINDOWS_PUBLIC_GREEN",len(b),actual)
+          PY
+          echo ENDLUME_1012_WINDOWS_RELEASED

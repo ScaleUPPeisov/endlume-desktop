@@ -185,7 +185,7 @@ export function LiveCompositePreview({assets,effect,active=true,busy,overlayRef,
   },[overlaySrc,assets?.previewType,assets?.requestId,assets?.baseBytes,assets?.overlayBytes,active]);
 
   useEffect(()=>()=>{if(brushRaf.current!=null)cancelAnimationFrame(brushRaf.current)},[]);
-  if(!assets)return <div className="livePreviewEmpty"><span>{busy?'Подготавливаю Live Preview…':'Выберите проект на основном экране'}</span></div>;
+  if(!assets)return <div className="livePreviewEmpty"><span>{busy?'Подготавливаю Live Preview…':'Нет изображения / видео для Preview'}</span></div>;
   const helperBase=baseSrc?(assets.baseKind==='video'?<video key={baseSrc} className="livePreviewBase helperPreviewBase" src={baseSrc} preload="auto" autoPlay loop muted playsInline onLoadedData={e=>baseLoaded(e.currentTarget.videoWidth,e.currentTarget.videoHeight)} onError={()=>reportRed('base-video-load')}/>:<img className="livePreviewBase helperPreviewBase" src={baseSrc} draggable={false} onLoad={e=>baseLoaded(e.currentTarget.naturalWidth,e.currentTarget.naturalHeight)} onError={()=>reportRed('base-image-load')}/>):null;
   const posterBase=posterSrc?<img className={`livePreviewBase composedPosterPreview ${liveReady?'liveReady':''}`} src={posterSrc} draggable={false} onLoad={e=>posterLoaded(e.currentTarget)} onError={()=>reportRed('poster-image-load')}/>:null;
   const exactOverlayStyle:React.CSSProperties=effect.fullscreen?overlayStyle:{...overlayStyle,aspectRatio:String(Math.max(.05,overlayAspect)),height:'auto'};

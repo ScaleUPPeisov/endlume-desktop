@@ -53,6 +53,14 @@ jobs:
           export CARGO_TARGET_DIR="$HOME/.endlume-build-cache/target-1012-audio-e2e"
           npm ci
           npm run build
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path("src-tauri/tauri.conf.json")
+          d=json.loads(p.read_text())
+          d["bundle"]["createUpdaterArtifacts"]=False
+          p.write_text(json.dumps(d,ensure_ascii=False,indent=2)+"\n")
+          PY
           npm run tauri build -- --target aarch64-apple-darwin --bundles app --features e2e-render
           APP="$(find "$CARGO_TARGET_DIR/aarch64-apple-darwin/release/bundle/macos" -maxdepth 1 -type d -name '*.app' -print -quit)"
           test -n "$APP" -a -d "$APP"

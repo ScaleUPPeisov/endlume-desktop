@@ -97,6 +97,7 @@ function EffectsEditor() {
   const [deleteConfirm, setDeleteConfirm] = useState(false);
   const persistTimer = useRef<number | undefined>(undefined);
   const previewRequest = useRef(0);
+  const invalidatePreview=()=>{previewRequest.current+=1;setAssets(undefined);setPreviewSnapshot(undefined);};
   const current = effects.find((e) => e.id === selected);
   const projectPath = scenePath || previewProjectPath;
   const target = (current?.target || 'CUSTOM').trim().toUpperCase() || 'CUSTOM';
@@ -140,7 +141,7 @@ function EffectsEditor() {
     if (!source) return;
     const effect = emptyEffect(source);
     await saveLibrary([...effects, effect], true);
-    setAssets(undefined);setPreviewSnapshot(undefined);setSelected(effect.id);
+    invalidatePreview();setSelected(effect.id);
   };
 
   const patch = (value: Partial<EffectPreset>) => {
@@ -169,7 +170,7 @@ function EffectsEditor() {
     if (!current) return;
     const next = effects.filter((e) => e.id !== current.id);
     await saveLibrary(next, true);
-    setAssets(undefined);setPreviewSnapshot(undefined);setSelected(next[0]?.id);
+    invalidatePreview();setSelected(next[0]?.id);
     setDeleteConfirm(false);
   };
 
@@ -230,7 +231,7 @@ function EffectsEditor() {
     <div className="editorLayout">
       <aside className="assetList">
         <button className="addAsset" onClick={add}>+ ДОБАВИТЬ</button>
-        {effects.map((effect) => <button key={effect.id} className={`assetItem ${selected === effect.id ? 'active' : ''}`} onClick={() => {setAssets(undefined);setPreviewSnapshot(undefined);setSelected(effect.id)}}>
+        {effects.map((effect) => <button key={effect.id} className={`assetItem ${selected === effect.id ? 'active' : ''}`} onClick={() => {invalidatePreview();setSelected(effect.id)}}>
           <span className="assetThumb"><Icon name="effects" /></span>
           <span><b>{effect.name}</b><small>{effect.enabled ? 'Включён' : 'Выключен'} • {effect.mode} • {effect.cacheReady ? 'render-cache готов' : 'render-cache при первом рендере'}</small></span>
           <i className={effect.enabled ? 'enabled' : 'disabled'} title={effect.enabled ? 'Выключить' : 'Включить'} onClick={(event) => {
@@ -242,7 +243,7 @@ function EffectsEditor() {
 
       <main className="visualEditor">
         {current && resolvedCurrent ? <>
-          {sceneCandidates.length > 0 && <div className="previewTime"><span>СЦЕНА / ИЗОБРАЖЕНИЕ</span><select value={projectPath || ''} onChange={(event) => {setAssets(undefined);setPreviewSnapshot(undefined);setScenePath(event.target.value)}}>{sceneCandidates.map((scene) => <option key={scene.path} value={scene.path}>{scene.name}</option>)}</select><b>{sceneAnchor ? `${target} ✓` : `${target}: anchor не задан`}</b></div>}
+          {sceneCandidates.length > 0 && <div className="previewTime"><span>СЦЕНА / ИЗОБРАЖЕНИЕ</span><select value={projectPath || ''} onChange={(event) => {invalidatePreview();setScenePath(event.target.value)}}>{sceneCandidates.map((scene) => <option key={scene.path} value={scene.path}>{scene.name}</option>)}</select><b>{sceneAnchor ? `${target} ✓` : `${target}: anchor не задан`}</b></div>}
           <PreviewStage
             title={anchorMode ? `ПОКАЖИ НА ИЗОБРАЖЕНИИ: ${target}` : "LIVE PREVIEW"}
             assets={assets}
@@ -312,6 +313,7 @@ function SubscribeEditor() {
   const [saved, setSaved] = useState(false);
   const persistTimer = useRef<number | undefined>(undefined);
   const previewRequest = useRef(0);
+  const invalidatePreview=()=>{previewRequest.current+=1;setAssets(undefined);setPreviewSnapshot(undefined);};
   const current = subscribes.find((e) => e.id === selected);
 
   const saveLibrary = (next: SubscribePreset[], immediate = false) => {
@@ -338,7 +340,7 @@ function SubscribeEditor() {
     if (!source) return;
     const subscribe = emptySubscribe(source);
     await saveLibrary([...subscribes, subscribe], true);
-    setAssets(undefined);setPreviewSnapshot(undefined);setSelected(subscribe.id);
+    invalidatePreview();setSelected(subscribe.id);
   };
 
   const patch = (value: Partial<SubscribePreset>) => {
@@ -350,7 +352,7 @@ function SubscribeEditor() {
     if (!current) return;
     const next = subscribes.filter((item) => item.id !== current.id);
     await saveLibrary(next, true);
-    setAssets(undefined);setPreviewSnapshot(undefined);setSelected(next[0]?.id);
+    invalidatePreview();setSelected(next[0]?.id);
   };
 
   const loadLive = async (request = ++previewRequest.current) => {
@@ -407,7 +409,7 @@ function SubscribeEditor() {
     <div className="editorLayout">
       <aside className="assetList">
         <button className="addAsset" onClick={add}>+ ДОБАВИТЬ</button>
-        {subscribes.map((item) => <button key={item.id} className={`assetItem ${selected === item.id ? 'active' : ''}`} onClick={() => {setAssets(undefined);setPreviewSnapshot(undefined);setSelected(item.id)}}>
+        {subscribes.map((item) => <button key={item.id} className={`assetItem ${selected === item.id ? 'active' : ''}`} onClick={() => {invalidatePreview();setSelected(item.id)}}>
           <span className="assetThumb pink"><Icon name="subscribe" /></span>
           <span><b>{item.name}</b><small>{usageLabel(item)}{effectiveUsageMode(item) === 'interval' ? ` • каждые ${Math.round(subscribeInterval(item) / 60)} мин` : ''}</small></span>
           <i className={item.enabled ? 'enabled' : 'disabled'} title={item.enabled ? 'Выключить' : 'Включить'} onClick={(event) => {

@@ -21,7 +21,7 @@ concurrency:
 
 jobs:
   windows-audio-cache:
-    runs-on: windows-2022
+    runs-on: [self-hosted, endlume, windows, x64]
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4

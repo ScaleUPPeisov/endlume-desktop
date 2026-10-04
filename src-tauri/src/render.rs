@@ -878,6 +878,50 @@ fn final_mp4_audio_args(audio:&AudioSource,encoder:&str)->Vec<String>{
   args
 }
 
+
+fn active_background_music(job:&QueueJob)->Option<&str>{
+  job.ambient.as_deref().map(str::trim).filter(|p|!p.is_empty())
+}
+
+fn append_final_av_audio_args(args:&mut Vec<String>,job:&QueueJob,audio:&AudioSource,encoder:&str,final_duration:f64)->Result<(),String>{
+  args.extend(vec!["-t",&final_duration.to_string(),"-map","0:v:0"].into_iter().map(String::from));
+  if let Some(background)=active_background_music(job){
+    let background_path=Path::new(background);
+    if !background_path.is_file(){
+      diag_line(json!({"kind":"render-asset-missing","assetClass":"BACKGROUND_MUSIC","projectId":job.project.id,"originalStoredPath":background,"resolvedPath":background,"exists":false,"parentExists":background_path.parent().map(|p|p.is_dir()).unwrap_or(false),"origin":"library"}));
+      return Err(format!("BACKGROUND_MUSIC файл не найден для проекта '{}': {}",job.project.name,background))
+    }
+    args.extend(vec!["-stream_loop","-1","-fflags","+genpts","-i",background].into_iter().map(String::from));
+    let cfg=&job.ambient_settings;
+    let volume=cfg.volume_pct.clamp(0.0,100.0)/100.0;
+    let bass=cfg.bass_db.clamp(-12.0,12.0);
+    let mid=cfg.mid_db.clamp(-12.0,12.0);
+    let treble=cfg.treble_db.clamp(-12.0,12.0);
+    let mut bg=vec![
+      "aresample=48000:async=1:first_pts=0".to_string(),
+      "aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo".to_string(),
+    ];
+    if bass.abs()>0.0001{bg.push(format!("bass=f=120:g={bass:.3}"))}
+    if mid.abs()>0.0001{bg.push(format!("equalizer=f=1000:t=q:w=1:g={mid:.3}"))}
+    if treble.abs()>0.0001{bg.push(format!("treble=f=8000:g={treble:.3}"))}
+    bg.push(format!("volume={volume:.6}"));
+    bg.push(format!("atrim=duration={final_duration:.6}"));
+    bg.push("asetpts=N/SR/TB".into());
+    let graph=format!(
+      "[1:a]aresample=48000:async=1:first_pts=0,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,atrim=duration={final_duration:.6},asetpts=N/SR/TB[maina];[2:a]{}[bga];[maina][bga]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,alimiter=limit=0.98[outa]",
+      bg.join(",")
+    );
+    args.extend(vec!["-filter_complex",&graph,"-map","[outa]","-c:v","copy"].into_iter().map(String::from));
+    args.extend(audio_encoder_args(encoder));
+    args.extend(vec!["-tag:a","mp4a","-disposition:a:0","default","-metadata:s:a:0","language=und"].into_iter().map(String::from));
+    diag_line(json!({"kind":"background-music-final","projectId":job.project.id,"source":background,"volumePct":volume*100.0,"bassDb":bass,"midDb":mid,"trebleDb":treble,"coveredDuration":final_duration,"loopMode":"stream_loop","tempPcm":false}));
+  }else{
+    args.extend(vec!["-map","1:a:0","-c:v","copy"].into_iter().map(String::from));
+    args.extend(final_mp4_audio_args(audio,encoder));
+  }
+  Ok(())
+}
+
 fn fast_aac_cache_needed_1003(audio:&AudioSource)->bool{
   match audio{
     AudioSource::ConcatList{..}=>true,

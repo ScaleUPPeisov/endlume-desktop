@@ -22,14 +22,20 @@ function isImagePath(path:string){const clean=path.split(/[?#]/)[0]||'';const ex
 export function ProjectPage(){
   const {
     draftProjects,setDraftProjects,invalidProjects,setInvalidProjects,appendProjects,
-    settings,patchSettings,effects,subscribes,ambient,setAmbient,openEditor,setPage,setLastRoot
+    settings,patchSettings,effects,subscribes,ambient,setAmbient,ambientSettings,patchAmbientSettings,openEditor,setPage,setLastRoot
   }=useApp();
   const [busy,setBusy]=useState(false),[scanNote,setScanNote]=useState(''),[features,setFeatures]=useState<FeatureFlags>(loadFeatures);
   const setFeature=(key:keyof FeatureFlags,value:boolean)=>setFeatures(prev=>{const next={...prev,[key]:value};localStorage.setItem(featureKey,JSON.stringify(next));return next});
   const saveAmbient=async(next?:string)=>{
     setAmbient(next);
     const state=useApp.getState();
-    await api.saveLibrary({effects:state.effects,subscribes:state.subscribes,ambient:next});
+    await api.saveLibrary({effects:state.effects,subscribes:state.subscribes,ambient:next,ambientSettings:state.ambientSettings});
+  };
+  const saveAmbientSettings=async(patch:Partial<typeof ambientSettings>)=>{
+    const next={...useApp.getState().ambientSettings,...patch};
+    patchAmbientSettings(patch);
+    const state=useApp.getState();
+    await api.saveLibrary({effects:state.effects,subscribes:state.subscribes,ambient:state.ambient,ambientSettings:next});
   };
 
   const scanRoots=useCallback(async(roots:string[])=>{
@@ -77,12 +83,12 @@ export function ProjectPage(){
       const activeSubscribes=features.subscribe?subscribes.filter(e=>e.enabled):[];
       const activeAmbient=features.ambient?ambient:undefined;
       const fastStaticProjects=draftProjects.filter(p=>p.media.length>0&&p.media.every(isImagePath)&&(p.media.length===1||(activeEffects.length===0&&activeSubscribes.length===0)));
-      if(fastStaticProjects.length&&(settings.crossfadeSec>0||settings.normalizeLufs||!!activeAmbient)){
+      if(fastStaticProjects.length&&(settings.crossfadeSec>0||settings.normalizeLufs)){
         await api.showInfo(`Processed Audio включён для ${fastStaticProjects.length} статичных проектов. Быстрый visual/manifest pipeline сохраняется, но музыка будет реально декодирована и обработана (crossfade / LUFS / ambient), поэтому MP3 packet-copy отключается и рендер может быть медленнее или больше. Чтобы получить Original MP3 bitstream-copy, выключите audio processing.`);
       }
       const stamp=Date.now().toString(36);
       const queuedProjects=draftProjects.map((p,i)=>({...p,id:`${p.id}-${stamp}-${i}-${Math.random().toString(36).slice(2,8)}`,status:'queued' as const,progress:0,stage:'Ожидает в очереди',elapsedSec:0}));
-      await api.enqueue(queuedProjects,settings,activeEffects,activeSubscribes,activeAmbient);
+      await api.enqueue(queuedProjects,settings,activeEffects,activeSubscribes,activeAmbient,ambientSettings);
       appendProjects(queuedProjects);
       setDraftProjects([]);setInvalidProjects([]);setScanNote('');setPage('render');
     }catch(e){await api.showError(String(e))}
@@ -140,6 +146,13 @@ export function ProjectPage(){
     <section className="sectionBlock">
       <div className="sectionTitle">BACKGROUND MUSIC</div>
       <div className="featureRow"><span className="featureIcon"><Icon name="ambient"/></span><div><b>Фоновая музыка</b><small>{!features.ambient?'Отключено для текущих рендеров':ambient||'Не выбрана'}</small></div><div className="rowButtons"><button onClick={()=>setFeature('ambient',!features.ambient)}>{features.ambient?'ВЫКЛЮЧИТЬ':'ВКЛЮЧИТЬ'}</button><button onClick={async()=>{const p=await api.chooseAmbient();if(p)await saveAmbient(p)}}>ВЫБРАТЬ</button>{ambient&&<button className="dangerText" onClick={()=>void saveAmbient(undefined)}>УДАЛИТЬ</button>}</div></div>
+      {ambient&&<div className="renderCard">
+        <div className="bigControl compactControl"><div><b>ГРОМКОСТЬ</b><small>Только фоновая музыка. Основные песни не меняются.</small></div><div className="bigValue small">{Math.round(ambientSettings.volumePct)}%</div><Range value={ambientSettings.volumePct} min={0} max={100} step={1} onChange={v=>void saveAmbientSettings({volumePct:v})} minLabel="0%" maxLabel="100%"/></div>
+        <div className="bigControl compactControl"><div><b>НИЗКИЕ / BASS</b><small>3-band EQ фоновой музыки</small></div><div className="bigValue small">{ambientSettings.bassDb.toFixed(1)} dB</div><Range value={ambientSettings.bassDb} min={-12} max={12} step={0.5} onChange={v=>void saveAmbientSettings({bassDb:v})} minLabel="-12 dB" maxLabel="+12 dB"/></div>
+        <div className="bigControl compactControl"><div><b>СРЕДНИЕ / MID</b><small>Нейтральное значение: 0 dB</small></div><div className="bigValue small">{ambientSettings.midDb.toFixed(1)} dB</div><Range value={ambientSettings.midDb} min={-12} max={12} step={0.5} onChange={v=>void saveAmbientSettings({midDb:v})} minLabel="-12 dB" maxLabel="+12 dB"/></div>
+        <div className="bigControl compactControl"><div><b>ВЫСОКИЕ / TREBLE</b><small>Нейтральное значение: 0 dB</small></div><div className="bigValue small">{ambientSettings.trebleDb.toFixed(1)} dB</div><Range value={ambientSettings.trebleDb} min={-12} max={12} step={0.5} onChange={v=>void saveAmbientSettings({trebleDb:v})} minLabel="-12 dB" maxLabel="+12 dB"/></div>
+        <p className="editorHint">Фоновая музыка автоматически зацикливается до MASTER duration и обрезается ровно на конце видео.</p>
+      </div>}
     </section>
 
     <section className="sectionBlock outputSection">

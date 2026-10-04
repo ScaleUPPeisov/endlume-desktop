@@ -2534,6 +2534,23 @@ mod tests_10012_processed_audio_cache {
     drop(lease);assert!(files(&root)<=24,"idle cache was not pruned after active cycle");let _=std::fs::remove_dir_all(root);
   }
   #[test]
+  fn twenty_large_inputs_survive_old_two_gib_pressure_while_leased(){
+    let root=temp_root("2gib");let lease=ProcessedAudioCacheLease1008::acquire_root(root.clone());
+    for i in 0..20{
+      let path=root.join(format!("{i:03}.wav"));
+      let file=std::fs::File::create(path).unwrap();
+      file.set_len(120*1024*1024).unwrap();
+    }
+    let logical_bytes: u64=std::fs::read_dir(&root).unwrap().filter_map(Result::ok).filter_map(|e|e.metadata().ok().map(|m|m.len())).sum();
+    assert!(logical_bytes>2*1024*1024*1024,"fixture did not exceed old 2 GiB limit");
+    prune_processed_audio_if_idle_1008(&root);
+    assert_eq!(files(&root),20,"old 2 GiB pressure pruned active project inputs");
+    drop(lease);
+    assert!(files(&root)<20,"idle cleanup did not reclaim old pressure fixture");
+    let _=std::fs::remove_dir_all(root);
+  }
+
+  #[test]
   fn multiple_processed_audio_leases_prevent_cross_project_prune(){
     let root=temp_root("multi");let a=ProcessedAudioCacheLease1008::acquire_root(root.clone());let b=ProcessedAudioCacheLease1008::acquire_root(root.clone());fill(&root,30);
     drop(a);assert_eq!(files(&root),30,"one project pruned another active project's inputs");

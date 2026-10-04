@@ -61,6 +61,7 @@ mod managed{
   static KEYRING_SERIAL:OnceLock<Mutex<()>>=OnceLock::new();
   static ACTIVITY:OnceLock<Mutex<Activity>>=OnceLock::new();
   static PROGRESS_SENT:OnceLock<Mutex<HashMap<String,i64>>>=OnceLock::new();
+  static TERMINAL_JOBS:OnceLock<Mutex<HashMap<String,String>>>=OnceLock::new();
 
   #[derive(Default)] struct TokenCache{loaded:bool,token:Option<String>}
   #[derive(Clone,Default)] struct Activity{screen:Option<String>,render_status:Option<String>,job_id:Option<String>,progress:Option<f64>,queue_depth:u32}
@@ -69,6 +70,7 @@ mod managed{
   fn cache()->&'static Mutex<TokenCache>{TOKEN_CACHE.get_or_init(||Mutex::new(TokenCache::default()))}
   fn activity()->&'static Mutex<Activity>{ACTIVITY.get_or_init(||Mutex::new(Activity::default()))}
   fn progress_sent()->&'static Mutex<HashMap<String,i64>>{PROGRESS_SENT.get_or_init(||Mutex::new(HashMap::new()))}
+  fn terminal_jobs()->&'static Mutex<HashMap<String,String>>{TERMINAL_JOBS.get_or_init(||Mutex::new(HashMap::new()))}
   fn keyring_entry()->Result<Entry,String>{Entry::new(KEYRING_SERVICE,KEYRING_USER).map_err(|e|format!("Secure storage недоступен: {e}"))}
   fn load_token()->Result<Option<String>,String>{
     {let c=cache().lock();if c.loaded{return Ok(c.token.clone())}}
@@ -288,16 +290,17 @@ mod managed{
   fn base_event(job:&QueueJob,event_type:&str,progress:f64,eta:Option<f64>,stage:Option<&str>,encoder:Option<&str>)->Value{
     json!({"event_type":event_type,"job_id":job.project.id,"project_id":job.project.id,"project_name":job.project.name,"progress":progress.clamp(0.0,100.0),"eta_seconds":eta,"stage":stage,"encoder":encoder,"width":job.settings.width,"height":job.settings.height,"fps":job.settings.fps,"codec":job.settings.codec,"audio_count":job.project.audio.len(),"effects_count":job.effects.iter().filter(|x|x.enabled).count(),"subscribe_enabled":job.subscribes.iter().any(|x|x.effect.enabled),"app_version":env!("CARGO_PKG_VERSION"),"settings":{"durationMode":job.settings.duration_mode,"durationHours":job.settings.duration_hours,"crossfadeSec":job.settings.crossfade_sec,"normalizeLufs":job.settings.normalize_lufs,"preset":job.settings.preset,"encoderPreference":job.settings.encoder_preference}})
   }
-  pub fn render_started(job:&QueueJob){set_render_activity(Some(job.project.id.clone()),Some("rendering".into()),Some(0.0));spawn_event(base_event(job,"render_started",0.0,None,Some("Starting"),None));}
+  pub fn render_started(job:&QueueJob){terminal_jobs().lock().remove(&job.project.id);set_render_activity(Some(job.project.id.clone()),Some("rendering".into()),Some(0.0));spawn_event(base_event(job,"render_started",0.0,None,Some("Starting"),None));}
   pub fn render_progress(job:&QueueJob,progress:f64,eta:Option<f64>,stage:&str,encoder:&str){
+    if terminal_jobs().lock().contains_key(&job.project.id){return}
     set_render_activity(Some(job.project.id.clone()),Some("rendering".into()),Some(progress));let now=now_ms();{let mut m=progress_sent().lock();let last=*m.get(&job.project.id).unwrap_or(&0);if progress<99.0&&now-last<1000{return}m.insert(job.project.id.clone(),now);}spawn_event(base_event(job,"render_progress",progress,eta,Some(stage),Some(encoder)));
   }
   pub fn render_terminal(job:&QueueJob,event_type:&str,output:Option<&str>,bytes:Option<u64>,error:Option<&str>,wall_seconds:Option<f64>){
-    let status=match event_type{"render_completed"=>"completed","render_cancelled"=>"cancelled",_=>"failed"};let progress=if event_type=="render_completed"{100.0}else{0.0};set_render_activity(None,Some(status.into()),Some(progress));progress_sent().lock().remove(&job.project.id);let mut body=base_event(job,event_type,progress,Some(0.0),Some(status),None);if let Some(o)=body.as_object_mut(){o.insert("output_filename".into(),output.and_then(|p|Path::new(p).file_name()).and_then(|x|x.to_str()).map(|x|Value::String(x.to_string())).unwrap_or(Value::Null));o.insert("output_bytes".into(),bytes.map(|x|json!(x)).unwrap_or(Value::Null));o.insert("error".into(),error.map(|x|Value::String(x.chars().take(4000).collect())).unwrap_or(Value::Null));o.insert("render_wall_seconds".into(),wall_seconds.map(|x|json!(x.max(0.0))).unwrap_or(Value::Null));}spawn_event(body);
+    let status=match event_type{"render_completed"=>"completed","render_cancelled"=>"cancelled",_=>"failed"};let progress=if event_type=="render_completed"{100.0}else{0.0};terminal_jobs().lock().insert(job.project.id.clone(),status.into());set_render_activity(None,Some(status.into()),Some(progress));progress_sent().lock().remove(&job.project.id);let mut body=base_event(job,event_type,progress,Some(0.0),Some(status),None);if let Some(o)=body.as_object_mut(){o.insert("output_filename".into(),output.and_then(|p|Path::new(p).file_name()).and_then(|x|x.to_str()).map(|x|Value::String(x.to_string())).unwrap_or(Value::Null));o.insert("output_bytes".into(),bytes.map(|x|json!(x)).unwrap_or(Value::Null));o.insert("error".into(),error.map(|x|Value::String(x.chars().take(4000).collect())).unwrap_or(Value::Null));o.insert("render_wall_seconds".into(),wall_seconds.map(|x|json!(x.max(0.0))).unwrap_or(Value::Null));}spawn_event(body);
     if event_type=="render_completed"{if let Some(path)=output.filter(|p|Path::new(p).is_file()){spawn_artifact_upload(job.project.id.clone(),path.to_string());}}
   }
   pub fn render_completed(job:&QueueJob,summary:&crate::render::RenderOutcome,wall_seconds:f64){
-    set_render_activity(None,Some("completed".into()),Some(100.0));progress_sent().lock().remove(&job.project.id);
+    terminal_jobs().lock().insert(job.project.id.clone(),"completed".into());set_render_activity(None,Some("completed".into()),Some(100.0));progress_sent().lock().remove(&job.project.id);
     let mut body=base_event(job,"render_completed",100.0,Some(0.0),Some("completed"),Some(&summary.encoder));
     if let Some(o)=body.as_object_mut(){
       o.insert("output_filename".into(),Path::new(&summary.output_path).file_name().and_then(|x|x.to_str()).map(|x|Value::String(x.to_string())).unwrap_or(Value::Null));

@@ -1,0 +1,105 @@
+name: ENDLUME 10.0.12 Windows Cross-Build Gate
+
+on:
+  push:
+    branches: [hotfix/endlume-10.0.12-windows-audio-cache-reliability]
+    paths:
+      - ".github/workflows/endlume-1012-windows-cross-build.yml"
+      - "src-tauri/src/render.rs"
+      - "src-tauri/src/license.rs"
+      - "supabase/functions/endlume-client-api/**"
+      - "package.json"
+      - "package-lock.json"
+      - "src-tauri/Cargo.toml"
+      - "src-tauri/Cargo.lock"
+      - "src-tauri/tauri.conf.json"
+      - "src-tauri/tauri.windows.conf.json"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-1012-windows-cross-build
+  cancel-in-progress: true
+
+jobs:
+  windows-cross:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 90
+    env:
+      WINDOWS_TARGET: x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Prepare Windows cross toolchain and sidecars
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
+          brew list nsis >/dev/null 2>&1 || brew install nsis
+          brew list llvm >/dev/null 2>&1 || brew install llvm
+          export PATH="$(brew --prefix llvm)/bin:$HOME/.cargo/bin:$PATH"
+          rustup target add "$WINDOWS_TARGET"
+          command -v cargo-xwin >/dev/null 2>&1 || cargo install --locked cargo-xwin
+          CACHE="$HOME/.endlume-build-cache/windows-sidecars-1012"
+          ZIP="$CACHE/ffmpeg-master-latest-win64-gpl.zip"
+          EXTRACT="$CACHE/extract"
+          mkdir -p "$CACHE" src-tauri/binaries
+          if [ ! -s "$ZIP" ]; then
+            curl -fL --retry 4 --connect-timeout 20 -o "$ZIP" "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
+          fi
+          rm -rf "$EXTRACT"; mkdir -p "$EXTRACT"
+          ditto -x -k "$ZIP" "$EXTRACT"
+          FFMPEG="$(find "$EXTRACT" -type f -name ffmpeg.exe -print -quit)"
+          FFPROBE="$(find "$EXTRACT" -type f -name ffprobe.exe -print -quit)"
+          test -n "$FFMPEG" -a -s "$FFMPEG"
+          test -n "$FFPROBE" -a -s "$FFPROBE"
+          cp "$FFMPEG" "src-tauri/binaries/ffmpeg-$WINDOWS_TARGET.exe"
+          cp "$FFPROBE" "src-tauri/binaries/ffprobe-$WINDOWS_TARGET.exe"
+          file "src-tauri/binaries/ffmpeg-$WINDOWS_TARGET.exe" | grep -E 'PE32|MS Windows'
+          echo ENDLUME_1012_WINDOWS_CROSS_TOOLCHAIN_GREEN
+
+      - name: Windows target compile gate
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="$(brew --prefix llvm)/bin:$HOME/.cargo/bin:/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+          npm ci
+          npm run check
+          npm run build
+          cargo xwin check --manifest-path src-tauri/Cargo.toml --target "$WINDOWS_TARGET"
+          echo ENDLUME_1012_WINDOWS_TARGET_COMPILE_GREEN
+
+      - name: Build pre-bump Windows NSIS
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="$(brew --prefix llvm)/bin:$HOME/.cargo/bin:/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+          export CARGO_TARGET_DIR="$HOME/.endlume-build-cache/target-1012-cross-win"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path("src-tauri/tauri.conf.json")
+          d=json.loads(p.read_text())
+          assert d["version"]=="10.0.11"
+          d["bundle"]["createUpdaterArtifacts"]=False
+          p.write_text(json.dumps(d,ensure_ascii=False,indent=2)+"\n")
+          PY
+          npm run tauri build -- --runner cargo-xwin --target "$WINDOWS_TARGET" --bundles nsis --config src-tauri/tauri.windows.conf.json --features e2e-render
+          CAND="$(find "$CARGO_TARGET_DIR/$WINDOWS_TARGET/release/bundle/nsis" -maxdepth 1 -type f -name '*.exe' -print -quit)"
+          test -n "$CAND" -a -s "$CAND"
+          python3 - "$CAND" <<'PY'
+          import sys,hashlib
+          from pathlib import Path
+          p=Path(sys.argv[1])
+          b=p.read_bytes()
+          assert len(b)>50_000_000,len(b)
+          assert b[:2]==b"MZ",b[:2]
+          print("ENDLUME_1012_WINDOWS_NSIS_GREEN",len(b),hashlib.sha256(b).hexdigest())
+          PY

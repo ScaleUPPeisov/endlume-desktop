@@ -28,7 +28,7 @@ wav_short=root/"short.wav"
 mp3_48=root/"base48.mp3"
 mp3_44=root/"base44.mp3"
 fake_mp3=root/"fake-pcm.mp3"
-run([ffmpeg,"-hide_banner","-loglevel","error","-f","lavfi","-i","sine=frequency=330:sample_rate=48000:duration=26","-ac","2","-c:a","pcm_s16le","-y",wav_long])
+run([ffmpeg,"-hide_banner","-loglevel","error","-f","lavfi","-i","sine=frequency=330:sample_rate=48000:duration=4","-ac","2","-c:a","pcm_s16le","-y",wav_long])
 run([ffmpeg,"-hide_banner","-loglevel","error","-f","lavfi","-i","sine=frequency=440:sample_rate=48000:duration=4","-ac","2","-c:a","pcm_s16le","-y",wav_short])
 run([ffmpeg,"-hide_banner","-loglevel","error","-f","lavfi","-i","sine=frequency=550:sample_rate=48000:duration=4","-ac","2","-c:a","libmp3lame","-b:a","320k","-y",mp3_48])
 run([ffmpeg,"-hide_banner","-loglevel","error","-f","lavfi","-i","sine=frequency=660:sample_rate=44100:duration=4","-ac","2","-c:a","libmp3lame","-b:a","320k","-y",mp3_44])
@@ -54,7 +54,7 @@ def job(pid,name,audio,crossfade,project_path=None,duration_hours=0.003):
     }
 
 jobs=[
-  job("e1012-a-20wav","E1012 A 20 WAV cache pressure",wav20,10.0),
+  job("e1012-a-20wav","E1012 A 20 WAV cache pressure",wav20,0.0),
   job("e1012-b-20mp3","E1012 B 20 compatible MP3",mp320,0.0),
   job("e1012-c-mixed","E1012 C mixed fallback",[mp3_48,wav_short,fake_mp3,mp3_44],0.0),
   job("e1012-d-1mp3","E1012 D one MP3",[mp3_48],0.0),

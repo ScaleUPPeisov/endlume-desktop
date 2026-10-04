@@ -2,7 +2,7 @@ import { invoke, convertFileSrc } from '@tauri-apps/api/core';
 import { open, message } from '@tauri-apps/plugin-dialog';
 import { getVersion } from '@tauri-apps/api/app';
 import { relaunch } from '@tauri-apps/plugin-process';
-import type { BenchmarkResult, EffectPreset, LibraryPayload, LicenseStatus, ProjectScanItem, RecoveryPayload, RenderSettings, SubscribePreset } from './types';
+import type { BackgroundMusicSettings, BenchmarkResult, EffectPreset, LibraryPayload, LicenseStatus, ProjectScanItem, RecoveryPayload, RenderSettings, SubscribePreset } from './types';
 
 export type SingleAppStatus={
   supported:boolean;
@@ -91,7 +91,7 @@ export const api = {
     return importManagedAsset(result,'ambient');
   },
   scanRoot:(path:string)=>invoke<ProjectScanItem[]>('scan_root',{path}),
-  enqueue:(projects:ProjectScanItem[],settings:RenderSettings,effects:EffectPreset[],subscribes:SubscribePreset[],ambient?:string)=>invoke<void>('enqueue_projects',{projects,settings,effects,subscribes,ambient}),
+  enqueue:(projects:ProjectScanItem[],settings:RenderSettings,effects:EffectPreset[],subscribes:SubscribePreset[],ambient:string|undefined,ambientSettings:BackgroundMusicSettings)=>invoke<void>('enqueue_projects',{projects,settings,effects,subscribes,ambient,ambientSettings}),
   queueSnapshot:()=>invoke<any>('queue_snapshot'),
   reorderQueue:(ids:string[])=>invoke<void>('reorder_queue',{ids}),
   cancelProject:(id:string)=>invoke<void>('cancel_project',{id}),

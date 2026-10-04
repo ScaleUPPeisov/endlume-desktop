@@ -320,10 +320,11 @@ pub(crate) async fn validate_video_proxy(app:&AppHandle,out:&Path)->Result<(),St
     "-show_entries","stream=codec_type,width,height,nb_read_frames:format=duration",
     "-of","json",out.to_string_lossy().as_ref()
   ].into_iter().map(String::from).collect::<Vec<_>>();
-  let probe=if let Some(ffprobe)=staged_ffprobe(app).filter(|p|executable_file(p)){
+  let (probe_success,probe_stdout,probe_stderr)=if let Some(ffprobe)=staged_ffprobe(app).filter(|p|executable_file(p)){
     if live_preview_diag_enabled(){eprintln!("ENDLUME_PREVIEW_FFPROBE_SOURCE=staged-cache path={}",ffprobe.display());}
-    std::process::Command::new(&ffprobe).args(&probe_args).output()
-      .map_err(|e|format!("staged FFprobe spawn failed {}: {e}",ffprobe.display()))?
+    let v=std::process::Command::new(&ffprobe).args(&probe_args).output()
+      .map_err(|e|format!("staged FFprobe spawn failed {}: {e}",ffprobe.display()))?;
+    (v.status.success(),v.stdout,v.stderr)
   }else{
     let cmd=match app.shell().sidecar("ffprobe"){
       Ok(v)=>v,
@@ -334,7 +335,7 @@ pub(crate) async fn validate_video_proxy(app:&AppHandle,out:&Path)->Result<(),St
       }
     };
     match cmd.args(probe_args).output().await{
-      Ok(v)=>v,
+      Ok(v)=>(v.status.success(),v.stdout,v.stderr),
       Err(e)=>{
         if let Some(decode)=decode_error{return Err(format!("proxy decode failed ({decode}); FFprobe spawn failed: {e}"))}
         if live_preview_diag_enabled(){eprintln!("ENDLUME_PREVIEW_FFPROBE_FALLBACK reason=spawn-error error={:?} path={}",e,out.display());}
@@ -342,8 +343,8 @@ pub(crate) async fn validate_video_proxy(app:&AppHandle,out:&Path)->Result<(),St
       }
     }
   };
-  if !probe.status.success(){return Err(format!("FFprobe не принял proxy: {}",String::from_utf8_lossy(&probe.stderr).trim()))}
-  if !proxy_probe_valid(&probe.stdout){return Err("FFprobe не подтвердил video stream / geometry / decoded frames / duration".into())}
+  if !probe_success{return Err(format!("FFprobe не принял proxy: {}",String::from_utf8_lossy(&probe_stderr).trim()))}
+  if !proxy_probe_valid(&probe_stdout){return Err("FFprobe не подтвердил video stream / geometry / decoded frames / duration".into())}
   if let Some(decode)=decode_error{
     if live_preview_diag_enabled(){eprintln!("ENDLUME_PREVIEW_REAL_FRAME_DECODE_GREEN mode=ffprobe-count-frames fallback_reason={:?} path={}",decode,out.display());}
   }

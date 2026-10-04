@@ -1,5 +1,5 @@
 use crate::{cache,model::{EffectPreset,Progress,ProjectScanItem,QueueJob,RenderSettings,SubscribePreset}};
-use serde_json::json;
+use serde_json::{json,Value};
 use sha2::{Digest,Sha256};
 use std::{collections::HashMap,io::{Read,Write},path::{Path,PathBuf},process::Command,sync::{Arc,OnceLock,atomic::{AtomicBool,AtomicU64,Ordering}},thread,time::{Duration,Instant,UNIX_EPOCH}};
 use sysinfo::{Disks,Pid,ProcessesToUpdate,System};
@@ -185,7 +185,9 @@ fn software_encoder(s:&RenderSettings)->String{if s.codec.eq_ignore_ascii_case("
 pub(crate) struct FastPathDecision{pub eligible:bool,pub reason:&'static str}
 
 fn audio_processing_requested(job:&QueueJob)->bool{
-  job.settings.crossfade_sec>0.01||job.settings.normalize_lufs||job.ambient.as_ref().map(|x|!x.trim().is_empty()).unwrap_or(false)
+  // Background Music is mixed once at the final mux. It must never force the
+  // normal 10–20-song playlist through the processed-audio pipeline.
+  job.settings.crossfade_sec>0.01||job.settings.normalize_lufs
 }
 
 pub(crate) fn fast_path_decision(job:&QueueJob)->FastPathDecision{
@@ -1133,9 +1135,9 @@ async fn localize_processed_audio_inputs_1008(app:&AppHandle,job:&QueueJob,cance
     if cancel.load(Ordering::SeqCst){return Err(CANCELLED.into())}
     tracks.push(localize_processed_audio_1008(app,Path::new(src)).await?);
   }
-  let ambient=if let Some(src)=job.ambient.as_ref().filter(|p|!p.trim().is_empty()){
-    Some(localize_processed_audio_1008(app,Path::new(src)).await?)
-  }else{None};
+  // Background Music is intentionally NOT localized/materialized with the playlist.
+  // It is streamed independently at the final mux.
+  let ambient=None;
   let sec=mark.elapsed().as_secs_f64();
   emit_timing(app,&job.project.id,"audio-source-localize",sec);
   let _=app.emit("engine-profile",json!({"id":job.project.id,"processedAudioLocalized":true,"processedAudioInputs":tracks.len(),"audioSourceLocalizeSeconds":sec}));
@@ -1152,8 +1154,7 @@ async fn build_lossless_processed_audio_cycle(app:&AppHandle,job:&QueueJob,start
     durations.push(probe_duration(app,a_str.as_ref()).await.unwrap_or(180.0).max(0.2));
     args.extend(vec!["-i",a_str.as_ref()].into_iter().map(String::from));
   }
-  let ambient_index=local_tracks.len();let ambient_enabled=local_ambient.is_some();
-  if let Some(a)=local_ambient.as_ref(){args.extend(vec!["-stream_loop","-1","-i",a.to_string_lossy().as_ref()].into_iter().map(String::from));}
+  let _local_ambient=local_ambient;
   emit_timing(app,&job.project.id,"probe",probe_mark.elapsed().as_secs_f64());
   let min_track=durations.iter().copied().fold(f64::INFINITY,f64::min);
   let cf=job.settings.crossfade_sec.clamp(0.0,10.0).min((min_track*0.40).max(0.0));
@@ -1177,11 +1178,7 @@ async fn build_lossless_processed_audio_cycle(app:&AppHandle,job:&QueueJob,start
   };
   let music="processed_music";
   if job.settings.normalize_lufs{graph.push_str(&format!(";[{last}]loudnorm=I=-14:TP=-1.5:LRA=11[{music}]"));}else{graph.push_str(&format!(";[{last}]anull[{music}]"));}
-  if ambient_enabled{
-    graph.push_str(&format!(";[{ambient_index}:a]aresample=48000:async=1:first_pts=0,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,volume=0.18[amb];[{music}][amb]amix=inputs=2:duration=first:weights='1 1':normalize=0,alimiter=limit=0.98[outa]"));
-  }else{
-    graph.push_str(&format!(";[{music}]aresample=48000:async=1:first_pts=0,alimiter=limit=0.98[outa]"));
-  }
+  graph.push_str(&format!(";[{music}]aresample=48000:async=1:first_pts=0,alimiter=limit=0.98[outa]"));
   let cycle=work.join("audio-crossfade-gapless.m4a");
   let expected=(durations.iter().sum::<f64>()-cf*((durations.len().saturating_sub(1)) as f64)).max(0.2);
   let audio_encoder=choose_audio_encoder(app).await;
@@ -1466,11 +1463,10 @@ async fn build_audio_cycle(app:&AppHandle,job:&QueueJob,started:i64,timer:&Insta
   let mark=Instant::now();let mut durations=Vec::new();for a in &job.project.audio{durations.push(probe_duration(app,a).await.unwrap_or(180.0).max(0.2));}
   if job.project.audio.is_empty(){return Err("Нет песен".into())}
   let mut args:Vec<String>=vec!["-hide_banner","-loglevel","error"].into_iter().map(String::from).collect();for a in &job.project.audio{args.extend(vec!["-i",a.as_str()].into_iter().map(String::from));}
-  let ambient_index=job.project.audio.len();if let Some(a)=job.ambient.as_ref().filter(|p|!p.trim().is_empty()){args.extend(vec!["-stream_loop","-1","-i",a.as_str()].into_iter().map(String::from));}
   let mut labels=Vec::new();let mut graph=String::new();for i in 0..job.project.audio.len(){if i>0{graph.push(';')}graph.push_str(&format!("[{i}:a]aresample=48000,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,asetpts=N/SR/TB[a{i}]"));labels.push(format!("a{i}"));}
   let min_duration=durations.iter().copied().fold(f64::INFINITY,f64::min);let cf=job.settings.crossfade_sec.clamp(0.0,10.0).min((min_duration/3.0).max(0.05));let mut last=labels[0].clone();for i in 1..labels.len(){let out=format!("x{i}");graph.push_str(&format!(";[{last}][{}]acrossfade=d={}:c1=tri:c2=tri[{out}]",labels[i],cf));last=out;}
   let music="music";if job.settings.normalize_lufs{graph.push_str(&format!(";[{last}]loudnorm=I=-14:TP=-1.5:LRA=11[{music}]"));}else{graph.push_str(&format!(";[{last}]anull[{music}]"));}
-  if job.ambient.as_ref().map(|x|!x.trim().is_empty()).unwrap_or(false){graph.push_str(&format!(";[{ambient_index}:a]aresample=48000,volume=0.18[amb];[{music}][amb]amix=inputs=2:duration=first:weights='1 1':normalize=0,alimiter=limit=0.97[outa]"));}else{graph.push_str(&format!(";[{music}]alimiter=limit=0.97[outa]"));}
+  graph.push_str(&format!(";[{music}]alimiter=limit=0.97[outa]"));
   let audio_encoder=choose_audio_encoder(app).await;let cycle=work.join("audio-cycle.m4a");args.extend(vec!["-filter_complex",&graph,"-map","[outa]"].into_iter().map(String::from));args.extend(audio_encoder_args(&audio_encoder));args.extend(vec!["-progress","pipe:1","-y",cycle.to_string_lossy().as_ref()].into_iter().map(String::from));
   let expected=(durations.iter().sum::<f64>()-cf*((durations.len().saturating_sub(1)) as f64)).max(1.0);run_ffmpeg(app,job,started,timer,args,"Подготавливаю музыку",35.0,20.0,expected,encoder,attempt,cancel).await?;
   let cycle_duration=probe_duration(app,cycle.to_string_lossy().as_ref()).await.unwrap_or(expected);emit_timing(app,&job.project.id,"audio",mark.elapsed().as_secs_f64());Ok((cycle,durations,cycle_duration))
@@ -2173,7 +2169,6 @@ fn pingpong_audio_key_1002(job:&QueueJob,final_duration:f64,encoder:&str)->Resul
   h.update(job.settings.crossfade_sec.to_le_bytes());
   h.update([job.settings.normalize_lufs as u8]);
   for p in &job.project.audio{h.update(file_stamp_1000(Path::new(p)).as_bytes());}
-  if let Some(a)=job.ambient.as_ref(){h.update(file_stamp_1000(Path::new(a)).as_bytes());}
   Ok(hex::encode(h.finalize()))
 }
 
@@ -2316,8 +2311,8 @@ pub async fn render_job(app:&AppHandle,job:&QueueJob,cancel:Arc<AtomicBool>)->Re
     resolved_job.settings.height=1080;
     resolved_job.settings.fps=60;
     resolved_job.settings.codec="h265".into();
-    // Preserve the user's duration/audio-processing mode when Crossfade, Normalize or Ambient
-    // is enabled. Whole-track lock is only for untouched original-audio fidelity.
+    // Preserve the user's duration/audio-processing mode when Crossfade or Normalize
+    // is enabled. Background Music is an independent final-mux layer.
     if !requested_audio_processing{resolved_job.settings.duration_mode="whole-track".into();}
   }
   let job=&resolved_job;let scan_mark=Instant::now();
@@ -2378,7 +2373,7 @@ pub async fn render_job(app:&AppHandle,job:&QueueJob,cancel:Arc<AtomicBool>)->Re
         })
       }else{None};
       let (audio,durations,final_duration,original_audio)=if smart_repeat{
-        let prefer_original=job.settings.duration_mode=="whole-track"&&job.ambient.as_ref().map(|x|x.trim().is_empty()).unwrap_or(true);
+        let prefer_original=job.settings.duration_mode=="whole-track";
         if prefer_original{
           match build_original_audio_cycle(app,job,started,&timer,&work,&encoder,attempt,&cancel).await{
             Ok((cycle,durations,cycle_duration))=>{

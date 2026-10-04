@@ -2314,16 +2314,14 @@ async fn render_pingpong_zero_copy_1002(app:&AppHandle,job:&QueueJob,source_mast
     pool=work.join("pingpong-1002-video-pool.mp4");pool_frames=cycle_frames+duration_frames;concat_video_parts_852(app,job,&[master.clone(),sub_master],&pool,pool_frames,work,encoder,attempt,cancel,started,timer).await?;sub_plan=Some((first_frames,repeat_frames,duration_frames));
   }
   let seed=work.join("pingpong-1002-final-local.mp4");let _=std::fs::remove_file(&seed);
-  let args:Vec<String>=vec![
+  let mut args:Vec<String>=vec![
     "-hide_banner","-loglevel","error",
     "-i",pool.to_string_lossy().as_ref(),
-    "-i",cached_audio.to_string_lossy().as_ref(),
-    "-t",&final_duration.to_string(),
-    "-map","0:v:0","-map","1:a:0",
-    "-c:v","copy","-c:a","copy",
-    "-tag:a","mp4a","-disposition:a:0","default","-metadata:s:a:0","language=und",
-    "-progress","pipe:1","-y",seed.to_string_lossy().as_ref()
+    "-i",cached_audio.to_string_lossy().as_ref()
   ].into_iter().map(String::from).collect();
+  let final_audio_encoder=choose_audio_encoder(app).await;
+  append_final_av_audio_args(&mut args,job,&AudioSource::Long(cached_audio.clone()),&final_audio_encoder,final_duration)?;
+  args.extend(vec!["-progress","pipe:1","-y",seed.to_string_lossy().as_ref()].into_iter().map(String::from));
   let mux_mark=Instant::now();run_ffmpeg(app,job,started,timer,args,"10.0.2: Ping-Pong cached AAC packet-copy mux",58.0,10.0,final_duration,encoder,attempt,cancel).await?;let mux_sec=mux_mark.elapsed().as_secs_f64();emit_timing(app,&job.project.id,"final-mux",mux_sec);
   let total_frames=(final_duration*fps as f64).round().max(cycle_frames as f64) as usize;let mut selected=Vec::with_capacity(total_frames);let mut appearances=0usize;
   for frame in 0..total_frames{

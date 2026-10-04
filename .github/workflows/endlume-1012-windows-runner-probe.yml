@@ -1,0 +1,27 @@
+name: ENDLUME 10.0.12 Windows Runner Probe
+
+on:
+  push:
+    branches: [hotfix/endlume-10.0.12-windows-audio-cache-reliability]
+    paths:
+      - ".github/workflows/endlume-1012-windows-runner-probe.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 5
+    steps:
+      - name: Identify Windows runner
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          Write-Host "RUNNER_OS=$env:RUNNER_OS"
+          Write-Host "RUNNER_ARCH=$env:RUNNER_ARCH"
+          Write-Host "RUNNER_NAME=$env:RUNNER_NAME"
+          if($env:RUNNER_OS -ne 'Windows'){throw "Expected Windows"}
+          if($env:RUNNER_ARCH -ne 'X64'){throw "Expected X64"}
+          Write-Host ENDLUME_1012_WINDOWS_RUNNER_GREEN

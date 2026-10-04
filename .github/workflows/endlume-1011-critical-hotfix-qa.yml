@@ -2,7 +2,7 @@ name: ENDLUME 10.0.11 Critical Hotfix Full QA
 
 on:
   push:
-    branches: [hotfix/endlume-10.0.11-critical-preview-effects-progress]
+    branches: [hotfix/endlume-10.0.11-critical-preview-effects-progress, hotfix/endlume-10.0.11-macos-render-assets-audio]
     paths:
       - ".github/workflows/endlume-1011-critical-hotfix-qa.yml"
       - "scripts/qa-endlume-1011-critical-hotfix.py"
@@ -14,10 +14,16 @@ on:
       - "src/pages/Editors.tsx"
       - "src/components/LiveCompositePreview.tsx"
       - "src/pages/RenderPage.tsx"
+      - "src/pages/ProjectPage.tsx"
+      - "src/types.ts"
+      - "src/store.ts"
+      - "src/tauri.ts"
+      - "src-tauri/src/model.rs"
+      - "src-tauri/src/queue.rs"
   workflow_dispatch: {}
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: endlume-1011-critical-full-qa
@@ -141,3 +147,35 @@ jobs:
             ${{ runner.temp }}/endlume-1011-qa/**
           if-no-files-found: warn
           retention-days: 7
+
+
+      - name: Record branch-visible QA verdict
+        if: always() && github.ref_name == 'hotfix/endlume-10.0.11-macos-render-assets-audio'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -u
+          STATUS="${{ job.status }}"
+          ROOT="$RUNNER_TEMP/endlume-1011-qa"
+          python3 - "$STATUS" "$ROOT/report.json" "$RUNNER_TEMP/qa-verdict.json" <<'PY'
+          import json,sys,os
+          status,report,out=sys.argv[1:]
+          d={"workflowStatus":status,"head":os.environ.get("GITHUB_SHA"),"runId":os.environ.get("GITHUB_RUN_ID")}
+          if os.path.isfile(report):
+              try:d["report"]=json.load(open(report))
+              except Exception as e:d["reportReadError"]=str(e)
+          json.dump(d,open(out,"w"),ensure_ascii=False,indent=2)
+          PY
+          B64="$(python3 - "$RUNNER_TEMP/qa-verdict.json" <<'PY'
+          import base64,sys
+          print(base64.b64encode(open(sys.argv[1],"rb").read()).decode())
+          PY
+          )"
+          API="repos/$GITHUB_REPOSITORY/contents/.qa/endlume-1011-render-assets-audio.json"
+          CUR="$(gh api "$API?ref=$GITHUB_REF_NAME" --jq .sha 2>/dev/null || true)"
+          if [ -n "$CUR" ]; then
+            gh api --method PUT "$API" -f message="qa: record ENDLUME 10.0.11 render assets audio verdict" -f content="$B64" -f sha="$CUR" -f branch="$GITHUB_REF_NAME" >/dev/null
+          else
+            gh api --method PUT "$API" -f message="qa: record ENDLUME 10.0.11 render assets audio verdict" -f content="$B64" -f branch="$GITHUB_REF_NAME" >/dev/null
+          fi

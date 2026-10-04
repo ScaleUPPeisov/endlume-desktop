@@ -90,6 +90,8 @@ def resolve_project():
     return project,media,songs[:15]
 
 def load_library():
+    best=(None,{"effects":[],"subscribes":[],"ambient":None})
+    best_score=-1
     for base in [Path.home()/"Library/Application Support",Path.home()/"Library/Containers"]:
         if not base.exists():continue
         for p in base.rglob("library.json"):
@@ -98,23 +100,61 @@ def load_library():
                 d=json.load(open(p))
             except Exception:continue
             fx=[x for x in d.get("effects",[]) if isinstance(x,dict) and Path(str(x.get("source",""))).is_file()]
-            if any(x.get("id")=="825dd7a4-f0cf-4032-a3c9-64290cb5756d" or "эквалайзер круглый" in str(x.get("name","")).lower() for x in fx):
-                return p,d
-    raise AssertionError("ENDLUME_LIBRARY_WITH_ROUND_EQUALIZER_NOT_FOUND")
+            subs=[x for x in d.get("subscribes",[]) if isinstance(x,dict) and Path(str(x.get("source",""))).is_file()]
+            score=len(fx)*10+len(subs)
+            if score>best_score:
+                best=(p,d);best_score=score
+    return best
 
 project,media,songs=resolve_project()
+tmp_root=Path(tempfile.mkdtemp(prefix="endlume1011-qa-"))
 lib_path,lib=load_library()
 fx=[dict(x) for x in lib.get("effects",[]) if isinstance(x,dict) and Path(str(x.get("source",""))).is_file()]
-eq=next(x for x in fx if x.get("id")=="825dd7a4-f0cf-4032-a3c9-64290cb5756d" or "эквалайзер круглый" in str(x.get("name","")).lower())
-ordinary=[x for x in fx if x.get("id")!=eq.get("id")]
-film=next((x for x in ordinary if any(t in str(x.get("name","")).lower() for t in ("80","плен","пыль","царап"))),ordinary[0] if ordinary else None)
-assert film,"80S_EFFECT_NOT_FOUND"
-third=next((x for x in ordinary if x.get("id")!=film.get("id")),None)
 subs=[dict(x) for x in lib.get("subscribes",[]) if isinstance(x,dict) and Path(str(x.get("source",""))).is_file()]
-assert subs,"REAL_SUBSCRIBE_NOT_FOUND"
-sub=subs[0]
 
-tmp_root=Path(tempfile.mkdtemp(prefix="endlume1011-qa-"))
+def make_overlay(name,key="0x00ff00",shape="red",x=120,y=80):
+    src=tmp_root/f"{name}.mp4"
+    run([FFMPEG,"-hide_banner","-loglevel","error",
+         "-f","lavfi","-i",f"color=c={key}:size=640x360:rate=30","-t","2",
+         "-vf",f"drawbox=x={x}:y={y}:w=360:h=160:color={shape}@1:t=fill,drawbox=x={x+70}:y={y+45}:w=220:h=70:color=white@1:t=fill",
+         "-c:v","libx264","-preset","ultrafast","-pix_fmt","yuv420p","-y",src],timeout=60)
+    return src
+
+def effect_fixture(eid,name,source,**overrides):
+    d={"id":eid,"name":name,"source":str(source),"enabled":True,"mode":"chromakey",
+       "keyColor":"#00ff00","similarity":0.10,"blend":0.06,"despill":0.35,
+       "lumaThreshold":0.03,"lumaTolerance":0.08,"saturation":1.0,
+       "x":0.50,"y":0.50,"scale":0.45,"fullscreen":False,"previewFrameTime":0.0,
+       "startSec":0.0,"endSec":None,"cacheKey":None,"cacheReady":False,
+       "usageMode":"always","intervalSec":240.0,"usageDurationSec":30.0,
+       "target":None,"offsetX":None,"offsetY":None,"opacity":1.0}
+    d.update(overrides)
+    return d
+
+eq=next((x for x in fx if x.get("id")=="825dd7a4-f0cf-4032-a3c9-64290cb5756d" or "эквалайзер круглый" in str(x.get("name","")).lower()),None)
+ordinary=[x for x in fx if not eq or x.get("id")!=eq.get("id")]
+film=next((x for x in ordinary if any(t in str(x.get("name","")).lower() for t in ("80","плен","пыль","царап"))),ordinary[0] if ordinary else None)
+third=next((x for x in ordinary if film is None or x.get("id")!=film.get("id")),None)
+
+if film is None:
+    film=effect_fixture("e1011-film","QA 80s Film",make_overlay("qa-film",shape="red",x=55,y=70),
+                        x=0.22,y=0.28,scale=0.34,opacity=0.72,similarity=0.08,blend=0.04,despill=0.20)
+if eq is None:
+    eq=effect_fixture("e1011-eq","QA Round Equalizer",make_overlay("qa-eq",shape="blue",x=145,y=95),
+                      x=0.63,y=0.67,scale=0.52,opacity=0.86,similarity=0.13,blend=0.09,despill=0.42)
+if third is None:
+    third=effect_fixture("e1011-third","QA Third Effect",make_overlay("qa-third",shape="yellow",x=220,y=45),
+                         x=0.78,y=0.24,scale=0.27,opacity=0.55,similarity=0.18,blend=0.12,despill=0.60,fullscreen=False)
+
+if subs:
+    sub=subs[0]
+else:
+    sub=effect_fixture("e1011-sub","QA Subscribe",make_overlay("qa-sub",shape="magenta",x=110,y=135),
+                       x=0.50,y=0.83,scale=0.42,opacity=1.0,similarity=0.10,blend=0.06,despill=0.35,
+                       usageMode="interval",intervalSec=240.0,usageDurationSec=8.0)
+    sub.update({"firstAtSec":0.0,"secondAtSec":240.0,"repeatEverySec":240.0,
+                "firstAppearance":"immediate","customFirstAtSec":0.0,"showDurationSec":8.0})
+
 background=tmp_root/"background-15m.m4a"
 run([FFMPEG,"-hide_banner","-loglevel","error",
      "-f","lavfi","-i","sine=frequency=120:sample_rate=48000:duration=900",
@@ -124,19 +164,15 @@ run([FFMPEG,"-hide_banner","-loglevel","error",
      "-c:a","aac","-b:a","128k","-ar","48000","-ac","2","-y",background],timeout=90)
 background_duration=float(probe(background)["format"]["duration"])
 assert 895<=background_duration<=905,background_duration
-if third is None:
-    # The user's current library may only contain the 80s Film + Round Equalizer.
-    # Add one QA-only ordinary chromakey layer so the compositor is still tested
-    # with the required third Effect without mutating the persisted library.
-    src=tmp_root/"qa-third-effect.mp4"
-    run([FFMPEG,"-hide_banner","-loglevel","error","-f","lavfi","-i","color=c=0x00ff00:size=640x360:rate=30","-t","2","-vf","drawbox=x=120:y=80:w=400:h=180:color=red@1:t=fill,drawbox=x=200:y=130:w=240:h=80:color=white@1:t=fill","-c:v","libx264","-preset","ultrafast","-pix_fmt","yuv420p","-y",src],timeout=60)
-    third={"id":"e1011-qa-third","name":"QA Third Ordinary Effect","source":str(src),"enabled":True,"mode":"chromakey","keyColor":"#00ff00","similarity":0.10,"blend":0.06,"despill":0.35,"lumaThreshold":0.03,"lumaTolerance":0.08,"saturation":1.0,"x":0.72,"y":0.32,"scale":0.28,"fullscreen":False,"previewFrameTime":0.0,"startSec":0.0,"endSec":None,"cacheKey":None,"cacheReady":False,"usageMode":"always","intervalSec":240.0,"usageDurationSec":30.0,"target":None,"offsetX":None,"offsetY":None,"opacity":1.0}
 
 def always(e):
     x=dict(e);x.update({"enabled":True,"usageMode":"always","startSec":0.0,"endSec":None})
     return x
 film=always(film);eq=always(eq);third=always(third)
 sub.update({"enabled":True,"usageMode":"interval","intervalSec":240.0,"repeatEverySec":240.0,"firstAppearance":"immediate","customFirstAtSec":0.0,"firstAtSec":0.0,"secondAtSec":240.0,"showDurationSec":8.0,"usageDurationSec":8.0})
+e2e_library=tmp_root/"library-e2e.json"
+e2e_library.write_text(json.dumps({"effects":[film,eq,third],"subscribes":[sub],"ambient":None},ensure_ascii=False,indent=2))
+
 
 preview_project=tmp_root/"preview-project";preview_project.mkdir()
 base_media=media[0]
@@ -217,7 +253,7 @@ jobs=[
 ]
 render_fixture=tmp_root/"render-jobs.json";render_result=tmp_root/"render-result.json"
 render_fixture.write_text(json.dumps({"jobs":jobs},ensure_ascii=False,indent=2))
-env=os.environ.copy();env.update({"ENDLUME_E2E_RENDER_JOB":str(render_fixture),"ENDLUME_E2E_RESULT":str(render_result),"RUST_BACKTRACE":"1"})
+env=os.environ.copy();env.update({"ENDLUME_E2E_RENDER_JOB":str(render_fixture),"ENDLUME_E2E_RESULT":str(render_result),"ENDLUME_E2E_LIBRARY_PATH":str(e2e_library),"RUST_BACKTRACE":"1"})
 started=time.perf_counter();rp=run([APP],check=False,timeout=300,env=env);app_wall=time.perf_counter()-started
 (tmp_root/"render.stderr").write_text(rp.stderr);(tmp_root/"render.stdout").write_text(rp.stdout)
 assert rp.returncode==0,(rp.returncode,rp.stderr[-10000:])

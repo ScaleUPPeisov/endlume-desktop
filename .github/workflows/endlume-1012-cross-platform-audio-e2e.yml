@@ -61,6 +61,13 @@ jobs:
             cargo build --manifest-path src-tauri/Cargo.toml --release --target aarch64-apple-darwin --features e2e-render
           fi
           test -x "$BIN"
+          SIDE_DIR="$(dirname "$BIN")"
+          cp src-tauri/binaries/ffmpeg-aarch64-apple-darwin "$SIDE_DIR/ffmpeg-aarch64-apple-darwin"
+          cp src-tauri/binaries/ffprobe-aarch64-apple-darwin "$SIDE_DIR/ffprobe-aarch64-apple-darwin"
+          cp src-tauri/binaries/ffmpeg-aarch64-apple-darwin "$SIDE_DIR/ffmpeg"
+          cp src-tauri/binaries/ffprobe-aarch64-apple-darwin "$SIDE_DIR/ffprobe"
+          chmod 755 "$SIDE_DIR/ffmpeg-aarch64-apple-darwin" "$SIDE_DIR/ffprobe-aarch64-apple-darwin" "$SIDE_DIR/ffmpeg" "$SIDE_DIR/ffprobe"
+          "$SIDE_DIR/ffmpeg-aarch64-apple-darwin" -hide_banner -encoders 2>/dev/null | grep -q hevc_videotoolbox
           printf '%s' "$BIN" > "$RUNNER_TEMP/e1012-app.txt"
           echo ENDLUME_1012_MAC_RUNTIME_REUSE_GREEN
 

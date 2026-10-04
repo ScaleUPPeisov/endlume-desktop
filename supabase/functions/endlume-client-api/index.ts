@@ -455,14 +455,47 @@ async function renderEvent(req: Request, body: any) {
     stage: row.stage,
     payload,
   });
-  await db.from("endlume_devices").update({
+  const deviceRow = {
     render_status: renderStatus,
     current_job_id: terminal[eventType] ? null : jobId,
     render_progress: progress,
     last_seen_at: stamp,
     last_heartbeat_at: stamp,
     updated_at: stamp,
-  }).eq("id", a.device.id);
+  };
+  if (terminal[eventType]) {
+    const deviceUpdate = await db.from("endlume_devices").update(deviceRow).eq("id", a.device.id);
+    if (deviceUpdate.error) { console.error("ENDLUME terminal_device_update_failed", deviceUpdate.error); return json({ ok: false, code: "terminal_device_update_failed" }, 500); }
+  } else if (eventType === "render_started") {
+    const deviceUpdate = await db.from("endlume_devices").update(deviceRow).eq("id", a.device.id);
+    if (deviceUpdate.error) { console.error("ENDLUME render_started_device_update_failed", deviceUpdate.error); return json({ ok: false, code: "render_started_device_update_failed" }, 500); }
+    // A terminal event may have overtaken this start after the render-row mutation.
+    // Re-read and repair the device so a late non-terminal event cannot leave Owner
+    // Control showing a zombie current_job_id/rendering state.
+    const latest = await db.from("endlume_renders").select("status,progress").eq("id", render.id).maybeSingle();
+    if (latest.error) { console.error("ENDLUME render_state_post_device_read_failed", latest.error); return json({ ok: false, code: "render_state_post_device_read_failed" }, 500); }
+    if (latest.data && isTerminalRenderStatus(latest.data.status)) {
+      const repair = await db.from("endlume_devices").update({
+        render_status: latest.data.status,
+        current_job_id: null,
+        render_progress: latest.data.progress,
+        last_seen_at: stamp,
+        last_heartbeat_at: stamp,
+        updated_at: stamp,
+      }).eq("id", a.device.id);
+      if (repair.error) { console.error("ENDLUME terminal_device_repair_failed", repair.error); return json({ ok: false, code: "terminal_device_repair_failed" }, 500); }
+      return json({ ok: true, ignored: true, reason: "render_already_terminal", status: latest.data.status });
+    }
+  } else {
+    // Progress/stage may mutate the device only while it still owns this exact job.
+    // Terminal events atomically clear current_job_id, so a late progress cannot
+    // resurrect the device row even if requests overlap.
+    const deviceUpdate = await db.from("endlume_devices").update(deviceRow)
+      .eq("id", a.device.id)
+      .eq("current_job_id", jobId)
+      .eq("render_status", "rendering");
+    if (deviceUpdate.error) { console.error("ENDLUME render_progress_device_update_failed", deviceUpdate.error); return json({ ok: false, code: "render_progress_device_update_failed" }, 500); }
+  }
   // ENDLUME control notification hook
   if (eventType === "render_started") {
     await pushNotification("render_started",a.license,a.device,render.id,"ENDLUME: рендер запущен",(a.license.customer_name || "Клиент") + " — " + String(row.project_name || jobId),{job_id:jobId});

@@ -927,7 +927,6 @@ fn active_background_music(job:&QueueJob)->Option<&str>{
 }
 
 fn append_final_av_audio_args(args:&mut Vec<String>,job:&QueueJob,audio:&AudioSource,encoder:&str,final_duration:f64)->Result<(),String>{
-  args.extend(vec!["-t",&final_duration.to_string(),"-map","0:v:0"].into_iter().map(String::from));
   if let Some(background)=active_background_music(job){
     let background_path=Path::new(background);
     if !background_path.is_file(){
@@ -954,12 +953,13 @@ fn append_final_av_audio_args(args:&mut Vec<String>,job:&QueueJob,audio:&AudioSo
       "[1:a]aresample=48000:async=1:first_pts=0,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,atrim=duration={final_duration:.6},asetpts=N/SR/TB[maina];[2:a]{}[bga];[maina][bga]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,alimiter=limit=0.98[outa]",
       bg.join(",")
     );
-    args.extend(vec!["-filter_complex",&graph,"-map","[outa]","-c:v","copy"].into_iter().map(String::from));
+    // All inputs must be declared before output-only options (-t/-map).
+    args.extend(vec!["-t",&final_duration.to_string(),"-map","0:v:0","-filter_complex",&graph,"-map","[outa]","-c:v","copy"].into_iter().map(String::from));
     args.extend(audio_encoder_args(encoder));
     args.extend(vec!["-tag:a","mp4a","-disposition:a:0","default","-metadata:s:a:0","language=und"].into_iter().map(String::from));
     diag_line(json!({"kind":"background-music-final","projectId":job.project.id,"source":background,"volumePct":volume*100.0,"bassDb":bass,"midDb":mid,"trebleDb":treble,"coveredDuration":final_duration,"loopMode":"stream_loop","tempPcm":false}));
   }else{
-    args.extend(vec!["-map","1:a:0","-c:v","copy"].into_iter().map(String::from));
+    args.extend(vec!["-t",&final_duration.to_string(),"-map","0:v:0","-map","1:a:0","-c:v","copy"].into_iter().map(String::from));
     args.extend(final_mp4_audio_args(audio,encoder));
   }
   Ok(())
@@ -2396,7 +2396,7 @@ pub async fn render_job(app:&AppHandle,job:&QueueJob,cancel:Arc<AtomicBool>)->Re
     resolved_job.settings.codec="h265".into();
     // Preserve the user's duration/audio-processing mode when Crossfade or Normalize
     // is enabled. Background Music is an independent final-mux layer.
-    if !requested_audio_processing{resolved_job.settings.duration_mode="whole-track".into();}
+    if !requested_audio_processing&&resolved_job.settings.duration_mode!="exact"{resolved_job.settings.duration_mode="whole-track".into();}
   }
   let job=&resolved_job;let scan_mark=Instant::now();
   for p in &job.project.media{

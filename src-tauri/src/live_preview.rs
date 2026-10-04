@@ -1,6 +1,6 @@
 use serde::Serialize;
 use sha2::{Digest,Sha256};
-use std::{fs,io::Read,path::{Path,PathBuf},time::UNIX_EPOCH};
+use std::{fs,io::Read,path::{Path,PathBuf},sync::OnceLock,time::UNIX_EPOCH};
 use tauri::{AppHandle,Manager};
 use tauri_plugin_shell::ShellExt;
 use walkdir::WalkDir;
@@ -51,6 +51,68 @@ fn cache_dir(app:&AppHandle)->Result<PathBuf,String>{let dir=app.path().app_cach
 fn fingerprint(path:&Path,seek:f64,kind:&str)->String{let meta=fs::metadata(path).ok();let size=meta.as_ref().map(|m|m.len()).unwrap_or(0);let modified=meta.as_ref().and_then(|m|m.modified().ok()).and_then(|t|t.duration_since(UNIX_EPOCH).ok()).map(|d|d.as_secs()).unwrap_or(0);let mut h=Sha256::new();h.update(format!("{}|{}|{}|{:.2}|{}",path.to_string_lossy(),size,modified,seek,kind));hex::encode(h.finalize())[..24].to_string()}
 fn first_media(project:&Path)->Option<PathBuf>{let mut files=WalkDir::new(project).max_depth(3).into_iter().filter_map(Result::ok).map(|e|e.into_path()).filter(|p|p.is_file()&&!rejected_macos_input(p)&&is_media(p)&&ready_file(p)).collect::<Vec<_>>();files.sort_by(|a,b|natural_name(a).cmp(&natural_name(b)));files.into_iter().next()}
 
+
+static STAGED_FFMPEG:OnceLock<Option<PathBuf>>=OnceLock::new();
+static STAGED_FFPROBE:OnceLock<Option<PathBuf>>=OnceLock::new();
+
+fn stage_packaged_tool(app:&AppHandle,name:&str)->Option<PathBuf>{
+  let exe=std::env::current_exe().ok()?;
+  let exe_dir=exe.parent()?;
+  #[cfg(target_os="windows")]
+  let source=exe_dir.join(format!("{name}.exe"));
+  #[cfg(not(target_os="windows"))]
+  let source=exe_dir.join(name);
+  if !executable_file(&source){return None}
+
+  let root=app.path().app_cache_dir().ok()?.join("live-preview-tools-v1");
+  fs::create_dir_all(&root).ok()?;
+  let source_meta=fs::metadata(&source).ok()?;
+  let file_name=source.file_name()?;
+  let target=root.join(file_name);
+  if fs::metadata(&target).map(|m|m.is_file()&&m.len()==source_meta.len()).unwrap_or(false)&&executable_file(&target){
+    if live_preview_diag_enabled(){eprintln!("ENDLUME_PREVIEW_TOOL_STAGE name={name} mode=cache-hit source={} staged={} bytes={}",source.display(),target.display(),source_meta.len());}
+    return Some(target)
+  }
+
+  let tmp=root.join(format!(".{}-{}.tmp",name,uuid::Uuid::new_v4()));
+  let _=fs::remove_file(&tmp);
+  let mode=if fs::hard_link(&source,&tmp).is_ok(){
+    "hard-link"
+  }else{
+    fs::copy(&source,&tmp).ok()?;
+    "copy"
+  };
+  #[cfg(unix)]
+  {
+    use std::os::unix::fs::PermissionsExt;
+    let mut permissions=fs::metadata(&tmp).ok()?.permissions();
+    permissions.set_mode(permissions.mode()|0o755);
+    fs::set_permissions(&tmp,permissions).ok()?;
+  }
+  if target.exists(){let _=fs::remove_file(&target);}
+  fs::rename(&tmp,&target).ok()?;
+  if !executable_file(&target){let _=fs::remove_file(&target);return None}
+  if live_preview_diag_enabled(){eprintln!("ENDLUME_PREVIEW_TOOL_STAGE name={name} mode={mode} source={} staged={} bytes={}",source.display(),target.display(),source_meta.len());}
+  Some(target)
+}
+
+fn staged_ffmpeg(app:&AppHandle)->Option<PathBuf>{
+  STAGED_FFMPEG.get_or_init(||stage_packaged_tool(app,"ffmpeg")).clone()
+}
+fn staged_ffprobe(app:&AppHandle)->Option<PathBuf>{
+  STAGED_FFPROBE.get_or_init(||stage_packaged_tool(app,"ffprobe")).clone()
+}
+fn ensure_preview_tools_staged(app:&AppHandle){
+  let ffmpeg=staged_ffmpeg(app);
+  let ffprobe=staged_ffprobe(app);
+  if live_preview_diag_enabled(){
+    eprintln!("ENDLUME_PREVIEW_TOOL_STAGE_READY ffmpeg={} ffprobe={}",
+      ffmpeg.as_ref().map(|p|p.display().to_string()).unwrap_or_else(||"<sidecar-only>".into()),
+      ffprobe.as_ref().map(|p|p.display().to_string()).unwrap_or_else(||"<sidecar-only>".into()));
+  }
+}
+
+
 #[cfg(feature="e2e-render")]
 fn qa_log_first_encode_sidecar(){
   static ONCE:std::sync::Once=std::sync::Once::new();
@@ -85,6 +147,10 @@ fn qa_log_first_encode_sidecar(){
 }
 
 async fn run(app:&AppHandle,args:Vec<String>)->Result<(),String>{
+  // Capture stable self-contained tool copies before the first Tauri externalBin
+  // spawn. Packaged macOS E2E can resolve the first sidecar and return ENOENT on
+  // later sidecar spawns; the cached executables remain addressable.
+  ensure_preview_tools_staged(app);
   #[cfg(feature="e2e-render")]
   qa_log_first_encode_sidecar();
   let out=app.shell().sidecar("ffmpeg").map_err(|e|e.to_string())?.args(args).output().await.map_err(|e|e.to_string())?;
@@ -120,6 +186,10 @@ fn app_bundle_root(exe:&Path)->Option<PathBuf>{
 }
 
 fn resolve_bundled_ffmpeg(app:&AppHandle)->Result<PathBuf,String>{
+  if let Some(staged)=staged_ffmpeg(app).filter(|p|executable_file(p)){
+    if live_preview_diag_enabled(){eprintln!("RESOLVED_FFMPEG_PATH={} FILE_EXISTS=true EXECUTABLE=true RESOLUTION=staged-cache",staged.display());}
+    return Ok(staged)
+  }
   let exe=std::env::current_exe().map_err(|e|format!("Live Preview current_exe: {e}"))?;
   let exe_dir=exe.parent().map(Path::to_path_buf).ok_or("Live Preview executable directory missing")?;
   let resource_dir=app.path().resource_dir().ok();
@@ -250,20 +320,26 @@ pub(crate) async fn validate_video_proxy(app:&AppHandle,out:&Path)->Result<(),St
     "-show_entries","stream=codec_type,width,height,nb_read_frames:format=duration",
     "-of","json",out.to_string_lossy().as_ref()
   ].into_iter().map(String::from).collect::<Vec<_>>();
-  let cmd=match app.shell().sidecar("ffprobe"){
-    Ok(v)=>v,
-    Err(e)=>{
-      if let Some(decode)=decode_error{return Err(format!("proxy decode failed ({decode}); FFprobe sidecar unavailable: {e}"))}
-      if live_preview_diag_enabled(){eprintln!("ENDLUME_PREVIEW_FFPROBE_FALLBACK reason=sidecar-unavailable path={}",out.display());}
-      return Ok(())
-    }
-  };
-  let probe=match cmd.args(probe_args).output().await{
-    Ok(v)=>v,
-    Err(e)=>{
-      if let Some(decode)=decode_error{return Err(format!("proxy decode failed ({decode}); FFprobe spawn failed: {e}"))}
-      if live_preview_diag_enabled(){eprintln!("ENDLUME_PREVIEW_FFPROBE_FALLBACK reason=spawn-error error={:?} path={}",e,out.display());}
-      return Ok(())
+  let probe=if let Some(ffprobe)=staged_ffprobe(app).filter(|p|executable_file(p)){
+    if live_preview_diag_enabled(){eprintln!("ENDLUME_PREVIEW_FFPROBE_SOURCE=staged-cache path={}",ffprobe.display());}
+    std::process::Command::new(&ffprobe).args(&probe_args).output()
+      .map_err(|e|format!("staged FFprobe spawn failed {}: {e}",ffprobe.display()))?
+  }else{
+    let cmd=match app.shell().sidecar("ffprobe"){
+      Ok(v)=>v,
+      Err(e)=>{
+        if let Some(decode)=decode_error{return Err(format!("proxy decode failed ({decode}); FFprobe sidecar unavailable: {e}"))}
+        if live_preview_diag_enabled(){eprintln!("ENDLUME_PREVIEW_FFPROBE_FALLBACK reason=sidecar-unavailable path={}",out.display());}
+        return Ok(())
+      }
+    };
+    match cmd.args(probe_args).output().await{
+      Ok(v)=>v,
+      Err(e)=>{
+        if let Some(decode)=decode_error{return Err(format!("proxy decode failed ({decode}); FFprobe spawn failed: {e}"))}
+        if live_preview_diag_enabled(){eprintln!("ENDLUME_PREVIEW_FFPROBE_FALLBACK reason=spawn-error error={:?} path={}",e,out.display());}
+        return Ok(())
+      }
     }
   };
   if !probe.status.success(){return Err(format!("FFprobe не принял proxy: {}",String::from_utf8_lossy(&probe.stderr).trim()))}

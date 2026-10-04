@@ -115,6 +115,15 @@ assert subs,"REAL_SUBSCRIBE_NOT_FOUND"
 sub=subs[0]
 
 tmp_root=Path(tempfile.mkdtemp(prefix="endlume1011-qa-"))
+background=tmp_root/"background-15m.m4a"
+run([FFMPEG,"-hide_banner","-loglevel","error",
+     "-f","lavfi","-i","sine=frequency=120:sample_rate=48000:duration=900",
+     "-f","lavfi","-i","sine=frequency=1000:sample_rate=48000:duration=900",
+     "-f","lavfi","-i","sine=frequency=8000:sample_rate=48000:duration=900",
+     "-filter_complex","[0:a][1:a][2:a]amix=inputs=3:normalize=0,volume=0.25",
+     "-c:a","aac","-b:a","128k","-ar","48000","-ac","2","-y",background],timeout=90)
+background_duration=float(probe(background)["format"]["duration"])
+assert 895<=background_duration<=905,background_duration
 if third is None:
     # The user's current library may only contain the 80s Film + Round Equalizer.
     # Add one QA-only ordinary chromakey layer so the compositor is still tested
@@ -183,14 +192,28 @@ common_project={"path":str(project),"media":[str(base_media)],"audio":[str(x) fo
 film_off=dict(film);film_off.update({"enabled":False,"usageMode":"off"})
 param_film=dict(film);param_film["opacity"]=0.35 if float(film.get("opacity",1) if film.get("opacity") is not None else 1)>0.55 else 0.85
 
-def job(pid,name,effects):
-    return {"project":dict(common_project,id=pid,name=name),"settings":settings,"effects":effects,"subscribes":[sub],"ambient":None}
+def job(pid,name,effects,subscribes=None,ambient=None,ambient_settings=None,settings_override=None):
+    cfg=dict(settings)
+    if settings_override:cfg.update(settings_override)
+    return {
+      "project":dict(common_project,id=pid,name=name),
+      "settings":cfg,
+      "effects":effects,
+      "subscribes":[sub] if subscribes is None else subscribes,
+      "ambient":ambient,
+      "ambientSettings":ambient_settings or {"volumePct":18.0,"bassDb":0.0,"midDb":0.0,"trebleDb":0.0},
+    }
 
+stale_film=dict(film);stale_film["source"]=str(tmp_root/"deleted-old-effect-proxy.mp4")
+exact_202={"durationHours":2.0+2.0/60.0,"durationMode":"exact","crossfadeSec":0.0,"normalizeLufs":False}
 jobs=[
     job("e1011-off","ENDLUME 10.0.11 QA OFF",[film_off,eq,third]),
     job("e1011-on","ENDLUME 10.0.11 QA ON",[film,eq,third]),
     job("e1011-param","ENDLUME 10.0.11 QA PARAM",[param_film,eq,third]),
     job("e1011-warm","ENDLUME 10.0.11 QA WARM",[param_film,eq,third]),
+    job("e1011-recover","ENDLUME 10.0.11 QA EFFECT RECOVERY",[stale_film,eq,third]),
+    job("e1011-bg-neutral","ENDLUME 10.0.11 QA BG NEUTRAL",[],[],str(background),{"volumePct":20.0,"bassDb":0.0,"midDb":0.0,"trebleDb":0.0},exact_202),
+    job("e1011-bg-eq","ENDLUME 10.0.11 QA BG EQ",[],[],str(background),{"volumePct":20.0,"bassDb":-3.0,"midDb":0.0,"trebleDb":-2.0},exact_202),
 ]
 render_fixture=tmp_root/"render-jobs.json";render_result=tmp_root/"render-result.json"
 render_fixture.write_text(json.dumps({"jobs":jobs},ensure_ascii=False,indent=2))
@@ -219,12 +242,16 @@ for pid,row in rows.items():
 # Cache invalidation proof: OFF != ON, parameter change != ON, repeated parameter state reuses same key.
 cache_events=[]
 checkpoints=[]
+background_events=[]
+recovered_events=[]
 for line in rp.stderr.splitlines():
     if "ENDLUME_DIAG " not in line:continue
     try:d=json.loads(line.split("ENDLUME_DIAG ",1)[1].strip())
     except Exception:continue
     if d.get("kind")=="cache" and d.get("visualCacheKey"):cache_events.append(d)
     if d.get("kind")=="eta-checkpoint":checkpoints.append(d)
+    if d.get("kind")=="background-music-final":background_events.append(d)
+    if d.get("kind")=="render-asset-recovered":recovered_events.append(d)
 
 def keys(pid):
     return {x["visualCacheKey"] for x in cache_events if x.get("projectId")==pid}
@@ -238,6 +265,38 @@ cp={float(x.get("checkpoint",0)):x for x in checkpoints if x.get("projectId")=="
 for c in (50.0,75.0,90.0):assert c in cp,(c,cp)
 assert cp[50.0].get("etaSec") is None or float(cp[50.0].get("etaSec"))>0.0,cp[50.0]
 assert "::visual-prewarm" not in rp.stderr
+
+
+# Background Music: exact 2:02:00 master, 15-minute source, full looping, gain and real EQ.
+for pid in ("e1011-bg-neutral","e1011-bg-eq"):
+    assert abs(render_meta[pid]["duration"]-7320.0)<=1.0,(pid,render_meta[pid])
+    p=Path(render_meta[pid]["path"])
+    for pos in (1.0,905.0,1805.0,3605.0,7315.0):
+        run([FFMPEG,"-hide_banner","-loglevel","error","-ss",str(pos),"-i",p,"-map","0:a:0","-t","0.5","-af","volumedetect","-f","null","-"],timeout=60)
+
+bg_by_id={x.get("projectId"):x for x in background_events}
+for pid in ("e1011-bg-neutral","e1011-bg-eq"):
+    assert pid in bg_by_id,(pid,background_events)
+    ev=bg_by_id[pid]
+    assert ev.get("loopMode")=="stream_loop" and ev.get("tempPcm") is False,ev
+    assert abs(float(ev.get("coveredDuration",0))-7320.0)<=1.0,ev
+    assert abs(float(ev.get("volumePct",0))-20.0)<0.01,ev
+eq_event=bg_by_id["e1011-bg-eq"]
+assert abs(float(eq_event.get("bassDb",99))+3.0)<0.01,eq_event
+assert abs(float(eq_event.get("midDb",99))-0.0)<0.01,eq_event
+assert abs(float(eq_event.get("trebleDb",99))+2.0)<0.01,eq_event
+
+def pcm_segment(path,pos=30.0,duration=1.0):
+    p=subprocess.run([str(FFMPEG),"-hide_banner","-loglevel","error","-ss",str(pos),"-i",str(path),"-map","0:a:0","-t",str(duration),"-ar","48000","-ac","2","-f","s16le","-"],check=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=60)
+    return p.stdout
+neutral_pcm=pcm_segment(Path(render_meta["e1011-bg-neutral"]["path"]))
+eq_pcm=pcm_segment(Path(render_meta["e1011-bg-eq"]["path"]))
+assert len(neutral_pcm)==len(eq_pcm) and len(eq_pcm)>10000
+audio_delta=sum(abs(a-b) for a,b in zip(neutral_pcm,eq_pcm))/len(eq_pcm)
+assert audio_delta>0.25,audio_delta
+
+# A stale queued Effect path must recover by stable current library id, not fail the project.
+assert any(x.get("projectId")=="e1011-recover" and x.get("assetClass")=="EFFECT" and x.get("effectId")==film.get("id") for x in recovered_events),recovered_events
 
 # Final visibility: compare the accepted all-ON final with exact Preview masks and OFF render.
 on_frame=frame(Path(render_meta["e1011-on"]["path"]))
@@ -269,6 +328,8 @@ report={
   "coldEffectsPreview":"GREEN","coldSubscribePreview":"GREEN","previewDiffs":preview_diffs,
   "render":render_meta,"cacheKeys":{"off":list(ko)[0],"on":list(k1)[0],"param":list(kp)[0],"warm":list(kw)[0]},
   "cacheInvalidation":"GREEN","progress":"GREEN","eta":"GREEN","filmFinalDelta":film_final_delta,"paramDelta":param_delta,"presence":presence,
+  "backgroundMusic":{"status":"GREEN","sourceDuration":background_duration,"coveredDuration":render_meta["e1011-bg-eq"]["duration"],"volumePct":20.0,"bassDb":-3.0,"midDb":0.0,"trebleDb":-2.0,"audioDelta":audio_delta,"tempPcm":False},
+  "effectPathRecovery":"GREEN",
   "appWallSeconds":app_wall,
   "qaOutputKept":render_meta["e1011-on"]["path"],
 }
@@ -276,6 +337,6 @@ REPORT.write_text(json.dumps(report,ensure_ascii=False,indent=2))
 print("ENDLUME_1011_CRITICAL_HOTFIX_QA_GREEN",json.dumps(report,ensure_ascii=False))
 
 # Keep the all-ON acceptance video for inspection; remove auxiliary QA outputs only.
-for pid in ("e1011-off","e1011-param","e1011-warm"):
+for pid in ("e1011-off","e1011-param","e1011-warm","e1011-recover","e1011-bg-neutral"):
     try:Path(render_meta[pid]["path"]).unlink()
     except Exception:pass

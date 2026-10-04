@@ -1,4 +1,5 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+import { isNonTerminalRenderEvent, isTerminalRenderStatus, shouldIgnoreRenderMutation } from "./render-state.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
 
 const URL = Deno.env.get("SUPABASE_URL")!;
@@ -372,10 +373,14 @@ async function renderEvent(req: Request, body: any) {
   if (!["render_started", "render_progress", "render_stage", "render_completed", "render_failed", "render_cancelled"].includes(eventType)) return json({ ok: false, code: "event_type" }, 400);
   const jobId = String(body.job_id ?? "").trim().slice(0, 180);
   if (!jobId) return json({ ok: false, code: "job_id" }, 400);
+  const { data: existing, error: existingError } = await db.from("endlume_renders").select("id,status").eq("license_id", a.license.id).eq("device_id", a.device.id).eq("job_id", jobId).maybeSingle();
+  if (existingError) { console.error("ENDLUME render_state_read_failed", existingError); return json({ ok: false, code: "render_state_read_failed" }, 500); }
+  if (shouldIgnoreRenderMutation(existing?.status, eventType)) {
+    return json({ ok: true, ignored: true, reason: "render_already_terminal", status: existing!.status });
+  }
   if (!a.allowed) {
     const canCloseExisting = eventType === "render_cancelled" || eventType === "render_failed";
     if (!canCloseExisting) return json({ ok: false, allowed: false, code: a.device.status !== "active" ? `device_${a.device.status}` : `license_${a.licenseStatus}` }, 403);
-    const { data: existing } = await db.from("endlume_renders").select("id,status").eq("license_id", a.license.id).eq("device_id", a.device.id).eq("job_id", jobId).maybeSingle();
     if (!existing || existing.status !== "rendering") return json({ ok: false, allowed: false, code: "blocked_terminal_without_running_job" }, 403);
   }
   const terminal: Record<string, string> = { render_completed: "completed", render_failed: "failed", render_cancelled: "cancelled" };
@@ -421,7 +426,22 @@ async function renderEvent(req: Request, body: any) {
   textField("audio_codec",body.audio_codec,80);
   if(body.settings&&typeof body.settings==="object")row.settings=body.settings;
   if (terminal[eventType]) row.finished_at = stamp;
-  const { data: render, error } = await db.from("endlume_renders").upsert(row, { onConflict: "license_id,device_id,job_id" }).select("id").single();
+  let render:any=null;let error:any=null;
+  if (isNonTerminalRenderEvent(eventType) && existing) {
+    const updated = await db.from("endlume_renders").update(row).eq("id", existing.id).eq("status", "rendering").select("id,status").maybeSingle();
+    render=updated.data;error=updated.error;
+    if (!error && !render) {
+      const current = await db.from("endlume_renders").select("id,status").eq("id", existing.id).maybeSingle();
+      if (current.error) { console.error("ENDLUME render_state_reread_failed", current.error); return json({ ok: false, code: "render_state_reread_failed" }, 500); }
+      if (current.data && isTerminalRenderStatus(current.data.status)) {
+        return json({ ok: true, ignored: true, reason: "render_already_terminal", status: current.data.status });
+      }
+      return json({ ok: false, code: "render_state_conflict" }, 409);
+    }
+  } else {
+    const upserted = await db.from("endlume_renders").upsert(row, { onConflict: "license_id,device_id,job_id" }).select("id,status").single();
+    render=upserted.data;error=upserted.error;
+  }
   if (error || !render) { console.error("ENDLUME render_upsert_failed", error); return json({ ok: false, code: "render_upsert_failed" }, 500); }
   const payload = body.payload && typeof body.payload === "object" ? body.payload : {};
   await db.from("endlume_render_events").insert({

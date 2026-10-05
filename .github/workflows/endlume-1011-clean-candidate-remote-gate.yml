@@ -1,0 +1,88 @@
+name: ENDLUME 10.0.11 Clean Candidate Remote Gate
+
+on:
+  push:
+    branches: [qa/endlume-10.0.11-clean-remote-gate]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  remote-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: e49fd871f461468671177bc7a74dca0001b72e10
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Prove frozen source ancestry and clean product diff
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          SOURCE=2e4e958d08927eaf098dc348fdfaed34ecb92b56
+          CANDIDATE=e49fd871f461468671177bc7a74dca0001b72e10
+          test "$(git rev-parse HEAD)" = "$CANDIDATE"
+          test "$(git merge-base HEAD "$SOURCE")" = "$SOURCE"
+          mapfile -t files < <(git diff --name-only "$SOURCE"..HEAD)
+          printf 'CHANGED=%s\n' "${files[*]}"
+          test "${#files[@]}" -eq 8
+          allowed='src-tauri/src/model.rs src-tauri/src/persistence.rs src-tauri/src/queue.rs src-tauri/src/render.rs src-tauri/src/scan.rs src/pages/ProjectPage.tsx src/store.ts src/types.ts'
+          for f in "${files[@]}"; do
+            case " $allowed " in *" $f "*) ;; *) echo "UNEXPECTED_FILE=$f"; exit 1;; esac
+          done
+          echo CLEAN_PRODUCT_DIFF=PASS
+
+      - name: Contract checks for selected effect fail-closed
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          grep -F 'selected_effect_id' src-tauri/src/model.rs
+          grep -F 'Selected effect' src-tauri/src/queue.rs
+          grep -F '!effect.enabled||effect.usage_mode.as_deref()==Some("off")' src-tauri/src/queue.rs
+          grep -F 'duplicate effect ID' src-tauri/src/queue.rs
+          grep -F 'selectedEffectId' src/pages/ProjectPage.tsx
+          grep -F 'selectedEffectByPath' src/store.ts
+          grep -F 'despill:e.despill??0.35' src/store.ts
+          grep -F 'fast_path_decision(job).reason=="FAST_MULTI_STILL"' src-tauri/src/render.rs
+          echo EFFECT_SELECTION_CONTRACT=PASS
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: TypeScript and production frontend build
+        run: |
+          npm run check
+          npm run build
+
+      - name: Install Tauri Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            pkg-config
+
+      - name: Stage compile-only sidecar placeholders
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p src-tauri/binaries
+          printf '#!/bin/sh\nexit 0\n' > src-tauri/binaries/ffmpeg-x86_64-unknown-linux-gnu
+          printf '#!/bin/sh\nexit 0\n' > src-tauri/binaries/ffprobe-x86_64-unknown-linux-gnu
+          chmod +x src-tauri/binaries/ffmpeg-x86_64-unknown-linux-gnu src-tauri/binaries/ffprobe-x86_64-unknown-linux-gnu
+
+      - name: Rust check and tests
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cargo check --manifest-path src-tauri/Cargo.toml
+          cargo test --manifest-path src-tauri/Cargo.toml -- --nocapture
+
+      - name: Final gate
+        run: echo 'ENDLUME_10_0_11_CLEAN_REMOTE_GATE=PASS'

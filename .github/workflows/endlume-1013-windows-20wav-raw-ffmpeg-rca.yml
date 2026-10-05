@@ -1,0 +1,104 @@
+name: ENDLUME 10.0.13 Windows 20-WAV Raw FFmpeg RCA
+
+on:
+  push:
+    branches: [hotfix/endlume-10.0.13-windows-20wav-audio-runtime]
+    paths:
+      - ".github/workflows/endlume-1013-windows-20wav-raw-ffmpeg-rca.yml"
+      - "scripts/qa-endlume-1013-windows-20wav-raw-ffmpeg.py"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-1013-windows-20wav-raw-ffmpeg-rca
+  cancel-in-progress: true
+
+jobs:
+  windows-raw-ffmpeg-rca:
+    name: Windows x64 • 20 WAV • CF 0/5/10 • LUFS raw RCA
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify RCA source ancestry
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          git merge-base --is-ancestor c700adb0fa38a5a3a7d448952a6a164fd06cc9ff $env:GITHUB_SHA
+          if ($LASTEXITCODE -ne 0) { throw 'RCA branch is not based on public 10.0.12 release' }
+          "SOURCE_HEAD=$env:GITHUB_SHA" | Out-File -FilePath "$env:GITHUB_WORKSPACE\windows-rca-source.txt" -Encoding utf8
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install process telemetry helper
+        shell: pwsh
+        run: python -m pip install --disable-pip-version-check psutil
+
+      - name: Stage production-family Windows FFmpeg sidecars
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $cache = Join-Path $env:RUNNER_TEMP 'endlume-1013-ffmpeg'
+          $zip = Join-Path $cache 'ffmpeg-master-latest-win64-gpl.zip'
+          $extract = Join-Path $cache 'extract'
+          New-Item -ItemType Directory -Force -Path $cache | Out-Null
+          Invoke-WebRequest -UseBasicParsing -Uri 'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip' -OutFile $zip
+          if (Test-Path $extract) { Remove-Item -Recurse -Force $extract }
+          Expand-Archive -LiteralPath $zip -DestinationPath $extract -Force
+          $ffmpeg = Get-ChildItem -Path $extract -Recurse -Filter ffmpeg.exe | Select-Object -First 1
+          $ffprobe = Get-ChildItem -Path $extract -Recurse -Filter ffprobe.exe | Select-Object -First 1
+          if (-not $ffmpeg -or -not $ffprobe) { throw 'Windows FFmpeg/FFprobe not found in production-family archive' }
+          $bin = Join-Path $env:RUNNER_TEMP 'endlume-1013-bin'
+          New-Item -ItemType Directory -Force -Path $bin | Out-Null
+          Copy-Item $ffmpeg.FullName (Join-Path $bin 'ffmpeg.exe')
+          Copy-Item $ffprobe.FullName (Join-Path $bin 'ffprobe.exe')
+          $ffmpegPath = Join-Path $bin 'ffmpeg.exe'
+          $ffprobePath = Join-Path $bin 'ffprobe.exe'
+          & $ffmpegPath -hide_banner -version | Tee-Object -FilePath "$env:GITHUB_WORKSPACE\windows-ffmpeg-version.txt"
+          & $ffprobePath -hide_banner -version | Tee-Object -FilePath "$env:GITHUB_WORKSPACE\windows-ffprobe-version.txt"
+          Get-FileHash -Algorithm SHA256 $zip | Format-List | Out-File "$env:GITHUB_WORKSPACE\windows-ffmpeg-archive-sha256.txt"
+          Get-FileHash -Algorithm SHA256 $ffmpegPath | Format-List | Out-File "$env:GITHUB_WORKSPACE\windows-ffmpeg-exe-sha256.txt"
+          "ENDLUME_FFMPEG=$ffmpegPath" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "ENDLUME_FFPROBE=$ffprobePath" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Capture Windows machine facts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          New-Item -ItemType Directory -Force -Path windows-rca | Out-Null
+          Get-ComputerInfo | Select-Object WindowsProductName,WindowsVersion,OsBuildNumber,OsArchitecture,CsProcessors,CsTotalPhysicalMemory | ConvertTo-Json -Depth 5 | Out-File windows-rca/windows-machine.json -Encoding utf8
+          Get-CimInstance Win32_Processor | Select-Object Name,NumberOfCores,NumberOfLogicalProcessors | ConvertTo-Json | Out-File windows-rca/windows-cpu.json -Encoding utf8
+
+      - name: Run exact 10.0.12-style 20-WAV processed-audio graph
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          python scripts/qa-endlume-1013-windows-20wav-raw-ffmpeg.py "$env:ENDLUME_FFMPEG" "$env:ENDLUME_FFPROBE" "windows-rca"
+          $code = $LASTEXITCODE
+          if (Test-Path windows-rca/summary.json) { Get-Content windows-rca/summary.json }
+          exit $code
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ENDLUME-10.0.13-Windows-20WAV-Raw-FFmpeg-RCA
+          path: |
+            windows-rca/
+            windows-rca-source.txt
+            windows-ffmpeg-version.txt
+            windows-ffprobe-version.txt
+            windows-ffmpeg-archive-sha256.txt
+            windows-ffmpeg-exe-sha256.txt
+          if-no-files-found: warn
+          retention-days: 14

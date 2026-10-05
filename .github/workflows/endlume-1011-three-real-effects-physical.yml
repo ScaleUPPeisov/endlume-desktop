@@ -1,0 +1,202 @@
+name: ENDLUME 10.0.11 Three Real Effects Physical Gate
+
+on:
+  push:
+    branches: [hotfix/endlume-10.0.11-performance-effects-reliability]
+    paths:
+      - ".github/workflows/endlume-1011-three-real-effects-physical.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-1011-three-real-effects-physical
+  cancel-in-progress: true
+
+jobs:
+  three-real-effects:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Prove source ancestry and physical fixture
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          SOURCE=2e4e958d08927eaf098dc348fdfaed34ecb92b56
+          git cat-file -e "$SOURCE^{commit}"
+          test "$(git merge-base HEAD "$SOURCE")" = "$SOURCE"
+          test -d "/Volumes/TOSHIBA EXT"
+          test -d "/Volumes/TOSHIBA EXT/ВАЙРОН/Render/Brewroom Jazz"
+          echo SOURCE_OF_TRUTH=$SOURCE
+          echo CANDIDATE_HEAD=$(git rev-parse HEAD)
+          echo PHYSICAL_FIXTURE=GREEN
+
+      - name: Stage Apple Silicon FFmpeg sidecars
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          TMP="$(mktemp -d)"
+          curl -fL --retry 4 "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffmpeg.zip" -o "$TMP/ffmpeg.zip"
+          curl -fL --retry 4 "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffprobe.zip" -o "$TMP/ffprobe.zip"
+          mkdir -p "$TMP/fm" "$TMP/fp" src-tauri/binaries
+          ditto -x -k "$TMP/ffmpeg.zip" "$TMP/fm"
+          ditto -x -k "$TMP/ffprobe.zip" "$TMP/fp"
+          cp "$(find "$TMP/fm" -type f -name ffmpeg -print -quit)" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp "$(find "$TMP/fp" -type f -name ffprobe -print -quit)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          chmod 755 src-tauri/binaries/ffmpeg-aarch64-apple-darwin src-tauri/binaries/ffprobe-aarch64-apple-darwin
+
+      - name: Build isolated packaged candidate
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
+          export CARGO_TARGET_DIR="$HOME/.endlume-build-cache/target-1011-perf-effects-reliability"
+          npm ci
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('src-tauri/tauri.conf.json')
+          d=json.loads(p.read_text())
+          d['bundle']['createUpdaterArtifacts']=False
+          p.write_text(json.dumps(d,ensure_ascii=False,indent=2)+'\n')
+          PY
+          ENDLUME_TAURI_TARGET=aarch64-apple-darwin node scripts/prepare-macos-ffmpeg-runtime.mjs
+          npx tauri build --target aarch64-apple-darwin --bundles app --features e2e-render
+          APP="$(find "$CARGO_TARGET_DIR/aarch64-apple-darwin/release/bundle/macos" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          test -n "$APP" -a -d "$APP"
+          /usr/bin/codesign --force --deep --sign - --timestamp=none "$APP"
+          /usr/bin/codesign --verify --deep --strict "$APP"
+          EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
+          test -x "$APP/Contents/MacOS/$EXE"
+          printf '%s' "$APP/Contents/MacOS/$EXE" > "$RUNNER_TEMP/e1011-three-effects-bin.txt"
+          printf '%s' "$APP/Contents/MacOS/ffmpeg" > "$RUNNER_TEMP/e1011-three-effects-ffmpeg.txt"
+          printf '%s' "$APP/Contents/MacOS/ffprobe" > "$RUNNER_TEMP/e1011-three-effects-ffprobe.txt"
+          echo PACKAGED_APP=GREEN
+
+      - name: Render three proven real effects and verify final-frame identity
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ROOT="$RUNNER_TEMP/endlume-1011-three-real-effects"
+          rm -rf "$ROOT"; mkdir -p "$ROOT/frames" "$ROOT/tmp"
+          export TMPDIR="$ROOT/tmp"
+          BIN="$(cat "$RUNNER_TEMP/e1011-three-effects-bin.txt")"
+          FFMPEG="$(cat "$RUNNER_TEMP/e1011-three-effects-ffmpeg.txt")"
+          FFPROBE="$(cat "$RUNNER_TEMP/e1011-three-effects-ffprobe.txt")"
+          python3 - "$BIN" "$FFMPEG" "$FFPROBE" "$ROOT" <<'PY'
+          import hashlib,json,os,subprocess,sys,tempfile,time
+          from pathlib import Path
+
+          APP=Path(sys.argv[1]); FFMPEG=Path(sys.argv[2]); FFPROBE=Path(sys.argv[3]); ROOT=Path(sys.argv[4])
+          VOL=Path('/Volumes/TOSHIBA EXT'); OUT=VOL/'ВАЙРОН'/'Render'/'Brewroom Jazz'
+          DATA=Path.home()/'Library/Application Support/studio.endlume.desktop'
+          ASSETS=DATA/'library-assets/effects'
+          IMAGE={'.jpg','.jpeg','.png','.webp','.bmp','.tif','.tiff','.heic','.avif'}
+          AUDIO={'.mp3','.wav','.m4a','.aac','.flac','.ogg','.opus','.aiff','.aif','.alac'}
+          def run(args,check=True,timeout=360,env=None): return subprocess.run([str(x) for x in args],check=check,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,timeout=timeout,env=env)
+          def sha(path):
+              h=hashlib.sha256()
+              with open(path,'rb') as f:
+                  for chunk in iter(lambda:f.read(1024*1024),b''): h.update(chunk)
+              return h.hexdigest()
+          wanted={
+            'ROUND_EQUALIZER':'f0cda2600334826a603ad4cee58e1efefaa8a86e42b2860b0736e708ab689a19',
+            '80S_FILM':'cbd2ec386519b14afc88f3d1549c43ba5c17f0180f448453635b8ae72e649991',
+            'SMOKE':'d32262025aa7b7ebd2626cfb397b860150104b987957d1c2bf77395016e2cfb0',
+          }
+          found={}
+          for p in ASSETS.glob('*'):
+              if not p.is_file(): continue
+              h=sha(p)
+              for k,v in wanted.items():
+                  if h==v and k not in found: found[k]=p
+          assert set(found)==set(wanted),('MISSING_REAL_EFFECT_ASSET',found)
+          for k,p in found.items(): print(f'REAL_EFFECT_ASSET={k}|{p}|{p.stat().st_size}|{sha(p)}')
+
+          # Use the real persisted Round Equalizer preset if present so its production geometry/chroma stays exact.
+          lib=json.loads((DATA/'library.json').read_text())
+          round_record=None
+          for e in lib.get('effects',[]):
+              p=Path(str(e.get('source','')))
+              if p.is_file() and sha(p)==wanted['ROUND_EQUALIZER']:
+                  round_record=dict(e); break
+          assert round_record,'ROUND_EQUALIZER_PRESET_NOT_FOUND'
+          round_record.update({'id':round_record.get('id') or 'prod-round-equalizer','name':'Round Equalizer','source':str(found['ROUND_EQUALIZER']),'enabled':True,'usageMode':'always'})
+
+          def base_effect(id,name,source,**overrides):
+              e={
+                'id':id,'name':name,'source':str(source),'enabled':True,'mode':'chromakey','keyColor':'#00ff00',
+                'similarity':0.10,'blend':0.06,'despill':0.35,'lumaThreshold':0.03,'lumaTolerance':0.08,
+                'saturation':1.0,'x':0.5,'y':0.5,'scale':0.34,'fullscreen':False,'previewFrameTime':0.0,
+                'startSec':0.0,'endSec':None,'cacheKey':None,'cacheReady':False,'usageMode':'always','intervalSec':240.0,
+                'usageDurationSec':30.0,'target':'CUSTOM','offsetX':0.0,'offsetY':0.0,'opacity':1.0,
+              }
+              e.update(overrides); return e
+          film=base_effect('prod-80s-film-cbd2ec38','80-х пленка',found['80S_FILM'],fullscreen=True,scale=1.0,target='FULL_FRAME')
+          smoke=base_effect('prod-smoke-d3226202','Smoke / Steam',found['SMOKE'],similarity=0.136,blend=0.35,despill=0.0,x=0.637,y=0.316,scale=0.34,target='CUSTOM')
+          effects={'ROUND_EQUALIZER':round_record,'80S_FILM':film,'SMOKE':smoke}
+          ids=[str(e['id']) for e in effects.values()]
+          assert len(set(ids))==3,ids
+          print('UNIQUE_EFFECT_IDS='+json.dumps(ids,ensure_ascii=False))
+          print('SMOKE_DESPILL='+str(smoke['despill']))
+
+          # Find one real 1-image + >=10-audio project on TOSHIBA.
+          project=None; media=None; songs=None
+          for d in (VOL/'ВАЙРОН').rglob('*'):
+              if not d.is_dir(): continue
+              try: files=[x for x in d.iterdir() if x.is_file() and not x.name.startswith('.') and not x.name.startswith('._')]
+              except Exception: continue
+              mm=sorted([x for x in files if x.suffix.lower() in IMAGE],key=lambda x:x.name.lower())
+              aa=sorted([x for x in files if x.suffix.lower() in AUDIO],key=lambda x:x.name.lower())
+              if mm and len(aa)>=10: project=d;media=mm[0];songs=aa[:10];break
+          assert project and media and songs,'REAL_PROJECT_NOT_FOUND'
+          print('SOURCE_PROJECT='+str(project))
+          settings={'width':1920,'height':1080,'fps':60,'codec':'h265','bitrateMbps':8.0,'durationHours':2.0,'durationMode':'whole-track','loopMode':'image','crossfadeSec':0.0,'normalizeLufs':False,'outputDir':str(OUT),'preset':'fast','encoderPreference':'auto'}
+          base_project={'path':str(project),'media':[str(media)],'audio':[str(x) for x in songs],'valid':True,'error':None,'anchors':{}}
+          frame_hash={}; rows=[]
+          def render(label,effect_list):
+              fixture=ROOT/f'{label}.job.json'; result=ROOT/f'{label}.result.json'
+              job={'project':dict(base_project,id=f'qa-{label}',name=f'ENDLUME 10.0.11 THREE EFFECTS {label}'),'settings':settings,'effects':effect_list,'subscribes':[],'ambient':None}
+              fixture.write_text(json.dumps({'jobs':[job]},ensure_ascii=False,indent=2))
+              env=os.environ.copy();env.update({'ENDLUME_E2E_RENDER_JOB':str(fixture),'ENDLUME_E2E_RESULT':str(result),'RUST_BACKTRACE':'1'})
+              t=time.perf_counter();p=run([APP],check=False,timeout=360,env=env);wall=time.perf_counter()-t
+              assert p.returncode==0 and result.is_file(),(label,p.returncode,p.stderr[-4000:])
+              raw=json.loads(result.read_text()); rr=raw['results'][0];out=Path(rr['outputPath']);assert out.is_file(),out
+              probe=json.loads(run([FFPROBE,'-v','error','-show_entries','stream=codec_type,codec_name,width,height,avg_frame_rate:format=duration,size','-of','json',out],timeout=90).stdout)
+              video=next(x for x in probe['streams'] if x.get('codec_type')=='video')
+              frame=ROOT/'frames'/f'{label}.png'
+              run([FFMPEG,'-hide_banner','-loglevel','error','-ss','10','-i',out,'-frames:v','1','-vf','scale=320:-2','-y',frame],timeout=120)
+              fh=sha(frame);frame_hash[label]=fh
+              row={'label':label,'wallSeconds':float(rr.get('wallSeconds') or wall),'bytes':out.stat().st_size,'encoder':rr.get('encoder'),'duration':float(probe['format']['duration']),'videoCodec':video.get('codec_name'),'width':video.get('width'),'height':video.get('height'),'fps':video.get('avg_frame_rate'),'frameSha256':fh,'effectIds':[e['id'] for e in effect_list]}
+              rows.append(row);print('RENDER='+json.dumps(row,ensure_ascii=False,sort_keys=True))
+              out.unlink()
+          render('BASELINE',[])
+          for label,e in effects.items(): render(label,[e])
+          assert all(frame_hash[k]!=frame_hash['BASELINE'] for k in effects),frame_hash
+          assert len({frame_hash[k] for k in effects})==3,frame_hash
+          assert all(r['encoder']=='hevc_videotoolbox' for r in rows),rows
+          assert all(r['videoCodec']=='hevc' and r['width']==1920 and r['height']==1080 and r['fps']=='60/1' for r in rows),rows
+          report={'sourceSha':'2e4e958d08927eaf098dc348fdfaed34ecb92b56','candidateHead':os.environ.get('GITHUB_SHA'),'effects':{k:{'id':v['id'],'name':v['name'],'source':v['source'],'despill':v.get('despill')} for k,v in effects.items()},'frameHashes':frame_hash,'renders':rows,'threeEffectFinalIdentityGate':True}
+          (ROOT/'report.json').write_text(json.dumps(report,ensure_ascii=False,indent=2))
+          print('FINAL_FRAME_HASHES='+json.dumps(frame_hash,ensure_ascii=False,sort_keys=True))
+          print('THREE_REAL_EFFECT_FINAL_IDENTITY_GATE=PASS')
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ENDLUME-10.0.11-THREE-REAL-EFFECTS-PHYSICAL
+          path: |
+            ${{ runner.temp }}/endlume-1011-three-real-effects/report.json
+            ${{ runner.temp }}/endlume-1011-three-real-effects/frames/*.png
+            ${{ runner.temp }}/endlume-1011-three-real-effects/*.result.json
+          if-no-files-found: warn
+          retention-days: 7

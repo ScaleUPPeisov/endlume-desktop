@@ -1,0 +1,144 @@
+workflows:
+  endlume-1011-hosted-macos:
+    name: ENDLUME 10.0.11 Hosted macOS Gate A
+    instance_type: mac_mini_m2
+    max_build_duration: 120
+    environment:
+      node: 22
+      vars:
+        ENDLUME_VERSION: "10.0.11"
+        ENDLUME_SOURCE_HEAD: "d7193383eda5ff3f1c8976d6c1a97d1eeb10305b"
+    triggering:
+      events:
+        - manual
+    scripts:
+      - name: Verify exact source and host
+        script: |
+          set -Eeuo pipefail
+          echo "CODMAGIC_BUILD_ID=${CM_BUILD_ID:-unknown}"
+          echo "BRANCH=${CM_BRANCH:-unknown}"
+          git rev-parse HEAD
+          test "$(git rev-parse HEAD)" = "$ENDLUME_SOURCE_HEAD"
+          uname -a
+          sw_vers
+          test "$(uname -m)" = "arm64"
+          echo LOCAL_MAC_USED=NO
+      - name: Install Rust target
+        script: |
+          set -Eeuo pipefail
+          rustup target add aarch64-apple-darwin
+          rustc --version
+          cargo --version
+      - name: Stage FFmpeg and FFprobe
+        script: |
+          set -Eeuo pipefail
+          TMP="$(mktemp -d)"
+          curl -fL --retry 4 "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffmpeg.zip" -o "$TMP/ffmpeg.zip"
+          curl -fL --retry 4 "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffprobe.zip" -o "$TMP/ffprobe.zip"
+          mkdir -p "$TMP/fm" "$TMP/fp" src-tauri/binaries
+          ditto -x -k "$TMP/ffmpeg.zip" "$TMP/fm"
+          ditto -x -k "$TMP/ffprobe.zip" "$TMP/fp"
+          cp "$(find "$TMP/fm" -type f -name ffmpeg -print -quit)" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp "$(find "$TMP/fp" -type f -name ffprobe -print -quit)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          chmod 755 src-tauri/binaries/ffmpeg-aarch64-apple-darwin src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          rm -rf "$TMP"
+      - name: Install dependencies and compile
+        script: |
+          set -Eeuo pipefail
+          npm ci
+          npm run check
+          npm run build
+          cargo test --manifest-path src-tauri/Cargo.toml live_preview::tests -- --nocapture
+          cargo test --manifest-path src-tauri/Cargo.toml cache::tests -- --nocapture
+          cargo test --manifest-path src-tauri/Cargo.toml -- --nocapture
+          cargo check --manifest-path src-tauri/Cargo.toml --features e2e-render --target aarch64-apple-darwin
+      - name: Build packaged macOS ARM64 app
+        script: |
+          set -Eeuo pipefail
+          export CARGO_TARGET_DIR="$CM_BUILD_DIR/.codemagic-target"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('src-tauri/tauri.conf.json')
+          d=json.loads(p.read_text())
+          d['bundle']['createUpdaterArtifacts']=False
+          p.write_text(json.dumps(d,ensure_ascii=False,indent=2)+'\n')
+          PY
+          ENDLUME_TAURI_TARGET=aarch64-apple-darwin node scripts/prepare-macos-ffmpeg-runtime.mjs
+          npx tauri build --target aarch64-apple-darwin --bundles app --features e2e-render
+          APP="$(find "$CARGO_TARGET_DIR/aarch64-apple-darwin/release/bundle/macos" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          test -n "$APP" -a -d "$APP"
+          /usr/bin/codesign --force --deep --sign - --timestamp=none "$APP"
+          /usr/bin/codesign --verify --deep --strict "$APP"
+          test "$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$APP/Contents/Info.plist")" = "studio.endlume.desktop"
+          test "$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist")" = "$ENDLUME_VERSION"
+          EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
+          BIN="$APP/Contents/MacOS/$EXE"
+          test -x "$BIN"
+          /usr/bin/lipo -archs "$BIN" | grep -qw arm64
+          mkdir -p "$CM_BUILD_DIR/out"
+          /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$APP" "$CM_BUILD_DIR/out/ENDLUME-10.0.11-HOSTED-QA.app.zip"
+          printf '%s' "$BIN" > "$CM_BUILD_DIR/out/bin-path.txt"
+      - name: Deterministic Gate A fixture and acceptance
+        script: |
+          set -Eeuo pipefail
+          ROOT="$CM_BUILD_DIR/endlume-1011-deterministic"
+          VOL="$ROOT/volume"
+          PROJECT="$VOL/ВАЙРОН/Fixture/Новая папка"
+          OUT="$VOL/ВАЙРОН/Render/Brewroom Jazz"
+          TMP="$ROOT/tmp"
+          rm -rf "$ROOT"
+          mkdir -p "$PROJECT" "$OUT" "$TMP"
+          export TMPDIR="$TMP"
+
+          FFMPEG="$CM_BUILD_DIR/src-tauri/binaries/ffmpeg-aarch64-apple-darwin"
+          FFPROBE="$CM_BUILD_DIR/src-tauri/binaries/ffprobe-aarch64-apple-darwin"
+          BIN="$(cat "$CM_BUILD_DIR/out/bin-path.txt")"
+
+          "$FFMPEG" -hide_banner -loglevel error -f lavfi -i "color=c=0x172033:size=1920x1080:rate=1" -frames:v 1 -y "$PROJECT/001.png"
+          MASTER="$ROOT/track-master.m4a"
+          "$FFMPEG" -hide_banner -loglevel error -f lavfi -i "anullsrc=r=48000:cl=stereo" -t 720 -c:a aac -b:a 64k -ar 48000 -ac 2 -y "$MASTER"
+          for n in 01 02 03 04 05 06 07 08 09 10; do ln "$MASTER" "$PROJECT/track-$n.m4a" 2>/dev/null || cp "$MASTER" "$PROJECT/track-$n.m4a"; done
+          OVERLAY="$ROOT/fixture-overlay.mp4"
+          "$FFMPEG" -hide_banner -loglevel error -f lavfi -i "color=c=0x00ff00:size=640x360:rate=30" -t 2 -vf "drawbox=x=100:y=80:w=420:h=190:color=red@1:t=fill,drawbox=x=180:y=135:w=260:h=80:color=white@1:t=fill" -c:v libx264 -preset ultrafast -pix_fmt yuv420p -an -y "$OVERLAY"
+
+          cp scripts/qa-endlume-1011-critical-hotfix.py "$ROOT/qa.py"
+          python3 - "$ROOT/qa.py" <<'PY'
+          from pathlib import Path
+          p=Path(__import__('sys').argv[1])
+          s=p.read_text()
+          replacements=[
+            ('VOL=Path("/Volumes/TOSHIBA EXT")','VOL=Path(__import__("os").environ["ENDLUME_QA_VOL"])'),
+            ('OUT=VOL/"ВАЙРОН"/"Render"/"Brewroom Jazz"','OUT=Path(__import__("os").environ["ENDLUME_QA_OUT"])'),
+            ('assert VOL.is_dir() and OUT.is_dir(),OUT','assert VOL.is_dir(),VOL\nOUT.mkdir(parents=True,exist_ok=True)\nassert OUT.is_dir(),OUT'),
+            ('def resolve_project():\n    roots=[]','def resolve_project():\n    forced=__import__("os").environ.get("ENDLUME_QA_PROJECT")\n    if forced:\n        project=Path(forced)\n        files=[p for p in project.iterdir() if p.is_file() and not p.name.startswith(".") and not p.name.startswith("._")]\n        media=sorted([p for p in files if p.suffix.lower() in IMAGE|VIDEO],key=lambda x:x.name.lower())\n        songs=sorted([p for p in files if p.suffix.lower() in AUDIO],key=lambda x:x.name.lower())\n        assert media and len(songs)>=8\n        return project,media,songs[:15]\n    roots=[]'),
+            ('base_frame=frame(baseline["exact"])\nfilm_frame=frame(cold_fx["exact"]);eq_frame=frame(eq_prev["exact"]);third_frame=frame(third_prev["exact"]);sub_frame=frame(cold_sub["exact"])','base_frame=frame(baseline["exact"],0.0)\nfilm_frame=frame(cold_fx["exact"],0.0);eq_frame=frame(eq_prev["exact"],0.0);third_frame=frame(third_prev["exact"],0.0);sub_frame=frame(cold_sub["exact"],0.0)')
+          ]
+          for old,new in replacements:
+              if old in s:
+                  s=s.replace(old,new,1)
+          p.write_text(s)
+          PY
+
+          export ENDLUME_QA_VOL="$VOL"
+          export ENDLUME_QA_OUT="$OUT"
+          export ENDLUME_QA_PROJECT="$PROJECT"
+          export ENDLUME_QA_DETERMINISTIC=1
+          python3 "$ROOT/qa.py" "$BIN" "$FFMPEG" "$FFPROBE" "$ROOT/report.json"
+
+          python3 - "$ROOT/report.json" <<'PY'
+          import json,sys
+          d=json.load(open(sys.argv[1]))
+          assert d['status']=='GREEN',d
+          assert d['coldEffectsPreview']=='GREEN'
+          assert d['coldSubscribePreview']=='GREEN'
+          assert d['backgroundMusic']['status']=='GREEN'
+          assert d['effectPathRecovery']=='GREEN'
+          for pid in ('e1011-on','e1011-warm','e1011-bg-eq'):
+              assert float(d['render'][pid]['wall']) <= 20.0,(pid,d['render'][pid]['wall'])
+          assert 400 <= float(d['render']['e1011-on']['mib']) <= 600
+          print('CODEMAGIC_GATE_A=GREEN')
+          PY
+    artifacts:
+      - out/ENDLUME-10.0.11-HOSTED-QA.app.zip
+      - endlume-1011-deterministic/report.json

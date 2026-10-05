@@ -51,6 +51,12 @@ jobs:
           from pathlib import Path
           import sys
           p=Path(sys.argv[1]); s=p.read_text()
+          # Execute all cold-preview/setup runs exactly as full QA does, but skip
+          # the later frame-diff readback because those cache MP4s are intentionally
+          # ephemeral and are unrelated to Final Render performance measurement.
+          a=s.index('base_frame=frame(')
+          b=s.index('settings={',a)
+          s=s[:a]+s[b:]
           a=s.index('jobs=[',s.index('stale_film='))
           b=s.index('render_fixture=',a)
           replacement='''jobs=[\n    job("e1011-setup-off","ENDLUME 10.0.11 PERF SETUP OFF",[film_off,eq,third]),\n    job("e1011-on","ENDLUME 10.0.11 PERF ON",[film,eq,third]),\n    job("e1011-on-warm","ENDLUME 10.0.11 PERF ON WARM",[film,eq,third]),\n    job("e1011-bg-eq","ENDLUME 10.0.11 PERF BG EQ",[],[],str(background),{"volumePct":20.0,"bassDb":-3.0,"midDb":0.0,"trebleDb":-2.0},exact_202),\n]\n'''

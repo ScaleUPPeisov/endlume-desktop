@@ -1,0 +1,145 @@
+name: ENDLUME 10.0.11 Invisible Preview-Only Smoke
+
+on:
+  push:
+    branches: [hotfix/endlume-10.0.11-macos-invisible-qa]
+    paths:
+      - ".github/workflows/endlume-1011-invisible-preview-only.yml"
+      - "scripts/qa-endlume-1011-invisible-preview-smoke.py"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-1011-invisible-preview-only
+  cancel-in-progress: true
+
+jobs:
+  preview-only:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Reuse packaged invisible-QA app
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          APP_ROOT="$HOME/.endlume-build-cache/target-1011-invisible-qa/aarch64-apple-darwin/release/bundle/macos/ENDLUME YT Studio PEISOV.app"
+          test -d "$APP_ROOT"
+          EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP_ROOT/Contents/Info.plist")"
+          test -x "$APP_ROOT/Contents/MacOS/$EXE"
+          /usr/bin/codesign --verify --deep --strict "$APP_ROOT"
+          printf '%s' "$APP_ROOT/Contents/MacOS/$EXE" > "$RUNNER_TEMP/e1011-invisible-preview-bin.txt"
+          echo INVISIBLE_PREVIEW_APP_REUSE_GREEN
+
+      - name: Build visibility guard
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cat > "$RUNNER_TEMP/endlume-preview-visibility-guard.swift" <<'SWIFT'
+          import AppKit
+          import CoreGraphics
+          import Foundation
+
+          guard CommandLine.arguments.count >= 3 else { exit(64) }
+          let reportPath = CommandLine.arguments[1]
+          let executable = CommandLine.arguments[2]
+          let process = Process()
+          process.executableURL = URL(fileURLWithPath: executable)
+          process.environment = ProcessInfo.processInfo.environment
+          process.standardOutput = FileHandle.standardOutput
+          process.standardError = FileHandle.standardError
+          do { try process.run() } catch {
+            let data = try! JSONSerialization.data(withJSONObject:["launchError":"\(error)"])
+            try! data.write(to:URL(fileURLWithPath:reportPath))
+            exit(65)
+          }
+          let pid = process.processIdentifier
+          var maxVisibleWindows = 0
+          var everFrontmost = false
+          var samples = 0
+          while process.isRunning {
+            autoreleasepool {
+              if NSWorkspace.shared.frontmostApplication?.processIdentifier == pid { everFrontmost = true }
+              let info = CGWindowListCopyWindowInfo([.optionOnScreenOnly,.excludeDesktopElements], kCGNullWindowID) as? [[String:Any]] ?? []
+              let visible = info.filter { row in
+                let owner = (row[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value ?? -1
+                let layer = (row[kCGWindowLayer as String] as? NSNumber)?.intValue ?? -1
+                let alpha = (row[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 0.0
+                return owner == pid && layer == 0 && alpha > 0.01
+              }.count
+              if visible > maxVisibleWindows { maxVisibleWindows = visible }
+              samples += 1
+            }
+            Thread.sleep(forTimeInterval:0.005)
+          }
+          process.waitUntilExit()
+          if NSWorkspace.shared.frontmostApplication?.processIdentifier == pid { everFrontmost = true }
+          let payload:[String:Any] = [
+            "pid":Int(pid),
+            "childExit":Int(process.terminationStatus),
+            "maxVisibleWindows":maxVisibleWindows,
+            "everFrontmost":everFrontmost,
+            "samples":samples
+          ]
+          let data = try! JSONSerialization.data(withJSONObject:payload,options:[.prettyPrinted,.sortedKeys])
+          try! data.write(to:URL(fileURLWithPath:reportPath))
+          exit(process.terminationStatus)
+          SWIFT
+          /usr/bin/swiftc "$RUNNER_TEMP/endlume-preview-visibility-guard.swift" -o "$RUNNER_TEMP/endlume-preview-visibility-guard"
+          test -x "$RUNNER_TEMP/endlume-preview-visibility-guard"
+          echo INVISIBLE_PREVIEW_GUARD_GREEN
+
+      - name: Three-process invisible Preview acceptance
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+          ROOT="$RUNNER_TEMP/endlume-1011-invisible-preview-only"
+          rm -rf "$ROOT"; mkdir -p "$ROOT/tmp"
+          export TMPDIR="$ROOT/tmp"
+          BIN="$(cat "$RUNNER_TEMP/e1011-invisible-preview-bin.txt")"
+          python3 scripts/qa-endlume-1011-invisible-preview-smoke.py \
+            "$BIN" \
+            "$(command -v ffmpeg)" \
+            "$(command -v ffprobe)" \
+            "$RUNNER_TEMP/endlume-preview-visibility-guard" \
+            "$ROOT/report.json"
+          python3 - "$ROOT/report.json" <<'PY'
+          import json,sys
+          d=json.load(open(sys.argv[1]))
+          assert d["status"]=="GREEN",d
+          assert d["previewProcessCount"]==3,d
+          assert d["combinedProcessCountBefore"]==6 and d["combinedProcessCountAfter"]==4,d
+          assert d["coldEffects"]=="GREEN" and d["coldSubscribe"]=="GREEN",d
+          assert d["baselinePreview"]=="GREEN" and d["roundEqualizer"]=="GREEN" and d["thirdEffect"]=="GREEN",d
+          assert d["resultFilesGenerated"]=="GREEN" and d["cleanExits"]=="GREEN",d
+          assert d["visibleWindows"]==0,d
+          assert d["focusSteal"]=="NO",d
+          print("PROCESS_COUNT_BEFORE=6")
+          print("PROCESS_COUNT_AFTER=4")
+          print("COLD_EFFECTS=GREEN")
+          print("COLD_SUBSCRIBE=GREEN")
+          print("BASELINE_PREVIEW=GREEN")
+          print("ROUND_EQUALIZER=GREEN")
+          print("THIRD_EFFECT=GREEN")
+          print("VISIBLE_WINDOWS=0")
+          print("FOCUS_STEAL=NO")
+          print("ENDLUME_1011_INVISIBLE_PREVIEW_ACCEPTANCE_GREEN")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ENDLUME-10.0.11-INVISIBLE-PREVIEW-ONLY
+          path: |
+            ${{ runner.temp }}/endlume-1011-invisible-preview-only/report.json
+          if-no-files-found: warn
+          retention-days: 3

@@ -35,9 +35,12 @@ jobs:
           s=p.read_text()
           old='''fn fast_multi_still(job:&QueueJob)->bool{\n  let reason=fast_path_decision(job).reason;\n  if reason=="FAST_MULTI_STILL"{return true}\n  if reason!="FAST_ONE_IMAGE"{return false}\n  let has_effects=job.effects.iter().any(|e|e.enabled&&!e.source.trim().is_empty());\n  let has_subs=job.subscribes.iter().any(|x|x.effect.enabled&&!x.effect.source.trim().is_empty());\n  !has_effects&&!has_subs\n}\n'''
           new='''fn fast_multi_still(job:&QueueJob)->bool{\n  // 10.0.11 hotfix: the multi-still physical pool is only for 2+ stills.\n  // A single image must continue into render_zero_sub_zero_copy_856, where its\n  // physical visual master is persistent-cacheable. Routing FAST_ONE_IMAGE here\n  // forced a fresh encode on every render and measured ~21-24 s even warm.\n  fast_path_decision(job).reason=="FAST_MULTI_STILL"\n}\n'''
-          if old not in s:
+          if new in s:
+              print('PATCH_ALREADY_PRESENT')
+          elif old in s:
+              p.write_text(s.replace(old,new,1))
+          else:
               raise SystemExit('EXACT_FAST_MULTI_STILL_BLOCK_NOT_FOUND')
-          p.write_text(s.replace(old,new,1))
           PY
           git diff --check
           git diff -- src-tauri/src/render.rs
@@ -73,5 +76,7 @@ jobs:
           git config user.name "ScaleUPPeisov"
           git config user.email "peisov.business@gmail.com"
           git commit -m "fix(10.0.11): route one-image renders through persistent visual cache"
+          git fetch origin hotfix/endlume-10.0.11-performance-effects-reliability
+          git rebase origin/hotfix/endlume-10.0.11-performance-effects-reliability
           git push origin HEAD:hotfix/endlume-10.0.11-performance-effects-reliability
           echo VERIFIED_FIX_HEAD=$(git rev-parse HEAD)

@@ -1,2 +1,5 @@
-ENDLUME 10.0.12 macOS cloud release trigger
-2026-10-05
+ENDLUME 10.0.12 macOS Codemagic release trigger
+2026-10-05T16:49+07:00
+provider=codemagic
+local_mac_used=no
+windows_build=no

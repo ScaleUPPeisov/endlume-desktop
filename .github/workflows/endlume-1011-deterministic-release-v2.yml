@@ -17,7 +17,7 @@ concurrency:
 jobs:
   deterministic-release:
     name: Gate A — hosted deterministic packaged acceptance
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
@@ -470,7 +470,7 @@ jobs:
           echo "## ENDLUME 10.0.11 Hosted Deterministic Release Acceptance" >> "$GITHUB_STEP_SUMMARY"
           echo "- **sourceHead:** fc5c8bb214e52bbfc6d2d0162fe02c6cecd27623" >> "$GITHUB_STEP_SUMMARY"
           echo "- **qaHead:** $GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **hostedRunner:** macos-14" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **hostedRunner:** macos-15" >> "$GITHUB_STEP_SUMMARY"
           echo "- **productCodeChanged:** NO" >> "$GITHUB_STEP_SUMMARY"
           echo "- **windowsTouched:** NO" >> "$GITHUB_STEP_SUMMARY"
           echo "- **localMacUsedForBuild:** NO" >> "$GITHUB_STEP_SUMMARY"

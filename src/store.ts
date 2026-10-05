@@ -66,7 +66,12 @@ export const useApp=create<State>()(persist((set)=>({
   setEffects:(effects)=>set({effects}),
   setSubscribes:(subscribes)=>set({subscribes}),
   setAmbient:(ambient)=>set({ambient}),
-  setLibrary:(v)=>set({effects:(v.effects||[]).map(e=>({...e,despill:e.despill>0?e.despill:0.35})),subscribes:(v.subscribes||[]).map(e=>({...e,despill:e.despill>0?e.despill:0.35})),ambient:v.ambient,libraryLoaded:true}),
+  setLibrary:(v)=>set({
+    effects:(v.effects||[]).map(e=>({...e,despill:e.despill??0.35})),
+    subscribes:(v.subscribes||[]).map(e=>({...e,despill:e.despill??0.35})),
+    ambient:v.ambient,
+    libraryLoaded:true
+  }),
   setLibraryLoaded:(libraryLoaded)=>set({libraryLoaded}),
   setSceneAnchor:(projectPath,target,anchor)=>set(s=>{
     const key=target.trim().toUpperCase()||'CUSTOM';

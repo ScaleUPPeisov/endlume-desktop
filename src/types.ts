@@ -26,6 +26,7 @@ export interface ProjectScanItem {
   valid: boolean;
   error?: string;
   anchors?: SceneAnchors;
+  selectedEffectId?: string | null;
 }
 
 export interface RenderProject extends ProjectScanItem {

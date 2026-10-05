@@ -1,7 +1,8 @@
 use crate::{assets,model::QueueJob};
 use serde_json::{json,Value};
-use std::{fs,path::{Path,PathBuf}};
+use std::{collections::HashMap,fs,io::Read,path::{Path,PathBuf}};
 use tauri::{AppHandle,Manager};
+use uuid::Uuid;
 
 fn dir(app:&AppHandle)->anyhow::Result<PathBuf>{
   let p=app.path().app_data_dir()?;
@@ -55,23 +56,77 @@ fn migrate_item(app:&AppHandle,item:&mut Value,kind:&str)->bool{
   // alpha.8.18 could leave chromakey at extreme 0.9–1.0 values while the old
   // WebGL preview also boosted saturation. Those values erase most of the overlay.
   // Bring only obviously broken legacy presets back to conservative defaults.
+  // IMPORTANT: despill=0 is a valid explicit production setting (e.g. neutral smoke)
+  // and must survive save/reload unchanged.
   if obj.get("mode").and_then(Value::as_str)==Some("chromakey"){
     let sim=obj.get("similarity").and_then(Value::as_f64).unwrap_or(0.10);
     let blend=obj.get("blend").and_then(Value::as_f64).unwrap_or(0.06);
     if sim>0.60{obj.insert("similarity".into(),json!(0.10));changed=true;}
     if blend>0.35{obj.insert("blend".into(),json!(0.06));changed=true;}
     if obj.get("saturation").and_then(Value::as_f64).unwrap_or(1.0)!=1.0{obj.insert("saturation".into(),json!(1.0));changed=true;}
-    let despill=obj.get("despill").and_then(Value::as_f64).unwrap_or(0.0);if despill<=0.0{obj.insert("despill".into(),json!(0.35));changed=true;}
+    if !obj.contains_key("despill"){obj.insert("despill".into(),json!(0.35));changed=true;}
     if changed{obj.insert("cacheReady".into(),json!(false));obj.insert("cacheKey".into(),Value::Null);}
   }
+  changed
+}
+
+fn same_asset_bytes(a:&str,b:&str)->bool{
+  if a==b{return true}
+  let pa=Path::new(a);let pb=Path::new(b);
+  let (Ok(ma),Ok(mb))=(fs::metadata(pa),fs::metadata(pb)) else{return false};
+  if !ma.is_file()||!mb.is_file()||ma.len()!=mb.len(){return false}
+  let (Ok(mut fa),Ok(mut fb))=(fs::File::open(pa),fs::File::open(pb)) else{return false};
+  let mut ba=[0u8;65536];let mut bb=[0u8;65536];
+  loop{
+    let Ok(na)=fa.read(&mut ba) else{return false};
+    let Ok(nb)=fb.read(&mut bb) else{return false};
+    if na!=nb{return false}
+    if na==0{return true}
+    if ba[..na]!=bb[..nb]{return false}
+  }
+}
+
+fn normalize_effect_identities(items:&mut Vec<Value>)->bool{
+  let old=std::mem::take(items);
+  let mut out=Vec::with_capacity(old.len());
+  let mut seen:HashMap<String,String>=HashMap::new();
+  let mut changed=false;
+  for mut item in old{
+    let Some(obj)=item.as_object_mut() else{out.push(item);continue};
+    let mut id=obj.get("id").and_then(Value::as_str).unwrap_or("").trim().to_string();
+    if id.is_empty(){id=Uuid::new_v4().to_string();obj.insert("id".into(),json!(id.clone()));changed=true;}
+    let source=obj.get("source").and_then(Value::as_str).unwrap_or("").to_string();
+    if let Some(first_source)=seen.get(&id){
+      if same_asset_bytes(first_source,&source){
+        // Same logical ID + byte-identical asset is one preset accidentally persisted twice.
+        // Drop only the duplicate record; never delete the managed asset itself.
+        changed=true;
+        continue
+      }
+      // One ID may never address two different production assets. Preserve both presets,
+      // but split the conflicting second identity once and persist the new stable UUID.
+      id=Uuid::new_v4().to_string();
+      obj.insert("id".into(),json!(id.clone()));
+      changed=true;
+    }
+    seen.insert(id,source);
+    out.push(item);
+  }
+  *items=out;
   changed
 }
 
 fn migrate_library(app:&AppHandle,v:&mut Value)->bool{
   let Some(obj)=v.as_object_mut() else{return false};
   let mut changed=false;
-  if let Some(items)=obj.get_mut("effects").and_then(Value::as_array_mut){for item in items{changed|=migrate_item(app,item,"effects");}}
-  if let Some(items)=obj.get_mut("subscribes").and_then(Value::as_array_mut){for item in items{changed|=migrate_item(app,item,"subscribe");}}
+  if let Some(items)=obj.get_mut("effects").and_then(Value::as_array_mut){
+    for item in items.iter_mut(){changed|=migrate_item(app,item,"effects");}
+    changed|=normalize_effect_identities(items);
+  }
+  if let Some(items)=obj.get_mut("subscribes").and_then(Value::as_array_mut){
+    for item in items.iter_mut(){changed|=migrate_item(app,item,"subscribe");}
+    changed|=normalize_effect_identities(items);
+  }
   if let Some(ambient)=obj.get("ambient").and_then(Value::as_str).map(str::to_string){
     if !ambient.trim().is_empty(){
       if Path::new(&ambient).is_file(){
@@ -132,4 +187,34 @@ pub fn mark_session_open(app:&AppHandle)->anyhow::Result<()> {
 
 pub fn mark_session_closed(app:&AppHandle)->anyhow::Result<()> {
   write_value(app,"session.json",&json!({"open":false,"closed":chrono::Utc::now()}))
+}
+
+#[cfg(test)]
+mod tests{
+  use super::normalize_effect_identities;
+  use serde_json::json;
+
+  #[test]
+  fn exact_duplicate_id_and_source_is_removed(){
+    let mut items=vec![
+      json!({"id":"same","source":"/tmp/effect.mp4","name":"A"}),
+      json!({"id":"same","source":"/tmp/effect.mp4","name":"A duplicate"})
+    ];
+    assert!(normalize_effect_identities(&mut items));
+    assert_eq!(items.len(),1);
+    assert_eq!(items[0]["id"],"same");
+  }
+
+  #[test]
+  fn distinct_assets_never_keep_the_same_id(){
+    let mut items=vec![
+      json!({"id":"collision","source":"/tmp/a.mp4","name":"A"}),
+      json!({"id":"collision","source":"/tmp/b.mp4","name":"B"})
+    ];
+    assert!(normalize_effect_identities(&mut items));
+    assert_eq!(items.len(),2);
+    assert_eq!(items[0]["id"],"collision");
+    assert_ne!(items[1]["id"],"collision");
+    assert_ne!(items[0]["id"],items[1]["id"]);
+  }
 }

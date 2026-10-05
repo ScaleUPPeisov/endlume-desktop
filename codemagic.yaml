@@ -28,7 +28,7 @@ workflows:
           uname -a
           sw_vers
           test "$(uname -m)" = "arm64"
-          test "$(node -p 'require(\"./package.json\").version')" = "$ENDLUME_VERSION"
+          test "$(node -p 'require("./package.json").version')" = "$ENDLUME_VERSION"
           test "$(python3 -c 'import json;print(json.load(open("src-tauri/tauri.conf.json"))["version"])')" = "$ENDLUME_VERSION"
           grep -q '^version = "10.0.12"$' src-tauri/Cargo.toml
           echo LOCAL_MAC_USED=NO

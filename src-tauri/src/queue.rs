@@ -93,6 +93,9 @@ pub async fn enqueue_projects(app:AppHandle,runtime:State<'_,Arc<QueueRuntime>>,
       Vec::new()
     }else{
       let effect=effects.iter().find(|e|e.id==selected_id).ok_or_else(||format!("Selected effect '{}' for project '{}' is not present in the effect registry",selected_id,project.name))?;
+      if !effect.enabled||effect.usage_mode.as_deref()==Some("off"){
+        return Err(format!("Selected effect '{}' ({}) for project '{}' is disabled. Re-enable it or choose another effect before rendering.",effect.name,effect.id,project.name))
+      }
       let source=PathBuf::from(&effect.source);
       if !source.is_file(){
         return Err(format!("Selected effect '{}' ({}) for project '{}' is missing: {}",effect.name,effect.id,project.name,source.display()))

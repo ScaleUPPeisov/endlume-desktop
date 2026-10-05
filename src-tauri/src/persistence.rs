@@ -1,7 +1,8 @@
 use crate::{assets,model::QueueJob};
 use serde_json::{json,Value};
-use std::{fs,path::{Path,PathBuf}};
+use std::{collections::HashMap,fs,path::{Path,PathBuf}};
 use tauri::{AppHandle,Manager};
+use uuid::Uuid;
 
 fn dir(app:&AppHandle)->anyhow::Result<PathBuf>{
   let p=app.path().app_data_dir()?;
@@ -55,23 +56,66 @@ fn migrate_item(app:&AppHandle,item:&mut Value,kind:&str)->bool{
   // alpha.8.18 could leave chromakey at extreme 0.9–1.0 values while the old
   // WebGL preview also boosted saturation. Those values erase most of the overlay.
   // Bring only obviously broken legacy presets back to conservative defaults.
+  // IMPORTANT: despill=0 is a valid explicit production setting (e.g. neutral smoke)
+  // and must survive save/reload unchanged.
   if obj.get("mode").and_then(Value::as_str)==Some("chromakey"){
     let sim=obj.get("similarity").and_then(Value::as_f64).unwrap_or(0.10);
     let blend=obj.get("blend").and_then(Value::as_f64).unwrap_or(0.06);
     if sim>0.60{obj.insert("similarity".into(),json!(0.10));changed=true;}
     if blend>0.35{obj.insert("blend".into(),json!(0.06));changed=true;}
     if obj.get("saturation").and_then(Value::as_f64).unwrap_or(1.0)!=1.0{obj.insert("saturation".into(),json!(1.0));changed=true;}
-    let despill=obj.get("despill").and_then(Value::as_f64).unwrap_or(0.0);if despill<=0.0{obj.insert("despill".into(),json!(0.35));changed=true;}
+    if !obj.contains_key("despill"){obj.insert("despill".into(),json!(0.35));changed=true;}
     if changed{obj.insert("cacheReady".into(),json!(false));obj.insert("cacheKey".into(),Value::Null);}
   }
+  changed
+}
+
+fn normalize_effect_identities(items:&mut Vec<Value>)->bool{
+  let old=std::mem::take(items);
+  let mut out=Vec::with_capacity(old.len());
+  let mut seen:HashMap<String,Value>=HashMap::new();
+  let mut changed=false;
+  for mut item in old{
+    if !item.is_object(){out.push(item);continue}
+    let mut id=item.get("id").and_then(Value::as_str).unwrap_or("").trim().to_string();
+    if id.is_empty(){
+      id=Uuid::new_v4().to_string();
+      if let Some(obj)=item.as_object_mut(){obj.insert("id".into(),json!(id.clone()));}
+      changed=true;
+    }
+    if let Some(first)=seen.get(&id){
+      if first==&item{
+        // Remove only a truly identical persisted record. Reusing the same source
+        // asset with different geometry/chroma/usage settings is a valid preset and
+        // must never be silently deleted.
+        changed=true;
+        continue
+      }
+      // One stable ID may not address two different preset definitions. Preserve
+      // both records and split the conflicting identity once; the new UUID is then
+      // persisted so selection remains stable across subsequent launches.
+      id=Uuid::new_v4().to_string();
+      if let Some(obj)=item.as_object_mut(){obj.insert("id".into(),json!(id.clone()));}
+      changed=true;
+    }
+    seen.insert(id,item.clone());
+    out.push(item);
+  }
+  *items=out;
   changed
 }
 
 fn migrate_library(app:&AppHandle,v:&mut Value)->bool{
   let Some(obj)=v.as_object_mut() else{return false};
   let mut changed=false;
-  if let Some(items)=obj.get_mut("effects").and_then(Value::as_array_mut){for item in items{changed|=migrate_item(app,item,"effects");}}
-  if let Some(items)=obj.get_mut("subscribes").and_then(Value::as_array_mut){for item in items{changed|=migrate_item(app,item,"subscribe");}}
+  if let Some(items)=obj.get_mut("effects").and_then(Value::as_array_mut){
+    for item in items.iter_mut(){changed|=migrate_item(app,item,"effects");}
+    changed|=normalize_effect_identities(items);
+  }
+  if let Some(items)=obj.get_mut("subscribes").and_then(Value::as_array_mut){
+    for item in items.iter_mut(){changed|=migrate_item(app,item,"subscribe");}
+    changed|=normalize_effect_identities(items);
+  }
   if let Some(ambient)=obj.get("ambient").and_then(Value::as_str).map(str::to_string){
     if !ambient.trim().is_empty(){
       if Path::new(&ambient).is_file(){
@@ -132,4 +176,46 @@ pub fn mark_session_open(app:&AppHandle)->anyhow::Result<()> {
 
 pub fn mark_session_closed(app:&AppHandle)->anyhow::Result<()> {
   write_value(app,"session.json",&json!({"open":false,"closed":chrono::Utc::now()}))
+}
+
+#[cfg(test)]
+mod tests{
+  use super::normalize_effect_identities;
+  use serde_json::json;
+
+  #[test]
+  fn fully_identical_duplicate_record_is_removed(){
+    let preset=json!({"id":"same","source":"/tmp/effect.mp4","name":"A","scale":0.5,"similarity":0.1});
+    let mut items=vec![preset.clone(),preset];
+    assert!(normalize_effect_identities(&mut items));
+    assert_eq!(items.len(),1);
+    assert_eq!(items[0]["id"],"same");
+  }
+
+  #[test]
+  fn same_asset_with_different_settings_is_preserved_with_new_id(){
+    let mut items=vec![
+      json!({"id":"collision","source":"/tmp/effect.mp4","name":"A","scale":0.5}),
+      json!({"id":"collision","source":"/tmp/effect.mp4","name":"B","scale":0.9})
+    ];
+    assert!(normalize_effect_identities(&mut items));
+    assert_eq!(items.len(),2);
+    assert_eq!(items[0]["id"],"collision");
+    assert_ne!(items[1]["id"],"collision");
+    assert_ne!(items[0]["id"],items[1]["id"]);
+    assert_eq!(items[1]["scale"],0.9);
+  }
+
+  #[test]
+  fn distinct_assets_never_keep_the_same_id(){
+    let mut items=vec![
+      json!({"id":"collision","source":"/tmp/a.mp4","name":"A"}),
+      json!({"id":"collision","source":"/tmp/b.mp4","name":"B"})
+    ];
+    assert!(normalize_effect_identities(&mut items));
+    assert_eq!(items.len(),2);
+    assert_eq!(items[0]["id"],"collision");
+    assert_ne!(items[1]["id"],"collision");
+    assert_ne!(items[0]["id"],items[1]["id"]);
+  }
 }

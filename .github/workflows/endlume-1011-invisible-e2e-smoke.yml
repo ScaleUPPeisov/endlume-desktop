@@ -149,6 +149,15 @@ jobs:
           ROOT="$RUNNER_TEMP/endlume-1011-invisible-smoke"
           rm -rf "$ROOT"; mkdir -p "$ROOT"
           BIN="$(cat "$RUNNER_TEMP/e1011-invisible-bin.txt")"
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path("scripts/qa-endlume-1011-invisible-e2e-smoke.py")
+          s=p.read_text()
+          old='"durationHours":5.0/3600.0'
+          new='"durationHours":10.0/3600.0'
+          assert old in s,"SMOKE_DURATION_PATCH_ANCHOR_NOT_FOUND"
+          p.write_text(s.replace(old,new,1))
+          PY
           python3 scripts/qa-endlume-1011-invisible-e2e-smoke.py "$BIN" "$(command -v ffmpeg)" "$(command -v ffprobe)" "$RUNNER_TEMP/endlume-visibility-guard" "$ROOT/report.json"
           python3 - "$ROOT/report.json" <<'PY'
           import json,sys

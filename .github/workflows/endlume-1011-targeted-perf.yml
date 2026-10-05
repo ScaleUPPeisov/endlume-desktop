@@ -51,7 +51,7 @@ jobs:
           from pathlib import Path
           import sys
           p=Path(sys.argv[1]); s=p.read_text()
-          a=s.index('jobs=[')
+          a=s.index('jobs=[',s.index('stale_film='))
           b=s.index('render_fixture=',a)
           replacement='''jobs=[\n    job("e1011-setup-off","ENDLUME 10.0.11 PERF SETUP OFF",[film_off,eq,third]),\n    job("e1011-on","ENDLUME 10.0.11 PERF ON",[film,eq,third]),\n    job("e1011-on-warm","ENDLUME 10.0.11 PERF ON WARM",[film,eq,third]),\n    job("e1011-bg-eq","ENDLUME 10.0.11 PERF BG EQ",[],[],str(background),{"volumePct":20.0,"bassDb":-3.0,"midDb":0.0,"trebleDb":-2.0},exact_202),\n]\n'''
           s=s[:a]+replacement+s[b:]

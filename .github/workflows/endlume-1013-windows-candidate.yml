@@ -1,0 +1,140 @@
+name: ENDLUME 10.0.13 Windows Candidate
+
+on:
+  push:
+    branches:
+      - hotfix/endlume-10.0.13-windows-20wav-audio-runtime
+    paths:
+      - ".github/workflows/endlume-1013-windows-candidate.yml"
+      - "scripts/qa-endlume-1013-windows-product-e2e.py"
+      - "scripts/prepare-windows-sidecars.ps1"
+      - "src/**"
+      - "src-tauri/**"
+      - "package.json"
+      - "package-lock.json"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-1013-windows-candidate
+  cancel-in-progress: true
+
+jobs:
+  windows-candidate:
+    name: Windows x64 • compile • product E2E • long acceptance
+    runs-on: windows-2022
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify candidate ancestry and hosted Windows
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RUNNER_OS -ne 'Windows' -or $env:RUNNER_ARCH -ne 'X64') { throw "Required hosted Windows x64, got $env:RUNNER_OS/$env:RUNNER_ARCH" }
+          git merge-base --is-ancestor c700adb0fa38a5a3a7d448952a6a164fd06cc9ff $env:GITHUB_SHA
+          if ($LASTEXITCODE -ne 0) { throw '10.0.13 candidate is not based on public 10.0.12 release' }
+          New-Item -ItemType Directory -Force windows-1013-qa | Out-Null
+          Get-ComputerInfo | Select-Object WindowsProductName,WindowsVersion,OsBuildNumber,OsArchitecture,CsTotalPhysicalMemory | ConvertTo-Json | Set-Content windows-1013-qa/windows.json
+          Get-CimInstance Win32_Processor | Select-Object Name,NumberOfCores,NumberOfLogicalProcessors | ConvertTo-Json | Set-Content windows-1013-qa/cpu.json
+          Get-Content windows-1013-qa/windows.json
+          Write-Host "RUNNER_NAME=$env:RUNNER_NAME RUNNER_OS=$env:RUNNER_OS RUNNER_ARCH=$env:RUNNER_ARCH"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install QA telemetry helper
+        shell: pwsh
+        run: python -m pip install --disable-pip-version-check psutil
+
+      - name: Stage pinned production Windows FFmpeg family
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          ./scripts/prepare-windows-sidecars.ps1
+          $ffmpeg = (Resolve-Path 'src-tauri/binaries/ffmpeg-x86_64-pc-windows-msvc.exe').Path
+          $ffprobe = (Resolve-Path 'src-tauri/binaries/ffprobe-x86_64-pc-windows-msvc.exe').Path
+          & $ffmpeg -hide_banner -version | Tee-Object windows-1013-qa/ffmpeg-version.txt
+          & $ffprobe -hide_banner -version | Tee-Object windows-1013-qa/ffprobe-version.txt
+          $filters = (& $ffmpeg -hide_banner -filters 2>&1 | Out-String)
+          $encoders = (& $ffmpeg -hide_banner -encoders 2>&1 | Out-String)
+          $filters | Set-Content windows-1013-qa/ffmpeg-filters.txt
+          $encoders | Set-Content windows-1013-qa/ffmpeg-encoders.txt
+          foreach ($f in @('aresample','aformat','acrossfade','concat','loudnorm','amix','alimiter')) { if ($filters -notmatch "(?m)\b$([regex]::Escape($f))\b") { throw "Required FFmpeg filter missing: $f" } }
+          foreach ($e in @('flac','libmp3lame')) { if ($encoders -notmatch "(?m)\b$([regex]::Escape($e))\b") { throw "Required FFmpeg encoder missing: $e" } }
+          "ENDLUME_FFMPEG=$ffmpeg" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "ENDLUME_FFPROBE=$ffprobe" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host ENDLUME_1013_WINDOWS_FFMPEG_CAPABILITIES_GREEN
+
+      - name: Frontend compile
+        shell: pwsh
+        run: |
+          npm ci
+          npm run check
+          npm run build
+
+      - name: Rust MSVC compile and unit regression
+        shell: pwsh
+        run: |
+          cargo check --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-msvc
+          cargo test --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-msvc --lib -- --nocapture
+          Write-Host ENDLUME_1013_WINDOWS_COMPILE_UNIT_GREEN
+
+      - name: Build real ENDLUME Windows E2E binary
+        shell: pwsh
+        run: |
+          cargo build --manifest-path src-tauri/Cargo.toml --release --target x86_64-pc-windows-msvc --features e2e-render
+          $app = Resolve-Path 'src-tauri/target/x86_64-pc-windows-msvc/release/endlume.exe' -ErrorAction SilentlyContinue
+          if (-not $app) { $app = Resolve-Path 'target/x86_64-pc-windows-msvc/release/endlume.exe' -ErrorAction SilentlyContinue }
+          if (-not $app) { throw 'Real ENDLUME e2e-render binary not found' }
+          $dir = Split-Path $app.Path -Parent
+          Copy-Item $env:ENDLUME_FFMPEG (Join-Path $dir 'ffmpeg-x86_64-pc-windows-msvc.exe') -Force
+          Copy-Item $env:ENDLUME_FFPROBE (Join-Path $dir 'ffprobe-x86_64-pc-windows-msvc.exe') -Force
+          Copy-Item $env:ENDLUME_FFMPEG (Join-Path $dir 'ffmpeg.exe') -Force
+          Copy-Item $env:ENDLUME_FFPROBE (Join-Path $dir 'ffprobe.exe') -Force
+          "ENDLUME_E2E_APP=$($app.Path)" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Required 20-track product E2E matrix
+        shell: pwsh
+        run: |
+          python scripts/qa-endlume-1013-windows-product-e2e.py "$env:ENDLUME_E2E_APP" "$env:ENDLUME_FFMPEG" "$env:ENDLUME_FFPROBE" "windows-1013-qa/fast" --mode fast
+          Get-Content windows-1013-qa/fast/summary.json
+          $s = Get-Content windows-1013-qa/fast/summary.json -Raw | ConvertFrom-Json
+          if ($s.status -ne 'GREEN') { throw 'Fast product matrix not GREEN' }
+          if ([int]$s.maxSimultaneousAudioInputsObserved -gt 4) { throw 'Observed more than four simultaneous audio inputs' }
+          Write-Host ENDLUME_1013_WINDOWS_FAST_MATRIX_GREEN
+
+      - name: Realistic long 20-WAV acceptance
+        shell: pwsh
+        run: |
+          python scripts/qa-endlume-1013-windows-product-e2e.py "$env:ENDLUME_E2E_APP" "$env:ENDLUME_FFMPEG" "$env:ENDLUME_FFPROBE" "windows-1013-qa/long" --mode long
+          Get-Content windows-1013-qa/long/summary.json
+          $s = Get-Content windows-1013-qa/long/summary.json -Raw | ConvertFrom-Json
+          if ($s.status -ne 'GREEN') { throw 'Long product acceptance not GREEN' }
+          if ([int]$s.maxSimultaneousAudioInputsObserved -gt 4) { throw 'Long test observed more than four simultaneous audio inputs' }
+          Write-Host ENDLUME_1013_WINDOWS_LONG_ACCEPTANCE_GREEN
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ENDLUME-10.0.13-Windows-Candidate-QA
+          path: windows-1013-qa/
+          if-no-files-found: warn
+          retention-days: 14

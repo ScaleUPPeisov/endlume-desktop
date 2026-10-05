@@ -123,6 +123,18 @@ jobs:
           rm -rf "$ROOT"; mkdir -p "$ROOT/tmp"
           export TMPDIR="$ROOT/tmp"
           BIN="$(cat "$RUNNER_TEMP/e1011-bin.txt")"
+          # Each fresh packaged app may clear the shared preview cache on startup.
+          # Preserve the exact rendered preview immediately so later cold-preview
+          # processes cannot invalidate evidence from earlier selections.
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('scripts/qa-endlume-1011-critical-hotfix.py')
+          s=p.read_text()
+          old='''    assert exact.is_file() and exact.stat().st_size>1024,(label,exact)\n    meta=probe(exact);v=next(x for x in meta["streams"] if x.get("codec_type")=="video")'''
+          new='''    assert exact.is_file() and exact.stat().st_size>1024,(label,exact)\n    preserved=tmp_root/f"{label}-exact-preserved.mp4"\n    shutil.copy2(exact,preserved)\n    exact=preserved\n    meta=probe(exact);v=next(x for x in meta["streams"] if x.get("codec_type")=="video")'''
+          assert old in s,'PREVIEW_PRESERVE_PATCH_ANCHOR_NOT_FOUND'
+          p.write_text(s.replace(old,new,1))
+          PY
           python3 scripts/qa-endlume-1011-critical-hotfix.py "$BIN" "$(command -v ffmpeg)" "$(command -v ffprobe)" "$ROOT/report.json"
           python3 - "$ROOT/report.json" <<'PY'
           import json,sys

@@ -90,7 +90,18 @@ fn maybe_start_render_e2e(app:tauri::AppHandle){
           if !ok{break}
           let id=job.project.id.clone();
           let started=std::time::Instant::now();
-          match render::render_job(&app,&job,Arc::new(std::sync::atomic::AtomicBool::new(false))).await{
+          let cancel=Arc::new(std::sync::atomic::AtomicBool::new(false));
+          let prepared=audio_1013::prepare_windows_bounded_audio(&app,&job,cancel.clone()).await;
+          let (render_result,prepared_audio)=match prepared{
+            Ok(Some(prepared_audio))=>{
+              let result=render::render_job(&app,&prepared_audio.job,cancel.clone()).await;
+              (result,Some(prepared_audio))
+            }
+            Ok(None)=>(render::render_job(&app,&job,cancel.clone()).await,None),
+            Err(error)=>(Err(error),None),
+          };
+          if let Some(prepared_audio)=prepared_audio.as_ref(){audio_1013::cleanup_prepared_audio(prepared_audio);}
+          match render_result{
             Ok(summary)=>{
               let terminal=queue::done_payload_from_summary(&job,&id,&summary);
               results.push(serde_json::json!({

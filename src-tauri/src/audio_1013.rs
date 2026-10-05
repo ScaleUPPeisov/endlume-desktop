@@ -54,7 +54,7 @@ async fn normalize_track(app:&AppHandle,input:&Path,out:&Path,cancel:&AtomicBool
   let args=vec![
     "-hide_banner".into(),"-loglevel".into(),"error".into(),
     "-i".into(),input.to_string_lossy().into_owned(),"-vn".into(),
-    "-af".into(),"aresample=48000:async=1:first_pts=0,aformat=sample_rates=48000:channel_layouts=stereo,asetpts=N/SR/TB".into(),
+    "-af".into(),"aresample=48000:async=1:first_pts=0,aformat=sample_fmts=s32:sample_rates=48000:channel_layouts=stereo,asetpts=N/SR/TB".into(),
     "-c:a".into(),"flac".into(),"-compression_level".into(),"5".into(),
     "-y".into(),out.to_string_lossy().into_owned()
   ];
@@ -87,7 +87,7 @@ async fn combine_group(app:&AppHandle,inputs:&[PathBuf],out:&Path,crossfade:f64,
     graph.push_str(&format!("{labels}concat=n={}:v=0:a=1[joined];",inputs.len()));
     "joined".to_string()
   };
-  graph.push_str(&format!("[{last}]aresample=48000:async=1:first_pts=0,aformat=sample_rates=48000:channel_layouts=stereo[outa]"));
+  graph.push_str(&format!("[{last}]aresample=48000:async=1:first_pts=0,aformat=sample_fmts=s32:sample_rates=48000:channel_layouts=stereo[outa]"));
   args.push("-filter_complex".into());args.push(graph);
   args.push("-map".into());args.push("[outa]".into());
   args.push("-c:a".into());args.push("flac".into());args.push("-compression_level".into());args.push("5".into());

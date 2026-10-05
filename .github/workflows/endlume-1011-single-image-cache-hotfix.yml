@@ -8,75 +8,19 @@ on:
   workflow_dispatch: {}
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: endlume-1011-single-image-cache-hotfix
   cancel-in-progress: true
 
 jobs:
-  patch-test-commit:
-    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
-    timeout-minutes: 25
+  completed-hotfix-marker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
     steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: hotfix/endlume-10.0.11-performance-effects-reliability
-          fetch-depth: 0
-          persist-credentials: true
-
-      - name: Patch exact single-image routing bug
+      - name: Confirm product fix is already committed
         shell: bash
         run: |
-          set -Eeuo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
-          p=Path('src-tauri/src/render.rs')
-          s=p.read_text()
-          old='''fn fast_multi_still(job:&QueueJob)->bool{\n  let reason=fast_path_decision(job).reason;\n  if reason=="FAST_MULTI_STILL"{return true}\n  if reason!="FAST_ONE_IMAGE"{return false}\n  let has_effects=job.effects.iter().any(|e|e.enabled&&!e.source.trim().is_empty());\n  let has_subs=job.subscribes.iter().any(|x|x.effect.enabled&&!x.effect.source.trim().is_empty());\n  !has_effects&&!has_subs\n}\n'''
-          new='''fn fast_multi_still(job:&QueueJob)->bool{\n  // 10.0.11 hotfix: the multi-still physical pool is only for 2+ stills.\n  // A single image must continue into render_zero_sub_zero_copy_856, where its\n  // physical visual master is persistent-cacheable. Routing FAST_ONE_IMAGE here\n  // forced a fresh encode on every render and measured ~21-24 s even warm.\n  fast_path_decision(job).reason=="FAST_MULTI_STILL"\n}\n'''
-          if new in s:
-              print('PATCH_ALREADY_PRESENT')
-          elif old in s:
-              p.write_text(s.replace(old,new,1))
-          else:
-              raise SystemExit('EXACT_FAST_MULTI_STILL_BLOCK_NOT_FOUND')
-          PY
-          git diff --check
-          git diff -- src-tauri/src/render.rs
-
-      - name: Stage Apple Silicon sidecars required by Rust build script
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          TMP="$(mktemp -d)"
-          curl -fL --retry 4 "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffmpeg.zip" -o "$TMP/ffmpeg.zip"
-          curl -fL --retry 4 "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffprobe.zip" -o "$TMP/ffprobe.zip"
-          mkdir -p "$TMP/fm" "$TMP/fp" src-tauri/binaries
-          ditto -x -k "$TMP/ffmpeg.zip" "$TMP/fm"
-          ditto -x -k "$TMP/ffprobe.zip" "$TMP/fp"
-          cp "$(find "$TMP/fm" -type f -name ffmpeg -print -quit)" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
-          cp "$(find "$TMP/fp" -type f -name ffprobe -print -quit)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
-          chmod 755 src-tauri/binaries/ffmpeg-aarch64-apple-darwin src-tauri/binaries/ffprobe-aarch64-apple-darwin
-
-      - name: Rust regression gate
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
-          export CARGO_TARGET_DIR="$HOME/.endlume-build-cache/target-1011-perf-effects-reliability"
-          cargo test --manifest-path src-tauri/Cargo.toml -- --nocapture
-
-      - name: Commit verified product fix
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          git add src-tauri/src/render.rs
-          git diff --cached --quiet && { echo NO_PRODUCT_DIFF; exit 0; }
-          git config user.name "ScaleUPPeisov"
-          git config user.email "peisov.business@gmail.com"
-          git commit -m "fix(10.0.11): route one-image renders through persistent visual cache"
-          git fetch origin hotfix/endlume-10.0.11-performance-effects-reliability
-          git rebase origin/hotfix/endlume-10.0.11-performance-effects-reliability
-          git push origin HEAD:hotfix/endlume-10.0.11-performance-effects-reliability
-          echo VERIFIED_FIX_HEAD=$(git rev-parse HEAD)
+          echo 'Single-image cache product fix already verified and committed at c3d4fe97c99d176a896f7565cc374883c738d707.'
+          echo 'This workflow is intentionally retired so it cannot occupy the physical Mac runner again.'

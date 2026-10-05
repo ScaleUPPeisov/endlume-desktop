@@ -76,15 +76,41 @@ pub(crate) fn done_payload_from_summary(job:&QueueJob,id:&str,summary:&render::R
 pub async fn enqueue_projects(app:AppHandle,runtime:State<'_,Arc<QueueRuntime>>,projects:Vec<ProjectScanItem>,settings:RenderSettings,effects:Vec<EffectPreset>,subscribes:Vec<SubscribePreset>,ambient:Option<String>)->Result<(),String>{
   license::assert_production_allowed(&app).await?;
   if settings.output_dir.trim().is_empty(){return Err("Не выбрана папка результата".into())}
+
+  let mut effect_ids=HashSet::new();
+  for effect in &effects{
+    let id=effect.id.trim();
+    if id.is_empty(){return Err(format!("Effects registry invalid: effect '{}' has empty ID",effect.name))}
+    if !effect_ids.insert(id.to_string()){
+      return Err(format!("Effects registry invalid: duplicate effect ID '{}'. Render blocked to prevent wrong-effect substitution.",id))
+    }
+  }
+
+  let mut prepared=Vec::<(ProjectScanItem,Vec<EffectPreset>)>::new();
+  for project in projects.into_iter().filter(|p|p.valid){
+    let selected_id=project.selected_effect_id.as_deref().map(str::trim).filter(|x|!x.is_empty()).unwrap_or("__none__");
+    let selected=if selected_id=="__none__"{
+      Vec::new()
+    }else{
+      let effect=effects.iter().find(|e|e.id==selected_id).ok_or_else(||format!("Selected effect '{}' for project '{}' is not present in the effect registry",selected_id,project.name))?;
+      let source=PathBuf::from(&effect.source);
+      if !source.is_file(){
+        return Err(format!("Selected effect '{}' ({}) for project '{}' is missing: {}",effect.name,effect.id,project.name,source.display()))
+      }
+      vec![effect.clone()]
+    };
+    prepared.push((project,selected));
+  }
+
   {
     let active=runtime.active.lock();
     let mut q=runtime.pending.lock();
     let mut occupied=q.iter().map(|j|j.project.id.clone()).collect::<HashSet<_>>();
     if let Some(job)=active.as_ref(){occupied.insert(job.project.id.clone());}
-    for project in projects.into_iter().filter(|p|p.valid){
+    for (project,selected_effects) in prepared{
       if !occupied.insert(project.id.clone()){continue}
       runtime.clear_terminal(&project.id);
-      q.push_back(QueueJob{project,settings:settings.clone(),effects:effects.clone(),subscribes:subscribes.clone(),ambient:ambient.clone()});
+      q.push_back(QueueJob{project,settings:settings.clone(),effects:selected_effects,subscribes:subscribes.clone(),ambient:ambient.clone()});
     }
   }
   runtime.persist(&app);let _=app.emit("queue-changed",queue_snapshot_value(runtime.inner().as_ref()));start_worker_if_needed(app,runtime.inner().clone());Ok(())
@@ -104,7 +130,7 @@ fn friendly_error(raw:&str)->String{
   if low.contains("moov atom not found")||low.contains("invalid data found")||low.contains("error opening input"){return "Один из медиафайлов повреждён или имеет неподдерживаемый формат.".into()}
   if low.contains("videotoolbox")||low.contains("hardware")||low.contains("device")&&low.contains("failed")||low.contains("encoder")&&low.contains("not found"){return "Аппаратный кодировщик не прошёл рендер. ENDLUME автоматически повторяет проект на software fallback.".into()}
   if low.contains("acrossfade")||low.contains("sample rate")||low.contains("channel layout"){return "Ошибка обработки аудиотреков. ENDLUME нормализует MP3 в 48 kHz stereo перед повтором.".into()}
-  if low.contains("colorkey")||low.contains("chromakey")||low.contains("overlay"){return "Ошибка обработки Effects/Subscribe. Проблемный overlay должен быть пропущен без остановки основного видео.".into()}
+  if low.contains("colorkey")||low.contains("chromakey")||low.contains("overlay"){return "Ошибка обработки Effects/Subscribe. ENDLUME не подменяет и не скрывает выбранный production-effect: проект остановлен с ошибкой.".into()}
   if raw=="__ENDLUME_CANCELLED__"{return "Остановлено пользователем".into()}
   let detail=useful_detail(raw);if detail.is_empty(){"Не удалось обработать проект.".into()}else{format!("Не удалось обработать проект. {detail}")}
 }

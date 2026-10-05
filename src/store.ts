@@ -17,6 +17,7 @@ interface State {
   lastRoot?: string;
   libraryLoaded: boolean;
   sceneAnchorsByPath: Record<string, SceneAnchors>;
+  selectedEffectByPath: Record<string, string>;
   setPage:(p:Page)=>void;
   openEditor:(editor:Editor)=>void;
   setProjects:(p:RenderProject[])=>void;
@@ -33,6 +34,7 @@ interface State {
   setLibrary:(v:LibraryPayload)=>void;
   setLibraryLoaded:(v:boolean)=>void;
   setSceneAnchor:(projectPath:string,target:string,anchor:AnchorPoint)=>void;
+  setSelectedEffectForProject:(projectPath:string,effectId:string)=>void;
   patchSettings:(p:Partial<RenderSettings>)=>void;
   setLastRoot:(v?:string)=>void;
 }
@@ -44,7 +46,7 @@ const initialSettings:RenderSettings={
 };
 
 export const useApp=create<State>()(persist((set)=>({
-  page:'project',editor:null,projects:[],draftProjects:[],invalidProjects:[],effects:[],subscribes:[],settings:initialSettings,libraryLoaded:false,sceneAnchorsByPath:{},
+  page:'project',editor:null,projects:[],draftProjects:[],invalidProjects:[],effects:[],subscribes:[],settings:initialSettings,libraryLoaded:false,sceneAnchorsByPath:{},selectedEffectByPath:{},
   setPage:(page)=>set({page,editor:null}),
   openEditor:(editor)=>set({editor}),
   setProjects:(projects)=>set({projects}),
@@ -74,6 +76,7 @@ export const useApp=create<State>()(persist((set)=>({
       draftProjects:s.draftProjects.map(p=>p.path===projectPath?{...p,anchors}:p)
     };
   }),
+  setSelectedEffectForProject:(projectPath,effectId)=>set(s=>({selectedEffectByPath:{...s.selectedEffectByPath,[projectPath]:effectId}})),
   patchSettings:(patch)=>set(s=>({settings:{...s.settings,...patch}})),
   setLastRoot:(lastRoot)=>set({lastRoot})
-}),{name:'endlume-1-ui',version:7,migrate:(persisted:any)=>{const p:any=persisted||{};if(p.settings){p.settings={...p.settings,width:1920,height:1080,fps:60,crossfadeSec:3,normalizeLufs:false,codec:'h265'};}p.projects=[];p.sceneAnchorsByPath=p.sceneAnchorsByPath||{};return p;},partialize:(s)=>({settings:s.settings,lastRoot:s.lastRoot,sceneAnchorsByPath:s.sceneAnchorsByPath})}));
+}),{name:'endlume-1-ui',version:8,migrate:(persisted:any)=>{const p:any=persisted||{};if(p.settings){p.settings={...p.settings,width:1920,height:1080,fps:60,crossfadeSec:3,normalizeLufs:false,codec:'h265'};}p.projects=[];p.sceneAnchorsByPath=p.sceneAnchorsByPath||{};p.selectedEffectByPath=p.selectedEffectByPath||{};return p;},partialize:(s)=>({settings:s.settings,lastRoot:s.lastRoot,sceneAnchorsByPath:s.sceneAnchorsByPath,selectedEffectByPath:s.selectedEffectByPath})}));

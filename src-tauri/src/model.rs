@@ -22,7 +22,8 @@ pub struct ProjectScanItem{
   pub audio:Vec<String>,
   pub valid:bool,
   pub error:Option<String>,
-  #[serde(default)] pub anchors:Option<HashMap<String,AnchorPoint>>
+  #[serde(default)] pub anchors:Option<HashMap<String,AnchorPoint>>,
+  #[serde(default)] pub selected_effect_id:Option<String>
 }
 
 #[derive(Debug,Clone,Serialize,Deserialize)]

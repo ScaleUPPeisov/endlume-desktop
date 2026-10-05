@@ -16,16 +16,22 @@ const modes:Array<{id:LoopMode;title:string;subtitle:string;icon:'image'|'crossf
 type FeatureFlags={subscribe:boolean;effects:boolean;ambient:boolean};
 const featureKey='endlume-feature-flags-v2';
 function loadFeatures():FeatureFlags{try{return {...{subscribe:true,effects:true,ambient:true},...JSON.parse(localStorage.getItem(featureKey)||'{}')}}catch{return {subscribe:true,effects:true,ambient:true}}}
+const NO_EFFECT_SELECTION='__none__';
 const imageExt=new Set(['jpg','jpeg','png','webp','bmp','tif','tiff','heic','avif']);
 function isImagePath(path:string){const clean=path.split(/[?#]/)[0]||'';const ext=clean.includes('.')?clean.split('.').pop()?.toLowerCase()||'':'';return imageExt.has(ext)}
 
 export function ProjectPage(){
   const {
     draftProjects,setDraftProjects,invalidProjects,setInvalidProjects,appendProjects,
-    settings,patchSettings,effects,subscribes,ambient,setAmbient,openEditor,setPage,setLastRoot
+    settings,patchSettings,effects,subscribes,ambient,setAmbient,openEditor,setPage,setLastRoot,
+    selectedEffectByPath,setSelectedEffectForProject
   }=useApp();
   const [busy,setBusy]=useState(false),[scanNote,setScanNote]=useState(''),[features,setFeatures]=useState<FeatureFlags>(loadFeatures);
   const setFeature=(key:keyof FeatureFlags,value:boolean)=>setFeatures(prev=>{const next={...prev,[key]:value};localStorage.setItem(featureKey,JSON.stringify(next));return next});
+  const enabledEffects=effects.filter(e=>e.enabled);
+  const effectIdCounts=effects.reduce<Record<string,number>>((acc,e)=>{const id=e.id.trim();if(id)acc[id]=(acc[id]||0)+1;return acc},{});
+  const duplicateEffectIds=Object.entries(effectIdCounts).filter(([,count])=>count>1).map(([id])=>id);
+  const selectedEffectIdForPath=(path:string)=>selectedEffectByPath[path]||(enabledEffects.length===1?enabledEffects[0].id:'');
   const saveAmbient=async(next?:string)=>{
     setAmbient(next);
     const state=useApp.getState();
@@ -73,20 +79,38 @@ export function ProjectPage(){
           await api.showInfo(`MacBook работает от аккумулятора${power.percent!=null?` (${power.percent}%)`:''}. ENDLUME продолжит рендер на полной мощности — подключите питание, если очередь большая.`);
         }
       }catch{}
-      const activeEffects=features.effects?effects.filter(e=>e.enabled):[];
+
+      const effectRegistry=features.effects?effects:[];
+      if(features.effects&&duplicateEffectIds.length){
+        throw new Error(`Effects registry повреждён: повторяются ID ${duplicateEffectIds.join(', ')}. ENDLUME не будет угадывать или рендерить не тот эффект.`);
+      }
       const activeSubscribes=features.subscribe?subscribes.filter(e=>e.enabled):[];
       const activeAmbient=features.ambient?ambient:undefined;
-      const fastStaticProjects=draftProjects.filter(p=>p.media.length>0&&p.media.every(isImagePath)&&(p.media.length===1||(activeEffects.length===0&&activeSubscribes.length===0)));
+      const resolved=draftProjects.map(project=>{
+        if(!features.effects)return {project,selectedEffect:undefined};
+        const selectedId=selectedEffectIdForPath(project.path);
+        if(!selectedId){
+          throw new Error(`Выберите эффект для проекта «${project.name}» или явно укажите «Без эффекта».`);
+        }
+        if(selectedId===NO_EFFECT_SELECTION)return {project,selectedEffect:undefined};
+        const selectedEffect=effectRegistry.find(effect=>effect.id===selectedId);
+        if(!selectedEffect){
+          throw new Error(`Эффект ${selectedId} для проекта «${project.name}» больше не существует. Выберите эффект заново.`);
+        }
+        return {project,selectedEffect};
+      });
+      const fastStaticProjects=resolved.filter(({project,selectedEffect})=>project.media.length>0&&project.media.every(isImagePath)&&(project.media.length===1||(!selectedEffect&&activeSubscribes.length===0)));
       if(fastStaticProjects.length&&(settings.crossfadeSec>0||settings.normalizeLufs||!!activeAmbient)){
         await api.showInfo(`Processed Audio включён для ${fastStaticProjects.length} статичных проектов. Быстрый visual/manifest pipeline сохраняется, но музыка будет реально декодирована и обработана (crossfade / LUFS / ambient), поэтому MP3 packet-copy отключается и рендер может быть медленнее или больше. Чтобы получить Original MP3 bitstream-copy, выключите audio processing.`);
       }
       const stamp=Date.now().toString(36);
-      const queuedProjects=draftProjects.map((p,i)=>({...p,id:`${p.id}-${stamp}-${i}-${Math.random().toString(36).slice(2,8)}`,status:'queued' as const,progress:0,stage:'Ожидает в очереди',elapsedSec:0}));
-      await api.enqueue(queuedProjects,settings,activeEffects,activeSubscribes,activeAmbient);
+      const queuedProjects=resolved.map(({project,selectedEffect},i)=>({...project,selectedEffectId:selectedEffect?.id||NO_EFFECT_SELECTION,id:`${project.id}-${stamp}-${i}-${Math.random().toString(36).slice(2,8)}`,status:'queued' as const,progress:0,stage:'Ожидает в очереди',elapsedSec:0}));
+      await api.enqueue(queuedProjects,settings,effectRegistry,activeSubscribes,activeAmbient);
       appendProjects(queuedProjects);
       setDraftProjects([]);setInvalidProjects([]);setScanNote('');setPage('render');
     }catch(e){await api.showError(String(e))}
   };
+
 
   return <div className="projectColumn">
     <section className="sectionBlock first">
@@ -135,7 +159,12 @@ export function ProjectPage(){
 
     <section className="sectionBlock">
       <div className="sectionTitle">ЭФФЕКТЫ</div>
-      <div className="featureRow"><span className="featureIcon blue"><Icon name="effects"/></span><div><b>Набор эффектов поверх видео</b><small>{!features.effects?'Отключено для текущих рендеров':effects.filter(e=>e.enabled).length?`Активно: ${effects.filter(e=>e.enabled).length} • сохранено: ${effects.length}`:'Эффекты не выбраны'}</small></div><div className="rowButtons"><button onClick={()=>setFeature('effects',!features.effects)}>{features.effects?'ВЫКЛЮЧИТЬ':'ВКЛЮЧИТЬ'}</button><button onClick={()=>openEditor({kind:'effects'})}>НАСТРОИТЬ →</button></div></div>
+      <div className="featureRow"><span className="featureIcon blue"><Icon name="effects"/></span><div><b>Эффект для каждого проекта</b><small>{!features.effects?'Отключено для текущих рендеров':effects.length?`Доступно: ${effects.length} • выбор сохраняется отдельно для каждого проекта`:'Эффекты не найдены'}</small></div><div className="rowButtons"><button onClick={()=>setFeature('effects',!features.effects)}>{features.effects?'ВЫКЛЮЧИТЬ':'ВКЛЮЧИТЬ'}</button><button onClick={()=>openEditor({kind:'effects'})}>НАСТРОИТЬ →</button></div></div>
+      {features.effects&&duplicateEffectIds.length>0&&<div className="validationBox"><b>Effects registry заблокирован:</b><div>Одинаковый ID назначен нескольким эффектам: {duplicateEffectIds.join(', ')}. Рендер с эффектами запрещён, чтобы ENDLUME не подставил другой эффект.</div></div>}
+      {features.effects&&draftProjects.length>0&&effects.length>0&&<div className="renderCard">
+        <div className="optionGroup"><span>Применить ко всем найденным проектам</span><div className="chipRow"><button onClick={()=>draftProjects.forEach(p=>setSelectedEffectForProject(p.path,NO_EFFECT_SELECTION))}>БЕЗ ЭФФЕКТА</button>{effects.map((effect,index)=><button key={`all-${effect.id}-${index}`} disabled={duplicateEffectIds.includes(effect.id)} onClick={()=>draftProjects.forEach(p=>setSelectedEffectForProject(p.path,effect.id))}>{effect.name}</button>)}</div></div>
+        {draftProjects.map(project=><div className="optionGroup" key={`effect-${project.path}`}><span>{project.name}</span><div className="chipRow"><button className={selectedEffectIdForPath(project.path)===NO_EFFECT_SELECTION?'selected':''} onClick={()=>setSelectedEffectForProject(project.path,NO_EFFECT_SELECTION)}>БЕЗ ЭФФЕКТА</button>{effects.map((effect,index)=><button key={`${project.path}-${effect.id}-${index}`} disabled={duplicateEffectIds.includes(effect.id)} className={selectedEffectIdForPath(project.path)===effect.id&&!duplicateEffectIds.includes(effect.id)?'selected':''} onClick={()=>setSelectedEffectForProject(project.path,effect.id)}>{effect.name}</button>)}</div></div>)}
+      </div>}
     </section>
     <section className="sectionBlock">
       <div className="sectionTitle">BACKGROUND MUSIC</div>

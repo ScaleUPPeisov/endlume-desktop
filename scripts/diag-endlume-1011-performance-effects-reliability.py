@@ -158,8 +158,16 @@ for i,e in enumerate(real_effects): render_case(f'EFFECT_{i+1}',[e])
 active=[e for e in real_effects if e.get('enabled')]
 if len(active)>1: render_case('ALL_ENABLED',active)
 
-report={'sourceSha':'2e4e958d08927eaf098dc348fdfaed34ecb92b56','project':str(project),'libraryPath':str(lib_path),'effectInventory':inventory,'realEffectCount':len(real_effects),'subscribePresent':bool(subs),'results':results,'threeEffectGate':len(real_effects)==3}
+unique_effect_ids=sorted({str(e.get('id','')).strip() for e in real_effects if str(e.get('id','')).strip()})
+ephemeral_effects=[row for row in inventory if row.get('exists') and ('/var/folders/' in str(row.get('source','')) or '/tmp/' in str(row.get('source','')))]
+effect_identity_gate=len(real_effects)==3 and len(unique_effect_ids)==3
+production_asset_gate=len(ephemeral_effects)==0
+three_effect_gate=effect_identity_gate and production_asset_gate
+report={'sourceSha':'2e4e958d08927eaf098dc348fdfaed34ecb92b56','project':str(project),'libraryPath':str(lib_path),'effectInventory':inventory,'realEffectCount':len(real_effects),'uniqueEffectIds':unique_effect_ids,'effectIdentityGate':effect_identity_gate,'ephemeralEffects':ephemeral_effects,'productionAssetGate':production_asset_gate,'subscribePresent':bool(subs),'results':results,'threeEffectGate':three_effect_gate}
 REPORT.write_text(json.dumps(report,ensure_ascii=False,indent=2))
 print('REPORT_PATH='+str(REPORT))
-print('THREE_EFFECT_GATE='+('PASS' if len(real_effects)==3 else 'BLOCKED'))
+print('UNIQUE_EFFECT_IDS='+json.dumps(unique_effect_ids,ensure_ascii=False))
+print('EFFECT_IDENTITY_GATE='+('PASS' if effect_identity_gate else 'BLOCKED'))
+print('PRODUCTION_ASSET_GATE='+('PASS' if production_asset_gate else 'BLOCKED'))
+print('THREE_EFFECT_GATE='+('PASS' if three_effect_gate else 'BLOCKED'))
 print('DIAGNOSTIC_COMPLETE=YES')

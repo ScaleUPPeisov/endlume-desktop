@@ -2,6 +2,7 @@ mod model;
 mod scan;
 mod persistence;
 mod render;
+mod audio_1013;
 mod preview;
 mod live_preview;
 mod assets;

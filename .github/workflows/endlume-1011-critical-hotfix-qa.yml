@@ -23,8 +23,8 @@ concurrency:
 
 jobs:
   hosted-build-qa:
-    name: Gate A — GitHub-hosted build / compile / package
-    runs-on: macos-15
+    name: Gate A — GitHub-hosted build / compile / ARM64 package
+    runs-on: macos-14
     timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
@@ -34,14 +34,13 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Prove GitHub-hosted Apple Silicon runner
+      - name: Prove GitHub-hosted runner
         shell: bash
         run: |
           set -Eeuo pipefail
           echo "RUNNER_NAME=$RUNNER_NAME"
           uname -a
           sw_vers
-          test "$(uname -m)" = "arm64"
           test "$RUNNER_NAME" != "kirill-mac-endlume"
           echo LOCAL_KIRILL_MAC_USED=NO
 
@@ -109,7 +108,7 @@ jobs:
           grep -q 'render-asset-recovered' src-tauri/src/render.rs
           echo COMPILE_REGRESSION=GREEN
 
-      - name: Build packaged macOS QA app on GitHub-hosted runner
+      - name: Build packaged macOS ARM64 QA app on GitHub-hosted runner
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -129,13 +128,15 @@ jobs:
           /usr/bin/codesign --verify --deep --strict "$APP"
           BID="$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$APP/Contents/Info.plist")"
           VER="$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist")"
+          EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
           test "$BID" = "studio.endlume.desktop"
           test "$VER" = "10.0.11"
+          /usr/bin/lipo -archs "$APP/Contents/MacOS/$EXE" | grep -qw arm64
           ZIP="$RUNNER_TEMP/ENDLUME-10.0.11-hosted-QA-app.zip"
           /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$APP" "$ZIP"
           test -s "$ZIP"
-          printf '{"version":"%s","bundleId":"%s","runner":"%s","arch":"%s"}\n' "$VER" "$BID" "$RUNNER_NAME" "$(uname -m)" > "$RUNNER_TEMP/endlume-1011-hosted-build.json"
-          echo PACKAGED_MACOS_APP=GREEN
+          printf '{"version":"%s","bundleId":"%s","runner":"%s","hostArch":"%s","packageArch":"arm64"}\n' "$VER" "$BID" "$RUNNER_NAME" "$(uname -m)" > "$RUNNER_TEMP/endlume-1011-hosted-build.json"
+          echo PACKAGED_MACOS_ARM64_APP=GREEN
           echo LOCAL_KIRILL_MAC_USED=NO
 
       - uses: actions/upload-artifact@v4

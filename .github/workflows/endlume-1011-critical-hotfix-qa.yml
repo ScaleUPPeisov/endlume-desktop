@@ -26,8 +26,6 @@ jobs:
     name: Gate A — GitHub-hosted build / compile / package
     runs-on: macos-15
     timeout-minutes: 150
-    env:
-      CARGO_TARGET_DIR: ${{ runner.temp }}/endlume-1011-cargo-target
     steps:
       - uses: actions/checkout@v4
         with:
@@ -41,12 +39,18 @@ jobs:
         run: |
           set -Eeuo pipefail
           echo "RUNNER_NAME=$RUNNER_NAME"
-          echo "RUNNER_ENVIRONMENT=$RUNNER_ENVIRONMENT"
           uname -a
           sw_vers
           test "$(uname -m)" = "arm64"
-          test "$RUNNER_ENVIRONMENT" = "github-hosted"
+          test "$RUNNER_NAME" != "kirill-mac-endlume"
           echo LOCAL_KIRILL_MAC_USED=NO
+
+      - name: Configure ephemeral Cargo target
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          echo "CARGO_TARGET_DIR=$RUNNER_TEMP/endlume-1011-cargo-target" >> "$GITHUB_ENV"
+          echo PERSISTENT_HOME_BUILD_CACHE_USED=NO
 
       - uses: actions/setup-node@v4
         with:
@@ -130,7 +134,7 @@ jobs:
           ZIP="$RUNNER_TEMP/ENDLUME-10.0.11-hosted-QA-app.zip"
           /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$APP" "$ZIP"
           test -s "$ZIP"
-          printf '{"version":"%s","bundleId":"%s","runner":"%s","environment":"%s","arch":"%s"}\n' "$VER" "$BID" "$RUNNER_NAME" "$RUNNER_ENVIRONMENT" "$(uname -m)" > "$RUNNER_TEMP/endlume-1011-hosted-build.json"
+          printf '{"version":"%s","bundleId":"%s","runner":"%s","arch":"%s"}\n' "$VER" "$BID" "$RUNNER_NAME" "$(uname -m)" > "$RUNNER_TEMP/endlume-1011-hosted-build.json"
           echo PACKAGED_MACOS_APP=GREEN
           echo LOCAL_KIRILL_MAC_USED=NO
 
@@ -165,10 +169,10 @@ jobs:
           set -Eeuo pipefail
           test "$RUNNER_NAME" = "kirill-mac-endlume"
           echo "Physical runner receives a ready artifact only."
-          echo "NO_NPM=YES"
-          echo "NO_CARGO=YES"
-          echo "NO_RUSTC=YES"
-          echo "NO_TAURI_BUILD=YES"
+          echo NO_NPM=YES
+          echo NO_CARGO=YES
+          echo NO_RUSTC=YES
+          echo NO_TAURI_BUILD=YES
 
       - uses: actions/download-artifact@v4
         with:
@@ -189,7 +193,8 @@ jobs:
           test "$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$APP/Contents/Info.plist")" = "studio.endlume.desktop"
           test "$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist")" = "10.0.11"
           /usr/bin/codesign --verify --deep --strict "$APP"
-          file "$APP/Contents/MacOS/$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")" | grep -q 'arm64'
+          EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
+          file "$APP/Contents/MacOS/$EXE" | grep -q 'arm64'
           if [ -d "/Volumes/TOSHIBA EXT" ]; then
             echo TOSHIBA=MOUNTED
           else

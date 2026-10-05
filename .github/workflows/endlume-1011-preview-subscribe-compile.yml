@@ -5,6 +5,7 @@ on:
     branches: [hotfix/endlume-10.0.11-preview-subscribe-final]
     paths:
       - ".github/workflows/endlume-1011-preview-subscribe-compile.yml"
+  workflow_dispatch: {}
 
 permissions:
   contents: read
@@ -15,7 +16,7 @@ concurrency:
 
 jobs:
   compile:
-    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    runs-on: macos-15
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -24,17 +25,30 @@ jobs:
           clean: true
           fetch-depth: 1
           persist-credentials: false
-      - name: Compile only changed paths
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: Compile only changed paths on GitHub-hosted macOS
         shell: bash
         run: |
           set -Eeuo pipefail
-          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
           npm ci
           npm run check
           npm run build
           cargo test --manifest-path src-tauri/Cargo.toml cache::tests -- --nocapture
           cargo test --manifest-path src-tauri/Cargo.toml live_preview::tests -- --nocapture
-          cargo check --manifest-path src-tauri/Cargo.toml --features e2e-render
+          cargo check --manifest-path src-tauri/Cargo.toml --features e2e-render --target aarch64-apple-darwin
           grep -q "FRONTEND_PAYLOAD_BYTES" src/components/LiveCompositePreview.tsx
           grep -q "IMAGE_NATURAL_WIDTH" src/components/LiveCompositePreview.tsx
           grep -q "subscribe_chromakey_params_1011" src-tauri/src/render.rs

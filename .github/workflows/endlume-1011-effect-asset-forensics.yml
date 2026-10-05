@@ -1,0 +1,96 @@
+name: ENDLUME 10.0.11 Effect Asset Forensics
+
+on:
+  push:
+    branches: [hotfix/endlume-10.0.11-performance-effects-reliability]
+    paths:
+      - ".github/workflows/endlume-1011-effect-asset-forensics.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  effect-forensics:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Hash durable effect assets and inspect library identity
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          APP="$HOME/Library/Application Support/studio.endlume.desktop"
+          LIB="$APP/library.json"
+          DIR="$APP/library-assets/effects"
+          test -f "$LIB"
+          test -d "$DIR"
+          echo '=== LIBRARY EFFECT RECORDS ==='
+          python3 - "$LIB" <<'PY'
+          import json,sys,hashlib,os
+          p=sys.argv[1]
+          d=json.load(open(p))
+          effects=d.get('effects',[])
+          print('EFFECT_RECORD_COUNT=%d' % len(effects))
+          for i,e in enumerate(effects):
+              src=e.get('source','')
+              sha='MISSING'
+              size=None
+              if src and os.path.isfile(src):
+                  h=hashlib.sha256()
+                  with open(src,'rb') as f:
+                      for chunk in iter(lambda:f.read(1024*1024),b''):
+                          h.update(chunk)
+                  sha=h.hexdigest(); size=os.path.getsize(src)
+              print('LIB_EFFECT_%d_ID=%s' % (i+1,e.get('id')))
+              print('LIB_EFFECT_%d_NAME=%s' % (i+1,e.get('name')))
+              print('LIB_EFFECT_%d_SOURCE=%s' % (i+1,src))
+              print('LIB_EFFECT_%d_SIZE=%s' % (i+1,size))
+              print('LIB_EFFECT_%d_SHA256=%s' % (i+1,sha))
+          PY
+          echo '=== ALL DURABLE EFFECT FILES ==='
+          python3 - "$DIR" <<'PY'
+          import sys,os,hashlib
+          root=sys.argv[1]
+          files=[]
+          for base,_,names in os.walk(root):
+              for name in names:
+                  p=os.path.join(base,name)
+                  if os.path.isfile(p): files.append(p)
+          files.sort()
+          print('DURABLE_EFFECT_FILE_COUNT=%d' % len(files))
+          for i,p in enumerate(files,1):
+              h=hashlib.sha256()
+              with open(p,'rb') as f:
+                  for chunk in iter(lambda:f.read(1024*1024),b''):
+                      h.update(chunk)
+              print('ASSET_%d=%s|%d|%s' % (i,p,os.path.getsize(p),h.hexdigest()))
+          PY
+          echo '=== JSON/BACKUP REFERENCES TO EFFECTS ==='
+          find "$APP" -maxdepth 3 -type f \( -name '*.json' -o -name '*.bak' -o -name '*.backup' \) -print0 | while IFS= read -r -d '' f; do
+            if grep -a -q -E 'e1011-eq|0e6effe4-ab30-4973-87c7-4b355c1821ac|effects' "$f"; then
+              echo "REFERENCE_FILE=$f"
+              python3 - "$f" <<'PY' || true
+          import sys,json
+          p=sys.argv[1]
+          try:
+              d=json.load(open(p))
+          except Exception:
+              raise SystemExit
+          def walk(x,path=''):
+              if isinstance(x,dict):
+                  if 'id' in x and ('source' in x or 'name' in x):
+                      print('REF_RECORD=%s|id=%s|name=%s|source=%s' % (p,x.get('id'),x.get('name'),x.get('source')))
+                  for k,v in x.items(): walk(v,path+'/'+str(k))
+              elif isinstance(x,list):
+                  for v in x: walk(v,path)
+          walk(d)
+          PY
+            fi
+          done

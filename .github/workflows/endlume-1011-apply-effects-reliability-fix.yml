@@ -1,0 +1,79 @@
+name: ENDLUME 10.0.11 Apply Effects Reliability Fix
+
+on:
+  push:
+    branches: [hotfix/endlume-10.0.11-performance-effects-reliability]
+    paths:
+      - ".github/workflows/endlume-1011-apply-effects-reliability-fix.yml"
+      - "scripts/apply-endlume-1011-effects-reliability-fix.py"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: endlume-1011-apply-effects-reliability-fix
+  cancel-in-progress: true
+
+jobs:
+  apply-and-verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: hotfix/endlume-10.0.11-performance-effects-reliability
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Prove exact source ancestry
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          SOURCE=2e4e958d08927eaf098dc348fdfaed34ecb92b56
+          git cat-file -e "$SOURCE^{commit}"
+          test "$(git merge-base HEAD "$SOURCE")" = "$SOURCE"
+          echo SOURCE_OF_TRUTH=$SOURCE
+          echo BEFORE_PATCH_HEAD=$(git rev-parse HEAD)
+
+      - name: Apply targeted effect reliability patch
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/apply-endlume-1011-effects-reliability-fix.py
+          git diff --check
+          git diff -- src/types.ts src/store.ts src/pages/ProjectPage.tsx src-tauri/src/model.rs src-tauri/src/queue.rs scripts/diag-endlume-1011-performance-effects-reliability.py
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Frontend regression gates
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          npm ci
+          npm run check
+          npm run build
+
+      - name: Rust regression gates
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          cargo check --manifest-path src-tauri/Cargo.toml
+          cargo test --manifest-path src-tauri/Cargo.toml -- --nocapture
+
+      - name: Commit verified source patch
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/types.ts src/store.ts src/pages/ProjectPage.tsx src-tauri/src/model.rs src-tauri/src/queue.rs scripts/diag-endlume-1011-performance-effects-reliability.py
+          git diff --cached --quiet && { echo NO_SOURCE_CHANGES=YES; exit 0; }
+          git commit -m "fix(10.0.11): isolate selected effect per project"
+          git push origin HEAD:hotfix/endlume-10.0.11-performance-effects-reliability
+          echo PATCH_HEAD=$(git rev-parse HEAD)

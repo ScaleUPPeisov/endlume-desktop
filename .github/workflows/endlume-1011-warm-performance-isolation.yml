@@ -1,0 +1,139 @@
+name: ENDLUME 10.0.11 Warm Performance Isolation
+
+on:
+  push:
+    branches: [hotfix/endlume-10.0.11-performance-effects-reliability]
+    paths:
+      - ".github/workflows/endlume-1011-warm-performance-isolation.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-1011-warm-performance-isolation
+  cancel-in-progress: true
+
+jobs:
+  isolate:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Prove tested product source is unchanged
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          SOURCE=8f5e6d621169fe21301bd52696b4a09c877b7fa1
+          git cat-file -e "$SOURCE^{commit}"
+          test "$(git merge-base HEAD "$SOURCE")" = "$SOURCE"
+          git diff --quiet "$SOURCE" HEAD -- src src-tauri scripts package.json package-lock.json
+          test -d "/Volumes/TOSHIBA EXT"
+          echo PRODUCT_SOURCE=$SOURCE
+          echo WORKFLOW_HEAD=$(git rev-parse HEAD)
+          echo PRODUCT_DIFF=NONE
+
+      - name: Reuse exact packaged candidate from physical PASS
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          TARGET="$HOME/.endlume-build-cache/target-1011-perf-effects-reliability/aarch64-apple-darwin/release/bundle/macos"
+          APP="$(find "$TARGET" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          test -n "$APP" -a -d "$APP"
+          EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
+          test -x "$APP/Contents/MacOS/$EXE"
+          test -x "$APP/Contents/MacOS/ffmpeg"
+          test -x "$APP/Contents/MacOS/ffprobe"
+          /usr/bin/codesign --verify --deep --strict "$APP"
+          printf '%s' "$APP/Contents/MacOS/$EXE" > "$RUNNER_TEMP/e1011-warm-bin.txt"
+          printf '%s' "$APP/Contents/MacOS/ffprobe" > "$RUNNER_TEMP/e1011-warm-ffprobe.txt"
+          echo PACKAGED_CANDIDATE=REUSED_GREEN
+
+      - name: Compare warm SSD and TOSHIBA renders
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ROOT="$RUNNER_TEMP/endlume-1011-warm-perf"
+          rm -rf "$ROOT"; mkdir -p "$ROOT/ssd-out" "$ROOT/tmp"
+          export TMPDIR="$ROOT/tmp"
+          BIN="$(cat "$RUNNER_TEMP/e1011-warm-bin.txt")"
+          FFPROBE="$(cat "$RUNNER_TEMP/e1011-warm-ffprobe.txt")"
+          python3 - "$BIN" "$FFPROBE" "$ROOT" <<'PY'
+          import hashlib,json,os,subprocess,sys,time
+          from pathlib import Path
+
+          APP=Path(sys.argv[1]); FFPROBE=Path(sys.argv[2]); ROOT=Path(sys.argv[3])
+          VOL=Path('/Volumes/TOSHIBA EXT')
+          TOSHIBA=VOL/'ВАЙРОН'/'Render'/'Brewroom Jazz'
+          SSD=ROOT/'ssd-out'
+          DATA=Path.home()/'Library/Application Support/studio.endlume.desktop'
+          IMAGE={'.jpg','.jpeg','.png','.webp','.bmp','.tif','.tiff','.heic','.avif'}
+          AUDIO={'.mp3','.wav','.m4a','.aac','.flac','.ogg','.opus','.aiff','.aif','.alac'}
+          ROUND_SHA='f0cda2600334826a603ad4cee58e1efefaa8a86e42b2860b0736e708ab689a19'
+          def sha(p):
+              h=hashlib.sha256()
+              with open(p,'rb') as f:
+                  for c in iter(lambda:f.read(1024*1024),b''):h.update(c)
+              return h.hexdigest()
+          lib=json.loads((DATA/'library.json').read_text())
+          round_effect=None
+          for e in lib.get('effects',[]):
+              p=Path(str(e.get('source','')))
+              if p.is_file() and sha(p)==ROUND_SHA:
+                  round_effect=dict(e);break
+          assert round_effect,'ROUND_EFFECT_NOT_FOUND'
+          round_effect.update({'enabled':True,'usageMode':'always'})
+
+          project=None;media=None;songs=None
+          for d in (VOL/'ВАЙРОН').rglob('*'):
+              if not d.is_dir():continue
+              try: files=[x for x in d.iterdir() if x.is_file() and not x.name.startswith('.') and not x.name.startswith('._')]
+              except Exception:continue
+              mm=sorted([x for x in files if x.suffix.lower() in IMAGE],key=lambda x:x.name.lower())
+              aa=sorted([x for x in files if x.suffix.lower() in AUDIO],key=lambda x:x.name.lower())
+              if mm and len(aa)>=10:
+                  project=d;media=mm[0];songs=aa[:10];break
+          assert project and media and songs,'PROJECT_NOT_FOUND'
+          base={'path':str(project),'media':[str(media)],'audio':[str(x) for x in songs],'valid':True,'error':None,'anchors':{}}
+          results=[]
+          def render(label,outdir,effects):
+              fixture=ROOT/f'{label}.job.json';result=ROOT/f'{label}.result.json'
+              settings={'width':1920,'height':1080,'fps':60,'codec':'h265','bitrateMbps':8.0,'durationHours':2.0,'durationMode':'whole-track','loopMode':'image','crossfadeSec':0.0,'normalizeLufs':False,'outputDir':str(outdir),'preset':'fast','encoderPreference':'auto'}
+              job={'project':dict(base,id='warm-'+label,name='ENDLUME WARM PERF '+label),'settings':settings,'effects':effects,'subscribes':[],'ambient':None}
+              fixture.write_text(json.dumps({'jobs':[job]},ensure_ascii=False))
+              env=os.environ.copy();env.update({'ENDLUME_E2E_RENDER_JOB':str(fixture),'ENDLUME_E2E_RESULT':str(result)})
+              t=time.perf_counter();p=subprocess.run([str(APP)],env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,timeout=180);proc=time.perf_counter()-t
+              assert p.returncode==0 and result.is_file(),(label,p.returncode,p.stderr[-2000:])
+              raw=json.loads(result.read_text());r=raw['results'][0];out=Path(r['outputPath']);assert out.is_file()
+              probe=json.loads(subprocess.run([str(FFPROBE),'-v','error','-show_entries','format=duration,size','-of','json',str(out)],capture_output=True,text=True,check=True).stdout)
+              row={'label':label,'wallSeconds':float(r['wallSeconds']),'processSeconds':proc,'bytes':out.stat().st_size,'encoder':r.get('encoder'),'duration':float(probe['format']['duration']),'target':'TOSHIBA' if str(outdir).startswith('/Volumes/') else 'SSD','effect':'ROUND' if effects else 'NONE'}
+              results.append(row);print('PERF='+json.dumps(row,sort_keys=True));out.unlink()
+          # Warm each path once, then repeat. Ordering alternates target/effect to reduce drift bias.
+          render('SSD_BASE_1',SSD,[])
+          render('TOSHIBA_BASE_1',TOSHIBA,[])
+          render('SSD_ROUND_1',SSD,[round_effect])
+          render('TOSHIBA_ROUND_1',TOSHIBA,[round_effect])
+          render('SSD_BASE_2',SSD,[])
+          render('TOSHIBA_BASE_2',TOSHIBA,[])
+          render('SSD_ROUND_2',SSD,[round_effect])
+          render('TOSHIBA_ROUND_2',TOSHIBA,[round_effect])
+          groups={}
+          for r in results:groups.setdefault((r['target'],r['effect']),[]).append(r['wallSeconds'])
+          summary={f'{k[0]}_{k[1]}':{'runs':v,'min':min(v),'max':max(v),'avg':sum(v)/len(v)} for k,v in groups.items()}
+          print('SUMMARY='+json.dumps(summary,sort_keys=True))
+          (ROOT/'report.json').write_text(json.dumps({'results':results,'summary':summary},indent=2))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ENDLUME-10.0.11-WARM-PERFORMANCE-ISOLATION
+          path: ${{ runner.temp }}/endlume-1011-warm-perf/report.json
+          if-no-files-found: warn
+          retention-days: 7

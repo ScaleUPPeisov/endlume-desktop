@@ -5,6 +5,7 @@ on:
     branches: [hotfix/endlume-10.0.11-performance-effects-reliability]
     paths:
       - "src-tauri/src/render.rs"
+      - ".github/workflows/endlume-1011-single-image-cache-physical-gate.yml"
   workflow_dispatch: {}
 
 permissions:
@@ -101,7 +102,6 @@ jobs:
               aa=sorted([x for x in files if x.suffix.lower() in AUDIO],key=lambda x:x.name.lower())
               if mm and len(aa)>=10:project=d;media=mm[0];songs=aa[:10];break
           assert project and media and songs,'REAL_PROJECT_NOT_FOUND'
-          # Create a unique valid PNG so this gate owns a fresh visual-cache key without deleting user caches.
           unique=ROOT/'unique-baseline-source.png'
           subprocess.run([str(FFMPEG),'-hide_banner','-loglevel','error','-i',str(media),'-vf','scale=1918:1078,pad=1920:1080:1:1:black','-frames:v','1','-compression_level','4','-y',str(unique)],check=True,timeout=90)
           settings={'width':1920,'height':1080,'fps':60,'codec':'h265','bitrateMbps':8.0,'durationHours':2.0,'durationMode':'whole-track','loopMode':'image','crossfadeSec':0.0,'normalizeLufs':False,'outputDir':str(OUT),'preset':'fast','encoderPreference':'auto'}

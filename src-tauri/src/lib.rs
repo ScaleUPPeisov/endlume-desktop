@@ -30,6 +30,24 @@ static E2E_RENDER_ACTIVE:AtomicBool=AtomicBool::new(false);
 use tauri::Manager;
 
 #[cfg(feature="e2e-render")]
+fn e2e_qa_mode()->bool{
+  std::env::var_os("ENDLUME_E2E_PREVIEW_JOB").is_some()||std::env::var_os("ENDLUME_E2E_RENDER_JOB").is_some()
+}
+
+#[cfg(feature="e2e-render")]
+async fn run_preview_e2e_case(app:tauri::AppHandle,value:serde_json::Value)->Result<serde_json::Value,String>{
+  let project_path=value.get("projectPath").and_then(|x|x.as_str()).ok_or("preview projectPath missing")?.to_string();
+  let overlay_source=value.get("overlaySource").and_then(|x|x.as_str()).ok_or("preview overlaySource missing")?.to_string();
+  let time_sec=value.get("timeSec").and_then(|x|x.as_f64()).unwrap_or(0.0);
+  let effects=serde_json::from_value::<Vec<model::EffectPreset>>(value.get("effects").cloned().unwrap_or_else(||serde_json::json!([]))).map_err(|e|format!("preview effects: {e}"))?;
+  let subscribes=serde_json::from_value::<Vec<model::SubscribePreset>>(value.get("subscribes").cloned().unwrap_or_else(||serde_json::json!([]))).map_err(|e|format!("preview subscribes: {e}"))?;
+  let helper=live_preview::prepare_live_preview(app.clone(),project_path.clone(),overlay_source,time_sec,Some("e1011-cold-preview".into()),Some(if subscribes.is_empty(){"Effects".into()}else{"Subscribe".into()})).await?;
+  let poster=preview::generate_preview_poster(app.clone(),project_path.clone(),time_sec,effects.clone(),subscribes.clone(),Some("e1011-cold-preview-poster".into())).await?;
+  let exact=preview::generate_preview(app,project_path,time_sec,effects,subscribes,Some("e1011-cold-preview".into())).await?;
+  Ok(serde_json::json!({"helper":serde_json::to_value(helper).map_err(|e|e.to_string())?,"posterPath":poster,"exactPath":exact}))
+}
+
+#[cfg(feature="e2e-render")]
 fn maybe_start_preview_e2e(app:tauri::AppHandle){
   E2E_RENDER_ACTIVE.store(true,Ordering::SeqCst);
   let Ok(fixture_path)=std::env::var("ENDLUME_E2E_PREVIEW_JOB") else{return};
@@ -40,17 +58,20 @@ fn maybe_start_preview_e2e(app:tauri::AppHandle){
       .and_then(|bytes|serde_json::from_slice::<serde_json::Value>(&bytes).map_err(|e|format!("preview fixture json: {e}")));
     let result:Result<serde_json::Value,String>=async{
       let value=parsed?;
-      let project_path=value.get("projectPath").and_then(|x|x.as_str()).ok_or("preview projectPath missing")?.to_string();
-      let overlay_source=value.get("overlaySource").and_then(|x|x.as_str()).ok_or("preview overlaySource missing")?.to_string();
-      let time_sec=value.get("timeSec").and_then(|x|x.as_f64()).unwrap_or(0.0);
-      let effects=serde_json::from_value::<Vec<model::EffectPreset>>(value.get("effects").cloned().unwrap_or_else(||serde_json::json!([]))).map_err(|e|format!("preview effects: {e}"))?;
-      let subscribes=serde_json::from_value::<Vec<model::SubscribePreset>>(value.get("subscribes").cloned().unwrap_or_else(||serde_json::json!([]))).map_err(|e|format!("preview subscribes: {e}"))?;
-      let helper=live_preview::prepare_live_preview(app.clone(),project_path.clone(),overlay_source,time_sec,Some("e1011-cold-preview".into()),Some(if subscribes.is_empty(){"Effects".into()}else{"Subscribe".into()})).await?;
-      let poster=preview::generate_preview_poster(app.clone(),project_path.clone(),time_sec,effects.clone(),subscribes.clone(),Some("e1011-cold-preview-poster".into())).await?;
-      let exact=preview::generate_preview(app.clone(),project_path,time_sec,effects,subscribes,Some("e1011-cold-preview".into())).await?;
-      Ok(serde_json::json!({"helper":serde_json::to_value(helper).map_err(|e|e.to_string())?,"posterPath":poster,"exactPath":exact}))
+      if let Some(jobs)=value.get("jobs").and_then(|x|x.as_array()){
+        let mut results=Vec::with_capacity(jobs.len());
+        for item in jobs{
+          let id=item.get("id").and_then(|x|x.as_str()).unwrap_or("preview-case").to_string();
+          let payload=run_preview_e2e_case(app.clone(),item.clone()).await?;
+          results.push(serde_json::json!({"id":id,"result":payload}));
+        }
+        Ok(serde_json::json!({"status":"passed","results":results}))
+      }else{
+        let payload=run_preview_e2e_case(app.clone(),value).await?;
+        Ok(serde_json::json!({"status":"passed","result":payload}))
+      }
     }.await;
-    let (ok,payload)=match result{Ok(v)=>(true,serde_json::json!({"status":"passed","result":v})),Err(e)=>(false,serde_json::json!({"status":"failed","error":e}))};
+    let (ok,payload)=match result{Ok(v)=>(true,v),Err(e)=>(false,serde_json::json!({"status":"failed","error":e}))};
     let _=std::fs::write(&result_path,serde_json::to_vec_pretty(&payload).unwrap_or_default());
     E2E_RENDER_ACTIVE.store(false,Ordering::SeqCst);
     app.exit(if ok{0}else{32});
@@ -134,6 +155,23 @@ fn maybe_start_render_e2e(app:tauri::AppHandle){
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run(){
+  #[cfg(feature="e2e-render")]
+  let e2e_qa=e2e_qa_mode();
+  #[cfg(not(feature="e2e-render"))]
+  let e2e_qa=false;
+
+  let mut context=tauri::generate_context!();
+  #[cfg(all(feature="e2e-render",target_os="macos"))]
+  if e2e_qa{
+    for window in &mut context.config_mut().app.windows{
+      if window.label=="main"{
+        window.visible=false;
+        window.focus=false;
+        window.focusable=false;
+      }
+    }
+  }
+
   let app=tauri::Builder::default()
     .manage(Arc::new(queue::QueueRuntime::default()))
     .plugin(tauri_plugin_dialog::init())
@@ -166,7 +204,13 @@ pub fn run(){
         }
       }
     })
-    .setup(|app|{
+    .setup(move |app|{
+      #[cfg(all(feature="e2e-render",target_os="macos"))]
+      if e2e_qa{
+        app.handle().set_activation_policy(tauri::ActivationPolicy::Accessory)?;
+        app.handle().set_dock_visibility(false)?;
+        if let Some(main)=app.get_webview_window("main"){let _=main.hide();}
+      }
       persistence::mark_session_open(&app.handle().clone())?;
       render::cleanup_runtime_caches_1003(&app.handle().clone());
       #[cfg(feature="e2e-render")]
@@ -190,7 +234,7 @@ pub fn run(){
       }
       if let tauri::WindowEvent::Destroyed=event{let _=persistence::mark_session_closed(window.app_handle());}
     })
-    .build(tauri::generate_context!())
+    .build(context)
     .expect("error while building ENDLUME");
   app.run(|_app_handle,event|{
     #[cfg(feature="e2e-render")]

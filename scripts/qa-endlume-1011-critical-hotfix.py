@@ -115,15 +115,18 @@ def app_bundle_root(exe):
             return p
     raise AssertionError(f"PACKAGED_APP_ROOT_NOT_FOUND: {exe}")
 
+# Keep the immutable source outside the QA temp tree. ENDLUME's packaged E2E
+# process may clean its own temporary working directory after exit, so a
+# "pristine" copy stored under tmp_root can disappear after the first cold
+# preview. Always clone directly from the packaged bundle produced by CI.
 APP_BUNDLE=app_bundle_root(APP)
 APP_REL=APP.relative_to(APP_BUNDLE)
-PRISTINE_APP=tmp_root/"packaged-pristine.app"
-shutil.copytree(APP_BUNDLE,PRISTINE_APP,symlinks=True)
 
 def fresh_app_binary(label):
     dst=tmp_root/f"{label}.app"
     shutil.rmtree(dst,ignore_errors=True)
-    shutil.copytree(PRISTINE_APP,dst,symlinks=True)
+    assert APP_BUNDLE.is_dir(),("PACKAGED_APP_SOURCE_MISSING",APP_BUNDLE)
+    shutil.copytree(APP_BUNDLE,dst,symlinks=True)
     exe=dst/APP_REL
     assert exe.is_file(),(label,exe)
     return exe
@@ -191,7 +194,6 @@ film=always(film);eq=always(eq);third=always(third)
 sub.update({"enabled":True,"usageMode":"interval","intervalSec":240.0,"repeatEverySec":240.0,"firstAppearance":"immediate","customFirstAtSec":0.0,"firstAtSec":0.0,"secondAtSec":240.0,"showDurationSec":8.0,"usageDurationSec":8.0})
 e2e_library=tmp_root/"library-e2e.json"
 e2e_library.write_text(json.dumps({"effects":[film,eq,third],"subscribes":[sub],"ambient":None},ensure_ascii=False,indent=2))
-
 
 preview_project=tmp_root/"preview-project";preview_project.mkdir()
 base_media=media[0]
@@ -322,7 +324,6 @@ cp={float(x.get("checkpoint",0)):x for x in checkpoints if x.get("projectId")=="
 for c in (50.0,75.0,90.0):assert c in cp,(c,cp)
 assert cp[50.0].get("etaSec") is None or float(cp[50.0].get("etaSec"))>0.0,cp[50.0]
 assert "::visual-prewarm" not in rp.stderr
-
 
 # Background Music: exact 2:02:00 master, 15-minute source, full looping, gain and real EQ.
 for pid in ("e1011-bg-neutral","e1011-bg-eq"):

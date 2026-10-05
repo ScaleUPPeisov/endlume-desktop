@@ -1,0 +1,186 @@
+name: ENDLUME 10.0.11 Invisible macOS E2E Smoke
+
+on:
+  push:
+    branches: [hotfix/endlume-10.0.11-macos-invisible-qa]
+    paths:
+      - ".github/workflows/endlume-1011-invisible-e2e-smoke.yml"
+      - "scripts/qa-endlume-1011-invisible-e2e-smoke.py"
+      - "scripts/qa-endlume-1011-critical-hotfix.py"
+      - "src-tauri/src/lib.rs"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-1011-invisible-e2e-smoke
+  cancel-in-progress: true
+
+jobs:
+  invisible-e2e-smoke:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Stage Apple Silicon FFmpeg
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
+          TMP="$(mktemp -d)"
+          curl -fL --retry 3 "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffmpeg.zip" -o "$TMP/ffmpeg.zip"
+          curl -fL --retry 3 "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffprobe.zip" -o "$TMP/ffprobe.zip"
+          mkdir -p "$TMP/fm" "$TMP/fp" src-tauri/binaries
+          ditto -x -k "$TMP/ffmpeg.zip" "$TMP/fm"
+          ditto -x -k "$TMP/ffprobe.zip" "$TMP/fp"
+          cp "$(find "$TMP/fm" -type f -name ffmpeg -print -quit)" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp "$(find "$TMP/fp" -type f -name ffprobe -print -quit)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          chmod 755 src-tauri/binaries/ffmpeg-aarch64-apple-darwin src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          echo INVISIBLE_QA_FFMPEG_GREEN
+
+      - name: Compile E2E-only code
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
+          export CARGO_TARGET_DIR="$HOME/.endlume-build-cache/target-1011-invisible-qa"
+          npm ci --prefer-offline --no-audit --no-fund
+          npm run check
+          cargo check --manifest-path src-tauri/Cargo.toml --features e2e-render --target aarch64-apple-darwin
+          echo INVISIBLE_QA_COMPILE_GREEN
+
+      - name: Build packaged invisible-QA app
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
+          export CARGO_TARGET_DIR="$HOME/.endlume-build-cache/target-1011-invisible-qa"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path("src-tauri/tauri.conf.json")
+          d=json.loads(p.read_text())
+          d["bundle"]["createUpdaterArtifacts"]=False
+          p.write_text(json.dumps(d,ensure_ascii=False,indent=2)+"\n")
+          PY
+          ENDLUME_TAURI_TARGET=aarch64-apple-darwin node scripts/prepare-macos-ffmpeg-runtime.mjs
+          npx tauri build --target aarch64-apple-darwin --bundles app --features e2e-render
+          APP="$(find "$CARGO_TARGET_DIR/aarch64-apple-darwin/release/bundle/macos" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          test -n "$APP" -a -d "$APP"
+          /usr/bin/codesign --force --deep --sign - --timestamp=none "$APP"
+          /usr/bin/codesign --verify --deep --strict "$APP"
+          EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
+          test -x "$APP/Contents/MacOS/$EXE"
+          printf '%s' "$APP/Contents/MacOS/$EXE" > "$RUNNER_TEMP/e1011-invisible-bin.txt"
+          echo INVISIBLE_QA_PACKAGED_APP_GREEN
+
+      - name: Build macOS visibility guard
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cat > "$RUNNER_TEMP/endlume-visibility-guard.swift" <<'SWIFT'
+          import AppKit
+          import CoreGraphics
+          import Foundation
+
+          guard CommandLine.arguments.count >= 3 else { exit(64) }
+          let reportPath = CommandLine.arguments[1]
+          let executable = CommandLine.arguments[2]
+          let childArgs = Array(CommandLine.arguments.dropFirst(3))
+          let process = Process()
+          process.executableURL = URL(fileURLWithPath: executable)
+          process.arguments = childArgs
+          process.environment = ProcessInfo.processInfo.environment
+          process.standardOutput = FileHandle.standardOutput
+          process.standardError = FileHandle.standardError
+          do { try process.run() } catch {
+            let data = try! JSONSerialization.data(withJSONObject:["launchError":"\(error)"])
+            try! data.write(to:URL(fileURLWithPath:reportPath))
+            exit(65)
+          }
+          let pid = process.processIdentifier
+          var maxVisibleWindows = 0
+          var everFrontmost = false
+          var samples = 0
+          while process.isRunning {
+            autoreleasepool {
+              if NSWorkspace.shared.frontmostApplication?.processIdentifier == pid { everFrontmost = true }
+              let info = CGWindowListCopyWindowInfo([.optionOnScreenOnly,.excludeDesktopElements], kCGNullWindowID) as? [[String:Any]] ?? []
+              let visible = info.filter { row in
+                let owner = (row[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value ?? -1
+                let layer = (row[kCGWindowLayer as String] as? NSNumber)?.intValue ?? -1
+                let alpha = (row[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 0.0
+                return owner == pid && layer == 0 && alpha > 0.01
+              }.count
+              if visible > maxVisibleWindows { maxVisibleWindows = visible }
+              samples += 1
+            }
+            Thread.sleep(forTimeInterval:0.005)
+          }
+          process.waitUntilExit()
+          if NSWorkspace.shared.frontmostApplication?.processIdentifier == pid { everFrontmost = true }
+          let payload:[String:Any] = [
+            "pid":Int(pid),
+            "childExit":Int(process.terminationStatus),
+            "maxVisibleWindows":maxVisibleWindows,
+            "everFrontmost":everFrontmost,
+            "samples":samples
+          ]
+          let data = try! JSONSerialization.data(withJSONObject:payload,options:[.prettyPrinted,.sortedKeys])
+          try! data.write(to:URL(fileURLWithPath:reportPath))
+          exit(process.terminationStatus)
+          SWIFT
+          /usr/bin/swiftc "$RUNNER_TEMP/endlume-visibility-guard.swift" -o "$RUNNER_TEMP/endlume-visibility-guard"
+          test -x "$RUNNER_TEMP/endlume-visibility-guard"
+          echo INVISIBLE_QA_GUARD_GREEN
+
+      - name: Short invisible E2E smoke
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+          ROOT="$RUNNER_TEMP/endlume-1011-invisible-smoke"
+          rm -rf "$ROOT"; mkdir -p "$ROOT"
+          BIN="$(cat "$RUNNER_TEMP/e1011-invisible-bin.txt")"
+          python3 scripts/qa-endlume-1011-invisible-e2e-smoke.py "$BIN" "$(command -v ffmpeg)" "$(command -v ffprobe)" "$RUNNER_TEMP/endlume-visibility-guard" "$ROOT/report.json"
+          python3 - "$ROOT/report.json" <<'PY'
+          import json,sys
+          d=json.load(open(sys.argv[1]))
+          assert d["status"]=="GREEN",d
+          assert d["processCountBefore"]==6 and d["processCountAfter"]==4,d
+          assert d["coldEffects"]=="GREEN" and d["coldSubscribe"]=="GREEN",d
+          assert d["baselinePreview"]=="GREEN" and d["roundEqualizer"]=="GREEN" and d["thirdEffect"]=="GREEN",d
+          assert d["renderE2E"]=="GREEN" and d["resultFilesGenerated"]=="GREEN" and d["cleanExits"]=="GREEN",d
+          assert d["visibleWindows"]==0,d
+          assert d["focusSteal"]=="NO",d
+          print("PROCESS_COUNT_BEFORE=6")
+          print("PROCESS_COUNT_AFTER=4")
+          print("COLD_EFFECTS=GREEN")
+          print("COLD_SUBSCRIBE=GREEN")
+          print("BASELINE_PREVIEW=GREEN")
+          print("ROUND_EQUALIZER=GREEN")
+          print("THIRD_EFFECT=GREEN")
+          print("RENDER_E2E=GREEN")
+          print("VISIBLE_WINDOWS=0")
+          print("FOCUS_STEAL=NO")
+          print("ENDLUME_1011_INVISIBLE_E2E_ACCEPTANCE_GREEN")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ENDLUME-10.0.11-INVISIBLE-E2E-SMOKE
+          path: |
+            ${{ runner.temp }}/endlume-1011-invisible-smoke/report.json
+            ${{ runner.temp }}/endlume-1011-invisible-smoke/work/*-visibility.json
+            ${{ runner.temp }}/endlume-1011-invisible-smoke/work/*.stderr
+            ${{ runner.temp }}/endlume-1011-invisible-smoke/work/*-result.json
+          if-no-files-found: warn
+          retention-days: 3

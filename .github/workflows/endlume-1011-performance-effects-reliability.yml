@@ -1,0 +1,146 @@
+name: ENDLUME 10.0.11 Performance + Effects Reliability
+
+on:
+  push:
+    branches: [hotfix/endlume-10.0.11-performance-effects-reliability]
+    paths:
+      - ".github/workflows/endlume-1011-performance-effects-reliability.yml"
+      - "scripts/diag-endlume-1011-performance-effects-reliability.py"
+      - "src-tauri/src/model.rs"
+      - "src-tauri/src/persistence.rs"
+      - "src-tauri/src/render.rs"
+      - "src-tauri/src/queue.rs"
+      - "src/store.ts"
+      - "src/types.ts"
+      - "src/pages/ProjectPage.tsx"
+      - "src/pages/Editors.tsx"
+      - "src/tauri.ts"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-1011-performance-effects-reliability
+  cancel-in-progress: true
+
+jobs:
+  physical-baseline:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Prove exact installed-10.0.11 ancestry
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          SOURCE=2e4e958d08927eaf098dc348fdfaed34ecb92b56
+          git cat-file -e "$SOURCE^{commit}"
+          test "$(git merge-base HEAD "$SOURCE")" = "$SOURCE"
+          echo SOURCE_OF_TRUTH=$SOURCE
+          echo CANDIDATE_HEAD=$(git rev-parse HEAD)
+          git status --short
+
+      - name: Prove physical TOSHIBA fixture
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -d "/Volumes/TOSHIBA EXT"
+          test -d "/Volumes/TOSHIBA EXT/ВАЙРОН/Render/Brewroom Jazz"
+          df -h "/Volumes/TOSHIBA EXT"
+          echo TOSHIBA_GATE=GREEN
+
+      - name: Stage Apple Silicon FFmpeg
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
+          TMP="$(mktemp -d)"
+          curl -fL --retry 4 "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffmpeg.zip" -o "$TMP/ffmpeg.zip"
+          curl -fL --retry 4 "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffprobe.zip" -o "$TMP/ffprobe.zip"
+          mkdir -p "$TMP/fm" "$TMP/fp" src-tauri/binaries
+          ditto -x -k "$TMP/ffmpeg.zip" "$TMP/fm"
+          ditto -x -k "$TMP/ffprobe.zip" "$TMP/fp"
+          cp "$(find "$TMP/fm" -type f -name ffmpeg -print -quit)" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp "$(find "$TMP/fp" -type f -name ffprobe -print -quit)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          chmod 755 src-tauri/binaries/ffmpeg-aarch64-apple-darwin src-tauri/binaries/ffprobe-aarch64-apple-darwin
+
+      - name: Compile exact-source candidate
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
+          npm ci
+          npm run check
+          npm run build
+          cargo check --manifest-path src-tauri/Cargo.toml
+          cargo test --manifest-path src-tauri/Cargo.toml -- --nocapture
+          echo COMPILE_REGRESSION=GREEN
+
+      - name: Build isolated packaged QA app
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
+          export CARGO_TARGET_DIR="$HOME/.endlume-build-cache/target-1011-perf-effects-reliability"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('src-tauri/tauri.conf.json')
+          d=json.loads(p.read_text())
+          d['bundle']['createUpdaterArtifacts']=False
+          p.write_text(json.dumps(d,ensure_ascii=False,indent=2)+'\n')
+          PY
+          ENDLUME_TAURI_TARGET=aarch64-apple-darwin node scripts/prepare-macos-ffmpeg-runtime.mjs
+          npx tauri build --target aarch64-apple-darwin --bundles app --features e2e-render
+          APP="$(find "$CARGO_TARGET_DIR/aarch64-apple-darwin/release/bundle/macos" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          test -n "$APP" -a -d "$APP"
+          /usr/bin/codesign --force --deep --sign - --timestamp=none "$APP"
+          /usr/bin/codesign --verify --deep --strict "$APP"
+          EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
+          test -x "$APP/Contents/MacOS/$EXE"
+          test -x "$APP/Contents/MacOS/ffmpeg"
+          test -x "$APP/Contents/MacOS/ffprobe"
+          printf '%s' "$APP/Contents/MacOS/$EXE" > "$RUNNER_TEMP/e1011-perf-effects-bin.txt"
+          printf '%s' "$APP/Contents/MacOS/ffmpeg" > "$RUNNER_TEMP/e1011-perf-effects-ffmpeg.txt"
+          printf '%s' "$APP/Contents/MacOS/ffprobe" > "$RUNNER_TEMP/e1011-perf-effects-ffprobe.txt"
+          echo PACKAGED_APP=GREEN
+
+      - name: Physical effect inventory + isolated render baseline
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ROOT="$RUNNER_TEMP/endlume-1011-perf-effects"
+          rm -rf "$ROOT"; mkdir -p "$ROOT/tmp"
+          export TMPDIR="$ROOT/tmp"
+          BIN="$(cat "$RUNNER_TEMP/e1011-perf-effects-bin.txt")"
+          FFMPEG="$(cat "$RUNNER_TEMP/e1011-perf-effects-ffmpeg.txt")"
+          FFPROBE="$(cat "$RUNNER_TEMP/e1011-perf-effects-ffprobe.txt")"
+          python3 scripts/diag-endlume-1011-performance-effects-reliability.py "$BIN" "$FFMPEG" "$FFPROBE" "$ROOT/report.json" 2>&1 | tee "$ROOT/diagnostic.log"
+          test -s "$ROOT/report.json"
+          python3 - "$ROOT/report.json" <<'PY'
+          import json,sys
+          d=json.load(open(sys.argv[1]))
+          print('REAL_EFFECT_COUNT=%s' % d['realEffectCount'])
+          print('THREE_EFFECT_GATE=%s' % ('PASS' if d['threeEffectGate'] else 'BLOCKED'))
+          for r in d['results']:
+              print('CASE_%s_SECONDS=%s' % (r['label'],r.get('wallSeconds')))
+              print('CASE_%s_ENCODER=%s' % (r['label'],r.get('encoder')))
+              print('CASE_%s_BYTES=%s' % (r['label'],r.get('outputBytes')))
+          print('PHYSICAL_BASELINE_COMPLETE=YES')
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ENDLUME-10.0.11-PERFORMANCE-EFFECTS-BASELINE
+          path: |
+            ${{ runner.temp }}/endlume-1011-perf-effects/**
+          if-no-files-found: warn
+          retention-days: 7

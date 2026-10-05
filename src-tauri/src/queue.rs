@@ -76,18 +76,80 @@ pub(crate) fn done_payload_from_summary(job:&QueueJob,id:&str,summary:&render::R
 pub async fn enqueue_projects(app:AppHandle,runtime:State<'_,Arc<QueueRuntime>>,projects:Vec<ProjectScanItem>,settings:RenderSettings,effects:Vec<EffectPreset>,subscribes:Vec<SubscribePreset>,ambient:Option<String>)->Result<(),String>{
   license::assert_production_allowed(&app).await?;
   if settings.output_dir.trim().is_empty(){return Err("Не выбрана папка результата".into())}
+
+  let mut effect_ids=HashSet::new();
+  for effect in &effects{
+    let id=effect.id.trim();
+    if id.is_empty(){return Err(format!("Effects registry invalid: effect '{}' has empty ID",effect.name))}
+    if !effect_ids.insert(id.to_string()){
+      return Err(format!("Effects registry invalid: duplicate effect ID '{}'. Render blocked to prevent wrong-effect substitution.",id))
+    }
+  }
+
+  let mut prepared=Vec::<(ProjectScanItem,Vec<EffectPreset>)>::new();
+  for project in projects.into_iter().filter(|p|p.valid){
+    let selected_id=match project.selected_effect_id.as_deref().map(str::trim).filter(|x|!x.is_empty()){
+      Some(id)=>id.to_string(),
+      None if effects.is_empty()=>"__none__".into(),
+      None=>return Err(format!("Project '{}' has Effects available but no explicit selectedEffectId. Choose an effect or «Без эффекта» before rendering.",project.name))
+    };
+    let selected=if selected_id=="__none__"{
+      Vec::new()
+    }else{
+      let effect=effects.iter().find(|e|e.id==selected_id).ok_or_else(||format!("Selected effect '{}' for project '{}' is not present in the effect registry",selected_id,project.name))?;
+      if !effect.enabled||effect.usage_mode.as_deref()==Some("off"){
+        return Err(format!("Selected effect '{}' ({}) for project '{}' is disabled. Re-enable it or choose another effect before rendering.",effect.name,effect.id,project.name))
+      }
+      let source=PathBuf::from(&effect.source);
+      if !source.is_file(){
+        return Err(format!("Selected effect '{}' ({}) for project '{}' is missing: {}",effect.name,effect.id,project.name,source.display()))
+      }
+      vec![effect.clone()]
+    };
+    prepared.push((project,selected));
+  }
+
   {
     let active=runtime.active.lock();
     let mut q=runtime.pending.lock();
     let mut occupied=q.iter().map(|j|j.project.id.clone()).collect::<HashSet<_>>();
     if let Some(job)=active.as_ref(){occupied.insert(job.project.id.clone());}
-    for project in projects.into_iter().filter(|p|p.valid){
+    for (project,selected_effects) in prepared{
       if !occupied.insert(project.id.clone()){continue}
       runtime.clear_terminal(&project.id);
-      q.push_back(QueueJob{project,settings:settings.clone(),effects:effects.clone(),subscribes:subscribes.clone(),ambient:ambient.clone()});
+      q.push_back(QueueJob{project,settings:settings.clone(),effects:selected_effects,subscribes:subscribes.clone(),ambient:ambient.clone()});
     }
   }
   runtime.persist(&app);let _=app.emit("queue-changed",queue_snapshot_value(runtime.inner().as_ref()));start_worker_if_needed(app,runtime.inner().clone());Ok(())
+}
+
+fn validate_recovered_effect_contract(job:&mut QueueJob)->Result<(),String>{
+  let selected=job.project.selected_effect_id.as_deref().map(str::trim).filter(|x|!x.is_empty()).map(str::to_string);
+  match selected.as_deref(){
+    Some("__none__")=>{
+      if !job.effects.is_empty(){return Err("recovery содержит Effects при явном выборе «Без эффекта»".into())}
+      Ok(())
+    }
+    Some(id)=>{
+      if job.effects.len()!=1{return Err(format!("recovery для выбранного effect ID '{}' содержит {} preset(s), ожидался ровно 1",id,job.effects.len()))}
+      let effect=&job.effects[0];
+      if effect.id.trim()!=id{return Err(format!("recovery effect ID '{}' не совпадает с сохранённым selectedEffectId '{}'",effect.id,id))}
+      if !effect.enabled||effect.usage_mode.as_deref()==Some("off"){return Err(format!("recovery effect '{}' ({}) выключен",effect.name,effect.id))}
+      let source=PathBuf::from(&effect.source);
+      if !source.is_file(){return Err(format!("recovery effect '{}' ({}) не найден: {}",effect.name,effect.id,source.display()))}
+      Ok(())
+    }
+    None=>{
+      if job.effects.is_empty(){
+        // Legacy no-effect jobs are unambiguous and safe to recover. Stamp the
+        // explicit sentinel so every subsequent persistence cycle uses the new contract.
+        job.project.selected_effect_id=Some("__none__".into());
+        Ok(())
+      }else{
+        Err(format!("legacy recovery содержит {} effect preset(s), но не содержит selectedEffectId; ENDLUME не будет угадывать нужный эффект",job.effects.len()))
+      }
+    }
+  }
 }
 
 fn useful_detail(raw:&str)->String{
@@ -104,7 +166,7 @@ fn friendly_error(raw:&str)->String{
   if low.contains("moov atom not found")||low.contains("invalid data found")||low.contains("error opening input"){return "Один из медиафайлов повреждён или имеет неподдерживаемый формат.".into()}
   if low.contains("videotoolbox")||low.contains("hardware")||low.contains("device")&&low.contains("failed")||low.contains("encoder")&&low.contains("not found"){return "Аппаратный кодировщик не прошёл рендер. ENDLUME автоматически повторяет проект на software fallback.".into()}
   if low.contains("acrossfade")||low.contains("sample rate")||low.contains("channel layout"){return "Ошибка обработки аудиотреков. ENDLUME нормализует MP3 в 48 kHz stereo перед повтором.".into()}
-  if low.contains("colorkey")||low.contains("chromakey")||low.contains("overlay"){return "Ошибка обработки Effects/Subscribe. Проблемный overlay должен быть пропущен без остановки основного видео.".into()}
+  if low.contains("colorkey")||low.contains("chromakey")||low.contains("overlay"){return "Ошибка обработки Effects/Subscribe. ENDLUME не подменяет и не скрывает выбранный production-effect: проект остановлен с ошибкой.".into()}
   if raw=="__ENDLUME_CANCELLED__"{return "Остановлено пользователем".into()}
   let detail=useful_detail(raw);if detail.is_empty(){"Не удалось обработать проект.".into()}else{format!("Не удалось обработать проект. {detail}")}
 }
@@ -186,8 +248,20 @@ pub fn reorder_queue(app:AppHandle,runtime:State<'_,Arc<QueueRuntime>>,ids:Vec<S
 pub async fn resume_recovery(app:AppHandle,runtime:State<'_,Arc<QueueRuntime>>)->Result<(),String>{
   license::assert_production_allowed(&app).await?;
   let value=persistence::read_value(&app,"recovery.json");if !value.get("interrupted").and_then(Value::as_bool).unwrap_or(false){return Ok(())}
-  let mut jobs=Vec::new();if let Some(active)=value.get("active").filter(|v|!v.is_null()){if let Ok(job)=serde_json::from_value::<QueueJob>(active.clone()){jobs.push(job)}}
-  if let Some(pending)=value.get("pending").and_then(Value::as_array){for v in pending{if let Ok(job)=serde_json::from_value::<QueueJob>(v.clone()){jobs.push(job)}}}
+  let mut jobs=Vec::new();
+  let mut blocked=Vec::<String>::new();
+  if let Some(active)=value.get("active").filter(|v|!v.is_null()){
+    if let Ok(mut job)=serde_json::from_value::<QueueJob>(active.clone()){
+      match validate_recovered_effect_contract(&mut job){Ok(())=>jobs.push(job),Err(reason)=>blocked.push(format!("{}: {}",job.project.name,reason))}
+    }
+  }
+  if let Some(pending)=value.get("pending").and_then(Value::as_array){
+    for v in pending{
+      if let Ok(mut job)=serde_json::from_value::<QueueJob>(v.clone()){
+        match validate_recovered_effect_contract(&mut job){Ok(())=>jobs.push(job),Err(reason)=>blocked.push(format!("{}: {}",job.project.name,reason))}
+      }
+    }
+  }
   let mut recovered_projects=Vec::new();
   {
     let active=runtime.active.lock();
@@ -200,6 +274,12 @@ pub async fn resume_recovery(app:AppHandle,runtime:State<'_,Arc<QueueRuntime>>)-
       recovered_projects.push(job.project.clone());
       q.push_back(job);
     }
+  }
+  if !blocked.is_empty(){
+    let shown=blocked.iter().take(8).cloned().collect::<Vec<_>>().join("\n");
+    let more=blocked.len().saturating_sub(8);
+    let suffix=if more>0{format!("\n…и ещё {more}")}else{String::new()};
+    let _=app.emit("render-warning",json!({"id":"recovery-effect-contract","message":format!("ENDLUME не восстановил {} legacy job(s) с неоднозначным Effects state. Добавьте эти проекты в очередь заново и явно выберите эффект или «Без эффекта».\n{}{}",blocked.len(),shown,suffix)}));
   }
   let _=app.emit("queue-recovered",json!({"projects":recovered_projects}));let _=persistence::write_value(&app,"recovery.json",&json!({"interrupted":false}));runtime.persist(&app);start_worker_if_needed(app,runtime.inner().clone());Ok(())
 }

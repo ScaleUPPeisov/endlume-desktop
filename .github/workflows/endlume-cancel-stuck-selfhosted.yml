@@ -1,0 +1,32 @@
+name: ENDLUME Cancel Stale Self-Hosted Run
+
+on:
+  push:
+    branches: [hotfix/endlume-10.0.11-performance-effects-reliability]
+    paths:
+      - ".github/workflows/endlume-cancel-stuck-selfhosted.yml"
+  workflow_dispatch: {}
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  cancel-stale:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Cancel stale self-hosted run
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const run_id = 37346788821;
+            const { owner, repo } = context.repo;
+            const run = await github.rest.actions.getWorkflowRun({ owner, repo, run_id });
+            core.info(`stale run status=${run.data.status} conclusion=${run.data.conclusion}`);
+            if (run.data.status !== 'completed') {
+              await github.rest.actions.cancelWorkflowRun({ owner, repo, run_id });
+              core.info(`cancel requested for ${run_id}`);
+            } else {
+              core.info(`run ${run_id} already completed`);
+            }

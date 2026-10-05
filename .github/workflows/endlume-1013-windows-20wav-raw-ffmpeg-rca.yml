@@ -18,7 +18,7 @@ concurrency:
 jobs:
   windows-raw-ffmpeg-rca:
     name: Windows x64 • 20 WAV • CF 0/5/10 • LUFS raw RCA
-    runs-on: windows-latest
+    runs-on: windows-2022
     timeout-minutes: 60
 
     steps:

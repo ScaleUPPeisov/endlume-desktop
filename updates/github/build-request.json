@@ -1,11 +1,11 @@
 {
-  "enabled": true,
-  "generation": 45,
+  "enabled": false,
+  "generation": 46,
   "app": "endlume",
   "channel": "stable",
   "version": "10.0.6",
   "builder": "BUILD_ENDLUME_1006_MAC_UPDATER.command",
-  "notes": "ENDLUME 10.0.6 production macOS updater. Exact source bd81d86152cb2f20fe02e33849aec255ea013634; hotfix 03df61a58641d5ce0b4e1c432c99af935acbf4d1. macOS only.",
+  "notes": "Legacy local macOS release-agent request disabled. ENDLUME routine build/release is migrating to GitHub-hosted macOS runners; keep local Mac for physical acceptance only.",
   "platforms": [
     "darwin-aarch64"
   ]

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import json, os, re, subprocess, sys, tempfile
+import json, os, subprocess, sys, tempfile
 from pathlib import Path
 
 if len(sys.argv) != 6:
@@ -23,10 +23,13 @@ source=source.split(cut,1)[0]
 
 # This smoke is strictly Preview/window QA. Do not create the 15-minute
 # background-music fixture from the full acceptance harness.
-source,n=re.subn(
-    r'\nbackground=tmp_root/"background-15m\\.m4a".*?assert 895<=background_duration<=905,background_duration\n',
-    '\n',source,flags=re.S)
-assert n==1,"BACKGROUND_FIXTURE_STRIP_ANCHOR_NOT_FOUND"
+bg_start='\nbackground=tmp_root/"background-15m.m4a"\n'
+bg_end='assert 895<=background_duration<=905,background_duration\n'
+assert bg_start in source,"BACKGROUND_FIXTURE_START_NOT_FOUND"
+bg_a=source.index(bg_start)
+assert bg_end in source[bg_a:],"BACKGROUND_FIXTURE_END_NOT_FOUND"
+bg_b=source.index(bg_end,bg_a)+len(bg_end)
+source=source[:bg_a]+'\n'+source[bg_b:]
 
 # Inject the visibility guard into the exact three packaged app launches used by
 # the proven critical Preview acceptance: cold-effects, cold-subscribe and the

@@ -4,31 +4,40 @@ workflows:
     instance_type: mac_mini_m2
     max_build_duration: 120
     environment:
-      node: 22
+      node: v22.11.0
       vars:
         ENDLUME_VERSION: "10.0.11"
-        ENDLUME_SOURCE_HEAD: "d7193383eda5ff3f1c8976d6c1a97d1eeb10305b"
-    triggering:
-      events:
-        - manual
+        ENDLUME_PRODUCT_HEAD: "d7193383eda5ff3f1c8976d6c1a97d1eeb10305b"
     scripts:
-      - name: Verify exact source and host
+      - name: Verify frozen product and hosted Apple Silicon
         script: |
           set -Eeuo pipefail
-          echo "CODMAGIC_BUILD_ID=${CM_BUILD_ID:-unknown}"
-          echo "BRANCH=${CM_BRANCH:-unknown}"
-          git rev-parse HEAD
-          test "$(git rev-parse HEAD)" = "$ENDLUME_SOURCE_HEAD"
+          echo "CM_BUILD_ID=${CM_BUILD_ID:-unknown}"
+          echo "CM_BRANCH=${CM_BRANCH:-unknown}"
+          echo "HEAD=$(git rev-parse HEAD)"
+          git merge-base --is-ancestor "$ENDLUME_PRODUCT_HEAD" HEAD
+          git diff --name-only "$ENDLUME_PRODUCT_HEAD"...HEAD | tee /tmp/endlume-codemagic-files.txt
+          if grep -Ev '^codemagic\.yaml$' /tmp/endlume-codemagic-files.txt | grep -q .; then
+            echo "ERROR: files other than codemagic.yaml changed after frozen product HEAD"
+            exit 1
+          fi
           uname -a
           sw_vers
           test "$(uname -m)" = "arm64"
           echo LOCAL_MAC_USED=NO
-      - name: Install Rust target
+          echo PRODUCT_CODE_CHANGED=NO
+
+      - name: Prepare Rust toolchain
         script: |
           set -Eeuo pipefail
+          if ! command -v rustup >/dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+          fi
+          export PATH="$HOME/.cargo/bin:$PATH"
           rustup target add aarch64-apple-darwin
           rustc --version
           cargo --version
+
       - name: Stage FFmpeg and FFprobe
         script: |
           set -Eeuo pipefail
@@ -42,9 +51,14 @@ workflows:
           cp "$(find "$TMP/fp" -type f -name ffprobe -print -quit)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
           chmod 755 src-tauri/binaries/ffmpeg-aarch64-apple-darwin src-tauri/binaries/ffprobe-aarch64-apple-darwin
           rm -rf "$TMP"
-      - name: Install dependencies and compile
+          src-tauri/binaries/ffmpeg-aarch64-apple-darwin -version | head -1
+          src-tauri/binaries/ffprobe-aarch64-apple-darwin -version | head -1
+
+      - name: Compile and regression
         script: |
           set -Eeuo pipefail
+          export PATH="$HOME/.cargo/bin:$PATH"
+          export CARGO_TARGET_DIR="$CM_BUILD_DIR/.codemagic-target"
           npm ci
           npm run check
           npm run build
@@ -52,9 +66,18 @@ workflows:
           cargo test --manifest-path src-tauri/Cargo.toml cache::tests -- --nocapture
           cargo test --manifest-path src-tauri/Cargo.toml -- --nocapture
           cargo check --manifest-path src-tauri/Cargo.toml --features e2e-render --target aarch64-apple-darwin
+          grep -q 'BackgroundMusicSettings' src/types.ts
+          grep -q 'render-asset-recovered' src-tauri/src/render.rs
+          grep -q 'window.visible=false' src-tauri/src/lib.rs
+          grep -q 'window.focus=false' src-tauri/src/lib.rs
+          grep -q 'window.focusable=false' src-tauri/src/lib.rs
+          echo COMPILE=GREEN
+          echo RUST_TESTS=GREEN
+
       - name: Build packaged macOS ARM64 app
         script: |
           set -Eeuo pipefail
+          export PATH="$HOME/.cargo/bin:$PATH"
           export CARGO_TARGET_DIR="$CM_BUILD_DIR/.codemagic-target"
           python3 - <<'PY'
           import json
@@ -79,7 +102,9 @@ workflows:
           mkdir -p "$CM_BUILD_DIR/out"
           /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$APP" "$CM_BUILD_DIR/out/ENDLUME-10.0.11-HOSTED-QA.app.zip"
           printf '%s' "$BIN" > "$CM_BUILD_DIR/out/bin-path.txt"
-      - name: Deterministic Gate A fixture and acceptance
+          echo MACOS_ARM64_PACKAGE=GREEN
+
+      - name: Deterministic Gate A
         script: |
           set -Eeuo pipefail
           ROOT="$CM_BUILD_DIR/endlume-1011-deterministic"
@@ -95,7 +120,7 @@ workflows:
           FFPROBE="$CM_BUILD_DIR/src-tauri/binaries/ffprobe-aarch64-apple-darwin"
           BIN="$(cat "$CM_BUILD_DIR/out/bin-path.txt")"
 
-          "$FFMPEG" -hide_banner -loglevel error -f lavfi -i "color=c=0x172033:size=1920x1080:rate=1" -frames:v 1 -y "$PROJECT/001.png"
+          "$FFMPEG" -hide_banner -loglevel error -f lavfi -i "color=c=0x172033:size=1920x1080:rate=1" -vf "drawbox=x=160:y=120:w=1600:h=840:color=0x24385c@1:t=fill,drawbox=x=620:y=410:w=680:h=260:color=0x5c6cff@1:t=fill" -frames:v 1 -y "$PROJECT/001.png"
           MASTER="$ROOT/track-master.m4a"
           "$FFMPEG" -hide_banner -loglevel error -f lavfi -i "anullsrc=r=48000:cl=stereo" -t 720 -c:a aac -b:a 64k -ar 48000 -ac 2 -y "$MASTER"
           for n in 01 02 03 04 05 06 07 08 09 10; do ln "$MASTER" "$PROJECT/track-$n.m4a" 2>/dev/null || cp "$MASTER" "$PROJECT/track-$n.m4a"; done
@@ -105,18 +130,21 @@ workflows:
           cp scripts/qa-endlume-1011-critical-hotfix.py "$ROOT/qa.py"
           python3 - "$ROOT/qa.py" <<'PY'
           from pathlib import Path
-          p=Path(__import__('sys').argv[1])
-          s=p.read_text()
+          import sys
+          p=Path(sys.argv[1]); s=p.read_text()
           replacements=[
             ('VOL=Path("/Volumes/TOSHIBA EXT")','VOL=Path(__import__("os").environ["ENDLUME_QA_VOL"])'),
             ('OUT=VOL/"ВАЙРОН"/"Render"/"Brewroom Jazz"','OUT=Path(__import__("os").environ["ENDLUME_QA_OUT"])'),
             ('assert VOL.is_dir() and OUT.is_dir(),OUT','assert VOL.is_dir(),VOL\nOUT.mkdir(parents=True,exist_ok=True)\nassert OUT.is_dir(),OUT'),
-            ('def resolve_project():\n    roots=[]','def resolve_project():\n    forced=__import__("os").environ.get("ENDLUME_QA_PROJECT")\n    if forced:\n        project=Path(forced)\n        files=[p for p in project.iterdir() if p.is_file() and not p.name.startswith(".") and not p.name.startswith("._")]\n        media=sorted([p for p in files if p.suffix.lower() in IMAGE|VIDEO],key=lambda x:x.name.lower())\n        songs=sorted([p for p in files if p.suffix.lower() in AUDIO],key=lambda x:x.name.lower())\n        assert media and len(songs)>=8\n        return project,media,songs[:15]\n    roots=[]'),
-            ('base_frame=frame(baseline["exact"])\nfilm_frame=frame(cold_fx["exact"]);eq_frame=frame(eq_prev["exact"]);third_frame=frame(third_prev["exact"]);sub_frame=frame(cold_sub["exact"])','base_frame=frame(baseline["exact"],0.0)\nfilm_frame=frame(cold_fx["exact"],0.0);eq_frame=frame(eq_prev["exact"],0.0);third_frame=frame(third_prev["exact"],0.0);sub_frame=frame(cold_sub["exact"],0.0)')
+            ('def resolve_project():\n    roots=[]','def resolve_project():\n    forced=__import__("os").environ.get("ENDLUME_QA_PROJECT")\n    if forced:\n        project=Path(forced)\n        assert project.is_dir(),project\n        files=[p for p in project.iterdir() if p.is_file() and not p.name.startswith(".") and not p.name.startswith("._")]\n        media=sorted([p for p in files if p.suffix.lower() in IMAGE|VIDEO],key=lambda x:x.name.lower())\n        songs=sorted([p for p in files if p.suffix.lower() in AUDIO],key=lambda x:x.name.lower())\n        assert media and len(songs)>=8,(project,len(media),len(songs))\n        return project,media,songs[:15]\n    roots=[]'),
+            ('lib_path,lib=load_library()','lib_path,lib=(None,{"effects":[],"subscribes":[],"ambient":None}) if __import__("os").environ.get("ENDLUME_QA_DETERMINISTIC")=="1" else load_library()'),
+            ('base_frame=frame(baseline["exact"])\nfilm_frame=frame(cold_fx["exact"]);eq_frame=frame(eq_prev["exact"]);third_frame=frame(third_prev["exact"]);sub_frame=frame(cold_sub["exact"])','base_frame=frame(baseline["exact"],0.0)\nfilm_frame=frame(cold_fx["exact"],0.0);eq_frame=frame(eq_prev["exact"],0.0);third_frame=frame(third_prev["exact"],0.0);sub_frame=frame(cold_sub["exact"],0.0)'),
+            ('render_meta[pid]={"path":str(p),"wall":float(row["wallSeconds"]),"mib":mib,"duration":dur}','render_meta[pid]={"path":str(p),"wall":float(row["wallSeconds"]),"mib":mib,"duration":dur,"encoder":str(row.get("encoder","")),"fastPath":str(row.get("fastPath",""))}')
           ]
           for old,new in replacements:
-              if old in s:
-                  s=s.replace(old,new,1)
+              count=s.count(old)
+              assert count==1,(old,count)
+              s=s.replace(old,new,1)
           p.write_text(s)
           PY
 
@@ -132,13 +160,23 @@ workflows:
           assert d['status']=='GREEN',d
           assert d['coldEffectsPreview']=='GREEN'
           assert d['coldSubscribePreview']=='GREEN'
+          assert d['cacheInvalidation']=='GREEN'
           assert d['backgroundMusic']['status']=='GREEN'
+          assert d['backgroundMusic']['tempPcm'] is False
+          assert abs(float(d['backgroundMusic']['coveredDuration'])-7320.0)<=1.0
           assert d['effectPathRecovery']=='GREEN'
           for pid in ('e1011-on','e1011-warm','e1011-bg-eq'):
               assert float(d['render'][pid]['wall']) <= 20.0,(pid,d['render'][pid]['wall'])
           assert 400 <= float(d['render']['e1011-on']['mib']) <= 600
+          assert d['render']['e1011-on']['encoder']=='hevc_videotoolbox',d['render']['e1011-on']
+          assert d['render']['e1011-on']['fastPath']=='FAST_ONE_IMAGE',d['render']['e1011-on']
           print('CODEMAGIC_GATE_A=GREEN')
+          print('COLD_SECONDS=',d['render']['e1011-on']['wall'])
+          print('WARM_SECONDS=',d['render']['e1011-warm']['wall'])
+          print('BG_EQ_SECONDS=',d['render']['e1011-bg-eq']['wall'])
+          print('OUTPUT_MIB=',d['render']['e1011-on']['mib'])
           PY
+
     artifacts:
       - out/ENDLUME-10.0.11-HOSTED-QA.app.zip
       - endlume-1011-deterministic/report.json

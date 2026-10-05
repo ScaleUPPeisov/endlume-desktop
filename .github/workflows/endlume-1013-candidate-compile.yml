@@ -1,77 +1,19 @@
-name: ENDLUME 10.0.13 Candidate Compile Gate
+name: ENDLUME 10.0.13 Candidate Compile Gate (retired mac gate)
 
 on:
-  push:
-    branches:
-      - hotfix/endlume-10.0.13-windows-20wav-audio-runtime
-    paths:
-      - ".github/workflows/endlume-1013-candidate-compile.yml"
-      - "src/**"
-      - "src-tauri/**"
-      - "package.json"
-      - "package-lock.json"
   workflow_dispatch: {}
 
 permissions:
   contents: read
 
-concurrency:
-  group: endlume-1013-candidate-compile
-  cancel-in-progress: true
-
 jobs:
-  compile:
-    name: macOS ARM64 compile + unit regressions
-    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
-    timeout-minutes: 45
+  retired:
+    name: Retired — Windows-hosted pipeline is authoritative
+    runs-on: windows-2022
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.sha }}
-          clean: true
-          fetch-depth: 1
-          persist-credentials: false
-
-      - name: Stage macOS FFmpeg sidecars
-        shell: bash
+      - name: Retired compile gate
+        shell: pwsh
         run: |
-          set -Eeuo pipefail
-          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
-          TMP="$(mktemp -d)"
-          trap 'rm -rf "$TMP"' EXIT
-          curl -fL --retry 4 "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffmpeg.zip" -o "$TMP/ffmpeg.zip"
-          curl -fL --retry 4 "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffprobe.zip" -o "$TMP/ffprobe.zip"
-          mkdir -p "$TMP/fm" "$TMP/fp" src-tauri/binaries
-          ditto -x -k "$TMP/ffmpeg.zip" "$TMP/fm"
-          ditto -x -k "$TMP/ffprobe.zip" "$TMP/fp"
-          FFMPEG="$(find "$TMP/fm" -type f -name ffmpeg -print -quit)"
-          FFPROBE="$(find "$TMP/fp" -type f -name ffprobe -print -quit)"
-          test -n "$FFMPEG" -a -n "$FFPROBE"
-          cp "$FFMPEG" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
-          cp "$FFPROBE" src-tauri/binaries/ffprobe-aarch64-apple-darwin
-          chmod 755 src-tauri/binaries/ffmpeg-aarch64-apple-darwin src-tauri/binaries/ffprobe-aarch64-apple-darwin
-          src-tauri/binaries/ffmpeg-aarch64-apple-darwin -hide_banner -version | head -1
-
-      - name: Frontend and Rust compile gates
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
-          export CARGO_TARGET_DIR="$HOME/.endlume-build-cache/target-1013-audio"
-          npm ci
-          npm run check
-          npm run build
-          cargo check --manifest-path src-tauri/Cargo.toml --target aarch64-apple-darwin
-          cargo test --manifest-path src-tauri/Cargo.toml --lib -- --nocapture
-          echo ENDLUME_1013_CANDIDATE_COMPILE_GREEN
-
-      - name: Source contract
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          grep -q 'const GROUP_WIDTH:usize=4' src-tauri/src/audio_1013.rs
-          grep -q 'sample_fmts=s32:sample_rates=48000:channel_layouts=stereo' src-tauri/src/audio_1013.rs
-          grep -q 'prepare_windows_bounded_audio' src-tauri/src/queue.rs
-          grep -q 'prepare_windows_bounded_audio' src-tauri/src/lib.rs
-          git merge-base --is-ancestor c700adb0fa38a5a3a7d448952a6a164fd06cc9ff HEAD
-          echo ENDLUME_1013_SOURCE_CONTRACT_GREEN
+          Write-Host 'Physical macOS runner is forbidden for 10.0.13 routine QA.'
+          Write-Host 'Use .github/workflows/endlume-1013-windows-candidate.yml.'

@@ -1,4 +1,4 @@
-use crate::{license,model::{EffectPreset,ProjectScanItem,QueueJob,RenderSettings,SubscribePreset},persistence,render};
+use crate::{audio_1013,license,model::{EffectPreset,ProjectScanItem,QueueJob,RenderSettings,SubscribePreset},persistence,render};
 use parking_lot::Mutex;
 use serde_json::{json,Value};
 use std::{collections::{HashSet,VecDeque},fs,path::PathBuf,sync::{Arc,atomic::{AtomicBool,Ordering}},time::{Instant,UNIX_EPOCH}};
@@ -103,7 +103,7 @@ fn friendly_error(raw:&str)->String{
   if low.contains("no such file")||low.contains("не найден файл")||low.contains("папка проекта не найдена"){return "Один из файлов проекта не найден. ENDLUME повторно сканирует выбранную папку, но файл всё ещё недоступен.".into()}
   if low.contains("moov atom not found")||low.contains("invalid data found")||low.contains("error opening input"){return "Один из медиафайлов повреждён или имеет неподдерживаемый формат.".into()}
   if low.contains("videotoolbox")||low.contains("hardware")||low.contains("device")&&low.contains("failed")||low.contains("encoder")&&low.contains("not found"){return "Аппаратный кодировщик не прошёл рендер. ENDLUME автоматически повторяет проект на software fallback.".into()}
-  if low.contains("acrossfade")||low.contains("sample rate")||low.contains("channel layout"){return "Ошибка обработки аудиотреков. ENDLUME нормализует MP3 в 48 kHz stereo перед повтором.".into()}
+  if low.contains("acrossfade")||low.contains("sample rate")||low.contains("channel layout")||low.contains("bounded audio")||low.contains("normalize wav"){return "Ошибка обработки аудио. Точный FFmpeg stderr сохранён в журнале проекта; формат источника больше не подменяется сообщением про MP3.".into()}
   if low.contains("colorkey")||low.contains("chromakey")||low.contains("overlay"){return "Ошибка обработки Effects/Subscribe. Проблемный overlay должен быть пропущен без остановки основного видео.".into()}
   if raw=="__ENDLUME_CANCELLED__"{return "Остановлено пользователем".into()}
   let detail=useful_detail(raw);if detail.is_empty(){"Не удалось обработать проект.".into()}else{format!("Не удалось обработать проект. {detail}")}
@@ -114,7 +114,8 @@ fn save_error_log(job:&QueueJob,raw:&str)->Option<String>{
   if fs::create_dir_all(&dir).is_err(){return None}
   let safe=job.project.name.chars().map(|c|if ['/', '\\', ':', '*', '?', '"', '<', '>', '|'].contains(&c){'_'}else{c}).collect::<String>();
   let path=dir.join(format!("{} — error.txt",safe));
-  let body=format!("ENDLUME render error\nProject: {}\nPath: {}\nVersion: {}\n\n{}\n",job.project.name,job.project.path,env!("CARGO_PKG_VERSION"),raw);
+  let tracks=job.project.audio.iter().enumerate().map(|(i,p)|format!("{:02}. {}",i+1,p)).collect::<Vec<_>>().join("\n");
+  let body=format!("ENDLUME render error\nProject: {}\nPath: {}\nVersion: {}\nTrack count: {}\nCrossfade: {}\nNormalize LUFS: {}\nAmbient: {}\nDuration mode: {}\n\nTracks:\n{}\n\nRaw error:\n{}\n",job.project.name,job.project.path,env!("CARGO_PKG_VERSION"),job.project.audio.len(),job.settings.crossfade_sec,job.settings.normalize_lufs,job.ambient.as_ref().map(|x|x.as_str()).unwrap_or("OFF"),job.settings.duration_mode,tracks,raw);
   fs::write(&path,body).ok().map(|_|path.to_string_lossy().into_owned())
 }
 
@@ -134,7 +135,17 @@ fn start_worker_if_needed(app:AppHandle,runtime:Arc<QueueRuntime>){
       let Some(job)=next else{break};
       runtime.persist(&app);let _=app.emit("queue-changed",queue_snapshot_value(runtime.as_ref()));
       let id=job.project.id.clone();let cancel=Arc::new(AtomicBool::new(false));*runtime.active_cancel.lock()=Some(cancel.clone());license::telemetry_render_started(&job);let job_timer=Instant::now();
-      let outcome=render::render_job(&app,&job,cancel).await;*runtime.active_cancel.lock()=None;
+      let prepared=audio_1013::prepare_windows_bounded_audio(&app,&job,cancel.clone()).await;
+      let (outcome,prepared_audio)=match prepared{
+        Ok(Some(prepared_audio))=>{
+          let outcome=render::render_job(&app,&prepared_audio.job,cancel.clone()).await;
+          (outcome,Some(prepared_audio))
+        }
+        Ok(None)=>(render::render_job(&app,&job,cancel.clone()).await,None),
+        Err(error)=>(Err(error),None),
+      };
+      if let Some(prepared_audio)=prepared_audio.as_ref(){audio_1013::cleanup_prepared_audio(prepared_audio);}
+      *runtime.active_cancel.lock()=None;
       let cancelled=runtime.cancelled.lock().remove(&id);
       if cancelled{
         license::telemetry_render_terminal(&job,"render_cancelled",None,None,None,Some(job_timer.elapsed().as_secs_f64()));

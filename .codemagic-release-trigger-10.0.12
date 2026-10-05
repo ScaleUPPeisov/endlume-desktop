@@ -1,4 +1,5 @@
 ENDLUME 10.0.12 macOS release trigger
 Cloud build only; local Mac not used.
 Secrets configured in Codemagic app group: endlume_release.
-Trigger timestamp: 2026-10-05T11:03:00Z
+Trigger timestamp: 2026-10-05T11:06:00Z
+Remote release requested by ChatGPT after secrets setup.

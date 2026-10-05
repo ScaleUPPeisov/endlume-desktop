@@ -27,7 +27,25 @@ fn eligible(job:&QueueJob)->bool{
 
 fn cancelled(cancel:&AtomicBool)->Result<(),String>{if cancel.load(Ordering::SeqCst){Err(CANCELLED.into())}else{Ok(())}}
 
+pub(crate) fn transition_count_for_tracks(mut count:usize)->usize{
+  let mut transitions=0usize;
+  while count>1{
+    let mut start=0usize;
+    let mut next=0usize;
+    while start<count{
+      let width=(count-start).min(GROUP_WIDTH);
+      transitions+=width.saturating_sub(1);
+      next+=1;
+      start+=width;
+    }
+    count=next;
+  }
+  transitions
+}
+
 async fn tool_output(app:&AppHandle,name:&str,args:Vec<String>,stage:&str)->Result<Vec<u8>,String>{
+  #[cfg(feature="e2e-render")]
+  eprintln!("ENDLUME_1013_TOOL_CMD {}",json!({"name":name,"stage":stage,"args":&args}));
   let out=app.shell().sidecar(name).map_err(|e|format!("ENDLUME 10.0.13 {stage}: {name} недоступен: {e}"))?.args(args).output().await.map_err(|e|format!("ENDLUME 10.0.13 {stage}: запуск {name}: {e}"))?;
   if !out.status.success(){
     let raw=String::from_utf8_lossy(&out.stderr).trim().to_string();
@@ -174,7 +192,7 @@ async fn prepare_inner(app:&AppHandle,job:&QueueJob,work:&Path,cancel:&AtomicBoo
   prepared.settings.crossfade_sec=0.0;
   prepared.settings.normalize_lufs=false;
   prepared.ambient=None;
-  let _=app.emit("engine-profile",json!({"id":job.project.id,"audioBounded1013":true,"sourceTracks":total,"maxSimultaneousInputs":GROUP_WIDTH,"crossfadeApplied":cf,"normalizeApplied":job.settings.normalize_lufs,"ambientApplied":job.ambient.as_ref().map(|x|!x.trim().is_empty()).unwrap_or(false),"expectedAudioDuration":expected,"actualAudioDuration":final_duration,"preparedAudio":final_mp3}));
+  let _=app.emit("engine-profile",json!({"id":job.project.id,"audioBounded1013":true,"sourceTracks":total,"maxSimultaneousInputs":GROUP_WIDTH,"transitionCount":transition_count_for_tracks(total),"crossfadeApplied":cf,"normalizeApplied":job.settings.normalize_lufs,"ambientApplied":job.ambient.as_ref().map(|x|!x.trim().is_empty()).unwrap_or(false),"expectedAudioDuration":expected,"actualAudioDuration":final_duration,"preparedAudio":final_mp3}));
   Ok(prepared)
 }
 
@@ -208,6 +226,13 @@ mod tests{
 
   #[test]
   fn bounded_width_is_four(){assert_eq!(GROUP_WIDTH,4)}
+
+  #[test]
+  fn transition_count_matches_actual_hierarchy(){
+    for (tracks,expected) in [(1,0),(2,1),(4,3),(5,4),(8,7),(20,19),(30,29)]{
+      assert_eq!(transition_count_for_tracks(tracks),expected,"tracks={tracks}");
+    }
+  }
 
   #[test]
   fn non_mp3_many_tracks_are_targeted(){

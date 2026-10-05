@@ -1,0 +1,75 @@
+name: ENDLUME 10.0.11 Effect Asset Visual Forensics
+
+on:
+  push:
+    branches: [hotfix/endlume-10.0.11-performance-effects-reliability]
+    paths:
+      - ".github/workflows/endlume-1011-effect-asset-visual-forensics.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  visual-forensics:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Probe all durable effect assets and export representative frames
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          APP="$HOME/Library/Application Support/studio.endlume.desktop"
+          DIR="$APP/library-assets/effects"
+          OUT="$RUNNER_TEMP/endlume-effect-visual-forensics"
+          rm -rf "$OUT"; mkdir -p "$OUT/frames"
+          FFPROBE="$(command -v ffprobe || true)"
+          FFMPEG="$(command -v ffmpeg || true)"
+          if [ -z "$FFPROBE" ] || [ -z "$FFMPEG" ]; then
+            CANDIDATE="$(find /Applications "$HOME/Applications" -maxdepth 4 -type f \( -name ffprobe -o -name ffmpeg \) 2>/dev/null | head -n 1 || true)"
+            :
+          fi
+          if [ -z "$FFPROBE" ]; then FFPROBE="$(find /Applications "$HOME/Applications" -type f -path '*/Contents/MacOS/ffprobe' -print -quit 2>/dev/null || true)"; fi
+          if [ -z "$FFMPEG" ]; then FFMPEG="$(find /Applications "$HOME/Applications" -type f -path '*/Contents/MacOS/ffmpeg' -print -quit 2>/dev/null || true)"; fi
+          test -x "$FFPROBE"
+          test -x "$FFMPEG"
+          echo "FFPROBE=$FFPROBE"
+          echo "FFMPEG=$FFMPEG"
+          python3 - "$DIR" "$FFPROBE" "$FFMPEG" "$OUT" <<'PY'
+          import os,sys,subprocess,json,hashlib
+          root,ffprobe,ffmpeg,out=sys.argv[1:]
+          files=sorted(os.path.join(root,x) for x in os.listdir(root) if os.path.isfile(os.path.join(root,x)))
+          rows=[]
+          seen={}
+          for i,p in enumerate(files,1):
+              h=hashlib.sha256(open(p,'rb').read()).hexdigest()
+              probe=subprocess.run([ffprobe,'-v','error','-show_entries','format=duration:stream=index,codec_type,codec_name,width,height,avg_frame_rate,pix_fmt','-of','json',p],capture_output=True,text=True)
+              meta=json.loads(probe.stdout or '{}') if probe.returncode==0 else {'error':probe.stderr}
+              dur=float((meta.get('format') or {}).get('duration') or 0)
+              row={'index':i,'path':p,'name':os.path.basename(p),'bytes':os.path.getsize(p),'sha256':h,'duration':dur,'meta':meta,'duplicateOf':seen.get(h)}
+              if h not in seen: seen[h]=os.path.basename(p)
+              rows.append(row)
+              if not row['duplicateOf']:
+                  t=max(0.0,min(dur*0.5, dur-0.05)) if dur else 0.0
+                  png=os.path.join(out,'frames',f"{i:02d}_{os.path.basename(p)}.png")
+                  r=subprocess.run([ffmpeg,'-hide_banner','-loglevel','error','-ss',f'{t:.3f}','-i',p,'-frames:v','1','-vf','scale=960:-2','-y',png],capture_output=True,text=True)
+                  row['frame']=png if r.returncode==0 and os.path.exists(png) else None
+                  row['frameError']=r.stderr if r.returncode else None
+              print('ASSET_META='+json.dumps(row,ensure_ascii=False))
+          with open(os.path.join(out,'report.json'),'w') as f: json.dump(rows,f,ensure_ascii=False,indent=2)
+          print('UNIQUE_HASH_COUNT=%d' % len(seen))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ENDLUME-10.0.11-EFFECT-ASSET-VISUAL-FORENSICS
+          path: ${{ runner.temp }}/endlume-effect-visual-forensics/**
+          if-no-files-found: error
+          retention-days: 7

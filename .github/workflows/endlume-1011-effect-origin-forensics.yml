@@ -1,0 +1,35 @@
+name: ENDLUME 10.0.11 Effect Origin Forensics
+
+on:
+  push:
+    branches: [hotfix/endlume-10.0.11-performance-effects-reliability]
+    paths:
+      - ".github/workflows/endlume-1011-effect-origin-forensics.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  origins:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Inspect origin metadata for durable effect assets
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          DIR="$HOME/Library/Application Support/studio.endlume.desktop/library-assets/effects"
+          for f in "$DIR"/*; do
+            [ -f "$f" ] || continue
+            echo "=== FILE=$f ==="
+            stat -f 'BIRTH=%SB|MOD=%Sm|SIZE=%z' -t '%Y-%m-%dT%H:%M:%S%z' "$f"
+            /usr/bin/mdls -name kMDItemDisplayName -name kMDItemWhereFroms -name kMDItemDownloadedDate -name kMDItemFSName "$f" 2>/dev/null || true
+            /usr/bin/xattr -l "$f" 2>/dev/null || true
+          done

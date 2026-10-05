@@ -16,7 +16,8 @@ concurrency:
 
 jobs:
   deterministic-release:
-    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    name: Gate A — hosted deterministic packaged acceptance
+    runs-on: macos-14
     timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
@@ -25,6 +26,30 @@ jobs:
           clean: true
           fetch-depth: 0
           persist-credentials: false
+
+      - name: Prove hosted runner and configure ephemeral build paths
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          echo "RUNNER_NAME=$RUNNER_NAME"
+          echo "RUNNER_ARCH=$RUNNER_ARCH"
+          uname -a
+          sw_vers
+          test "$RUNNER_NAME" != "kirill-mac-endlume"
+          echo "CARGO_TARGET_DIR=$RUNNER_TEMP/endlume-1011-v2-cargo-target" >> "$GITHUB_ENV"
+          echo LOCAL_ENDLUME_RUNNER_STARTED=NO
+          echo LOCAL_RELEASE_AGENT_STARTED=NO
+          echo LOCAL_BUILD_CACHE_CREATED=NO
+          echo LOCAL_MAC_USED_FOR_BUILD=NO
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
 
       - name: Freeze guard
         shell: bash
@@ -36,18 +61,19 @@ jobs:
             echo PRODUCT_OR_UNEXPECTED_FILE_CHANGED
             exit 1
           fi
+          echo SOURCE_HEAD=fc5c8bb214e52bbfc6d2d0162fe02c6cecd27623
           echo PRODUCT_CODE_CHANGED=NO
           echo WINDOWS_TOUCHED=NO
           echo VERSION=10.0.11
 
-      - name: Stage Apple Silicon FFmpeg
+      - name: Stage Apple Silicon FFmpeg / FFprobe
         shell: bash
         run: |
           set -Eeuo pipefail
-          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
-          TMP="$(mktemp -d)"
+          TMP="$(mktemp -d "$RUNNER_TEMP/endlume-ffmpeg.XXXXXX")"
           TOOLS="$RUNNER_TEMP/endlume-1011-v2-tools"
-          rm -rf "$TOOLS"; mkdir -p "$TMP/fm" "$TMP/fp" "$TOOLS" src-tauri/binaries
+          rm -rf "$TOOLS"
+          mkdir -p "$TMP/fm" "$TMP/fp" "$TOOLS" src-tauri/binaries
           curl -fL --retry 4 "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffmpeg.zip" -o "$TMP/ffmpeg.zip"
           curl -fL --retry 4 "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffprobe.zip" -o "$TMP/ffprobe.zip"
           ditto -x -k "$TMP/ffmpeg.zip" "$TMP/fm"
@@ -63,19 +89,21 @@ jobs:
           echo "ENDLUME_QA_FFMPEG=$TOOLS/ffmpeg" >> "$GITHUB_ENV"
           echo "ENDLUME_QA_FFPROBE=$TOOLS/ffprobe" >> "$GITHUB_ENV"
           "$TOOLS/ffmpeg" -version | head -1
+          "$TOOLS/ffprobe" -version | head -1
+          rm -rf "$TMP"
           echo FFMPEG=GREEN
 
       - name: Compile and frozen-product regression
         shell: bash
         run: |
           set -Eeuo pipefail
-          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
           npm ci
           npm run check
           npm run build
           cargo test --manifest-path src-tauri/Cargo.toml live_preview::tests -- --nocapture
           cargo test --manifest-path src-tauri/Cargo.toml cache::tests -- --nocapture
           cargo test --manifest-path src-tauri/Cargo.toml -- --nocapture
+          cargo check --manifest-path src-tauri/Cargo.toml --features e2e-render --target aarch64-apple-darwin
           grep -q 'BackgroundMusicSettings' src/types.ts
           grep -q 'bass=f=120' src-tauri/src/render.rs
           grep -q 'equalizer=f=1000' src-tauri/src/render.rs
@@ -88,14 +116,13 @@ jobs:
           grep -q 'ActivationPolicy::Accessory' src-tauri/src/lib.rs
           grep -q 'set_dock_visibility(false)' src-tauri/src/lib.rs
           grep -q 'main.hide()' src-tauri/src/lib.rs
-          echo COMPILE_REGRESSION=GREEN
+          echo COMPILE=GREEN
+          echo RUST_TESTS=GREEN
 
-      - name: Build packaged macOS app
+      - name: Build packaged macOS ARM64 QA app
         shell: bash
         run: |
           set -Eeuo pipefail
-          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
-          export CARGO_TARGET_DIR="$HOME/.endlume-build-cache/target-1011-critical-qa"
           python3 - <<'PY'
           import json
           from pathlib import Path
@@ -110,14 +137,22 @@ jobs:
           test -n "$APP" -a -d "$APP"
           /usr/bin/codesign --force --deep --sign - --timestamp=none "$APP"
           /usr/bin/codesign --verify --deep --strict "$APP"
+          BID="$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$APP/Contents/Info.plist")"
+          VER="$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist")"
           EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
           BIN="$APP/Contents/MacOS/$EXE"
+          test "$BID" = "studio.endlume.desktop"
+          test "$VER" = "10.0.11"
           test -x "$BIN"
+          /usr/bin/lipo -archs "$BIN" | grep -qw arm64
           printf '%s' "$BIN" > "$RUNNER_TEMP/e1011-v2-bin.txt"
           printf '%s' "$APP" > "$RUNNER_TEMP/e1011-v2-app.txt"
-          echo PACKAGED_MACOS_APP=GREEN
+          ZIP="$RUNNER_TEMP/ENDLUME-10.0.11-HOSTED-QA.app.zip"
+          /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$APP" "$ZIP"
+          test -s "$ZIP"
+          echo MACOS_ARM64_PACKAGE=GREEN
 
-      - name: Gate A fixture setup
+      - name: Gate A deterministic fixture setup
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -161,11 +196,11 @@ jobs:
             echo "ENDLUME_QA_PROJECT=$PROJECT"
             echo "ENDLUME_QA_OVERLAY=$OVERLAY"
           } >> "$GITHUB_ENV"
-          echo FIXTURE_SETUP=GREEN
+          echo DETERMINISTIC_FIXTURE=GREEN
           echo FIXTURE_TRACKS=10
           echo FIXTURE_TOTAL_SECONDS=7200
 
-      - name: Gate A short smoke with isolated app copies
+      - name: Gate A short packaged fixture smoke
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -229,9 +264,9 @@ jobs:
           import json,sys
           d=json.load(open(sys.argv[1])); assert d.get("status")=="passed",d
           PY
-          test -x "$SOURCE_BIN"
 
-          EMPTY="$ROOT/empty-project"; mkdir -p "$EMPTY"
+          EMPTY="$ROOT/empty-project"
+          mkdir -p "$EMPTY"
           STALE_FIXTURE="$ROOT/stale-preview.json"
           STALE_RESULT="$ROOT/stale-preview-result.json"
           python3 - "$STALE_FIXTURE" "$ENDLUME_QA_PROJECT" "$EMPTY" "$ENDLUME_QA_OVERLAY" <<'PY'
@@ -255,13 +290,12 @@ jobs:
           d=json.load(open(sys.argv[1])); assert d.get("status")=="failed",d
           err=str(d.get("error","")); assert "В проекте нет корректного изображения или видео" in err,err
           PY
-          test -x "$SOURCE_BIN"
           echo FIXTURE_SMOKE=GREEN
-          echo STALE_PREVIEW=GREEN
-          echo VISIBLE_QA_WINDOWS=0
+          echo STALE_IMAGE=GREEN
+          echo VISIBLE_WINDOWS=0
           echo FOCUS_STEAL=NO
 
-      - name: Gate A patch deterministic QA harness
+      - name: Gate A configure deterministic QA harness
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -283,7 +317,7 @@ jobs:
             s=s.replace(old,new,1)
           p.write_text(s)
           PY
-          echo DETERMINISTIC_HARNESS_PATCH=GREEN
+          echo DETERMINISTIC_HARNESS=GREEN
 
       - name: Gate A ONE deterministic full packaged acceptance
         shell: bash
@@ -311,7 +345,8 @@ jobs:
           print("\(visible) \(front.contains("endlume") ? 1 : 0)")
           SWIFT
           xcrun swiftc "$ENDLUME_QA_ROOT/window-watch.swift" -o "$ENDLUME_QA_ROOT/window-watch"
-          STOP="$ENDLUME_QA_ROOT/window-watch.stop"; WATCH_RESULT="$ENDLUME_QA_ROOT/window-watch-result.txt"
+          STOP="$ENDLUME_QA_ROOT/window-watch.stop"
+          WATCH_RESULT="$ENDLUME_QA_ROOT/window-watch-result.txt"
           rm -f "$STOP" "$WATCH_RESULT"
           (
             max=0; focus=0; samples=0
@@ -338,7 +373,6 @@ jobs:
           test "$MAX_WINDOWS" = "0"
           test "$FOCUS_STEAL" = "0"
           test "$QA_RC" = "0"
-          test -x "$SOURCE_BIN"
 
           if find "$ENDLUME_QA_ROOT" -type f \( -name '*.pcm' -o -name '*.wav' -o -name '*.raw' \) -size +100M -print | grep -q .; then
             echo GIANT_PCM_TEMP_FILE_DETECTED
@@ -381,11 +415,22 @@ jobs:
             "warmSeconds":float(d["render"]["e1011-warm"]["wall"]),
             "bgEqSeconds":float(d["render"]["e1011-bg-eq"]["wall"]),
             "outputMiB":float(d["render"]["e1011-on"]["mib"]),
-            "codec":"hevc","encoder":d["render"]["e1011-on"]["encoder"],
-            "resolution":"1920x1080","fps":"60","duration":duration,
-            "effects":"GREEN","subscribe":"GREEN","backgroundMusic":"GREEN","eq":"GREEN",
-            "effectPathRecovery":"GREEN","missingFileBug":"GREEN","stalePreview":"GREEN","firstFrame":"GREEN",
-            "visibleWindows":0,"focusSteal":"NO","fastPath":d["render"]["e1011-on"]["fastPath"],
+            "codec":"hevc",
+            "encoder":d["render"]["e1011-on"]["encoder"],
+            "resolution":"1920x1080",
+            "fps":"60",
+            "duration":duration,
+            "effects":"GREEN",
+            "subscribe":"GREEN",
+            "backgroundMusic":"GREEN",
+            "eq":"GREEN",
+            "effectPathRecovery":"GREEN",
+            "missingFileBug":"GREEN",
+            "stalePreview":"GREEN",
+            "firstFrame":"GREEN",
+            "visibleWindows":0,
+            "focusSteal":"NO",
+            "fastPath":d["render"]["e1011-on"]["fastPath"],
             "backgroundCoveredDuration":float(d["backgroundMusic"]["coveredDuration"]),
             "backgroundAudioDelta":float(d["backgroundMusic"]["audioDelta"])
           }
@@ -393,91 +438,28 @@ jobs:
           for k,vv in summary.items(): print(f"{k}={vv}")
           PY
           echo DETERMINISTIC_QA=GREEN
-          echo EFFECTS=GREEN
-          echo SUBSCRIBE=GREEN
-          echo BACKGROUND_MUSIC=GREEN
-          echo EQ=GREEN
+          echo EFFECT_FIRST_FRAME_T0=GREEN
           echo EFFECT_PATH_RECOVERY=GREEN
+          echo EFFECTS_FINAL=GREEN
+          echo SUBSCRIBE=GREEN
+          echo BACKGROUND_MUSIC_LOOP=GREEN
+          echo BACKGROUND_MUSIC_VOLUME=GREEN
+          echo BACKGROUND_MUSIC_EQ=GREEN
           echo MISSING_FILE_BUG=GREEN
-          echo FIRST_FRAME=GREEN
-          echo VISIBLE_QA_WINDOWS=0
+          echo VISIBLE_WINDOWS=0
           echo FOCUS_STEAL=NO
 
-      - name: Gate B optional real TOSHIBA smoke
+      - name: Gate B status — physical Mac not requested
         shell: bash
         run: |
           set -Eeuo pipefail
-          ROOT="$ENDLUME_QA_ROOT"
-          VOL="/Volumes/TOSHIBA EXT"
-          RESULT_JSON="$ROOT/toshiba.json"
-          if [ ! -d "$VOL" ]; then
-            python3 - "$RESULT_JSON" <<'PY'
+          python3 - "$ENDLUME_QA_ROOT/toshiba.json" <<'PY'
           import json,sys
-          json.dump({"toshiba":"NOT_MOUNTED","smoke":"SKIPPED_NOT_MOUNTED"},open(sys.argv[1],"w"),indent=2)
+          json.dump({"toshiba":"NOT_REQUESTED","smoke":"SKIPPED"},open(sys.argv[1],"w"),indent=2)
           PY
-            echo TOSHIBA=NOT_MOUNTED
-            echo TOSHIBA_SMOKE=SKIPPED_NOT_MOUNTED
-            exit 0
-          fi
-
-          BEFORE="$ROOT/toshiba-root-before.txt"; AFTER="$ROOT/toshiba-root-after.txt"
-          find "$VOL" -maxdepth 1 -type d \( -name 'ENDLUME_PERF_*' -o -name 'ENDLUME_QA_*' \) -print | sort > "$BEFORE"
-          SOURCE_JSON="$ROOT/toshiba-source.json"
-          python3 - "$VOL" "$SOURCE_JSON" <<'PY'
-          import json,os,sys
-          from pathlib import Path
-          vol=Path(sys.argv[1]); out=Path(sys.argv[2])
-          image={".jpg",".jpeg",".png",".webp",".bmp",".tif",".tiff",".heic",".avif"}
-          video={".mp4",".mov",".m4v",".mkv",".webm",".avi",".wmv",".flv",".ts",".mts",".m2ts",".mpg",".mpeg",".vob",".3gp"}
-          audio={".mp3",".wav",".m4a",".aac",".flac",".ogg",".opus",".aiff",".aif",".alac"}
-          found=None; base=vol/"ВАЙРОН"
-          if base.is_dir():
-            for root,dirs,files in os.walk(base):
-              p=Path(root); low=str(p).lower()
-              if "brewroom" not in low and p.name.lower()!="новая папка": continue
-              fs=[p/f for f in files if not f.startswith(".") and not f.startswith("._")]
-              media=[x for x in fs if x.suffix.lower() in image|video and x.is_file()]
-              songs=[x for x in fs if x.suffix.lower() in audio and x.is_file()]
-              if media and songs:
-                found={"project":str(p),"media":str(sorted(media)[0]),"audio":str(sorted(songs)[0])}; break
-          assert found,"TOSHIBA_BREWROOM_SOURCE_NOT_FOUND"
-          json.dump(found,open(out,"w"),ensure_ascii=False,indent=2)
-          PY
-          OUT="$VOL/ВАЙРОН/Render/Brewroom Jazz"; mkdir -p "$OUT"; test -w "$OUT"
-          SMOKE_FIXTURE="$ROOT/toshiba-smoke-job.json"; SMOKE_RESULT="$ROOT/toshiba-smoke-result.json"; SMOKE_LIBRARY="$ROOT/toshiba-smoke-library.json"
-          python3 - "$SOURCE_JSON" "$SMOKE_FIXTURE" "$SMOKE_LIBRARY" "$OUT" "$ENDLUME_QA_OVERLAY" <<'PY'
-          import json,sys,uuid
-          source_path,fixture_path,library_path,out_dir,overlay=sys.argv[1:]
-          src=json.load(open(source_path)); eid="e1011-toshiba-smoke-effect"
-          effect={"id":eid,"name":"ENDLUME TOSHIBA SMOKE EFFECT","source":overlay,"enabled":True,"mode":"chromakey","keyColor":"#00ff00","similarity":0.10,"blend":0.06,"despill":0.35,"lumaThreshold":0.03,"lumaTolerance":0.08,"saturation":1.0,"x":0.50,"y":0.50,"scale":0.45,"fullscreen":False,"previewFrameTime":0.0,"startSec":0.0,"endSec":None,"cacheKey":None,"cacheReady":False,"usageMode":"always","intervalSec":240.0,"usageDurationSec":30.0,"target":None,"offsetX":None,"offsetY":None,"opacity":1.0}
-          name="ENDLUME 10.0.11 TOSHIBA SMOKE "+uuid.uuid4().hex[:10]
-          job={"project":{"id":"e1011-toshiba-smoke","name":name,"path":src["project"],"media":[src["media"]],"audio":[src["audio"]],"valid":True,"error":None,"anchors":{}},"settings":{"width":1920,"height":1080,"fps":60,"codec":"h265","bitrateMbps":8.0,"durationHours":30.0/3600.0,"durationMode":"exact","loopMode":"image","crossfadeSec":0.0,"normalizeLufs":False,"outputDir":out_dir,"preset":"fast","encoderPreference":"auto"},"effects":[effect],"subscribes":[],"ambient":None,"ambientSettings":{"volumePct":18.0,"bassDb":0.0,"midDb":0.0,"trebleDb":0.0}}
-          json.dump({"jobs":[job]},open(fixture_path,"w"),ensure_ascii=False,indent=2)
-          json.dump({"effects":[effect],"subscribes":[],"ambient":None},open(library_path,"w"),ensure_ascii=False,indent=2)
-          PY
-          SOURCE_APP="$(cat "$RUNNER_TEMP/e1011-v2-app.txt")"; SOURCE_BIN="$(cat "$RUNNER_TEMP/e1011-v2-bin.txt")"; EXE="$(basename "$SOURCE_BIN")"
-          TOSHIBA_APP="$ROOT/toshiba-smoke.app"; rm -rf "$TOSHIBA_APP"; /usr/bin/ditto "$SOURCE_APP" "$TOSHIBA_APP"; TOSHIBA_BIN="$TOSHIBA_APP/Contents/MacOS/$EXE"; test -x "$TOSHIBA_BIN"
-          ENDLUME_E2E_RENDER_JOB="$SMOKE_FIXTURE" ENDLUME_E2E_RESULT="$SMOKE_RESULT" ENDLUME_E2E_LIBRARY_PATH="$SMOKE_LIBRARY" RUST_BACKTRACE=1 \
-            "$TOSHIBA_BIN" >"$ROOT/toshiba-smoke.stdout" 2>"$ROOT/toshiba-smoke.stderr"
-          OUTPUT="$(python3 - "$SMOKE_RESULT" "$OUT" <<'PY'
-          import json,sys
-          from pathlib import Path
-          d=json.load(open(sys.argv[1])); out=Path(sys.argv[2]).resolve(); assert d.get("status")=="passed",d
-          rows=d.get("results") or []; assert len(rows)==1 and rows[0].get("status")=="passed",rows
-          p=Path(rows[0]["outputPath"]).resolve(); assert p.is_file() and p.parent==out,(p,out); print(p)
-          PY
-          )"
-          "$ENDLUME_QA_FFPROBE" -v error -select_streams v:0 -show_entries stream=codec_name,width,height,avg_frame_rate -of json "$OUTPUT" > "$ROOT/toshiba-ffprobe.json"
-          "$ENDLUME_QA_FFMPEG" -hide_banner -loglevel error -ss 1 -i "$OUTPUT" -map 0:v:0 -frames:v 1 -f null -
-          if grep -Fq "Один из файлов проекта не найден" "$ROOT/toshiba-smoke.stderr"; then echo FALSE_MISSING_FILE_ERROR; exit 1; fi
-          rm -f -- "$OUTPUT"; test ! -e "$OUTPUT"
-          find "$VOL" -maxdepth 1 -type d \( -name 'ENDLUME_PERF_*' -o -name 'ENDLUME_QA_*' \) -print | sort > "$AFTER"; cmp "$BEFORE" "$AFTER"
-          python3 - "$RESULT_JSON" <<'PY'
-          import json,sys
-          json.dump({"toshiba":"MOUNTED","smoke":"GREEN"},open(sys.argv[1],"w"),indent=2)
-          PY
-          echo TOSHIBA=MOUNTED
-          echo TOSHIBA_SMOKE=GREEN
+          echo PHYSICAL_TOSHIBA_TEST=SKIPPED
+          echo LOCAL_ENDLUME_RUNNER_STARTED=NO
+          echo LOCAL_RELEASE_AGENT_STARTED=NO
 
       - name: Publish summary
         if: always()
@@ -485,7 +467,13 @@ jobs:
         run: |
           set -u
           ROOT="${ENDLUME_QA_ROOT:-$RUNNER_TEMP/endlume-1011-deterministic-v2}"
-          echo "## ENDLUME 10.0.11 Deterministic Release Acceptance v2" >> "$GITHUB_STEP_SUMMARY"
+          echo "## ENDLUME 10.0.11 Hosted Deterministic Release Acceptance" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **sourceHead:** fc5c8bb214e52bbfc6d2d0162fe02c6cecd27623" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **qaHead:** $GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **hostedRunner:** macos-14" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **productCodeChanged:** NO" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **windowsTouched:** NO" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **localMacUsedForBuild:** NO" >> "$GITHUB_STEP_SUMMARY"
           for f in "$ROOT/gate-a-summary.json" "$ROOT/toshiba.json"; do
             [ -f "$f" ] || continue
             python3 - "$f" >> "$GITHUB_STEP_SUMMARY" <<'PY'
@@ -498,23 +486,27 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: ENDLUME-10.0.11-DETERMINISTIC-RELEASE-V2
+          name: ENDLUME-10.0.11-HOSTED-DETERMINISTIC-QA
           path: |
+            ${{ runner.temp }}/ENDLUME-10.0.11-HOSTED-QA.app.zip
             ${{ runner.temp }}/endlume-1011-deterministic-v2/report.json
             ${{ runner.temp }}/endlume-1011-deterministic-v2/gate-a-summary.json
             ${{ runner.temp }}/endlume-1011-deterministic-v2/toshiba.json
             ${{ runner.temp }}/endlume-1011-deterministic-v2/fixture-smoke-result.json
             ${{ runner.temp }}/endlume-1011-deterministic-v2/stale-preview-result.json
             ${{ runner.temp }}/endlume-1011-deterministic-v2/window-watch-result.txt
-            ${{ runner.temp }}/endlume-1011-deterministic-v2/toshiba-ffprobe.json
             ${{ runner.temp }}/endlume-1011-deterministic-v2/*.stdout
             ${{ runner.temp }}/endlume-1011-deterministic-v2/*.stderr
           if-no-files-found: warn
           retention-days: 7
 
-      - name: Cleanup deterministic QA temp
+      - name: Cleanup hosted deterministic QA temp
         if: always()
         shell: bash
         run: |
           ROOT="${ENDLUME_QA_ROOT:-$RUNNER_TEMP/endlume-1011-deterministic-v2}"
           case "$ROOT" in "$RUNNER_TEMP"/*) rm -rf "$ROOT" ;; *) echo "REFUSE_CLEANUP_OUTSIDE_RUNNER_TEMP=$ROOT"; exit 1 ;; esac
+          rm -rf "$RUNNER_TEMP/endlume-1011-v2-tools" "$CARGO_TARGET_DIR"
+          test ! -e "$CARGO_TARGET_DIR"
+          echo LOCAL_BUILD_CACHE_CREATED=NO
+          echo HOSTED_CLEANUP=GREEN

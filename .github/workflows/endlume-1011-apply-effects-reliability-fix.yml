@@ -17,7 +17,7 @@ concurrency:
 
 jobs:
   apply-and-verify:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -44,15 +44,11 @@ jobs:
           git diff --check
           git diff -- src/types.ts src/store.ts src/pages/ProjectPage.tsx src-tauri/src/model.rs src-tauri/src/queue.rs scripts/diag-endlume-1011-performance-effects-reliability.py
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-
       - name: Frontend regression gates
         shell: bash
         run: |
           set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
           npm ci
           npm run check
           npm run build
@@ -61,8 +57,7 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-          rustup toolchain install stable --profile minimal
-          rustup default stable
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
           cargo check --manifest-path src-tauri/Cargo.toml
           cargo test --manifest-path src-tauri/Cargo.toml -- --nocapture
 

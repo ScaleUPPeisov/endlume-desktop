@@ -91,12 +91,26 @@ pub struct SubscribePreset{
 
 #[derive(Debug,Clone,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]
+pub struct BackgroundMusicSettings{
+  #[serde(default="default_background_volume")] pub volume_pct:f64,
+  #[serde(default)] pub bass_db:f64,
+  #[serde(default)] pub mid_db:f64,
+  #[serde(default)] pub treble_db:f64,
+}
+fn default_background_volume()->f64{18.0}
+impl Default for BackgroundMusicSettings{
+  fn default()->Self{Self{volume_pct:18.0,bass_db:0.0,mid_db:0.0,treble_db:0.0}}
+}
+
+#[derive(Debug,Clone,Serialize,Deserialize)]
+#[serde(rename_all="camelCase")]
 pub struct QueueJob{
   pub project:ProjectScanItem,
   pub settings:RenderSettings,
   pub effects:Vec<EffectPreset>,
   pub subscribes:Vec<SubscribePreset>,
   pub ambient:Option<String>,
+  #[serde(default)] pub ambient_settings:BackgroundMusicSettings,
 }
 
 #[derive(Debug,Clone,Serialize,Deserialize)]

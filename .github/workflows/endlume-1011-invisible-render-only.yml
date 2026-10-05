@@ -1,0 +1,168 @@
+name: ENDLUME 10.0.11 Invisible Render-Only Smoke
+
+on:
+  push:
+    branches: [hotfix/endlume-10.0.11-macos-invisible-qa]
+    paths:
+      - ".github/workflows/endlume-1011-invisible-render-only.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-1011-invisible-render-only
+  cancel-in-progress: true
+
+jobs:
+  render-only:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Reuse packaged invisible-QA app
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          APP_ROOT="$HOME/.endlume-build-cache/target-1011-invisible-qa/aarch64-apple-darwin/release/bundle/macos/ENDLUME YT Studio PEISOV.app"
+          test -d "$APP_ROOT"
+          EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP_ROOT/Contents/Info.plist")"
+          test -x "$APP_ROOT/Contents/MacOS/$EXE"
+          /usr/bin/codesign --verify --deep --strict "$APP_ROOT"
+          printf '%s' "$APP_ROOT/Contents/MacOS/$EXE" > "$RUNNER_TEMP/e1011-invisible-render-bin.txt"
+          echo INVISIBLE_RENDER_APP_REUSE_GREEN
+
+      - name: Build visibility guard
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cat > "$RUNNER_TEMP/endlume-render-visibility-guard.swift" <<'SWIFT'
+          import AppKit
+          import CoreGraphics
+          import Foundation
+
+          guard CommandLine.arguments.count >= 3 else { exit(64) }
+          let reportPath = CommandLine.arguments[1]
+          let executable = CommandLine.arguments[2]
+          let process = Process()
+          process.executableURL = URL(fileURLWithPath: executable)
+          process.environment = ProcessInfo.processInfo.environment
+          process.standardOutput = FileHandle.standardOutput
+          process.standardError = FileHandle.standardError
+          do { try process.run() } catch {
+            let data = try! JSONSerialization.data(withJSONObject:["launchError":"\(error)"])
+            try! data.write(to:URL(fileURLWithPath:reportPath))
+            exit(65)
+          }
+          let pid = process.processIdentifier
+          var maxVisibleWindows = 0
+          var everFrontmost = false
+          var samples = 0
+          while process.isRunning {
+            autoreleasepool {
+              if NSWorkspace.shared.frontmostApplication?.processIdentifier == pid { everFrontmost = true }
+              let info = CGWindowListCopyWindowInfo([.optionOnScreenOnly,.excludeDesktopElements], kCGNullWindowID) as? [[String:Any]] ?? []
+              let visible = info.filter { row in
+                let owner = (row[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value ?? -1
+                let layer = (row[kCGWindowLayer as String] as? NSNumber)?.intValue ?? -1
+                let alpha = (row[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 0.0
+                return owner == pid && layer == 0 && alpha > 0.01
+              }.count
+              if visible > maxVisibleWindows { maxVisibleWindows = visible }
+              samples += 1
+            }
+            Thread.sleep(forTimeInterval:0.005)
+          }
+          process.waitUntilExit()
+          if NSWorkspace.shared.frontmostApplication?.processIdentifier == pid { everFrontmost = true }
+          let payload:[String:Any] = [
+            "pid":Int(pid),
+            "childExit":Int(process.terminationStatus),
+            "maxVisibleWindows":maxVisibleWindows,
+            "everFrontmost":everFrontmost,
+            "samples":samples
+          ]
+          let data = try! JSONSerialization.data(withJSONObject:payload,options:[.prettyPrinted,.sortedKeys])
+          try! data.write(to:URL(fileURLWithPath:reportPath))
+          exit(process.terminationStatus)
+          SWIFT
+          /usr/bin/swiftc "$RUNNER_TEMP/endlume-render-visibility-guard.swift" -o "$RUNNER_TEMP/endlume-render-visibility-guard"
+          test -x "$RUNNER_TEMP/endlume-render-visibility-guard"
+          echo INVISIBLE_RENDER_GUARD_GREEN
+
+      - name: Render E2E invisible acceptance
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+          ROOT="$RUNNER_TEMP/endlume-1011-invisible-render-only"
+          rm -rf "$ROOT"; mkdir -p "$ROOT/project" "$ROOT/output"
+          BIN="$(cat "$RUNNER_TEMP/e1011-invisible-render-bin.txt")"
+          FFMPEG="$(command -v ffmpeg)"
+          FFPROBE="$(command -v ffprobe)"
+          "$FFMPEG" -hide_banner -loglevel error -f lavfi -i "color=c=0x182238:size=1920x1080:rate=1" -frames:v 1 -y "$ROOT/project/base.png"
+          "$FFMPEG" -hide_banner -loglevel error -f lavfi -i "sine=frequency=440:sample_rate=48000:duration=12" -c:a libmp3lame -b:a 192k -ar 48000 -ac 2 -y "$ROOT/project/song.mp3"
+          python3 - "$ROOT" <<'PY'
+          import json,sys
+          from pathlib import Path
+          root=Path(sys.argv[1])
+          job={
+            "project":{"id":"qa-invisible-render","name":"QA Invisible Render","path":str(root/"project"),"media":[str(root/"project/base.png")],"audio":[str(root/"project/song.mp3")],"valid":True,"error":None,"anchors":{}},
+            "settings":{"width":1920,"height":1080,"fps":60,"codec":"h265","bitrateMbps":8.0,"durationHours":10.0/3600.0,"durationMode":"exact","loopMode":"image","crossfadeSec":0.0,"normalizeLufs":False,"outputDir":str(root/"output"),"preset":"fast","encoderPreference":"auto"},
+            "effects":[],"subscribes":[],"ambient":None,
+            "ambientSettings":{"volumePct":18.0,"bassDb":0.0,"midDb":0.0,"trebleDb":0.0}
+          }
+          (root/"render-job.json").write_text(json.dumps({"jobs":[job]},ensure_ascii=False))
+          PY
+          export ENDLUME_E2E_RENDER_JOB="$ROOT/render-job.json"
+          export ENDLUME_E2E_RESULT="$ROOT/render-result.json"
+          export RUST_BACKTRACE=1
+          "$RUNNER_TEMP/endlume-render-visibility-guard" "$ROOT/visibility.json" "$BIN"
+          python3 - "$ROOT" "$FFPROBE" <<'PY'
+          import json,subprocess,sys
+          from pathlib import Path
+          root=Path(sys.argv[1]); ffprobe=sys.argv[2]
+          result=json.loads((root/"render-result.json").read_text())
+          vis=json.loads((root/"visibility.json").read_text())
+          assert result.get("status")=="passed",result
+          assert len(result.get("results",[]))==1,result
+          row=result["results"][0]
+          assert row.get("status")=="passed",row
+          out=Path(row["outputPath"])
+          assert out.is_file() and out.stat().st_size>64000,out
+          meta=json.loads(subprocess.run([ffprobe,"-v","error","-show_entries","stream=codec_type,codec_name,width,height,avg_frame_rate:format=duration,size","-of","json",str(out)],check=True,stdout=subprocess.PIPE,text=True).stdout)
+          v=next(x for x in meta["streams"] if x.get("codec_type")=="video")
+          a=next(x for x in meta["streams"] if x.get("codec_type")=="audio")
+          duration=float(meta["format"]["duration"])
+          assert v["codec_name"]=="hevc" and v["width"]==1920 and v["height"]==1080 and v["avg_frame_rate"]=="60/1",v
+          assert a["codec_name"]=="aac",a
+          assert abs(duration-10.0)<=0.25,duration
+          assert int(vis.get("childExit",99))==0,vis
+          assert int(vis.get("maxVisibleWindows",99))==0,vis
+          assert vis.get("everFrontmost") is False,vis
+          report={"status":"GREEN","renderE2E":"GREEN","resultFilesGenerated":"GREEN","cleanExit":"GREEN","visibleWindows":0,"focusSteal":"NO","wallSeconds":row.get("wallSeconds"),"duration":duration,"outputBytes":out.stat().st_size,"videoCodec":v.get("codec_name"),"audioCodec":a.get("codec_name"),"visibility":vis}
+          (root/"report.json").write_text(json.dumps(report,ensure_ascii=False,indent=2))
+          print("RENDER_E2E=GREEN")
+          print("RESULT_FILES=GREEN")
+          print("CLEAN_EXIT=GREEN")
+          print("VISIBLE_WINDOWS=0")
+          print("FOCUS_STEAL=NO")
+          print("ENDLUME_1011_INVISIBLE_RENDER_ONLY_GREEN")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ENDLUME-10.0.11-INVISIBLE-RENDER-ONLY
+          path: |
+            ${{ runner.temp }}/endlume-1011-invisible-render-only/report.json
+            ${{ runner.temp }}/endlume-1011-invisible-render-only/render-result.json
+            ${{ runner.temp }}/endlume-1011-invisible-render-only/visibility.json
+          if-no-files-found: warn
+          retention-days: 3

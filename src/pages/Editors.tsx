@@ -74,9 +74,7 @@ export function EditorRouter() {
 }
 
 function useProjectPath() {
-  const draft = useApp((s) => s.draftProjects);
-  const projects = useApp((s) => s.projects);
-  return draft[0]?.path || projects.find((p) => p.status === 'rendering')?.path || projects.at(-1)?.path;
+  return useApp((s) => s.previewProjectPath);
 }
 
 function EffectsEditor() {
@@ -85,21 +83,23 @@ function EffectsEditor() {
   const openEditor = useApp((s) => s.openEditor);
   const editor = useApp((s) => s.editor);
   const draftProjects = useApp((s) => s.draftProjects);
-  const projects = useApp((s) => s.projects);
+  const previewProjectPath = useApp((s) => s.previewProjectPath);
   const sceneAnchorsByPath = useApp((s) => s.sceneAnchorsByPath);
   const setSceneAnchor = useApp((s) => s.setSceneAnchor);
-  const sceneCandidates = useMemo(() => draftProjects.length ? draftProjects : projects, [draftProjects, projects]);
+  const sceneCandidates = useMemo(() => draftProjects, [draftProjects]);
   const [scenePath, setScenePath] = useState('');
   const [selected, setSelected] = useState(editor?.id || effects[0]?.id);
   const [saved, setSaved] = useState(false);
   const [assets, setAssets] = useState<LivePreviewAssets>();
+  const [previewSnapshot, setPreviewSnapshot] = useState<EffectPreset>();
   const [previewBusy, setPreviewBusy] = useState(false);
   const [anchorMode, setAnchorMode] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState(false);
   const persistTimer = useRef<number | undefined>(undefined);
   const previewRequest = useRef(0);
+  const invalidatePreview=()=>{previewRequest.current+=1;setAssets(undefined);setPreviewSnapshot(undefined);};
   const current = effects.find((e) => e.id === selected);
-  const projectPath = scenePath || sceneCandidates[0]?.path;
+  const projectPath = scenePath || previewProjectPath;
   const target = (current?.target || 'CUSTOM').trim().toUpperCase() || 'CUSTOM';
   const sceneAnchor = projectPath ? sceneAnchorsByPath[projectPath]?.[target] : undefined;
   const resolvedCurrent = current ? {
@@ -124,6 +124,7 @@ function EffectsEditor() {
       effects: next,
       subscribes: useApp.getState().subscribes,
       ambient: useApp.getState().ambient,
+      ambientSettings: useApp.getState().ambientSettings,
     }).catch(() => undefined);
     if (immediate) return persist();
     persistTimer.current = window.setTimeout(persist, 180);
@@ -140,7 +141,7 @@ function EffectsEditor() {
     if (!source) return;
     const effect = emptyEffect(source);
     await saveLibrary([...effects, effect], true);
-    setSelected(effect.id);
+    invalidatePreview();setSelected(effect.id);
   };
 
   const patch = (value: Partial<EffectPreset>) => {
@@ -169,14 +170,14 @@ function EffectsEditor() {
     if (!current) return;
     const next = effects.filter((e) => e.id !== current.id);
     await saveLibrary(next, true);
-    setSelected(next[0]?.id);
-    setAssets(undefined);
+    invalidatePreview();setSelected(next[0]?.id);
     setDeleteConfirm(false);
   };
 
   const loadLive = async (request = ++previewRequest.current) => {
     const latest = useApp.getState().effects.find((e) => e.id === selected);
-    if (!projectPath || !latest) return;
+    if (!projectPath || !latest) { setAssets(undefined);setPreviewSnapshot(undefined);return; }
+    setAssets(undefined);setPreviewSnapshot(undefined);
     const requestId=`effects-${request}`;
     previewDiag('effects','START',request,{requestId});
     setPreviewBusy(true);
@@ -188,6 +189,7 @@ function EffectsEditor() {
       ]);
       previewDiag('effects','FINISH',request,{requestId,basePath:result.basePath,overlayPath:result.overlayPath,posterPath});
       if (request !== previewRequest.current) { previewDiag('effects','DISCARD',request,{requestId,latest:previewRequest.current}); return; }
+      setPreviewSnapshot(composed);
       setAssets({
         basePath: api.previewUrl(result.basePath),
         baseFilePath: result.basePath,
@@ -229,7 +231,7 @@ function EffectsEditor() {
     <div className="editorLayout">
       <aside className="assetList">
         <button className="addAsset" onClick={add}>+ ДОБАВИТЬ</button>
-        {effects.map((effect) => <button key={effect.id} className={`assetItem ${selected === effect.id ? 'active' : ''}`} onClick={() => setSelected(effect.id)}>
+        {effects.map((effect) => <button key={effect.id} className={`assetItem ${selected === effect.id ? 'active' : ''}`} onClick={() => {invalidatePreview();setSelected(effect.id)}}>
           <span className="assetThumb"><Icon name="effects" /></span>
           <span><b>{effect.name}</b><small>{effect.enabled ? 'Включён' : 'Выключен'} • {effect.mode} • {effect.cacheReady ? 'render-cache готов' : 'render-cache при первом рендере'}</small></span>
           <i className={effect.enabled ? 'enabled' : 'disabled'} title={effect.enabled ? 'Выключить' : 'Включить'} onClick={(event) => {
@@ -241,13 +243,13 @@ function EffectsEditor() {
 
       <main className="visualEditor">
         {current && resolvedCurrent ? <>
-          {sceneCandidates.length > 0 && <div className="previewTime"><span>СЦЕНА / ИЗОБРАЖЕНИЕ</span><select value={projectPath || ''} onChange={(event) => setScenePath(event.target.value)}>{sceneCandidates.map((scene) => <option key={scene.path} value={scene.path}>{scene.name}</option>)}</select><b>{sceneAnchor ? `${target} ✓` : `${target}: anchor не задан`}</b></div>}
+          {sceneCandidates.length > 0 && <div className="previewTime"><span>СЦЕНА / ИЗОБРАЖЕНИЕ</span><select value={projectPath || ''} onChange={(event) => {invalidatePreview();setScenePath(event.target.value)}}>{sceneCandidates.map((scene) => <option key={scene.path} value={scene.path}>{scene.name}</option>)}</select><b>{sceneAnchor ? `${target} ✓` : `${target}: anchor не задан`}</b></div>}
           <PreviewStage
             title={anchorMode ? `ПОКАЖИ НА ИЗОБРАЖЕНИИ: ${target}` : "LIVE PREVIEW"}
             assets={assets}
             busy={previewBusy}
-            current={resolvedCurrent}
-            active={previewEnabled(current)}
+            current={previewSnapshot || resolvedCurrent}
+            active={!!assets&&!!previewSnapshot&&previewEnabled(previewSnapshot)}
             anchor={sceneAnchor}
             anchorMode={anchorMode}
             onAnchorPick={pickAnchor}
@@ -306,10 +308,12 @@ function SubscribeEditor() {
   const projectPath = useProjectPath();
   const [selected, setSelected] = useState(editor?.id || subscribes[0]?.id);
   const [assets, setAssets] = useState<LivePreviewAssets>();
+  const [previewSnapshot, setPreviewSnapshot] = useState<SubscribePreset>();
   const [previewBusy, setPreviewBusy] = useState(false);
   const [saved, setSaved] = useState(false);
   const persistTimer = useRef<number | undefined>(undefined);
   const previewRequest = useRef(0);
+  const invalidatePreview=()=>{previewRequest.current+=1;setAssets(undefined);setPreviewSnapshot(undefined);};
   const current = subscribes.find((e) => e.id === selected);
 
   const saveLibrary = (next: SubscribePreset[], immediate = false) => {
@@ -319,6 +323,7 @@ function SubscribeEditor() {
       effects: useApp.getState().effects,
       subscribes: next,
       ambient: useApp.getState().ambient,
+      ambientSettings: useApp.getState().ambientSettings,
     }).catch(() => undefined);
     if (immediate) return persist();
     persistTimer.current = window.setTimeout(persist, 180);
@@ -335,7 +340,7 @@ function SubscribeEditor() {
     if (!source) return;
     const subscribe = emptySubscribe(source);
     await saveLibrary([...subscribes, subscribe], true);
-    setSelected(subscribe.id);
+    invalidatePreview();setSelected(subscribe.id);
   };
 
   const patch = (value: Partial<SubscribePreset>) => {
@@ -347,13 +352,13 @@ function SubscribeEditor() {
     if (!current) return;
     const next = subscribes.filter((item) => item.id !== current.id);
     await saveLibrary(next, true);
-    setSelected(next[0]?.id);
-    setAssets(undefined);
+    invalidatePreview();setSelected(next[0]?.id);
   };
 
   const loadLive = async (request = ++previewRequest.current) => {
     const latest = useApp.getState().subscribes.find((item) => item.id === selected);
-    if (!projectPath || !latest) return;
+    if (!projectPath || !latest) { setAssets(undefined);setPreviewSnapshot(undefined);return; }
+    setAssets(undefined);setPreviewSnapshot(undefined);
     const requestId=`subscribe-${request}`;
     previewDiag('subscribe','START',request,{requestId});
     setPreviewBusy(true);
@@ -364,6 +369,7 @@ function SubscribeEditor() {
       ]);
       previewDiag('subscribe','FINISH',request,{requestId,basePath:result.basePath,overlayPath:result.overlayPath,posterPath});
       if (request !== previewRequest.current) { previewDiag('subscribe','DISCARD',request,{requestId,latest:previewRequest.current}); return; }
+      setPreviewSnapshot(latest);
       setAssets({
         basePath: api.previewUrl(result.basePath),
         baseFilePath: result.basePath,
@@ -403,7 +409,7 @@ function SubscribeEditor() {
     <div className="editorLayout">
       <aside className="assetList">
         <button className="addAsset" onClick={add}>+ ДОБАВИТЬ</button>
-        {subscribes.map((item) => <button key={item.id} className={`assetItem ${selected === item.id ? 'active' : ''}`} onClick={() => setSelected(item.id)}>
+        {subscribes.map((item) => <button key={item.id} className={`assetItem ${selected === item.id ? 'active' : ''}`} onClick={() => {invalidatePreview();setSelected(item.id)}}>
           <span className="assetThumb pink"><Icon name="subscribe" /></span>
           <span><b>{item.name}</b><small>{usageLabel(item)}{effectiveUsageMode(item) === 'interval' ? ` • каждые ${Math.round(subscribeInterval(item) / 60)} мин` : ''}</small></span>
           <i className={item.enabled ? 'enabled' : 'disabled'} title={item.enabled ? 'Выключить' : 'Включить'} onClick={(event) => {
@@ -415,7 +421,7 @@ function SubscribeEditor() {
 
       <main className="visualEditor">
         {current ? <>
-          <PreviewStage title="LIVE PREVIEW" assets={assets} busy={previewBusy} current={current} active={previewEnabled(current)} onMove={(x, y) => patch({ x, y })} onScale={(scale) => patch({ scale })} onPickColor={(hex) => patch({ keyColor: hex, similarity: 0.10, blend: 0.06 })} />
+          <PreviewStage title="LIVE PREVIEW" assets={assets} busy={previewBusy} current={previewSnapshot || current} active={!!assets&&!!previewSnapshot&&previewEnabled(previewSnapshot)} onMove={(x, y) => patch({ x, y })} onScale={(scale) => patch({ scale })} onPickColor={(hex) => patch({ keyColor: hex, similarity: 0.10, blend: 0.06 })} />
           <div className="previewTime"><span>Стартовый кадр Subscribe-видео</span><Range value={current.previewFrameTime} min={0} max={60} step={0.1} onChange={(value) => patch({ previewFrameTime: value })} minLabel="0:00" maxLabel="1:00" /><b>{current.previewFrameTime.toFixed(1)} сек</b></div>
           <button className="refreshPreview" disabled={previewBusy} onClick={() => void loadLive()}><Icon name="refresh" /> {previewBusy ? 'ГОТОВЛЮ PROXY…' : 'ОБНОВИТЬ LIVE PREVIEW'}</button>
           <SubscribeTimeline current={current} />

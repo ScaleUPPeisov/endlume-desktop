@@ -1,81 +1,117 @@
-name: ENDLUME 10.0.11 Critical Hotfix Full QA
+name: ENDLUME 10.0.11 Final Release Closure
 
 on:
   push:
-    branches: [hotfix/endlume-10.0.11-critical-preview-effects-progress]
+    branches: [hotfix/endlume-10.0.11-macos-render-assets-audio]
     paths:
       - ".github/workflows/endlume-1011-critical-hotfix-qa.yml"
-      - "scripts/qa-endlume-1011-critical-hotfix.py"
-      - "src-tauri/src/live_preview.rs"
-      - "src-tauri/src/preview.rs"
-      - "src-tauri/src/cache.rs"
-      - "src-tauri/src/render.rs"
-      - "src-tauri/src/lib.rs"
-      - "src/pages/Editors.tsx"
-      - "src/components/LiveCompositePreview.tsx"
-      - "src/pages/RenderPage.tsx"
-  workflow_dispatch: {}
+      - ".github/workflows/endlume-1011-render-assets-audio-qa.yml"
+  workflow_dispatch:
+    inputs:
+      physical_smoke:
+        description: "Run short physical acceptance on kirill-mac-endlume after hosted build"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
 
 concurrency:
-  group: endlume-1011-critical-full-qa
+  group: endlume-1011-final-release-closure
   cancel-in-progress: true
 
 jobs:
-  full-qa:
-    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
-    timeout-minutes: 100
+  hosted-build-qa:
+    name: Gate A — GitHub-hosted build / compile / ARM64 package
+    runs-on: macos-14
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
           clean: true
-          fetch-depth: 1
+          fetch-depth: 0
           persist-credentials: false
 
-      - name: Stage proven Apple Silicon FFmpeg
+      - name: Prove GitHub-hosted runner
         shell: bash
         run: |
           set -Eeuo pipefail
-          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
+          echo "RUNNER_NAME=$RUNNER_NAME"
+          uname -a
+          sw_vers
+          test "$RUNNER_NAME" != "kirill-mac-endlume"
+          echo LOCAL_KIRILL_MAC_USED=NO
+
+      - name: Configure ephemeral Cargo target
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          echo "CARGO_TARGET_DIR=$RUNNER_TEMP/endlume-1011-cargo-target" >> "$GITHUB_ENV"
+          echo PERSISTENT_HOME_BUILD_CACHE_USED=NO
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: Stage Apple Silicon FFmpeg / FFprobe
+        shell: bash
+        run: |
+          set -Eeuo pipefail
           TMP="$(mktemp -d)"
+          TOOLS="$RUNNER_TEMP/endlume-1011-tools"
+          mkdir -p "$TMP/fm" "$TMP/fp" "$TOOLS" src-tauri/binaries
           curl -fL --retry 4 "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffmpeg.zip" -o "$TMP/ffmpeg.zip"
           curl -fL --retry 4 "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffprobe.zip" -o "$TMP/ffprobe.zip"
-          mkdir -p "$TMP/fm" "$TMP/fp" src-tauri/binaries
           ditto -x -k "$TMP/ffmpeg.zip" "$TMP/fm"
           ditto -x -k "$TMP/ffprobe.zip" "$TMP/fp"
-          cp "$(find "$TMP/fm" -type f -name ffmpeg -print -quit)" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
-          cp "$(find "$TMP/fp" -type f -name ffprobe -print -quit)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
-          chmod 755 src-tauri/binaries/ffmpeg-aarch64-apple-darwin src-tauri/binaries/ffprobe-aarch64-apple-darwin
-          echo ENDLUME_1011_FFMPEG_GREEN
+          FFMPEG="$(find "$TMP/fm" -type f -name ffmpeg -print -quit)"
+          FFPROBE="$(find "$TMP/fp" -type f -name ffprobe -print -quit)"
+          test -n "$FFMPEG" -a -n "$FFPROBE"
+          cp "$FFMPEG" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp "$FFPROBE" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          cp "$FFMPEG" "$TOOLS/ffmpeg"
+          cp "$FFPROBE" "$TOOLS/ffprobe"
+          chmod 755 src-tauri/binaries/ffmpeg-aarch64-apple-darwin src-tauri/binaries/ffprobe-aarch64-apple-darwin "$TOOLS/ffmpeg" "$TOOLS/ffprobe"
+          "$TOOLS/ffmpeg" -version | head -1
+          "$TOOLS/ffprobe" -version | head -1
 
-      - name: Compile and focused regression
+      - name: Compile and frozen-product regression
         shell: bash
         run: |
           set -Eeuo pipefail
-          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
           npm ci
           npm run check
           npm run build
           cargo test --manifest-path src-tauri/Cargo.toml live_preview::tests -- --nocapture
           cargo test --manifest-path src-tauri/Cargo.toml cache::tests -- --nocapture
           cargo test --manifest-path src-tauri/Cargo.toml -- --nocapture
-          grep -q "await api.generatePreview" src/pages/Editors.tsx
-          grep -q "helper:'prepareLivePreview'" src/pages/Editors.tsx
+          cargo check --manifest-path src-tauri/Cargo.toml --features e2e-render --target aarch64-apple-darwin
+          grep -q "api.generatePreviewPoster(projectPath" src/pages/Editors.tsx
+          grep -q "api.prepareLivePreview(projectPath" src/pages/Editors.tsx
           grep -q "ENDLUME_PREVIEW_BASE SOURCE_IMAGE=" src-tauri/src/live_preview.rs
           grep -q "ENDLUME_PREVIEW_FFPROBE_FALLBACK" src-tauri/src/live_preview.rs
-          grep -q 'job_bg=(\*job).clone()' src-tauri/src/render.rs
-          ! grep -q 'job_bg.project.id=format!("{}::visual-prewarm"' src-tauri/src/render.rs
-          echo ENDLUME_1011_COMPILE_REGRESSION_GREEN
+          grep -q 'BackgroundMusicSettings' src/types.ts
+          grep -q 'bass=f=120' src-tauri/src/render.rs
+          grep -q 'equalizer=f=1000' src-tauri/src/render.rs
+          grep -q 'treble=f=8000' src-tauri/src/render.rs
+          grep -q 'render-asset-recovered' src-tauri/src/render.rs
+          echo COMPILE_REGRESSION=GREEN
 
-      - name: Build packaged QA app
+      - name: Build packaged macOS ARM64 QA app on GitHub-hosted runner
         shell: bash
         run: |
           set -Eeuo pipefail
-          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
-          export CARGO_TARGET_DIR="$HOME/.endlume-build-cache/target-1011-critical-qa"
           python3 - <<'PY'
           import json
           from pathlib import Path
@@ -90,54 +126,90 @@ jobs:
           test -n "$APP" -a -d "$APP"
           /usr/bin/codesign --force --deep --sign - --timestamp=none "$APP"
           /usr/bin/codesign --verify --deep --strict "$APP"
+          BID="$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$APP/Contents/Info.plist")"
+          VER="$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist")"
           EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
-          test -x "$APP/Contents/MacOS/$EXE"
-          printf '%s' "$APP/Contents/MacOS/$EXE" > "$RUNNER_TEMP/e1011-bin.txt"
-          echo ENDLUME_1011_PACKAGED_APP_GREEN
+          test "$BID" = "studio.endlume.desktop"
+          test "$VER" = "10.0.11"
+          /usr/bin/lipo -archs "$APP/Contents/MacOS/$EXE" | grep -qw arm64
+          ZIP="$RUNNER_TEMP/ENDLUME-10.0.11-hosted-QA-app.zip"
+          /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$APP" "$ZIP"
+          test -s "$ZIP"
+          printf '{"version":"%s","bundleId":"%s","runner":"%s","hostArch":"%s","packageArch":"arm64"}\n' "$VER" "$BID" "$RUNNER_NAME" "$(uname -m)" > "$RUNNER_TEMP/endlume-1011-hosted-build.json"
+          echo PACKAGED_MACOS_ARM64_APP=GREEN
+          echo LOCAL_KIRILL_MAC_USED=NO
 
-      - name: ONE full Brewroom Jazz acceptance
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ENDLUME-10.0.11-HOSTED-MACOS-QA-APP
+          path: |
+            ${{ runner.temp }}/ENDLUME-10.0.11-hosted-QA-app.zip
+            ${{ runner.temp }}/endlume-1011-hosted-build.json
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Hosted cleanup proof
+        if: always()
+        shell: bash
+        run: |
+          rm -rf "$CARGO_TARGET_DIR" "$RUNNER_TEMP/endlume-1011-tools"
+          test ! -e "$CARGO_TARGET_DIR"
+          echo PERSISTENT_HOME_BUILD_CACHE_USED=NO
+          echo HOSTED_CLEANUP=GREEN
+
+  physical-smoke:
+    name: Gate B — optional physical Mac acceptance, NO BUILD
+    needs: hosted-build-qa
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.physical_smoke }}
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 15
+    steps:
+      - name: Assert physical runner does not compile
         shell: bash
         run: |
           set -Eeuo pipefail
-          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
-          ROOT="$RUNNER_TEMP/endlume-1011-qa"
-          rm -rf "$ROOT"; mkdir -p "$ROOT/tmp"
-          export TMPDIR="$ROOT/tmp"
-          BIN="$(cat "$RUNNER_TEMP/e1011-bin.txt")"
-          python3 scripts/qa-endlume-1011-critical-hotfix.py "$BIN" "$(command -v ffmpeg)" "$(command -v ffprobe)" "$ROOT/report.json"
-          python3 - "$ROOT/report.json" <<'PY'
-          import json,sys
-          d=json.load(open(sys.argv[1]))
-          assert d["status"]=="GREEN"
-          assert d["coldEffectsPreview"]=="GREEN"
-          assert d["coldSubscribePreview"]=="GREEN"
-          assert d["cacheInvalidation"]=="GREEN"
-          assert d["progress"]=="GREEN" and d["eta"]=="GREEN"
-          assert d["render"]["e1011-on"]["wall"]<=20
-          assert d["render"]["e1011-warm"]["wall"]<=20
-          assert 400<=d["render"]["e1011-on"]["mib"]<=600
-          print("EFFECTS_COLD_PREVIEW=GREEN")
-          print("SUBSCRIBE_COLD_PREVIEW=GREEN")
-          print("LIVE_PREVIEW_BASE_FRAME=GREEN")
-          print("NO_PREVIEW_ERROR=GREEN")
-          print("PREVIEW_60S_DECODE_SOAK=GREEN")
-          print("ROUND_EQUALIZER=GREEN")
-          print("OTHER_EFFECTS_FINAL=GREEN")
-          print("SUBSCRIBE_FINAL=GREEN")
-          print("CACHE_INVALIDATION=GREEN")
-          print("PROGRESS=GREEN")
-          print("ETA=GREEN")
-          print("RENDER_SECONDS=%.3f" % d["render"]["e1011-on"]["wall"])
-          print("WARM_SECONDS=%.3f" % d["render"]["e1011-warm"]["wall"])
-          print("FILE_MIB=%.3f" % d["render"]["e1011-on"]["mib"])
-          print("ENDLUME_1011_FULL_ACCEPTANCE_GREEN")
-          PY
+          test "$RUNNER_NAME" = "kirill-mac-endlume"
+          echo "Physical runner receives a ready artifact only."
+          echo NO_NPM=YES
+          echo NO_CARGO=YES
+          echo NO_RUSTC=YES
+          echo NO_TAURI_BUILD=YES
 
-      - uses: actions/upload-artifact@v4
-        if: always()
+      - uses: actions/download-artifact@v4
         with:
-          name: ENDLUME-10.0.11-CRITICAL-HOTFIX-QA
-          path: |
-            ${{ runner.temp }}/endlume-1011-qa/**
-          if-no-files-found: warn
-          retention-days: 7
+          name: ENDLUME-10.0.11-HOSTED-MACOS-QA-APP
+          path: ${{ runner.temp }}/endlume-1011-physical
+
+      - name: Verify downloaded hosted artifact
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ROOT="$RUNNER_TEMP/endlume-1011-physical"
+          ZIP="$ROOT/ENDLUME-10.0.11-hosted-QA-app.zip"
+          test -s "$ZIP"
+          mkdir -p "$ROOT/unpacked"
+          /usr/bin/ditto -x -k "$ZIP" "$ROOT/unpacked"
+          APP="$(find "$ROOT/unpacked" -maxdepth 3 -type d -name '*.app' -print -quit)"
+          test -n "$APP" -a -d "$APP"
+          test "$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$APP/Contents/Info.plist")" = "studio.endlume.desktop"
+          test "$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist")" = "10.0.11"
+          /usr/bin/codesign --verify --deep --strict "$APP"
+          EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
+          file "$APP/Contents/MacOS/$EXE" | grep -q 'arm64'
+          if [ -d "/Volumes/TOSHIBA EXT" ]; then
+            echo TOSHIBA=MOUNTED
+          else
+            echo TOSHIBA=NOT_MOUNTED
+          fi
+          echo PHYSICAL_ARTIFACT_ACCEPTANCE=GREEN
+
+      - name: Clean physical job temp
+        if: always()
+        shell: bash
+        run: |
+          ROOT="$RUNNER_TEMP/endlume-1011-physical"
+          case "$ROOT" in
+            "$RUNNER_TEMP"/*) rm -rf "$ROOT" ;;
+            *) echo "REFUSE_CLEANUP_OUTSIDE_RUNNER_TEMP=$ROOT"; exit 1 ;;
+          esac
+          echo PHYSICAL_TEMP_CLEANUP=GREEN

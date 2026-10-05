@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import type { AnchorPoint, EffectPreset, LibraryPayload, Page, RenderProject, RenderSettings, SceneAnchors, SubscribePreset } from './types';
+import type { AnchorPoint, BackgroundMusicSettings, EffectPreset, LibraryPayload, Page, RenderProject, RenderSettings, SceneAnchors, SubscribePreset } from './types';
 import { applyProjectPatch } from './queue-state';
 
 type Editor = null | {kind:'effects'|'subscribe'; id?:string};
@@ -13,8 +13,10 @@ interface State {
   effects: EffectPreset[];
   subscribes: SubscribePreset[];
   ambient?: string;
+  ambientSettings: BackgroundMusicSettings;
   settings: RenderSettings;
   lastRoot?: string;
+  previewProjectPath?: string;
   libraryLoaded: boolean;
   sceneAnchorsByPath: Record<string, SceneAnchors>;
   setPage:(p:Page)=>void;
@@ -30,12 +32,16 @@ interface State {
   setEffects:(v:EffectPreset[])=>void;
   setSubscribes:(v:SubscribePreset[])=>void;
   setAmbient:(v?:string)=>void;
+  patchAmbientSettings:(v:Partial<BackgroundMusicSettings>)=>void;
   setLibrary:(v:LibraryPayload)=>void;
   setLibraryLoaded:(v:boolean)=>void;
   setSceneAnchor:(projectPath:string,target:string,anchor:AnchorPoint)=>void;
   patchSettings:(p:Partial<RenderSettings>)=>void;
   setLastRoot:(v?:string)=>void;
+  setPreviewProjectPath:(v?:string)=>void;
 }
+
+export const defaultBackgroundMusicSettings:BackgroundMusicSettings={volumePct:18,bassDb:0,midDb:0,trebleDb:0};
 
 const initialSettings:RenderSettings={
   width:1920,height:1080,fps:60,codec:'h265',bitrateMbps:30,durationHours:2,
@@ -44,7 +50,7 @@ const initialSettings:RenderSettings={
 };
 
 export const useApp=create<State>()(persist((set)=>({
-  page:'project',editor:null,projects:[],draftProjects:[],invalidProjects:[],effects:[],subscribes:[],settings:initialSettings,libraryLoaded:false,sceneAnchorsByPath:{},
+  page:'project',editor:null,projects:[],draftProjects:[],invalidProjects:[],effects:[],subscribes:[],ambientSettings:defaultBackgroundMusicSettings,settings:initialSettings,libraryLoaded:false,sceneAnchorsByPath:{},
   setPage:(page)=>set({page,editor:null}),
   openEditor:(editor)=>set({editor}),
   setProjects:(projects)=>set({projects}),
@@ -64,7 +70,8 @@ export const useApp=create<State>()(persist((set)=>({
   setEffects:(effects)=>set({effects}),
   setSubscribes:(subscribes)=>set({subscribes}),
   setAmbient:(ambient)=>set({ambient}),
-  setLibrary:(v)=>set({effects:(v.effects||[]).map(e=>({...e,despill:e.despill>0?e.despill:0.35})),subscribes:(v.subscribes||[]).map(e=>({...e,despill:e.despill>0?e.despill:0.35})),ambient:v.ambient,libraryLoaded:true}),
+  patchAmbientSettings:(patch)=>set(s=>({ambientSettings:{...s.ambientSettings,...patch}})),
+  setLibrary:(v)=>set({effects:(v.effects||[]).map(e=>({...e,despill:e.despill>0?e.despill:0.35})),subscribes:(v.subscribes||[]).map(e=>({...e,despill:e.despill>0?e.despill:0.35})),ambient:v.ambient,ambientSettings:{...defaultBackgroundMusicSettings,...(v.ambientSettings||{})},libraryLoaded:true}),
   setLibraryLoaded:(libraryLoaded)=>set({libraryLoaded}),
   setSceneAnchor:(projectPath,target,anchor)=>set(s=>{
     const key=target.trim().toUpperCase()||'CUSTOM';
@@ -75,5 +82,6 @@ export const useApp=create<State>()(persist((set)=>({
     };
   }),
   patchSettings:(patch)=>set(s=>({settings:{...s.settings,...patch}})),
-  setLastRoot:(lastRoot)=>set({lastRoot})
+  setLastRoot:(lastRoot)=>set({lastRoot}),
+  setPreviewProjectPath:(previewProjectPath)=>set({previewProjectPath})
 }),{name:'endlume-1-ui',version:7,migrate:(persisted:any)=>{const p:any=persisted||{};if(p.settings){p.settings={...p.settings,width:1920,height:1080,fps:60,crossfadeSec:3,normalizeLufs:false,codec:'h265'};}p.projects=[];p.sceneAnchorsByPath=p.sceneAnchorsByPath||{};return p;},partialize:(s)=>({settings:s.settings,lastRoot:s.lastRoot,sceneAnchorsByPath:s.sceneAnchorsByPath})}));

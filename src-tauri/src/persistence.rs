@@ -10,6 +10,14 @@ fn dir(app:&AppHandle)->anyhow::Result<PathBuf>{
 }
 
 pub fn read_value(app:&AppHandle,name:&str)->Value{
+  #[cfg(feature="e2e-render")]
+  if name=="library.json"{
+    if let Ok(path)=std::env::var("ENDLUME_E2E_LIBRARY_PATH"){
+      if let Ok(bytes)=fs::read(path){
+        if let Ok(value)=serde_json::from_slice(&bytes){return value}
+      }
+    }
+  }
   dir(app).ok()
     .and_then(|d|fs::read(d.join(name)).ok())
     .and_then(|bytes|serde_json::from_slice(&bytes).ok())

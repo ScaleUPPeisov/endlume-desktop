@@ -1,6 +1,6 @@
 use serde::Serialize;
 use sha2::{Digest,Sha256};
-use std::{fs,io::Read,path::{Path,PathBuf},time::UNIX_EPOCH};
+use std::{fs,io::Read,path::{Path,PathBuf},sync::OnceLock,time::UNIX_EPOCH};
 use tauri::{AppHandle,Manager};
 use tauri_plugin_shell::ShellExt;
 use walkdir::WalkDir;
@@ -42,6 +42,7 @@ fn proxy_probe_valid(raw:&[u8])->bool{
   let Some(stream)=v.get("streams").and_then(|x|x.as_array()).and_then(|x|x.first()) else{return false};
   if stream.get("codec_type").and_then(|x|x.as_str())!=Some("video"){return false}
   if !json_positive(stream.get("width"))||!json_positive(stream.get("height")){return false}
+  if !json_positive(stream.get("nb_read_frames")){return false}
   json_positive(v.get("format").and_then(|x|x.get("duration")))
 }
 fn accept_proxy_attempt(process_ok:bool,proxy_valid:bool)->bool{process_ok&&proxy_valid}
@@ -49,6 +50,68 @@ fn accept_proxy_attempt(process_ok:bool,proxy_valid:bool)->bool{process_ok&&prox
 fn cache_dir(app:&AppHandle)->Result<PathBuf,String>{let dir=app.path().app_cache_dir().map_err(|e|e.to_string())?.join("live-preview-v6");fs::create_dir_all(&dir).map_err(|e|e.to_string())?;Ok(dir)}
 fn fingerprint(path:&Path,seek:f64,kind:&str)->String{let meta=fs::metadata(path).ok();let size=meta.as_ref().map(|m|m.len()).unwrap_or(0);let modified=meta.as_ref().and_then(|m|m.modified().ok()).and_then(|t|t.duration_since(UNIX_EPOCH).ok()).map(|d|d.as_secs()).unwrap_or(0);let mut h=Sha256::new();h.update(format!("{}|{}|{}|{:.2}|{}",path.to_string_lossy(),size,modified,seek,kind));hex::encode(h.finalize())[..24].to_string()}
 fn first_media(project:&Path)->Option<PathBuf>{let mut files=WalkDir::new(project).max_depth(3).into_iter().filter_map(Result::ok).map(|e|e.into_path()).filter(|p|p.is_file()&&!rejected_macos_input(p)&&is_media(p)&&ready_file(p)).collect::<Vec<_>>();files.sort_by(|a,b|natural_name(a).cmp(&natural_name(b)));files.into_iter().next()}
+
+
+static STAGED_FFMPEG:OnceLock<Option<PathBuf>>=OnceLock::new();
+static STAGED_FFPROBE:OnceLock<Option<PathBuf>>=OnceLock::new();
+
+fn stage_packaged_tool(app:&AppHandle,name:&str)->Option<PathBuf>{
+  let exe=std::env::current_exe().ok()?;
+  let exe_dir=exe.parent()?;
+  #[cfg(target_os="windows")]
+  let source=exe_dir.join(format!("{name}.exe"));
+  #[cfg(not(target_os="windows"))]
+  let source=exe_dir.join(name);
+  if !executable_file(&source){return None}
+
+  let root=app.path().app_cache_dir().ok()?.join("live-preview-tools-v1");
+  fs::create_dir_all(&root).ok()?;
+  let source_meta=fs::metadata(&source).ok()?;
+  let file_name=source.file_name()?;
+  let target=root.join(file_name);
+  if fs::metadata(&target).map(|m|m.is_file()&&m.len()==source_meta.len()).unwrap_or(false)&&executable_file(&target){
+    if live_preview_diag_enabled(){eprintln!("ENDLUME_PREVIEW_TOOL_STAGE name={name} mode=cache-hit source={} staged={} bytes={}",source.display(),target.display(),source_meta.len());}
+    return Some(target)
+  }
+
+  let tmp=root.join(format!(".{}-{}.tmp",name,uuid::Uuid::new_v4()));
+  let _=fs::remove_file(&tmp);
+  let mode=if fs::hard_link(&source,&tmp).is_ok(){
+    "hard-link"
+  }else{
+    fs::copy(&source,&tmp).ok()?;
+    "copy"
+  };
+  #[cfg(unix)]
+  {
+    use std::os::unix::fs::PermissionsExt;
+    let mut permissions=fs::metadata(&tmp).ok()?.permissions();
+    permissions.set_mode(permissions.mode()|0o755);
+    fs::set_permissions(&tmp,permissions).ok()?;
+  }
+  if target.exists(){let _=fs::remove_file(&target);}
+  fs::rename(&tmp,&target).ok()?;
+  if !executable_file(&target){let _=fs::remove_file(&target);return None}
+  if live_preview_diag_enabled(){eprintln!("ENDLUME_PREVIEW_TOOL_STAGE name={name} mode={mode} source={} staged={} bytes={}",source.display(),target.display(),source_meta.len());}
+  Some(target)
+}
+
+pub(crate) fn staged_ffmpeg(app:&AppHandle)->Option<PathBuf>{
+  STAGED_FFMPEG.get_or_init(||stage_packaged_tool(app,"ffmpeg")).clone()
+}
+fn staged_ffprobe(app:&AppHandle)->Option<PathBuf>{
+  STAGED_FFPROBE.get_or_init(||stage_packaged_tool(app,"ffprobe")).clone()
+}
+fn ensure_preview_tools_staged(app:&AppHandle){
+  let ffmpeg=staged_ffmpeg(app);
+  let ffprobe=staged_ffprobe(app);
+  if live_preview_diag_enabled(){
+    eprintln!("ENDLUME_PREVIEW_TOOL_STAGE_READY ffmpeg={} ffprobe={}",
+      ffmpeg.as_ref().map(|p|p.display().to_string()).unwrap_or_else(||"<sidecar-only>".into()),
+      ffprobe.as_ref().map(|p|p.display().to_string()).unwrap_or_else(||"<sidecar-only>".into()));
+  }
+}
+
 
 #[cfg(feature="e2e-render")]
 fn qa_log_first_encode_sidecar(){
@@ -83,11 +146,27 @@ fn qa_log_first_encode_sidecar(){
   });
 }
 
-async fn run(app:&AppHandle,args:Vec<String>)->Result<(),String>{
+pub(crate) async fn ffmpeg_output(app:&AppHandle,args:Vec<String>)->Result<(bool,Option<i32>,Vec<u8>,Vec<u8>),String>{
+  // One Preview execution path for poster, base frame and overlay proxy.
+  // Packaged macOS may resolve externalBin metadata but fail sidecar spawn with
+  // ENOENT, so prefer the stable staged executable and keep sidecar as fallback.
+  ensure_preview_tools_staged(app);
   #[cfg(feature="e2e-render")]
   qa_log_first_encode_sidecar();
+  if let Some(ffmpeg)=staged_ffmpeg(app).filter(|p|executable_file(p)){
+    if live_preview_diag_enabled(){eprintln!("ENDLUME_PREVIEW_FFMPEG_SOURCE=staged-cache path={}",ffmpeg.display());}
+    let out=std::process::Command::new(&ffmpeg).args(&args).output()
+      .map_err(|e|format!("Не удалось запустить staged FFmpeg preview {}: {e}",ffmpeg.display()))?;
+    return Ok((out.status.success(),out.status.code(),out.stdout,out.stderr))
+  }
+  if live_preview_diag_enabled(){eprintln!("ENDLUME_PREVIEW_FFMPEG_SOURCE=tauri-sidecar-fallback");}
   let out=app.shell().sidecar("ffmpeg").map_err(|e|e.to_string())?.args(args).output().await.map_err(|e|e.to_string())?;
-  if out.status.success(){Ok(())}else{Err(String::from_utf8_lossy(&out.stderr).trim().to_string())}
+  Ok((out.status.success(),out.status.code(),out.stdout,out.stderr))
+}
+
+async fn run(app:&AppHandle,args:Vec<String>)->Result<(),String>{
+  let (success,_,_,stderr)=ffmpeg_output(app,args).await?;
+  if success{Ok(())}else{Err(String::from_utf8_lossy(&stderr).trim().to_string())}
 }
 
 fn executable_file(p:&Path)->bool{
@@ -119,10 +198,34 @@ fn app_bundle_root(exe:&Path)->Option<PathBuf>{
 }
 
 fn resolve_bundled_ffmpeg(app:&AppHandle)->Result<PathBuf,String>{
+  if let Some(staged)=staged_ffmpeg(app).filter(|p|executable_file(p)){
+    if live_preview_diag_enabled(){eprintln!("RESOLVED_FFMPEG_PATH={} FILE_EXISTS=true EXECUTABLE=true RESOLUTION=staged-cache",staged.display());}
+    return Ok(staged)
+  }
   let exe=std::env::current_exe().map_err(|e|format!("Live Preview current_exe: {e}"))?;
   let exe_dir=exe.parent().map(Path::to_path_buf).ok_or("Live Preview executable directory missing")?;
   let resource_dir=app.path().resource_dir().ok();
   let bundle=app_bundle_root(&exe);
+
+  // In a packaged macOS app Tauri places externalBin next to the main executable:
+  // Contents/MacOS/ffmpeg. Resolve that exact sibling first. This is the same path
+  // used successfully by the initial sidecar encode and avoids relying on a
+  // recursive bundle walk during the second-process validation pass.
+  #[cfg(target_os="windows")]
+  let direct_names=["ffmpeg.exe","ffmpeg-x86_64-pc-windows-msvc.exe"];
+  #[cfg(not(target_os="windows"))]
+  let direct_names=["ffmpeg","ffmpeg-aarch64-apple-darwin"];
+  for name in direct_names{
+    let candidate=exe_dir.join(name);
+    if executable_file(&candidate){
+      let resolved=fs::canonicalize(&candidate).unwrap_or(candidate);
+      if live_preview_diag_enabled(){
+        eprintln!("RESOLVED_FFMPEG_PATH={} FILE_EXISTS=true EXECUTABLE=true RESOLUTION=exact-sibling",resolved.display());
+      }
+      return Ok(resolved)
+    }
+  }
+
   if live_preview_diag_enabled(){
     eprintln!("ENDLUME_PREVIEW_FFMPEG_CONTEXT APP_BUNDLE_PATH={} RESOURCE_DIR={} EXECUTABLE_DIR={}",
       bundle.as_ref().map(|p|p.display().to_string()).unwrap_or_else(||"<none>".into()),
@@ -219,24 +322,44 @@ async fn decode_proxy_frame(app:&AppHandle,out:&Path)->Result<(),String>{
 
 pub(crate) async fn validate_video_proxy(app:&AppHandle,out:&Path)->Result<(),String>{
   if !ready_file(out){return Err("proxy-файл отсутствует или слишком мал".into())}
-  // A real decoded frame is mandatory. Prefer Tauri's sidecar launcher; if the
-  // packaged launcher cannot resolve/spawn a second process, execute the bundled
-  // sibling FFmpeg directly. Corrupt media still fails because decode exit != 0.
-  decode_proxy_frame(app,out).await.map_err(|e|format!("proxy не декодируется: {e}"))?;
-  let probe_args=vec!["-v","error","-select_streams","v:0","-show_entries","stream=codec_type,width,height:format=duration","-of","json",out.to_string_lossy().as_ref()].into_iter().map(String::from).collect::<Vec<_>>();
-  let Ok(cmd)=app.shell().sidecar("ffprobe") else{
-    if live_preview_diag_enabled(){eprintln!("ENDLUME_PREVIEW_FFPROBE_FALLBACK reason=sidecar-unavailable path={}",out.display());}
-    return Ok(())
-  };
-  let probe=match cmd.args(probe_args).output().await{
-    Ok(v)=>v,
-    Err(e)=>{
-      if live_preview_diag_enabled(){eprintln!("ENDLUME_PREVIEW_FFPROBE_FALLBACK reason=spawn-error error={:?} path={}",e,out.display());}
-      return Ok(())
+  // Prefer a direct FFmpeg decode. On packaged macOS Tauri can successfully use
+  // externalBin for the encode and still return ENOENT on a second ffmpeg spawn.
+  // In that exact case FFprobe frame counting is the independent decode gate:
+  // it must actually read >0 video frames plus valid geometry and duration.
+  let decode_error=decode_proxy_frame(app,out).await.err();
+  let probe_args=vec![
+    "-v","error","-select_streams","v:0","-count_frames",
+    "-show_entries","stream=codec_type,width,height,nb_read_frames:format=duration",
+    "-of","json",out.to_string_lossy().as_ref()
+  ].into_iter().map(String::from).collect::<Vec<_>>();
+  let (probe_success,probe_stdout,probe_stderr)=if let Some(ffprobe)=staged_ffprobe(app).filter(|p|executable_file(p)){
+    if live_preview_diag_enabled(){eprintln!("ENDLUME_PREVIEW_FFPROBE_SOURCE=staged-cache path={}",ffprobe.display());}
+    let v=std::process::Command::new(&ffprobe).args(&probe_args).output()
+      .map_err(|e|format!("staged FFprobe spawn failed {}: {e}",ffprobe.display()))?;
+    (v.status.success(),v.stdout,v.stderr)
+  }else{
+    let cmd=match app.shell().sidecar("ffprobe"){
+      Ok(v)=>v,
+      Err(e)=>{
+        if let Some(decode)=decode_error{return Err(format!("proxy decode failed ({decode}); FFprobe sidecar unavailable: {e}"))}
+        if live_preview_diag_enabled(){eprintln!("ENDLUME_PREVIEW_FFPROBE_FALLBACK reason=sidecar-unavailable path={}",out.display());}
+        return Ok(())
+      }
+    };
+    match cmd.args(probe_args).output().await{
+      Ok(v)=>(v.status.success(),v.stdout,v.stderr),
+      Err(e)=>{
+        if let Some(decode)=decode_error{return Err(format!("proxy decode failed ({decode}); FFprobe spawn failed: {e}"))}
+        if live_preview_diag_enabled(){eprintln!("ENDLUME_PREVIEW_FFPROBE_FALLBACK reason=spawn-error error={:?} path={}",e,out.display());}
+        return Ok(())
+      }
     }
   };
-  if !probe.status.success(){return Err(format!("FFprobe не принял proxy: {}",String::from_utf8_lossy(&probe.stderr).trim()))}
-  if !proxy_probe_valid(&probe.stdout){return Err("FFprobe не подтвердил video stream / geometry / duration".into())}
+  if !probe_success{return Err(format!("FFprobe не принял proxy: {}",String::from_utf8_lossy(&probe_stderr).trim()))}
+  if !proxy_probe_valid(&probe_stdout){return Err("FFprobe не подтвердил video stream / geometry / decoded frames / duration".into())}
+  if let Some(decode)=decode_error{
+    if live_preview_diag_enabled(){eprintln!("ENDLUME_PREVIEW_REAL_FRAME_DECODE_GREEN mode=ffprobe-count-frames fallback_reason={:?} path={}",decode,out.display());}
+  }
   Ok(())
 }
 
@@ -298,14 +421,14 @@ async fn make_base(app:&AppHandle,src:&Path,seek:f64,out:&Path)->Result<String,S
     let name=out.file_name().and_then(|x|x.to_str()).unwrap_or("base.png");
     let tmp=out.with_file_name(format!("{name}-{}.tmp.png",uuid::Uuid::new_v4()));
     let args=vec!["-hide_banner","-loglevel","error","-i",src.to_string_lossy().as_ref(),"-vf","scale=960:540:force_original_aspect_ratio=decrease,pad=960:540:(ow-iw)/2:(oh-ih)/2","-frames:v","1","-compression_level","1","-y",tmp.to_string_lossy().as_ref()].into_iter().map(String::from).collect::<Vec<_>>();
-    let output=app.shell().sidecar("ffmpeg").map_err(|e|format!("FFmpeg Live Preview недоступен: {e}"))?.args(args).output().await.map_err(|e|format!("Не удалось запустить FFmpeg Live Preview: {e}"))?;
-    let stderr=String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let (success,code,_stdout,stderr_bytes)=ffmpeg_output(app,args).await.map_err(|e|format!("Не удалось запустить FFmpeg Live Preview: {e}"))?;
+    let stderr=String::from_utf8_lossy(&stderr_bytes).trim().to_string();
     let (width,height,pix_fmt)=frame_probe_diag(app,&tmp).await;
     if live_preview_diag_enabled(){
       let size=fs::metadata(&tmp).map(|m|m.len()).unwrap_or(0);
-      eprintln!("ENDLUME_PREVIEW_BASE SOURCE_IMAGE={} BASE_FRAME_PATH={} BASE_FRAME_EXISTS={} BASE_FRAME_SIZE={} WIDTH={} HEIGHT={} PIX_FMT={} FFMPEG_EXIT={:?} STDERR={:?} CACHE_KEY={} TEMP_PATH={}",src.display(),out.display(),tmp.is_file(),size,width,height,pix_fmt,output.status.code(),stderr,out.file_stem().and_then(|x|x.to_str()).unwrap_or(""),tmp.display());
+      eprintln!("ENDLUME_PREVIEW_BASE SOURCE_IMAGE={} BASE_FRAME_PATH={} BASE_FRAME_EXISTS={} BASE_FRAME_SIZE={} WIDTH={} HEIGHT={} PIX_FMT={} FFMPEG_EXIT={:?} STDERR={:?} CACHE_KEY={} TEMP_PATH={}",src.display(),out.display(),tmp.is_file(),size,width,height,pix_fmt,code,stderr,out.file_stem().and_then(|x|x.to_str()).unwrap_or(""),tmp.display());
     }
-    if !output.status.success(){let _=fs::remove_file(&tmp);return Err(if stderr.is_empty(){"Не удалось создать базовый кадр Live Preview".into()}else{stderr})}
+    if !success{let _=fs::remove_file(&tmp);return Err(if stderr.is_empty(){"Не удалось создать базовый кадр Live Preview".into()}else{stderr})}
     if !ready_file(&tmp){let _=fs::remove_file(&tmp);return Err("Не удалось создать базовый кадр Live Preview".into())}
     if ready_file(out){let _=fs::remove_file(&tmp);}else{let _=fs::remove_file(out);fs::rename(&tmp,out).map_err(|e|format!("Live Preview atomic base publish: {e}"))?;}
     Ok("image".into())
@@ -378,9 +501,10 @@ mod tests{
 
   #[test]
   fn ffprobe_contract_requires_video_geometry_and_duration(){
-    let good=br#"{"streams":[{"codec_type":"video","width":640,"height":360}],"format":{"duration":"6.000000"}}"#;
+    let good=br#"{"streams":[{"codec_type":"video","width":640,"height":360,"nb_read_frames":"180"}],"format":{"duration":"6.000000"}}"#;
     let no_stream=br#"{"streams":[],"format":{"duration":"6.000000"}}"#;
-    let no_duration=br#"{"streams":[{"codec_type":"video","width":640,"height":360}],"format":{"duration":"0"}}"#;
-    assert!(proxy_probe_valid(good));assert!(!proxy_probe_valid(no_stream));assert!(!proxy_probe_valid(no_duration));
+    let no_frames=br#"{"streams":[{"codec_type":"video","width":640,"height":360,"nb_read_frames":"0"}],"format":{"duration":"6.000000"}}"#;
+    let no_duration=br#"{"streams":[{"codec_type":"video","width":640,"height":360,"nb_read_frames":"180"}],"format":{"duration":"0"}}"#;
+    assert!(proxy_probe_valid(good));assert!(!proxy_probe_valid(no_stream));assert!(!proxy_probe_valid(no_frames));assert!(!proxy_probe_valid(no_duration));
   }
 }

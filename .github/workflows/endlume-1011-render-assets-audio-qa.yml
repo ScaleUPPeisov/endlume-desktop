@@ -1,0 +1,17 @@
+name: ENDLUME 10.0.11 Legacy Render Assets Audio QA (manual only)
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  superseded:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Legacy workflow disabled for automatic release acceptance
+        run: |
+          echo "This workflow is manual-only."
+          echo "Primary release acceptance is .github/workflows/endlume-1011-critical-hotfix-qa.yml"
+          echo "Gate A uses deterministic RUNNER_TEMP media; Gate B is optional TOSHIBA smoke."

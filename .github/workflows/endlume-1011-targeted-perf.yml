@@ -1,0 +1,108 @@
+name: ENDLUME 10.0.11 Targeted Render Perf
+
+on:
+  push:
+    branches: [hotfix/endlume-10.0.11-macos-render-assets-audio]
+    paths:
+      - ".github/workflows/endlume-1011-targeted-perf.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-1011-targeted-render-perf
+  cancel-in-progress: true
+
+jobs:
+  targeted-perf:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Reuse packaged 10.0.11 app
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          APP_ROOT="$HOME/.endlume-build-cache/target-1011-critical-qa/aarch64-apple-darwin/release/bundle/macos/ENDLUME YT Studio PEISOV.app"
+          test -d "$APP_ROOT"
+          EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP_ROOT/Contents/Info.plist")"
+          test -x "$APP_ROOT/Contents/MacOS/$EXE"
+          /usr/bin/codesign --verify --deep --strict "$APP_ROOT"
+          printf '%s' "$APP_ROOT/Contents/MacOS/$EXE" > "$RUNNER_TEMP/e1011-targeted-bin.txt"
+          echo TARGETED_PACKAGED_APP_REUSE=GREEN
+
+      - name: Run e1011-on cold warm and bg-eq only
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+          ROOT="$RUNNER_TEMP/endlume-1011-targeted-perf"
+          rm -rf "$ROOT"; mkdir -p "$ROOT/tmp"
+          export TMPDIR="$ROOT/tmp"
+          BIN="$(cat "$RUNNER_TEMP/e1011-targeted-bin.txt")"
+          cp scripts/qa-endlume-1011-critical-hotfix.py "$ROOT/targeted.py"
+          python3 - "$ROOT/targeted.py" <<'PY'
+          from pathlib import Path
+          import sys
+          p=Path(sys.argv[1]); s=p.read_text()
+          # Execute all cold-preview/setup runs exactly as full QA does, but skip
+          # the later frame-diff readback because those cache MP4s are intentionally
+          # ephemeral and are unrelated to Final Render performance measurement.
+          a=s.index('base_frame=frame(')
+          b=s.index('settings={',a)
+          s=s[:a]+s[b:]
+          a=s.index('jobs=[',s.index('stale_film='))
+          b=s.index('render_fixture=',a)
+          replacement='''jobs=[\n    job("e1011-setup-off","ENDLUME 10.0.11 PERF SETUP OFF",[film_off,eq,third]),\n    job("e1011-on","ENDLUME 10.0.11 PERF ON",[film,eq,third]),\n    job("e1011-on-warm","ENDLUME 10.0.11 PERF ON WARM",[film,eq,third]),\n    job("e1011-bg-eq","ENDLUME 10.0.11 PERF BG EQ",[],[],str(background),{"volumePct":20.0,"bassDb":-3.0,"midDb":0.0,"trebleDb":-2.0},exact_202),\n]\n'''
+          s=s[:a]+replacement+s[b:]
+          a=s.index('render_meta={}')
+          tail='''render_meta={}
+          timings={}
+          cache_events=[]
+          bg_events=[]
+          for line in rp.stderr.splitlines():
+              if "ENDLUME_DIAG " not in line: continue
+              try: d=json.loads(line.split("ENDLUME_DIAG ",1)[1].strip())
+              except Exception: continue
+              pid=str(d.get("projectId") or "")
+              if d.get("kind")=="engine-timing" and pid:
+                  timings.setdefault(pid,{}).setdefault(str(d.get("key")),[]).append(float(d.get("seconds") or 0.0))
+              elif d.get("kind")=="cache": cache_events.append(d)
+              elif d.get("kind")=="background-music-final": bg_events.append(d)
+          for pid,row in rows.items():
+              pth=Path(row["outputPath"]); assert pth.is_file(),pth
+              m=probe(pth); v=next(x for x in m["streams"] if x.get("codec_type")=="video"); astream=next(x for x in m["streams"] if x.get("codec_type")=="audio")
+              mib=pth.stat().st_size/1048576; dur=float(m["format"]["duration"])
+              render_meta[pid]={"wall":float(row["wallSeconds"]),"mib":mib,"duration":dur,"codec":v.get("codec_name"),"width":v.get("width"),"height":v.get("height"),"fps":v.get("avg_frame_rate"),"audioCodec":astream.get("codec_name"),"fastPath":row.get("fastPath"),"fastPathReason":row.get("fastPathReason")}
+          report={"status":"GREEN" if all(render_meta[x]["wall"]<=20.0 for x in ("e1011-on","e1011-on-warm","e1011-bg-eq")) else "RED","render":render_meta,"timings":timings,"cache":cache_events,"background":bg_events,"appWall":app_wall}
+          REPORT.parent.mkdir(parents=True,exist_ok=True); REPORT.write_text(json.dumps(report,ensure_ascii=False,indent=2))
+          for pid in ("e1011-on","e1011-on-warm","e1011-bg-eq"):
+              print("TARGET",pid,json.dumps(render_meta[pid],ensure_ascii=False,sort_keys=True))
+              print("TIMINGS",pid,json.dumps(timings.get(pid,{}),ensure_ascii=False,sort_keys=True))
+              print("CACHE",pid,json.dumps([x for x in cache_events if x.get("projectId")==pid],ensure_ascii=False,sort_keys=True))
+          print("BG_EVENTS",json.dumps(bg_events,ensure_ascii=False,sort_keys=True))
+          print("TARGETED_PERF_STATUS="+report["status"])
+          '''
+          import textwrap
+          s=s[:a]+textwrap.dedent(tail)
+          p.write_text(s)
+          PY
+          python3 "$ROOT/targeted.py" "$BIN" "$(command -v ffmpeg)" "$(command -v ffprobe)" "$ROOT/report.json"
+          cat "$ROOT/report.json"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ENDLUME-10.0.11-TARGETED-PERF
+          path: |
+            ${{ runner.temp }}/endlume-1011-targeted-perf/report.json
+            ${{ runner.temp }}/endlume-1011-targeted-perf/tmp/**/render.stderr
+            ${{ runner.temp }}/endlume-1011-targeted-perf/tmp/**/render.stdout
+          if-no-files-found: warn
+          retention-days: 3

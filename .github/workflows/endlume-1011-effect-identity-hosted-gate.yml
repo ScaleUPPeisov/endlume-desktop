@@ -1,0 +1,68 @@
+name: ENDLUME 10.0.11 Effect Identity Hosted Gate
+
+on:
+  push:
+    branches: [hotfix/endlume-10.0.11-performance-effects-reliability]
+    paths:
+      - ".github/workflows/endlume-1011-effect-identity-hosted-gate.yml"
+      - "src-tauri/src/persistence.rs"
+      - "src-tauri/src/model.rs"
+      - "src-tauri/src/queue.rs"
+      - "src-tauri/src/scan.rs"
+      - "src/store.ts"
+      - "src/types.ts"
+      - "src/pages/ProjectPage.tsx"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: macos-15
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Prove source ancestry
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          SOURCE=2e4e958d08927eaf098dc348fdfaed34ecb92b56
+          git cat-file -e "$SOURCE^{commit}"
+          test "$(git merge-base HEAD "$SOURCE")" = "$SOURCE"
+          echo SOURCE_OF_TRUTH=$SOURCE
+          echo CANDIDATE_HEAD=$(git rev-parse HEAD)
+
+      - name: Stage Apple Silicon sidecars required by Tauri build script
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          TMP="$(mktemp -d)"
+          curl -fL --retry 4 "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffmpeg.zip" -o "$TMP/ffmpeg.zip"
+          curl -fL --retry 4 "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffprobe.zip" -o "$TMP/ffprobe.zip"
+          mkdir -p "$TMP/fm" "$TMP/fp" src-tauri/binaries
+          ditto -x -k "$TMP/ffmpeg.zip" "$TMP/fm"
+          ditto -x -k "$TMP/ffprobe.zip" "$TMP/fp"
+          cp "$(find "$TMP/fm" -type f -name ffmpeg -print -quit)" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp "$(find "$TMP/fp" -type f -name ffprobe -print -quit)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          chmod 755 src-tauri/binaries/ffmpeg-aarch64-apple-darwin src-tauri/binaries/ffprobe-aarch64-apple-darwin
+
+      - name: Frontend gates
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          npm ci
+          npm run check
+          npm run build
+
+      - name: Rust gates including identity regression
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cargo check --manifest-path src-tauri/Cargo.toml
+          cargo test --manifest-path src-tauri/Cargo.toml -- --nocapture

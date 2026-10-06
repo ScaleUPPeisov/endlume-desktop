@@ -1,0 +1,133 @@
+name: QA ENDLUME 10.0.11 macOS sidecar diagnostic
+
+on:
+  push:
+    branches:
+      - qa/endlume-10.0.11-macos-sidecar-diagnostic-016571
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PRODUCT_SHA: 016571ccc0031feb511e225f749d718df5f89a58
+
+jobs:
+  diagnose-sidecars:
+    runs-on: [self-hosted, macOS, ARM64]
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact product SHA
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.PRODUCT_SHA }}
+          fetch-depth: 1
+
+      - name: Prove exact product checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$PRODUCT_SHA"
+          test "$(git status --porcelain)" = ""
+          echo "EXACT_PRODUCT_SHA=PASS"
+
+      - name: Stage Homebrew ffmpeg sidecars
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p src-tauri/binaries
+          cp "$(command -v ffmpeg)" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp "$(command -v ffprobe)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          chmod +x src-tauri/binaries/ffmpeg-aarch64-apple-darwin src-tauri/binaries/ffprobe-aarch64-apple-darwin
+
+      - name: Build portable closure only
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/prepare-macos-ffmpeg-runtime.mjs
+
+      - name: Baseline clean-env launch and code-signature diagnostics
+        shell: bash
+        run: |
+          set -u
+          FFMPEG="$GITHUB_WORKSPACE/src-tauri/binaries/ffmpeg-aarch64-apple-darwin"
+          FFPROBE="$GITHUB_WORKSPACE/src-tauri/binaries/ffprobe-aarch64-apple-darwin"
+          echo "BASELINE_FFMPEG_OTOOL_BEGIN"
+          otool -L "$FFMPEG" || true
+          echo "BASELINE_FFMPEG_OTOOL_END"
+          echo "BASELINE_FFMPEG_CODESIGN_DETAIL_BEGIN"
+          codesign -dv --verbose=4 "$FFMPEG" 2>&1 || true
+          echo "BASELINE_FFMPEG_CODESIGN_DETAIL_END"
+          codesign --verify --verbose=4 "$FFMPEG" >/tmp/ffmpeg.codesign.out 2>&1
+          cs_ffmpeg=$?
+          codesign --verify --verbose=4 "$FFPROBE" >/tmp/ffprobe.codesign.out 2>&1
+          cs_ffprobe=$?
+          echo "BASELINE_FFMPEG_CODESIGN_STATUS=$cs_ffmpeg"
+          cat /tmp/ffmpeg.codesign.out || true
+          echo "BASELINE_FFPROBE_CODESIGN_STATUS=$cs_ffprobe"
+          cat /tmp/ffprobe.codesign.out || true
+          env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin "$FFMPEG" -version >/tmp/ffmpeg.run.out 2>/tmp/ffmpeg.run.err
+          run_ffmpeg=$?
+          env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin "$FFPROBE" -version >/tmp/ffprobe.run.out 2>/tmp/ffprobe.run.err
+          run_ffprobe=$?
+          echo "BASELINE_FFMPEG_RUN_STATUS=$run_ffmpeg"
+          echo "BASELINE_FFMPEG_STDERR=$(tr '\n' ' ' </tmp/ffmpeg.run.err)"
+          echo "BASELINE_FFPROBE_RUN_STATUS=$run_ffprobe"
+          echo "BASELINE_FFPROBE_STDERR=$(tr '\n' ' ' </tmp/ffprobe.run.err)"
+          printf '%s\n' "$cs_ffmpeg" > /tmp/baseline_cs_ffmpeg
+          printf '%s\n' "$cs_ffprobe" > /tmp/baseline_cs_ffprobe
+          printf '%s\n' "$run_ffmpeg" > /tmp/baseline_run_ffmpeg
+          printf '%s\n' "$run_ffprobe" > /tmp/baseline_run_ffprobe
+          exit 0
+
+      - name: QA-only ad-hoc sign portable closure
+        shell: bash
+        run: |
+          set -euo pipefail
+          FRAMEWORKS="$GITHUB_WORKSPACE/src-tauri/.generated/macos-ffmpeg-frameworks"
+          if [ -d "$FRAMEWORKS" ]; then
+            while IFS= read -r -d '' dylib; do
+              codesign --force --sign - "$dylib"
+            done < <(find "$FRAMEWORKS" -type f -name '*.dylib' -print0)
+          fi
+          codesign --force --sign - src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          codesign --force --sign - src-tauri/binaries/ffprobe-aarch64-apple-darwin
+
+      - name: Re-test clean-env launch after QA-only signing
+        shell: bash
+        run: |
+          set -u
+          FFMPEG="$GITHUB_WORKSPACE/src-tauri/binaries/ffmpeg-aarch64-apple-darwin"
+          FFPROBE="$GITHUB_WORKSPACE/src-tauri/binaries/ffprobe-aarch64-apple-darwin"
+          codesign --verify --verbose=4 "$FFMPEG" >/tmp/ffmpeg.after.codesign.out 2>&1
+          cs_ffmpeg=$?
+          codesign --verify --verbose=4 "$FFPROBE" >/tmp/ffprobe.after.codesign.out 2>&1
+          cs_ffprobe=$?
+          env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin "$FFMPEG" -version >/tmp/ffmpeg.after.out 2>/tmp/ffmpeg.after.err
+          run_ffmpeg=$?
+          env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin "$FFPROBE" -version >/tmp/ffprobe.after.out 2>/tmp/ffprobe.after.err
+          run_ffprobe=$?
+          echo "AFTER_SIGN_FFMPEG_CODESIGN_STATUS=$cs_ffmpeg"
+          echo "AFTER_SIGN_FFPROBE_CODESIGN_STATUS=$cs_ffprobe"
+          echo "AFTER_SIGN_FFMPEG_RUN_STATUS=$run_ffmpeg"
+          echo "AFTER_SIGN_FFMPEG_STDERR=$(tr '\n' ' ' </tmp/ffmpeg.after.err)"
+          echo "AFTER_SIGN_FFPROBE_RUN_STATUS=$run_ffprobe"
+          echo "AFTER_SIGN_FFPROBE_STDERR=$(tr '\n' ' ' </tmp/ffprobe.after.err)"
+          base_run_ffmpeg="$(cat /tmp/baseline_run_ffmpeg)"
+          base_run_ffprobe="$(cat /tmp/baseline_run_ffprobe)"
+          if [ "$base_run_ffmpeg" -ne 0 ] && [ "$run_ffmpeg" -eq 0 ] && [ "$base_run_ffprobe" -ne 0 ] && [ "$run_ffprobe" -eq 0 ]; then
+            echo "ADHOC_SIGNING_ROOT_CAUSE_PROVEN=PASS"
+          else
+            echo "ADHOC_SIGNING_ROOT_CAUSE_PROVEN=NO"
+          fi
+          test "$run_ffmpeg" -eq 0
+          test "$run_ffprobe" -eq 0
+
+      - name: Prove product source untouched
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$PRODUCT_SHA"
+          git diff -- src src-tauri/src src-tauri/tauri.conf.json package.json package-lock.json
+          test -z "$(git diff --name-only -- src src-tauri/src src-tauri/tauri.conf.json package.json package-lock.json)"
+          echo "PRODUCT_SOURCE_UNTOUCHED=PASS"

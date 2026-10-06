@@ -62,26 +62,37 @@ fn migrate_item(app:&AppHandle,item:&mut Value,kind:&str)->bool{
   if source.trim().is_empty(){
     changed|=mark_asset_repair_required(obj,"Источник файла не сохранён. Выберите исходный файл этого preset заново; ENDLUME не будет подставлять другой эффект.".into());
   }else if Path::new(&source).is_file(){
-    if let Ok(managed)=assets::ensure_managed_asset(app,&source,kind){
-      if managed!=source{
-        obj.insert("source".into(),json!(managed));
-        obj.insert("cacheReady".into(),json!(false));
-        obj.insert("cacheKey".into(),Value::Null);
-        changed=true;
+    match assets::ensure_managed_asset(app,&source,kind){
+      Ok(managed)=>{
+        if managed!=source{
+          obj.insert("source".into(),json!(managed));
+          obj.insert("cacheReady".into(),json!(false));
+          obj.insert("cacheKey".into(),Value::Null);
+          changed=true;
+        }
+        changed|=mark_asset_ready(obj);
+      }
+      Err(reason)=>{
+        changed|=mark_asset_repair_required(obj,format!("Файл preset существует, но ENDLUME не смог сохранить его в managed library: {source}. {reason}"));
       }
     }
-    changed|=mark_asset_ready(obj);
   }else{
     match assets::repair_missing_managed_asset(app,&source,kind){
       Ok(Some(repaired))=>{
-        let managed=assets::ensure_managed_asset(app,&repaired,kind).unwrap_or(repaired);
-        if obj.get("source").and_then(Value::as_str)!=Some(managed.as_str()){
-          obj.insert("source".into(),json!(managed));
-          changed=true;
+        match assets::ensure_managed_asset(app,&repaired,kind){
+          Ok(managed)=>{
+            if obj.get("source").and_then(Value::as_str)!=Some(managed.as_str()){
+              obj.insert("source".into(),json!(managed));
+              changed=true;
+            }
+            changed|=set_json_field(obj,"cacheReady",json!(false));
+            changed|=set_json_field(obj,"cacheKey",Value::Null);
+            changed|=mark_asset_ready(obj);
+          }
+          Err(reason)=>{
+            changed|=mark_asset_repair_required(obj,format!("ENDLUME нашёл точный managed asset для stale path '{source}', но не смог импортировать его в текущую managed library: {repaired}. {reason}"));
+          }
         }
-        changed|=set_json_field(obj,"cacheReady",json!(false));
-        changed|=set_json_field(obj,"cacheKey",Value::Null);
-        changed|=mark_asset_ready(obj);
       }
       Ok(None)=>{
         changed|=mark_asset_repair_required(obj,format!("Файл preset не найден: {source}. ENDLUME сохранил identity и не будет скрывать или заменять этот эффект. Требуется восстановить источник."));
@@ -115,8 +126,6 @@ fn normalize_effect_identities(items:&mut Vec<Value>)->bool{
   let mut out=Vec::with_capacity(old.len());
   let mut changed=false;
 
-  // Phase 1: make missing IDs valid and remove only byte-for-byte-equivalent
-  // logical records. Different preset settings that reuse the same asset are valid.
   for mut item in old{
     if !item.is_object(){out.push(item);continue}
     let id=item.get("id").and_then(Value::as_str).unwrap_or("").trim().to_string();
@@ -128,9 +137,6 @@ fn normalize_effect_identities(items:&mut Vec<Value>)->bool{
     out.push(item);
   }
 
-  // Phase 2: if one legacy ID addresses multiple distinct preset definitions,
-  // retire that ambiguous ID from *all* participants. Keeping it on the first
-  // record could make an old selectedEffectId silently resolve to the wrong preset.
   let mut counts=HashMap::<String,usize>::new();
   for item in &out{
     if let Some(id)=item.get("id").and_then(Value::as_str).map(str::trim).filter(|id|!id.is_empty()){

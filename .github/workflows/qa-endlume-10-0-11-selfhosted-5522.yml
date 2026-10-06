@@ -64,8 +64,27 @@ jobs:
         run: cargo check --manifest-path src-tauri/Cargo.toml
       - name: Rust tests
         run: cargo test --manifest-path src-tauri/Cargo.toml
-      - name: Tauri packaged macOS app
-        run: npm run tauri -- build --bundles app
+      - name: Tauri packaged macOS app (QA app-only, no updater signing)
+        shell: bash
+        run: |
+          set -euo pipefail
+          config="src-tauri/tauri.conf.json"
+          backup="$RUNNER_TEMP/tauri.conf.product.json"
+          cp "$config" "$backup"
+          restore_config() { cp "$backup" "$config"; }
+          trap restore_config EXIT
+          node - <<'NODE'
+          const fs=require('fs');
+          const p='src-tauri/tauri.conf.json';
+          const cfg=JSON.parse(fs.readFileSync(p,'utf8'));
+          cfg.bundle={...(cfg.bundle||{}),createUpdaterArtifacts:false};
+          fs.writeFileSync(p,JSON.stringify(cfg,null,2)+'\n');
+          NODE
+          npm run tauri -- build --bundles app
+          restore_config
+          trap - EXIT
+          git diff --exit-code -- "$config"
+          test "$(git rev-parse HEAD)" = "$PRODUCT_SHA"
       - name: Prove packaged app exists
         shell: bash
         run: |
@@ -73,3 +92,4 @@ jobs:
           app="$(find src-tauri/target/release/bundle/macos -maxdepth 2 -type d -name '*.app' -print -quit)"
           echo "PACKAGED_APP=$app"
           test -n "$app"
+          test -x "$app/Contents/MacOS/ENDLUME YT Studio PEISOV"

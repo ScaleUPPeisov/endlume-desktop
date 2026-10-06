@@ -3,8 +3,9 @@ Set-StrictMode -Version Latest
 Set-Location (Join-Path $PSScriptRoot '..')
 
 $Target = 'x86_64-pc-windows-msvc'
-$ReleaseTag = 'autobuild-2026-09-14-13-17'
-$ArchiveName = 'ffmpeg-N-126549-ga51bb69b09-win64-gpl.zip'
+$ReleaseTag = 'autobuild-2026-10-05-13-07'
+$ArchiveName = 'ffmpeg-N-127203-ga35c879992-win64-gpl.zip'
+$ArchiveSha256 = '34517BF39ADDBCFCDF01236074491E3BA94D6D137801F88803903A87CB76D1AA'
 $Url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/$ReleaseTag/$ArchiveName"
 $Cache = Join-Path $env:RUNNER_TEMP 'endlume-ffmpeg'
 if (-not $env:RUNNER_TEMP) { $Cache = Join-Path $env:TEMP 'endlume-ffmpeg' }
@@ -17,6 +18,13 @@ if (-not (Test-Path $Zip)) {
   Write-Host "Downloading pinned FFmpeg build $ReleaseTag"
   Invoke-WebRequest -Uri $Url -OutFile $Zip -UseBasicParsing
 }
+
+$ActualSha256 = (Get-FileHash -Path $Zip -Algorithm SHA256).Hash.ToUpperInvariant()
+if ($ActualSha256 -ne $ArchiveSha256) {
+  throw "Pinned FFmpeg archive SHA256 mismatch. Expected $ArchiveSha256, got $ActualSha256"
+}
+Write-Host "Pinned FFmpeg archive SHA256 verified: $ActualSha256"
+
 if (Test-Path $Extract) { Remove-Item $Extract -Recurse -Force }
 Expand-Archive -Path $Zip -DestinationPath $Extract -Force
 

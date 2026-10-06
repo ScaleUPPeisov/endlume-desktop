@@ -1,5 +1,5 @@
 use crate::{assets,model::QueueJob};
-use serde_json::{json,Value};
+use serde_json::{json,Map,Value};
 use std::{collections::HashMap,fs,path::{Path,PathBuf}};
 use tauri::{AppHandle,Manager};
 use uuid::Uuid;
@@ -34,23 +34,64 @@ pub fn write_value(app:&AppHandle,name:&str,v:&Value)->anyhow::Result<()> {
   Ok(())
 }
 
+fn set_json_field(obj:&mut Map<String,Value>,key:&str,value:Value)->bool{
+  if obj.get(key)==Some(&value){return false}
+  obj.insert(key.to_string(),value);true
+}
+
+fn mark_asset_ready(obj:&mut Map<String,Value>)->bool{
+  let mut changed=set_json_field(obj,"assetState",json!("ready"));
+  if obj.remove("assetError").is_some(){changed=true;}
+  changed
+}
+
+fn mark_asset_repair_required(obj:&mut Map<String,Value>,message:String)->bool{
+  let mut changed=false;
+  changed|=set_json_field(obj,"assetState",json!("repair-required"));
+  changed|=set_json_field(obj,"assetError",json!(message));
+  changed|=set_json_field(obj,"cacheReady",json!(false));
+  changed|=set_json_field(obj,"cacheKey",Value::Null);
+  changed
+}
+
 fn migrate_item(app:&AppHandle,item:&mut Value,kind:&str)->bool{
   let Some(obj)=item.as_object_mut() else{return false};
   let mut changed=false;
   let source=obj.get("source").and_then(Value::as_str).unwrap_or("").to_string();
-  if !source.trim().is_empty(){
-    if Path::new(&source).is_file(){
-      if let Ok(managed)=assets::ensure_managed_asset(app,&source,kind){
-        if managed!=source{obj.insert("source".into(),json!(managed));obj.insert("cacheReady".into(),json!(false));obj.insert("cacheKey".into(),Value::Null);changed=true;}
+
+  if source.trim().is_empty(){
+    changed|=mark_asset_repair_required(obj,"Источник файла не сохранён. Выберите исходный файл этого preset заново; ENDLUME не будет подставлять другой эффект.".into());
+  }else if Path::new(&source).is_file(){
+    if let Ok(managed)=assets::ensure_managed_asset(app,&source,kind){
+      if managed!=source{
+        obj.insert("source".into(),json!(managed));
+        obj.insert("cacheReady".into(),json!(false));
+        obj.insert("cacheKey".into(),Value::Null);
+        changed=true;
       }
-    }else{
-      obj.insert("source".into(),json!(""));
-      obj.insert("enabled".into(),json!(false));
-      obj.insert("cacheReady".into(),json!(false));
-      obj.insert("cacheKey".into(),Value::Null);
-      changed=true;
+    }
+    changed|=mark_asset_ready(obj);
+  }else{
+    match assets::repair_missing_managed_asset(app,&source,kind){
+      Ok(Some(repaired))=>{
+        let managed=assets::ensure_managed_asset(app,&repaired,kind).unwrap_or(repaired);
+        if obj.get("source").and_then(Value::as_str)!=Some(managed.as_str()){
+          obj.insert("source".into(),json!(managed));
+          changed=true;
+        }
+        changed|=set_json_field(obj,"cacheReady",json!(false));
+        changed|=set_json_field(obj,"cacheKey",Value::Null);
+        changed|=mark_asset_ready(obj);
+      }
+      Ok(None)=>{
+        changed|=mark_asset_repair_required(obj,format!("Файл preset не найден: {source}. ENDLUME сохранил identity и не будет скрывать или заменять этот эффект. Требуется восстановить источник."));
+      }
+      Err(reason)=>{
+        changed|=mark_asset_repair_required(obj,format!("Файл preset не найден: {source}. {reason}"));
+      }
     }
   }
+
   let enabled=obj.get("enabled").and_then(Value::as_bool).unwrap_or(false);
   let usage=obj.get("usageMode").and_then(Value::as_str).unwrap_or("");
   if enabled&&usage=="off"{

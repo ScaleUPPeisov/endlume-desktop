@@ -1,0 +1,142 @@
+name: QA ENDLUME 10.0.11 live library read-only
+
+on:
+  push:
+    branches:
+      - qa/endlume-10.0.11-live-library-readonly-016571
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PRODUCT_SHA: 016571ccc0031feb511e225f749d718df5f89a58
+  ROUND_EXPECTED_ID: 825dd7a4-f0cf-4032-a3c9-64290cb5756d
+
+jobs:
+  live-library-readonly:
+    runs-on: [self-hosted, macOS, ARM64]
+    timeout-minutes: 8
+    steps:
+      - name: Checkout exact product SHA
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.PRODUCT_SHA }}
+          fetch-depth: 1
+
+      - name: Prove exact product checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual="$(git rev-parse HEAD)"
+          echo "PRODUCT_SHA=$PRODUCT_SHA"
+          echo "CHECKED_OUT_SHA=$actual"
+          test "$actual" = "$PRODUCT_SHA"
+          test "$(git status --porcelain)" = ""
+
+      - name: Read live effect identities without mutation
+        shell: bash
+        run: |
+          set -euo pipefail
+          LIB="$HOME/Library/Application Support/studio.endlume.desktop/library.json"
+          test -f "$LIB" || { echo "LIVE_LIBRARY_PRESENT=0"; exit 31; }
+          echo "LIVE_LIBRARY_PRESENT=1"
+          before="$(shasum -a 256 "$LIB" | awk '{print $1}')"
+          echo "LIVE_LIBRARY_SHA256_BEFORE=$before"
+          python3 - "$LIB" "$ROUND_EXPECTED_ID" <<'PY'
+          import json, os, sys
+          from pathlib import Path
+
+          lib=Path(sys.argv[1])
+          round_expected=sys.argv[2]
+          data=json.loads(lib.read_text())
+          effects=data.get('effects') or []
+          print(f"LIVE_EFFECT_COUNT={len(effects)}")
+
+          def clean(v):
+              return str(v or '').strip()
+          def low(v):
+              return clean(v).lower()
+          def basename(v):
+              s=clean(v)
+              return Path(s).name if s else ''
+          def state(e):
+              source=clean(e.get('source'))
+              exists=bool(source and Path(source).is_file())
+              return {
+                  'name': clean(e.get('name')),
+                  'id': clean(e.get('id')),
+                  'enabled': bool(e.get('enabled')),
+                  'usageMode': clean(e.get('usageMode')),
+                  'assetState': clean(e.get('assetState')),
+                  'assetErrorPresent': bool(clean(e.get('assetError'))),
+                  'sourceBasename': basename(source),
+                  'sourceExists': exists,
+              }
+
+          rows=[state(e) for e in effects if isinstance(e,dict)]
+          for i,row in enumerate(rows):
+              print('LIVE_EFFECT|index={}|name={}|id={}|enabled={}|usageMode={}|assetState={}|assetErrorPresent={}|sourceBasename={}|sourceExists={}'.format(
+                  i,row['name'],row['id'],int(row['enabled']),row['usageMode'],row['assetState'],int(row['assetErrorPresent']),row['sourceBasename'],int(row['sourceExists'])
+              ))
+
+          def find(label,predicate):
+              matches=[r for r in rows if predicate(low(r['name']))]
+              print(f"{label}_MATCH_COUNT={len(matches)}")
+              for r in matches:
+                  print(f"{label}_ID={r['id']}")
+                  print(f"{label}_NAME={r['name']}")
+                  print(f"{label}_SOURCE_BASENAME={r['sourceBasename']}")
+                  print(f"{label}_SOURCE_EXISTS={int(r['sourceExists'])}")
+                  print(f"{label}_ASSET_STATE={r['assetState']}")
+              return matches
+
+          round_rows=find('ROUND_EQUALIZER',lambda n:'round' in n and ('equal' in n or 'eq' in n))
+          film_rows=find('FILM_80S',lambda n:('80' in n or '80s' in n) and 'film' in n)
+          smoke_rows=find('SMOKE',lambda n:'smoke' in n)
+
+          if len(round_rows)==1:
+              print('ROUND_EXPECTED_ID_MATCH='+('PASS' if round_rows[0]['id']==round_expected else 'FAIL'))
+          else:
+              print('ROUND_EXPECTED_ID_MATCH=UNPROVEN')
+
+          print('THREE_CANONICAL_IDENTITIES_PROVEN='+('PASS' if len(round_rows)==len(film_rows)==len(smoke_rows)==1 else 'FAIL'))
+          PY
+          after="$(shasum -a 256 "$LIB" | awk '{print $1}')"
+          echo "LIVE_LIBRARY_SHA256_AFTER=$after"
+          test "$before" = "$after"
+          echo "LIVE_LIBRARY_UNTOUCHED=PASS"
+
+      - name: Read TOSHIBA availability without mutation
+        shell: bash
+        run: |
+          set -euo pipefail
+          VOL="/Volumes/TOSHIBA EXT"
+          if [ ! -d "$VOL" ]; then
+            echo "TOSHIBA_MOUNTED=0"
+            exit 0
+          fi
+          echo "TOSHIBA_MOUNTED=1"
+          python3 - "$VOL" <<'PY'
+          import os,sys
+          from pathlib import Path
+          vol=Path(sys.argv[1])
+          audio={'.mp3','.wav','.m4a','.aac','.flac','.ogg','.opus','.aif','.aiff'}
+          image={'.jpg','.jpeg','.png','.webp','.bmp','.tif','.tiff','.heic','.avif'}
+          candidates=[]
+          root_depth=len(vol.parts)
+          for root,dirs,files in os.walk(vol):
+              p=Path(root)
+              depth=len(p.parts)-root_depth
+              dirs[:]=[d for d in dirs if not d.startswith('.') and d not in {'System Volume Information','$RECYCLE.BIN'}]
+              if depth>=4:
+                  dirs[:]=[]
+              direct=[p/f for f in files if not f.startswith('._')]
+              aud=[x for x in direct if x.suffix.lower() in audio]
+              imgs=[x for x in direct if x.suffix.lower() in image]
+              if aud and imgs:
+                  candidates.append((len(aud),len(imgs)))
+          print(f"TOSHIBA_STATIC_PROJECT_CANDIDATES={len(candidates)}")
+          suitable=[x for x in candidates if x[1]>=1 and 10<=x[0]<=15]
+          print(f"TOSHIBA_1PLUS_IMAGE_10_15_AUDIO_CANDIDATES={len(suitable)}")
+          PY

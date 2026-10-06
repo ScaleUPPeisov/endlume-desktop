@@ -1,5 +1,5 @@
 use sha2::{Digest,Sha256};
-use std::{collections::HashSet,ffi::OsStr,fs,io::Read,path::{Path,PathBuf},time::UNIX_EPOCH};
+use std::{collections::HashSet,fs,io::Read,path::{Path,PathBuf},time::UNIX_EPOCH};
 use tauri::{AppHandle,Manager};
 
 fn safe_ext(path:&Path)->String{
@@ -40,8 +40,7 @@ fn push_unique_candidate(candidates:&mut Vec<PathBuf>,seen:&mut HashSet<PathBuf>
 /// a different visual effect for the user's selected preset.
 pub fn repair_missing_managed_asset(app:&AppHandle,source:&str,kind:&str)->Result<Option<String>,String>{
   let stale=PathBuf::from(source);
-  let Some(file_name):Option<&OsStr>=stale.file_name() else{return Ok(None)};
-  if file_name.is_empty(){return Ok(None)}
+  let Some(file_name)=stale.file_name() else{return Ok(None)};
 
   let root=managed_root(app,kind)?;
   let mut candidates=Vec::<PathBuf>::new();

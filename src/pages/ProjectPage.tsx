@@ -59,6 +59,20 @@ export function ProjectPage(){
   };
   const saveAmbient=async(next?:string)=>{setAmbient(next);await persistCurrentLibrary();};
   const saveAmbientSettings=async(patch:Partial<typeof ambientSettings>)=>{patchAmbientSettings(patch);await persistCurrentLibrary();};
+  const repairEffectSource=async(effect:EffectPreset)=>{
+    const source=await api.chooseVideo('effects');
+    if(!source)return;
+    const previous=effects;
+    const next=effects.map(item=>item.id===effect.id?{...item,source,assetState:'ready' as const,assetError:undefined,cacheReady:false,cacheKey:undefined}:item);
+    useApp.getState().setEffects(next);
+    const state=useApp.getState();
+    try{
+      await api.saveLibrary({effects:next,subscribes:state.subscribes,ambient:state.ambient,ambientSettings:state.ambientSettings});
+    }catch(error){
+      useApp.getState().setEffects(previous);
+      await api.showError(`Не удалось сохранить восстановленный файл эффекта.\n${String(error)}`);
+    }
+  };
 
   const scanRoots=useCallback(async(roots:string[])=>{
     if(busy||!roots.length)return;setBusy(true);setScanNote('');setInvalidProjects([]);setDraftProjects([]);setPreviewProjectPath(undefined);
@@ -158,7 +172,7 @@ export function ProjectPage(){
     <section className="sectionBlock">
       <div className="sectionTitle">ЭФФЕКТЫ</div>
       <div className="featureRow"><span className="featureIcon blue"><Icon name="effects"/></span><div><b>Эффект для каждого проекта</b><small>{!features.effects?'Отключено для текущих рендеров':effects.length?`В библиотеке: ${effects.length} • доступно: ${selectableEffects.length}${repairRequiredEffects.length?` • восстановить: ${repairRequiredEffects.length}`:''}`:'Эффекты в библиотеке не настроены'}</small></div><div className="rowButtons"><button onClick={()=>setFeature('effects',!features.effects)}>{features.effects?'ВЫКЛЮЧИТЬ':'ВКЛЮЧИТЬ'}</button><button onClick={()=>openEditor({kind:'effects'})}>НАСТРОИТЬ →</button></div></div>
-      {features.effects&&repairRequiredEffects.length>0&&<div className="validationBox"><b>Effects требуют восстановления:</b>{repairRequiredEffects.map((effect,index)=><div key={`repair-${effect.id}-${index}`}><strong>{effect.name}</strong> — ⚠ REPAIR REQUIRED{effect.assetError?` • ${effect.assetError}`:''}</div>)}</div>}
+      {features.effects&&repairRequiredEffects.length>0&&<div className="validationBox"><b>Effects требуют восстановления:</b>{repairRequiredEffects.map((effect,index)=><div key={`repair-${effect.id}-${index}`}><strong>{effect.name}</strong> — ⚠ REPAIR REQUIRED{effect.assetError?` • ${effect.assetError}`:''} <button onClick={()=>void repairEffectSource(effect)}>ВОССТАНОВИТЬ ФАЙЛ</button></div>)}</div>}
       {features.effects&&duplicateEffectIds.length>0&&<div className="validationBox"><b>Effects registry заблокирован:</b><div>Одинаковый ID назначен нескольким эффектам: {duplicateEffectIds.join(', ')}. Рендер с эффектами запрещён, чтобы ENDLUME не подставил другой эффект.</div></div>}
       {features.effects&&draftProjects.length>0&&<div className="renderCard">
         <div className="optionGroup"><span>Применить ко всем найденным проектам</span><div className="chipRow"><button onClick={()=>draftProjects.forEach(p=>setSelectedEffectForProject(p.path,NO_EFFECT_SELECTION))}>БЕЗ ЭФФЕКТА</button>{effects.map((effect,index)=>{const selectable=effectIsSelectable(effect)&&!duplicateEffectIds.includes(effect.id);return <button key={`all-${effect.id}-${index}`} disabled={!selectable} title={effect.assetError||effectStatusLabel(effect)} onClick={()=>selectable&&draftProjects.forEach(p=>setSelectedEffectForProject(p.path,effect.id))}>{effect.name} • {effectStatusLabel(effect)}</button>})}</div></div>

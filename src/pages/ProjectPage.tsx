@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { api } from '../tauri';
 import { useApp } from '../store';
-import type { LoopMode, RenderProject } from '../types';
+import type { EffectPreset, LoopMode, RenderProject, SubscribePreset } from '../types';
 import { Icon,Range,Toggle } from '../components/ui';
 
 const resolutions=[{w:1920,h:1080,label:'1080P FULL HD'},{w:2560,h:1440,label:'2K QHD'},{w:3840,h:2160,label:'4K UHD'}];
@@ -19,6 +19,13 @@ function loadFeatures():FeatureFlags{try{return {...{subscribe:true,effects:true
 const NO_EFFECT_SELECTION='__none__';
 const imageExt=new Set(['jpg','jpeg','png','webp','bmp','tif','tiff','heic','avif']);
 function isImagePath(path:string){const clean=path.split(/[?#]/)[0]||'';const ext=clean.includes('.')?clean.split('.').pop()?.toLowerCase()||'':'';return imageExt.has(ext)}
+function effectNeedsRepair(effect:EffectPreset){return effect.assetState==='repair-required'||!effect.source?.trim()}
+function effectIsSelectable(effect:EffectPreset){return effect.enabled&&effect.usageMode!=='off'&&!effectNeedsRepair(effect)}
+function effectStatusLabel(effect:EffectPreset){
+  if(effectNeedsRepair(effect))return '⚠ REPAIR REQUIRED';
+  if(!effect.enabled||effect.usageMode==='off')return 'ВЫКЛЮЧЕН';
+  return 'ГОТОВ';
+}
 
 export function ProjectPage(){
   const {
@@ -29,10 +36,22 @@ export function ProjectPage(){
   const [busy,setBusy]=useState(false),[scanNote,setScanNote]=useState(''),[features,setFeatures]=useState<FeatureFlags>(loadFeatures);
   const librarySaveQueue=useRef<Promise<void>>(Promise.resolve());
   const setFeature=(key:keyof FeatureFlags,value:boolean)=>setFeatures(prev=>{const next={...prev,[key]:value};localStorage.setItem(featureKey,JSON.stringify(next));return next});
-  const enabledEffects=effects.filter(e=>e.enabled&&e.usageMode!=='off');
+  const selectableEffects=effects.filter(effectIsSelectable);
+  const repairRequiredEffects=effects.filter(effectNeedsRepair);
+  const repairRequiredSubscribes=subscribes.filter(effectNeedsRepair);
+  const activeSubscribesReady=subscribes.filter(item=>item.enabled&&item.usageMode!=='off'&&!effectNeedsRepair(item));
   const effectIdCounts=effects.reduce<Record<string,number>>((acc,e)=>{const id=e.id.trim();if(id)acc[id]=(acc[id]||0)+1;return acc},{});
   const duplicateEffectIds=Object.entries(effectIdCounts).filter(([,count])=>count>1).map(([id])=>id);
   const selectedEffectIdForPath=(path:string)=>selectedEffectByPath[path]||'';
+  const selectionIssueForPath=(path:string)=>{
+    const selectedId=selectedEffectIdForPath(path);
+    if(!selectedId||selectedId===NO_EFFECT_SELECTION)return '';
+    const effect=effects.find(item=>item.id===selectedId);
+    if(!effect)return `Сохранённый effect ID ${selectedId} больше не существует после migration. ENDLUME не будет угадывать замену — выберите эффект заново.`;
+    if(effectNeedsRepair(effect))return `${effect.name}: ${effect.assetError||'файл эффекта недоступен; требуется восстановить источник.'}`;
+    if(!effect.enabled||effect.usageMode==='off')return `${effect.name}: эффект выключен. Включите его или выберите другой.`;
+    return '';
+  };
   const persistCurrentLibrary=()=>{
     librarySaveQueue.current=librarySaveQueue.current.catch(()=>undefined).then(()=>{
       const state=useApp.getState();
@@ -42,6 +61,34 @@ export function ProjectPage(){
   };
   const saveAmbient=async(next?:string)=>{setAmbient(next);await persistCurrentLibrary();};
   const saveAmbientSettings=async(patch:Partial<typeof ambientSettings>)=>{patchAmbientSettings(patch);await persistCurrentLibrary();};
+  const repairEffectSource=async(effect:EffectPreset)=>{
+    const source=await api.chooseVideo('effects');
+    if(!source)return;
+    const previous=effects;
+    const next=effects.map(item=>item.id===effect.id?{...item,source,assetState:'ready' as const,assetError:undefined,cacheReady:false,cacheKey:undefined}:item);
+    useApp.getState().setEffects(next);
+    const state=useApp.getState();
+    try{
+      await api.saveLibrary({effects:next,subscribes:state.subscribes,ambient:state.ambient,ambientSettings:state.ambientSettings});
+    }catch(error){
+      useApp.getState().setEffects(previous);
+      await api.showError(`Не удалось сохранить восстановленный файл эффекта.\n${String(error)}`);
+    }
+  };
+  const repairSubscribeSource=async(subscribe:SubscribePreset)=>{
+    const source=await api.chooseVideo('subscribe');
+    if(!source)return;
+    const previous=subscribes;
+    const next=subscribes.map(item=>item.id===subscribe.id?{...item,source,assetState:'ready' as const,assetError:undefined,cacheReady:false,cacheKey:undefined}:item);
+    useApp.getState().setSubscribes(next);
+    const state=useApp.getState();
+    try{
+      await api.saveLibrary({effects:state.effects,subscribes:next,ambient:state.ambient,ambientSettings:state.ambientSettings});
+    }catch(error){
+      useApp.getState().setSubscribes(previous);
+      await api.showError(`Не удалось сохранить восстановленный файл Subscribe.\n${String(error)}`);
+    }
+  };
 
   const scanRoots=useCallback(async(roots:string[])=>{
     if(busy||!roots.length)return;setBusy(true);setScanNote('');setInvalidProjects([]);setDraftProjects([]);setPreviewProjectPath(undefined);
@@ -76,17 +123,23 @@ export function ProjectPage(){
     if(!settings.outputDir){await api.showError('Сначала выберите папку результата.');return}
     try{
       try{const power=await api.powerStatus();if(power.supported&&power.onBattery){await api.showInfo(`MacBook работает от аккумулятора${power.percent!=null?` (${power.percent}%)`:''}. ENDLUME продолжит рендер на полной мощности — подключите питание, если очередь большая.`);}}catch{}
-      const effectRegistry=features.effects?enabledEffects:[];
+      const effectRegistry=features.effects?selectableEffects:[];
       if(features.effects&&duplicateEffectIds.length){throw new Error(`Effects registry повреждён: повторяются ID ${duplicateEffectIds.join(', ')}. ENDLUME не будет угадывать или рендерить не тот эффект.`);}
-      const activeSubscribes=features.subscribe?subscribes.filter(e=>e.enabled):[];
+      const brokenActiveSubscribes=features.subscribe?subscribes.filter(item=>item.enabled&&item.usageMode!=='off'&&effectNeedsRepair(item)):[];
+      if(brokenActiveSubscribes.length){throw new Error(`Subscribe требует восстановления файла: ${brokenActiveSubscribes.map(item=>item.name).join(', ')}. ENDLUME не будет запускать рендер с отсутствующим Subscribe asset.`);}
+      const activeSubscribes=features.subscribe?activeSubscribesReady:[];
       const activeAmbient=features.ambient?ambient:undefined;
       const resolved=draftProjects.map(project=>{
         if(!features.effects)return {project,selectedEffect:undefined};
         const selectedId=selectedEffectIdForPath(project.path);
         if(!selectedId){throw new Error(`Выберите эффект для проекта «${project.name}» или явно укажите «Без эффекта».`);}
         if(selectedId===NO_EFFECT_SELECTION)return {project,selectedEffect:undefined};
+        const persistedEffect=effects.find(effect=>effect.id===selectedId);
+        if(!persistedEffect){throw new Error(`Сохранённый effect ID ${selectedId} для проекта «${project.name}» больше не существует. Возможна migration старого duplicate ID. ENDLUME не будет угадывать замену — выберите эффект заново.`);}
+        if(effectNeedsRepair(persistedEffect)){throw new Error(`Эффект «${persistedEffect.name}» (${persistedEffect.id}) требует восстановления файла. ${persistedEffect.assetError||'Выберите исходный файл заново в настройках Effects.'}`);}
+        if(!persistedEffect.enabled||persistedEffect.usageMode==='off'){throw new Error(`Эффект «${persistedEffect.name}» (${persistedEffect.id}) выключен. Включите его или выберите другой эффект.`);}
         const selectedEffect=effectRegistry.find(effect=>effect.id===selectedId);
-        if(!selectedEffect){throw new Error(`Эффект ${selectedId} для проекта «${project.name}» выключен или больше не существует. Выберите эффект заново.`);}
+        if(!selectedEffect){throw new Error(`Эффект ${selectedId} для проекта «${project.name}» недоступен. ENDLUME не будет подставлять другой эффект.`);}
         return {project,selectedEffect};
       });
       const fastStaticProjects=resolved.filter(({project,selectedEffect})=>project.media.length>0&&project.media.every(isImagePath)&&(project.media.length===1||(!selectedEffect&&activeSubscribes.length===0)));
@@ -132,15 +185,20 @@ export function ProjectPage(){
       </div>
     </section>
 
-    <section className="sectionBlock"><div className="sectionTitle">КНОПКА SUBSCRIBE</div><div className="featureRow"><span className="featureIcon pink"><Icon name="subscribe"/></span><div><b>Subscribe Button</b><small>{!features.subscribe?'Отключено для текущих рендеров':subscribes.filter(s=>s.enabled).length?`Активно пресетов: ${subscribes.filter(s=>s.enabled).length}`:'Не настроено'}</small></div><div className="rowButtons"><button onClick={()=>setFeature('subscribe',!features.subscribe)}>{features.subscribe?'ВЫКЛЮЧИТЬ':'ВКЛЮЧИТЬ'}</button><button onClick={()=>openEditor({kind:'subscribe'})}>НАСТРОИТЬ →</button></div></div></section>
+    <section className="sectionBlock">
+      <div className="sectionTitle">КНОПКА SUBSCRIBE</div>
+      <div className="featureRow"><span className="featureIcon pink"><Icon name="subscribe"/></span><div><b>Subscribe Button</b><small>{!features.subscribe?'Отключено для текущих рендеров':subscribes.length?`В библиотеке: ${subscribes.length} • активно и готово: ${activeSubscribesReady.length}${repairRequiredSubscribes.length?` • восстановить: ${repairRequiredSubscribes.length}`:''}`:'Не настроено'}</small></div><div className="rowButtons"><button onClick={()=>setFeature('subscribe',!features.subscribe)}>{features.subscribe?'ВЫКЛЮЧИТЬ':'ВКЛЮЧИТЬ'}</button><button onClick={()=>openEditor({kind:'subscribe'})}>НАСТРОИТЬ →</button></div></div>
+      {features.subscribe&&repairRequiredSubscribes.length>0&&<div className="validationBox"><b>Subscribe требует восстановления:</b>{repairRequiredSubscribes.map((item,index)=><div key={`repair-subscribe-${item.id}-${index}`}><strong>{item.name}</strong> — ⚠ REPAIR REQUIRED{item.assetError?` • ${item.assetError}`:''} <button onClick={()=>void repairSubscribeSource(item)}>ВОССТАНОВИТЬ ФАЙЛ</button></div>)}</div>}
+    </section>
 
     <section className="sectionBlock">
       <div className="sectionTitle">ЭФФЕКТЫ</div>
-      <div className="featureRow"><span className="featureIcon blue"><Icon name="effects"/></span><div><b>Эффект для каждого проекта</b><small>{!features.effects?'Отключено для текущих рендеров':enabledEffects.length?`Доступно: ${enabledEffects.length} • выбор сохраняется отдельно для каждого проекта`:'Включённые эффекты не найдены'}</small></div><div className="rowButtons"><button onClick={()=>setFeature('effects',!features.effects)}>{features.effects?'ВЫКЛЮЧИТЬ':'ВКЛЮЧИТЬ'}</button><button onClick={()=>openEditor({kind:'effects'})}>НАСТРОИТЬ →</button></div></div>
+      <div className="featureRow"><span className="featureIcon blue"><Icon name="effects"/></span><div><b>Эффект для каждого проекта</b><small>{!features.effects?'Отключено для текущих рендеров':effects.length?`В библиотеке: ${effects.length} • доступно: ${selectableEffects.length}${repairRequiredEffects.length?` • восстановить: ${repairRequiredEffects.length}`:''}`:'Эффекты в библиотеке не настроены'}</small></div><div className="rowButtons"><button onClick={()=>setFeature('effects',!features.effects)}>{features.effects?'ВЫКЛЮЧИТЬ':'ВКЛЮЧИТЬ'}</button><button onClick={()=>openEditor({kind:'effects'})}>НАСТРОИТЬ →</button></div></div>
+      {features.effects&&repairRequiredEffects.length>0&&<div className="validationBox"><b>Effects требуют восстановления:</b>{repairRequiredEffects.map((effect,index)=><div key={`repair-${effect.id}-${index}`}><strong>{effect.name}</strong> — ⚠ REPAIR REQUIRED{effect.assetError?` • ${effect.assetError}`:''} <button onClick={()=>void repairEffectSource(effect)}>ВОССТАНОВИТЬ ФАЙЛ</button></div>)}</div>}
       {features.effects&&duplicateEffectIds.length>0&&<div className="validationBox"><b>Effects registry заблокирован:</b><div>Одинаковый ID назначен нескольким эффектам: {duplicateEffectIds.join(', ')}. Рендер с эффектами запрещён, чтобы ENDLUME не подставил другой эффект.</div></div>}
       {features.effects&&draftProjects.length>0&&<div className="renderCard">
-        <div className="optionGroup"><span>Применить ко всем найденным проектам</span><div className="chipRow"><button onClick={()=>draftProjects.forEach(p=>setSelectedEffectForProject(p.path,NO_EFFECT_SELECTION))}>БЕЗ ЭФФЕКТА</button>{enabledEffects.map((effect,index)=><button key={`all-${effect.id}-${index}`} disabled={duplicateEffectIds.includes(effect.id)} onClick={()=>draftProjects.forEach(p=>setSelectedEffectForProject(p.path,effect.id))}>{effect.name}</button>)}</div></div>
-        {draftProjects.map(project=><div className="optionGroup" key={`effect-${project.path}`}><span>{project.name}</span><div className="chipRow"><button className={selectedEffectIdForPath(project.path)===NO_EFFECT_SELECTION?'selected':''} onClick={()=>setSelectedEffectForProject(project.path,NO_EFFECT_SELECTION)}>БЕЗ ЭФФЕКТА</button>{enabledEffects.map((effect,index)=><button key={`${project.path}-${effect.id}-${index}`} disabled={duplicateEffectIds.includes(effect.id)} className={selectedEffectIdForPath(project.path)===effect.id&&!duplicateEffectIds.includes(effect.id)?'selected':''} onClick={()=>setSelectedEffectForProject(project.path,effect.id)}>{effect.name}</button>)}</div></div>)}
+        <div className="optionGroup"><span>Применить ко всем найденным проектам</span><div className="chipRow"><button onClick={()=>draftProjects.forEach(p=>setSelectedEffectForProject(p.path,NO_EFFECT_SELECTION))}>БЕЗ ЭФФЕКТА</button>{effects.map((effect,index)=>{const selectable=effectIsSelectable(effect)&&!duplicateEffectIds.includes(effect.id);return <button key={`all-${effect.id}-${index}`} disabled={!selectable} title={effect.assetError||effectStatusLabel(effect)} onClick={()=>selectable&&draftProjects.forEach(p=>setSelectedEffectForProject(p.path,effect.id))}>{effect.name} • {effectStatusLabel(effect)}</button>})}</div></div>
+        {draftProjects.map(project=>{const selectionIssue=selectionIssueForPath(project.path);return <div className="optionGroup" key={`effect-${project.path}`}><span>{project.name}</span><div className="chipRow"><button className={selectedEffectIdForPath(project.path)===NO_EFFECT_SELECTION?'selected':''} onClick={()=>setSelectedEffectForProject(project.path,NO_EFFECT_SELECTION)}>БЕЗ ЭФФЕКТА</button>{effects.map((effect,index)=>{const duplicate=duplicateEffectIds.includes(effect.id);const selectable=effectIsSelectable(effect)&&!duplicate;return <button key={`${project.path}-${effect.id}-${index}`} disabled={!selectable} title={effect.assetError||effectStatusLabel(effect)} className={selectedEffectIdForPath(project.path)===effect.id&&!duplicate?'selected':''} onClick={()=>selectable&&setSelectedEffectForProject(project.path,effect.id)}>{effect.name} • {effectStatusLabel(effect)}</button>})}</div>{selectionIssue&&<small>⚠ {selectionIssue}</small>}</div>})}
       </div>}
     </section>
 

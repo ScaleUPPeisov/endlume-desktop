@@ -1,5 +1,5 @@
 use sha2::{Digest,Sha256};
-use std::{fs,io::Read,path::{Path,PathBuf},time::UNIX_EPOCH};
+use std::{collections::HashSet,fs,io::Read,path::{Path,PathBuf},time::UNIX_EPOCH};
 use tauri::{AppHandle,Manager};
 
 fn safe_ext(path:&Path)->String{
@@ -19,10 +19,63 @@ fn is_macos_sidecar(path:&Path)->bool{
   n==".DS_Store"||n.starts_with("._")||n.starts_with(".Spotlight-")||n.starts_with(".Trashes")||n.starts_with('.')
 }
 
+fn usable_asset(path:&Path)->bool{
+  path.is_file()&&!is_macos_sidecar(path)&&!has_appledouble_magic(path)&&fs::metadata(path).map(|m|m.len()>0).unwrap_or(false)
+}
+
 fn managed_root(app:&AppHandle,kind:&str)->Result<PathBuf,String>{
   let root=app.path().app_data_dir().map_err(|e|e.to_string())?.join("library-assets").join(safe_kind(kind));
   fs::create_dir_all(&root).map_err(|e|format!("Не удалось создать библиотеку ENDLUME: {e}"))?;
   Ok(root)
+}
+
+fn push_unique_candidate(candidates:&mut Vec<PathBuf>,seen:&mut HashSet<PathBuf>,candidate:PathBuf){
+  if !usable_asset(&candidate){return}
+  let canonical=fs::canonicalize(&candidate).unwrap_or(candidate);
+  if seen.insert(canonical.clone()){candidates.push(canonical);}
+}
+
+/// Recover only by exact managed filename. ENDLUME never guesses by display name,
+/// extension, ordering, or "first available" asset because that could substitute
+/// a different visual effect for the user's selected preset.
+pub fn repair_missing_managed_asset(app:&AppHandle,source:&str,kind:&str)->Result<Option<String>,String>{
+  let stale=PathBuf::from(source);
+  let Some(file_name)=stale.file_name() else{return Ok(None)};
+
+  let root=managed_root(app,kind)?;
+  let mut candidates=Vec::<PathBuf>::new();
+  let mut seen=HashSet::<PathBuf>::new();
+
+  // Current ENDLUME managed library path.
+  push_unique_candidate(&mut candidates,&mut seen,root.join(file_name));
+
+  // Previous ENDLUME application-support roots. This is intentionally shallow:
+  // <Application Support>/<old-app-id>/library-assets/<kind>/<exact managed filename>.
+  if let Ok(app_data)=app.path().app_data_dir(){
+    if let Some(support_root)=app_data.parent(){
+      if let Ok(entries)=fs::read_dir(support_root){
+        for entry in entries.flatten(){
+          let base=entry.path();
+          if !base.is_dir(){continue}
+          push_unique_candidate(&mut candidates,&mut seen,base.join("library-assets").join(safe_kind(kind)).join(file_name));
+        }
+      }
+    }
+  }
+
+  // Future/packaged-resource compatible lookup. Current 10.0.11 bundle may not
+  // contain these assets, but if a resource with the exact managed filename is
+  // shipped later the resolver remains deterministic and does not depend on repo paths.
+  if let Ok(resource_root)=app.path().resource_dir(){
+    push_unique_candidate(&mut candidates,&mut seen,resource_root.join("library-assets").join(safe_kind(kind)).join(file_name));
+    push_unique_candidate(&mut candidates,&mut seen,resource_root.join(safe_kind(kind)).join(file_name));
+  }
+
+  match candidates.len(){
+    0=>Ok(None),
+    1=>Ok(Some(candidates.remove(0).to_string_lossy().into_owned())),
+    n=>Err(format!("Найдено {n} разных файлов с точным managed-именем '{}'; ENDLUME не будет угадывать нужный эффект.",file_name.to_string_lossy()))
+  }
 }
 
 fn fingerprint(path:&Path,meta:&fs::Metadata)->String{

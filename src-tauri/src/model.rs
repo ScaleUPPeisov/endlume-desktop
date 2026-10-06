@@ -69,6 +69,8 @@ pub struct EffectPreset{
   pub end_sec:Option<f64>,
   pub cache_key:Option<String>,
   pub cache_ready:Option<bool>,
+  #[serde(default)] pub asset_state:Option<String>,
+  #[serde(default)] pub asset_error:Option<String>,
   #[serde(default)] pub usage_mode:Option<String>,
   #[serde(default)] pub interval_sec:Option<f64>,
   #[serde(default)] pub usage_duration_sec:Option<f64>,

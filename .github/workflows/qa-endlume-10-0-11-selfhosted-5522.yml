@@ -46,6 +46,20 @@ jobs:
         run: npm ci
       - name: TypeScript and Vite production build
         run: npm run build
+      - name: Stage real Apple Silicon FFmpeg sidecars
+        shell: bash
+        run: |
+          set -euo pipefail
+          ffmpeg_bin="$(command -v ffmpeg)"
+          ffprobe_bin="$(command -v ffprobe)"
+          test -x "$ffmpeg_bin"
+          test -x "$ffprobe_bin"
+          mkdir -p src-tauri/binaries
+          cp "$ffmpeg_bin" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp "$ffprobe_bin" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          chmod +x src-tauri/binaries/ffmpeg-aarch64-apple-darwin src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          file src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          file src-tauri/binaries/ffprobe-aarch64-apple-darwin
       - name: Rust check
         run: cargo check --manifest-path src-tauri/Cargo.toml
       - name: Rust tests

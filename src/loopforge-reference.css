@@ -1,0 +1,313 @@
+/* ENDLUME Studio — LoopForge reference reconstruction.
+   Visual-only override derived from the supplied 81.93s reference capture.
+   No renderer, audio, queue, updater, license, serialization or media-import logic.
+   Keep this file last in the CSS import order so rollback is one-line/simple-file removal. */
+
+:root{
+  --lf-bg:#080c18;
+  --lf-bg2:#0a1020;
+  --lf-panel:#10172a;
+  --lf-panel-soft:#11192d;
+  --lf-line:rgba(110,126,169,.22);
+  --lf-line-soft:rgba(110,126,169,.14);
+  --lf-cyan:#51c8ff;
+  --lf-blue:#5a8fff;
+  --lf-violet:#7667ff;
+  --lf-violet-soft:rgba(118,103,255,.14);
+  --lf-text:#f4f6ff;
+  --lf-muted:#8c97b1;
+  --lf-muted2:#68738d;
+  --lf-ease:cubic-bezier(.22,.74,.24,1);
+  --lf-fast:150ms;
+  --lf-normal:190ms;
+}
+
+html,body,#root{background:var(--lf-bg)}
+body{color:var(--lf-text)}
+
+.appShell{
+  background:
+    radial-gradient(760px 320px at 50% -8%,rgba(87,102,255,.10),transparent 70%),
+    linear-gradient(180deg,#090e1c 0%,#080c18 44%,#070b16 100%);
+}
+
+/* Reference capture uses a compact, calm header with the brand visually centered. */
+.topbar{
+  height:58px;
+  padding:0 18px;
+  border-bottom:1px solid rgba(100,118,157,.14);
+  background:linear-gradient(180deg,rgba(9,14,27,.99),rgba(8,12,24,.985));
+  box-shadow:none;
+}
+.content{height:calc(100vh - 58px)}
+.brandMark{gap:7px}
+.infinity{transform:scale(.84);transform-origin:center}
+.brandText b{font-size:13px;letter-spacing:.9px}
+.brandText small{font-size:7px;color:#69758f;letter-spacing:1.55px}
+.topnav{gap:3px}
+.topnav button{
+  height:30px;
+  padding:0 8px;
+  gap:5px;
+  border-radius:8px;
+  border:1px solid transparent;
+  background:transparent;
+  color:#77839f;
+  box-shadow:none;
+  transition:color var(--lf-fast) var(--lf-ease),border-color var(--lf-fast) var(--lf-ease),background var(--lf-fast) var(--lf-ease)!important;
+}
+.topnav button .icon{width:13px;height:13px}
+.topnav button span{font-size:9px}
+.topnav button:hover{transform:none!important;color:#d8deed;border-color:rgba(104,120,157,.16);background:rgba(17,25,43,.56)}
+.topnav button.active{color:#fff;border-color:rgba(106,123,170,.22);background:rgba(19,28,48,.72);box-shadow:none}
+
+/* The decisive geometry change: narrow, centered single working column. */
+.projectColumn{
+  width:min(648px,calc(100% - 44px));
+  margin:0 auto;
+  padding:26px 0 92px;
+}
+.sectionBlock{margin-top:24px;padding-top:0}
+.sectionBlock:not(.first){border-top:1px solid var(--lf-line-soft);padding-top:22px}
+.sectionTitle{
+  margin:0 2px 9px;
+  color:#8a95ad;
+  font-size:8.5px;
+  line-height:1;
+  font-weight:760;
+  letter-spacing:.115em;
+  text-transform:uppercase;
+}
+
+/* Source/output zones: stable geometry, dashed cyan edge, glow only intensifies. */
+.dropZone,.outputPicker{
+  width:100%;
+  border:1px dashed rgba(83,198,255,.58);
+  background:
+    radial-gradient(420px 120px at 50% 112%,rgba(80,117,255,.075),transparent 72%),
+    linear-gradient(180deg,rgba(14,22,40,.91),rgba(10,17,31,.96));
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.015),0 0 0 1px rgba(73,184,255,.018);
+  transition:border-color var(--lf-normal) var(--lf-ease),box-shadow var(--lf-normal) var(--lf-ease),background var(--lf-normal) var(--lf-ease)!important;
+}
+.dropZone{min-height:116px;border-radius:13px;padding:17px 18px}
+.outputPicker{min-height:78px;border-radius:12px}
+.dropZone:hover,.outputPicker:hover,.dropZone.busy{
+  transform:none!important;
+  border-color:rgba(78,205,255,.92);
+  box-shadow:0 0 0 1px rgba(80,200,255,.10),0 0 24px rgba(56,147,255,.08),inset 0 0 26px rgba(63,130,255,.035);
+}
+.folderRound{
+  width:34px;height:34px;border-radius:9px;
+  border-color:rgba(96,129,177,.25);
+  background:rgba(16,27,48,.90);
+  color:var(--lf-cyan);
+  box-shadow:none;
+}
+.folderRound .icon{width:18px;height:18px}
+.dropZone b{margin-top:8px;font-size:11px;font-weight:620}
+.dropZone small{margin-top:4px;font-size:8.5px;color:#7b87a2}
+.dropStats{margin-top:7px;font-size:8px;color:#5abfff}
+.outputPicker b{font-size:9.5px;font-weight:620}
+.outputPicker small{font-size:8px;color:#68748e}
+
+/* 2x2 mode cards from the reference: compact, quiet, selected = cyan/violet halo. */
+.modeGrid{grid-template-columns:1fr 1fr;gap:8px}
+.modeCard{
+  min-height:82px;
+  padding:9px 10px;
+  grid-template-columns:64px 1fr;
+  gap:10px;
+  border:1px solid rgba(99,115,153,.23);
+  border-radius:12px;
+  background:linear-gradient(180deg,rgba(16,23,40,.96),rgba(12,18,32,.98));
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.014);
+  transition:border-color var(--lf-normal) var(--lf-ease),background var(--lf-normal) var(--lf-ease),box-shadow var(--lf-normal) var(--lf-ease)!important;
+}
+.modeCard:hover{transform:none!important;border-color:rgba(95,131,183,.38);box-shadow:inset 0 1px 0 rgba(255,255,255,.018)}
+.modeCard::after{display:none!important}
+.modeCard::before{
+  background:radial-gradient(180px 70px at 50% 115%,rgba(79,109,255,.11),transparent 72%)!important;
+  transition:opacity var(--lf-normal) var(--lf-ease)!important;
+}
+.modeCard.selected{
+  border-color:rgba(75,201,255,.78)!important;
+  background:linear-gradient(180deg,rgba(20,29,52,.98),rgba(14,21,39,.99))!important;
+  box-shadow:0 0 0 1px rgba(105,105,255,.12),0 0 20px rgba(70,141,255,.09),inset 0 0 24px rgba(81,108,255,.035)!important;
+}
+.modeVisual{
+  height:54px;
+  border-radius:9px;
+  border-color:rgba(92,111,150,.20);
+  background:rgba(10,16,29,.92);
+  box-shadow:none;
+}
+.modeVisual .icon{width:31px;height:31px;filter:none!important}
+.modeCard b{font-size:10.5px;font-weight:630}
+.modeCard small{font-size:8px;line-height:1.35;margin-top:4px;color:#707c96}
+
+/* The reference does not put all render controls inside one heavy container. */
+.renderCard{
+  border:0!important;
+  border-radius:0!important;
+  background:transparent!important;
+  box-shadow:none!important;
+  padding:0!important;
+}
+.optionGroup{margin-bottom:13px}
+.optionGroup>span{margin-bottom:6px;font-size:8px;color:#77829b}
+.chipRow{gap:5px}
+.chipRow button,.durationPresets button{
+  min-height:25px;
+  padding:4px 9px;
+  border:1px solid rgba(93,109,148,.28)!important;
+  border-radius:999px;
+  background:rgba(16,23,40,.72)!important;
+  color:#9da6bb;
+  font-size:8px;
+  font-weight:650;
+  letter-spacing:.02em;
+  box-shadow:none!important;
+  transition:border-color var(--lf-fast) var(--lf-ease),background var(--lf-fast) var(--lf-ease),color var(--lf-fast) var(--lf-ease),box-shadow var(--lf-fast) var(--lf-ease)!important;
+}
+.chipRow button:hover,.durationPresets button:hover{transform:none!important;color:#e9ecf6;border-color:rgba(119,112,255,.48)!important}
+.chipRow button.selected,.durationPresets button.selected{
+  color:#fff!important;
+  border-color:rgba(124,105,255,.74)!important;
+  background:linear-gradient(180deg,rgba(68,55,132,.72),rgba(42,34,94,.78))!important;
+  box-shadow:0 0 14px rgba(112,87,255,.10)!important;
+}
+
+/* Duration/bitrate/crossfade become the soft violet slider cards seen in the capture. */
+.bigControl{
+  margin-top:11px;
+  padding:13px 14px 11px;
+  border:1px solid rgba(103,92,183,.20)!important;
+  border-radius:13px;
+  background:
+    radial-gradient(260px 90px at 92% -10%,rgba(112,88,255,.08),transparent 72%),
+    linear-gradient(180deg,rgba(27,27,55,.76),rgba(18,21,42,.80))!important;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.018)!important;
+  gap:5px 14px;
+}
+.bigControl>div:first-child b{font-size:10.5px;font-weight:650}
+.bigControl>div:first-child small{margin-top:3px;font-size:8px;color:#77819a;line-height:1.35}
+.bigValue,.bigValue.small{
+  min-width:92px;
+  padding:5px 8px;
+  border:0!important;
+  border-radius:0!important;
+  background:transparent!important;
+  color:#f2f3ff!important;
+  font-size:18px!important;
+  font-weight:650;
+  text-align:right;
+  text-shadow:none!important;
+  box-shadow:none!important;
+}
+.bigValue.small{font-size:14px!important}
+.rangeWrap{margin-top:3px}
+.range{height:3px;box-shadow:none!important;background:linear-gradient(90deg,#5a9eff 0%,#7868ff var(--pct),rgba(75,87,118,.35) var(--pct),rgba(75,87,118,.35) 100%)!important}
+.range::-webkit-slider-thumb{width:12px;height:12px;border:1px solid rgba(255,255,255,.78);background:#f7f8ff;box-shadow:0 0 0 2px rgba(110,92,255,.10),0 0 9px rgba(90,119,255,.18)}
+.rangeEnds{margin-top:4px;font-size:7px;color:#5e6982}
+.durationPresets{gap:4px;margin-top:6px}
+.durationPresets button{min-height:22px;padding:3px 7px;font-size:7px}
+
+/* Small switches; geometry stays fixed while only thumb/background animate. */
+.toggles{gap:0;margin-top:14px;border-top:1px solid var(--lf-line-soft)}
+.toggleRow{min-height:39px;align-items:center;gap:9px;padding:8px 1px;border-bottom:1px solid var(--lf-line-soft);font-size:9.5px;color:#e7eaf2}
+.toggleRow span small{margin-top:2px;font-size:7.5px;color:#66718a}
+.toggle{width:29px;height:16px;padding:1px;border-color:rgba(92,105,138,.42);background:#171d2b;transition:border-color var(--lf-fast) var(--lf-ease),background var(--lf-fast) var(--lf-ease)!important}
+.toggle i{width:12px;height:12px;background:#7b859b;transition:transform var(--lf-fast) var(--lf-ease),background var(--lf-fast) var(--lf-ease)!important}
+.toggle.on{background:linear-gradient(90deg,#597ee8,#7567ff);border-color:rgba(120,111,255,.66)}
+.toggle.on i{transform:translateX(13px);background:#fff}
+
+/* Subscribe / Effects modules: media-module card with one calm glow language. */
+.featureRow{
+  min-height:64px;
+  padding:9px 10px;
+  gap:10px;
+  border:1px solid rgba(92,108,146,.21)!important;
+  border-radius:12px;
+  background:
+    radial-gradient(220px 80px at 5% 50%,rgba(86,92,255,.055),transparent 76%),
+    linear-gradient(180deg,rgba(16,23,41,.94),rgba(12,18,33,.97))!important;
+  box-shadow:0 0 18px rgba(91,76,255,.025),inset 0 1px 0 rgba(255,255,255,.014)!important;
+}
+.featureIcon{
+  width:38px;height:38px;border-radius:9px;
+  border-color:rgba(98,106,166,.24);
+  background:linear-gradient(145deg,rgba(68,79,157,.28),rgba(42,31,93,.34));
+  box-shadow:0 0 14px rgba(100,79,255,.06);
+}
+.featureIcon.pink{color:#c75cff;background:linear-gradient(145deg,rgba(124,59,164,.30),rgba(61,30,95,.34))}
+.featureIcon.blue{color:#6ebfff;background:linear-gradient(145deg,rgba(55,105,170,.30),rgba(35,48,103,.34))}
+.featureIcon .icon{width:19px;height:19px}
+.featureRow b{font-size:10px;font-weight:640}
+.featureRow small{margin-top:3px;font-size:7.8px;color:#727d97}
+.rowButtons{gap:5px}
+.featureRow button,.rowButtons button{
+  min-height:27px;
+  padding:5px 8px;
+  border-radius:999px;
+  border:1px solid rgba(103,95,190,.32)!important;
+  background:rgba(33,29,67,.68)!important;
+  color:#d7d5ff;
+  font-size:7.2px;
+  font-weight:700;
+  letter-spacing:.025em;
+  box-shadow:none!important;
+  transition:border-color var(--lf-fast) var(--lf-ease),background var(--lf-fast) var(--lf-ease),color var(--lf-fast) var(--lf-ease)!important;
+}
+.featureRow button:hover,.rowButtons button:hover{transform:none!important;color:#fff;border-color:rgba(123,106,255,.58)!important;background:rgba(52,42,99,.72)!important}
+
+/* Selected folders / save destination use the same quiet row vocabulary as reference. */
+.selectedFolders{
+  overflow:hidden;
+  border:1px solid rgba(92,108,146,.20)!important;
+  border-radius:11px;
+  background:rgba(13,20,35,.88)!important;
+  box-shadow:none!important;
+}
+.selectedFolders>div{min-height:43px;padding:7px 10px;border-bottom-color:rgba(92,108,146,.13);font-size:9px}
+.selectedFolders>div>span{width:20px;height:20px;border-radius:6px;background:rgba(65,82,132,.20);color:#6fc8ff;font-size:8px}
+.selectedFolders small{font-size:7.5px;color:#6c7891}
+.selectedFolders p{font-size:8.5px;color:#6c7891}
+.outputTitle{margin-top:18px}
+
+/* Sticky action stays visually fixed; no transform or relayout on hover/press. */
+.projectBottom{
+  height:56px;
+  padding:0 18px;
+  border-top:1px solid rgba(96,111,148,.14);
+  background:linear-gradient(180deg,rgba(9,14,26,.985),rgba(7,11,21,.995));
+  box-shadow:0 -12px 28px rgba(0,0,0,.10);
+}
+.projectBottom span{font-size:8px;color:#68748e}
+.primaryQueue{
+  min-height:31px;
+  padding:8px 13px;
+  border-radius:999px;
+  background:linear-gradient(100deg,#55bfff,#677fff 54%,#7869ff)!important;
+  font-size:8px;
+  font-weight:720;
+  letter-spacing:.02em;
+  box-shadow:0 0 18px rgba(83,123,255,.13),inset 0 1px 0 rgba(255,255,255,.16);
+  transition:opacity var(--lf-fast) var(--lf-ease),box-shadow var(--lf-fast) var(--lf-ease)!important;
+}
+.primaryQueue:not(:disabled):hover{transform:none!important;box-shadow:0 0 22px rgba(83,123,255,.18),inset 0 1px 0 rgba(255,255,255,.18)}
+.appShell button:not(:disabled):active{transform:none!important}
+
+/* Page changes: opacity only. Do not animate geometry; keeps fixed/sticky controls stable. */
+.pageScene{animation:lf-page-in 220ms var(--lf-ease) both}
+@keyframes lf-page-in{from{opacity:.82}to{opacity:1}}
+
+@media (max-width:760px){
+  .projectColumn{width:min(620px,calc(100% - 28px));padding-top:20px}
+  .topnav button span{display:none}
+  .topnav button{width:30px;justify-content:center;padding:0}
+}
+
+@media (prefers-reduced-motion:reduce){
+  .pageScene{animation:none}
+  .dropZone,.outputPicker,.modeCard,.chipRow button,.durationPresets button,.toggle,.toggle i,.featureRow button,.rowButtons button,.primaryQueue{transition:none!important}
+}

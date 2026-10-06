@@ -208,12 +208,11 @@ pub(crate) fn fast_path_decision(job:&QueueJob)->FastPathDecision{
 fn smart_repeat_project(job:&QueueJob)->bool{fast_path_decision(job).eligible}
 fn fast_pingpong_project(job:&QueueJob)->bool{fast_path_decision(job).reason=="FAST_SHORT_VIDEO_PINGPONG"}
 fn fast_multi_still(job:&QueueJob)->bool{
-  let reason=fast_path_decision(job).reason;
-  if reason=="FAST_MULTI_STILL"{return true}
-  if reason!="FAST_ONE_IMAGE"{return false}
-  let has_effects=job.effects.iter().any(|e|e.enabled&&!e.source.trim().is_empty());
-  let has_subs=job.subscribes.iter().any(|x|x.effect.enabled&&!x.effect.source.trim().is_empty());
-  !has_effects&&!has_subs
+  // 10.0.11 hotfix: the multi-still physical pool is only for 2+ stills.
+  // A single image must continue into render_zero_sub_zero_copy_856, where its
+  // physical visual master is persistent-cacheable. Routing FAST_ONE_IMAGE here
+  // forced a fresh encode on every render and measured ~21-24 s even warm.
+  fast_path_decision(job).reason=="FAST_MULTI_STILL"
 }
 
 async fn choose_fidelity_encoder(app:&AppHandle,attempt:u32)->String{

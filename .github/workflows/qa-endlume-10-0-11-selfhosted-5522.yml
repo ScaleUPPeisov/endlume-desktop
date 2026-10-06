@@ -1,4 +1,4 @@
-name: QA ENDLUME 10.0.11 exact 5522 self-hosted
+name: QA ENDLUME 10.0.11 exact final self-hosted
 
 on:
   push:
@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 env:
-  PRODUCT_SHA: 5522f7d788b745fe9871351fde7b99c8bafaeaa2
+  PRODUCT_SHA: 804468ebc9bfa77c740c2d89f9536d2fc1118ded
 
 jobs:
   apple-silicon-exact:
@@ -47,9 +47,9 @@ jobs:
       - name: TypeScript and Vite production build
         run: npm run build
       - name: Rust check
-        run: cargo check --manifest-path src-tauri/Cargo.toml --locked
+        run: cargo check --manifest-path src-tauri/Cargo.toml
       - name: Rust tests
-        run: cargo test --manifest-path src-tauri/Cargo.toml --locked
+        run: cargo test --manifest-path src-tauri/Cargo.toml
       - name: Tauri packaged macOS app
         run: npm run tauri -- build --bundles app
       - name: Prove packaged app exists

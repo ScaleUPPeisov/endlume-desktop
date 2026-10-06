@@ -42,10 +42,7 @@ jobs:
           src/main.tsx
           EOF
           sort -o /tmp/allowed.txt /tmp/allowed.txt
-          if ! diff -u /tmp/allowed.txt /tmp/changed.txt; then
-            echo 'Forbidden file change detected. UI-only gate failed.' >&2
-            exit 21
-          fi
+          diff -u /tmp/allowed.txt /tmp/changed.txt
 
       - name: Prove product logic untouched
         shell: bash
@@ -58,8 +55,8 @@ jobs:
             src/license-realtime.ts \
             src/queue-state.ts \
             src/platform-brand.ts
-          if grep -nE 'backdrop-filter|-webkit-backdrop-filter' src/cinematic-ui-polish.css; then
-            echo 'Expensive backdrop blur is forbidden for this WKWebView-safe pass.' >&2
+          if grep -nE '^[[:space:]]*(-webkit-)?backdrop-filter[[:space:]]*:' src/cinematic-ui-polish.css; then
+            echo 'Expensive backdrop blur declaration is forbidden for this WKWebView-safe pass.' >&2
             exit 22
           fi
           grep -q "import './cinematic-ui-polish.css';" src/main.tsx

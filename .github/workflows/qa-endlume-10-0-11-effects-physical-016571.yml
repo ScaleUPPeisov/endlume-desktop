@@ -1,0 +1,206 @@
+name: QA ENDLUME 10.0.11 physical Effects migration 016571
+
+on:
+  push:
+    branches:
+      - qa/endlume-10.0.11-stale-effect-gate-5522f7
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PRODUCT_SHA: 016571ccc0031feb511e225f749d718df5f89a58
+
+jobs:
+  physical-effects-isolated:
+    runs-on: [self-hosted, macOS, ARM64]
+    timeout-minutes: 35
+    steps:
+      - name: Checkout exact product
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.PRODUCT_SHA }}
+          fetch-depth: 1
+
+      - name: Prove exact checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$PRODUCT_SHA"
+          test "$(git status --porcelain)" = ""
+
+      - name: Inventory REAL library read-only
+        id: inventory
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, pathlib, sys
+          home=pathlib.Path.home()
+          support=home/'Library'/'Application Support'
+          candidates=[support/'studio.endlume.desktop'/'library.json']
+          candidates += list(support.glob('*endlume*/library.json'))
+          seen=[]
+          for p in candidates:
+              if p not in seen: seen.append(p)
+          lib=next((p for p in seen if p.is_file()),None)
+          if not lib:
+              print('REAL_LIBRARY_NOT_FOUND')
+              print('searched=',*[str(p) for p in seen],sep='\n')
+              sys.exit(2)
+          raw=lib.read_bytes()
+          data=json.loads(raw)
+          print(f'REAL_LIBRARY={lib}')
+          print(f'REAL_LIBRARY_BYTES={len(raw)}')
+          print('REAL_EFFECTS_BEGIN')
+          effects=data.get('effects') or []
+          for i,e in enumerate(effects):
+              source=str(e.get('source') or '')
+              print(json.dumps({
+                'index':i,'id':e.get('id'),'name':e.get('name'),'enabled':e.get('enabled'),
+                'usageMode':e.get('usageMode'),'source':source,'sourceExists':pathlib.Path(source).is_file() if source else False,
+                'assetState':e.get('assetState'),'assetError':e.get('assetError')
+              },ensure_ascii=False))
+          print('REAL_EFFECTS_END')
+          def score(e,kind):
+              n=str(e.get('name') or '').lower()
+              if kind=='round': return e.get('id')=='825dd7a4-f0cf-4032-a3c9-64290cb5756d' or ('эквал' in n and 'круг' in n)
+              if kind=='80s': return any(x in n for x in ('80','плен','пыль','царап'))
+              if kind=='smoke': return any(x in n for x in ('smoke','дым','пар'))
+          for kind in ('round','80s','smoke'):
+              matches=[e for e in effects if score(e,kind)]
+              print(f'CANONICAL_{kind.upper()}='+json.dumps([{'id':e.get('id'),'name':e.get('name'),'source':e.get('source'),'exists':pathlib.Path(str(e.get('source') or '')).is_file()} for e in matches],ensure_ascii=False))
+          # Persist only a path pointer and a cryptographic checksum in runner temp; never modify the real file.
+          import hashlib
+          (pathlib.Path(os.environ['RUNNER_TEMP'])/'endlume-real-library-path.txt').write_text(str(lib))
+          (pathlib.Path(os.environ['RUNNER_TEMP'])/'endlume-real-library-sha256.txt').write_text(hashlib.sha256(raw).hexdigest())
+          PY
+
+      - name: Prepare isolated migration fixture from REAL presets
+        shell: bash
+        run: |
+          set -euo pipefail
+          export ISO_HOME="$RUNNER_TEMP/endlume-isolated-home"
+          rm -rf "$ISO_HOME"
+          mkdir -p "$ISO_HOME/Library/Application Support/studio.endlume.desktop/library-assets/effects"
+          python3 - <<'PY'
+          import json, os, pathlib, shutil
+          tmp=pathlib.Path(os.environ['RUNNER_TEMP'])
+          lib=pathlib.Path((tmp/'endlume-real-library-path.txt').read_text().strip())
+          data=json.loads(lib.read_text())
+          effects=data.get('effects') or []
+          round_fx=next((e for e in effects if e.get('id')=='825dd7a4-f0cf-4032-a3c9-64290cb5756d'),None)
+          if not round_fx:
+              round_fx=next((e for e in effects if 'эквал' in str(e.get('name') or '').lower() and 'круг' in str(e.get('name') or '').lower()),None)
+          if not round_fx:
+              raise SystemExit('ROUND_EQUALIZER_REAL_PRESET_NOT_FOUND')
+          src=pathlib.Path(str(round_fx.get('source') or ''))
+          if not src.is_file():
+              raise SystemExit(f'ROUND_EQUALIZER_REAL_SOURCE_NOT_FOUND:{src}')
+          other=next((e for e in effects if e is not round_fx and any(x in str(e.get('name') or '').lower() for x in ('80','плен','пыль','царап','smoke','дым','пар'))),None)
+          if not other:
+              other=next((e for e in effects if e is not round_fx),None)
+          if not other:
+              raise SystemExit('SECOND_REAL_EFFECT_NOT_FOUND')
+          iso=pathlib.Path(os.environ['ISO_HOME'])/'Library'/'Application Support'/'studio.endlume.desktop'
+          managed=iso/'library-assets'/'effects'
+          managed.mkdir(parents=True,exist_ok=True)
+          seeded=managed/src.name
+          shutil.copy2(src,seeded)
+          a=json.loads(json.dumps(round_fx))
+          b=json.loads(json.dumps(other))
+          a['source']=f'/stale/old-app/library-assets/effects/{src.name}'
+          a.pop('assetState',None); a.pop('assetError',None)
+          missing_name='__endlume_missing_identity__'+(pathlib.Path(str(b.get('source') or 'effect.mp4')).suffix or '.mp4')
+          b['source']=f'/stale/old-app/library-assets/effects/{missing_name}'
+          b.pop('assetState',None); b.pop('assetError',None)
+          fixture={'effects':[a,b],'subscribes':[],'ambient':None}
+          (iso/'library.json').write_text(json.dumps(fixture,ensure_ascii=False,indent=2))
+          expected={
+            'repair':{'id':a.get('id'),'name':a.get('name'),'enabled':a.get('enabled'),'basename':src.name},
+            'missing':{'id':b.get('id'),'name':b.get('name'),'enabled':b.get('enabled'),'source':b['source']}
+          }
+          (tmp/'endlume-effects-expected.json').write_text(json.dumps(expected,ensure_ascii=False,indent=2))
+          print('ISOLATED_EXPECTED='+json.dumps(expected,ensure_ascii=False))
+          PY
+
+      - name: Build exact candidate runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run build
+          mkdir -p src-tauri/binaries
+          cp "$(command -v ffmpeg)" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp "$(command -v ffprobe)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          chmod +x src-tauri/binaries/*
+          cargo build --release --manifest-path src-tauri/Cargo.toml
+
+      - name: Launch candidate twice in ISOLATED HOME
+        shell: bash
+        run: |
+          set -euo pipefail
+          ISO_HOME="$RUNNER_TEMP/endlume-isolated-home"
+          BIN="$GITHUB_WORKSPACE/src-tauri/target/release/endlume"
+          test -x "$BIN"
+          for pass in 1 2; do
+            echo "ISOLATED_LAUNCH_PASS=$pass"
+            HOME="$ISO_HOME" CFFIXED_USER_HOME="$ISO_HOME" TMPDIR="$RUNNER_TEMP" "$BIN" >"$RUNNER_TEMP/endlume-isolated-$pass.log" 2>&1 &
+            pid=$!
+            sleep 8
+            kill "$pid" 2>/dev/null || true
+            sleep 1
+          done
+          echo 'APP_LOG_PASS1_BEGIN'; cat "$RUNNER_TEMP/endlume-isolated-1.log" || true; echo 'APP_LOG_PASS1_END'
+          echo 'APP_LOG_PASS2_BEGIN'; cat "$RUNNER_TEMP/endlume-isolated-2.log" || true; echo 'APP_LOG_PASS2_END'
+
+      - name: Verify deterministic repair, visible failure state, restart idempotence
+        shell: bash
+        run: |
+          set -euo pipefail
+          export ISO_HOME="$RUNNER_TEMP/endlume-isolated-home"
+          python3 - <<'PY'
+          import json, os, pathlib, hashlib
+          tmp=pathlib.Path(os.environ['RUNNER_TEMP'])
+          iso=pathlib.Path(os.environ['ISO_HOME'])/'Library'/'Application Support'/'studio.endlume.desktop'
+          lib=iso/'library.json'
+          if not lib.is_file():
+              raise SystemExit(f'ISOLATED_LIBRARY_NOT_FOUND:{lib}')
+          data=json.loads(lib.read_text())
+          exp=json.loads((tmp/'endlume-effects-expected.json').read_text())
+          effects=data.get('effects') or []
+          print('ISOLATED_EFFECTS_AFTER='+json.dumps(effects,ensure_ascii=False))
+          repair=next((e for e in effects if e.get('id')==exp['repair']['id']),None)
+          missing=next((e for e in effects if e.get('id')==exp['missing']['id']),None)
+          assert repair, 'REPAIRED_PRESET_DISAPPEARED'
+          assert missing, 'MISSING_PRESET_DISAPPEARED'
+          assert repair.get('name')==exp['repair']['name'], 'REPAIR_NAME_CHANGED'
+          assert repair.get('enabled')==exp['repair']['enabled'], 'REPAIR_ENABLED_CHANGED'
+          assert pathlib.Path(str(repair.get('source') or '')).name==exp['repair']['basename'], 'REPAIR_WRONG_ASSET_BASENAME'
+          assert pathlib.Path(str(repair.get('source') or '')).is_file(), 'REPAIR_SOURCE_NOT_FILE'
+          assert repair.get('assetState')=='ready', f"REPAIR_NOT_READY:{repair.get('assetState')}"
+          assert missing.get('name')==exp['missing']['name'], 'MISSING_NAME_CHANGED'
+          assert missing.get('enabled')==exp['missing']['enabled'], 'MISSING_ENABLED_CHANGED'
+          assert missing.get('source')==exp['missing']['source'], 'MISSING_SOURCE_WAS_GUESSED_OR_REPLACED'
+          assert missing.get('assetState')=='repair-required', f"MISSING_NOT_REPAIR_REQUIRED:{missing.get('assetState')}"
+          assert missing.get('assetError'), 'MISSING_NO_DIAGNOSTIC'
+          print('PHYSICAL_MIGRATION_GATE=PASS')
+          PY
+
+      - name: Prove REAL library untouched
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib, os, pathlib
+          tmp=pathlib.Path(os.environ['RUNNER_TEMP'])
+          p=pathlib.Path((tmp/'endlume-real-library-path.txt').read_text().strip())
+          before=(tmp/'endlume-real-library-sha256.txt').read_text().strip()
+          after=hashlib.sha256(p.read_bytes()).hexdigest()
+          print(f'REAL_LIBRARY_SHA_BEFORE={before}')
+          print(f'REAL_LIBRARY_SHA_AFTER={after}')
+          assert before==after, 'REAL_LIBRARY_WAS_MODIFIED'
+          print('REAL_LIBRARY_UNTOUCHED=PASS')
+          PY

@@ -1,0 +1,179 @@
+name: ENDLUME 10.0.11 UI Motion Candidate
+
+on:
+  push:
+    branches:
+      - ui/endlume-10.0.11-loopforge-motion-pass
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-1011-ui-motion-candidate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  source-safety:
+    name: Source safety • UI-only diff
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify exact ENDLUME 10.0.11 release ancestry
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git fetch origin release-endlume-10.0.11:refs/remotes/origin/release-endlume-10.0.11
+          git merge-base --is-ancestor 750623fde68ef73a58429a5fdef1b85d541c7e12 HEAD
+          test "$(git rev-parse origin/release-endlume-10.0.11)" = "750623fde68ef73a58429a5fdef1b85d541c7e12"
+
+      - name: Enforce visual-only file whitelist
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git diff --name-only 750623fde68ef73a58429a5fdef1b85d541c7e12...HEAD | sort > /tmp/changed.txt
+          cat /tmp/changed.txt
+          cat > /tmp/allowed.txt <<'EOF'
+          .github/workflows/endlume-1011-ui-motion-candidate.yml
+          src/cinematic-ui-polish.css
+          src/main.tsx
+          EOF
+          sort -o /tmp/allowed.txt /tmp/allowed.txt
+          if ! diff -u /tmp/allowed.txt /tmp/changed.txt; then
+            echo 'Forbidden file change detected. UI-only gate failed.' >&2
+            exit 21
+          fi
+
+      - name: Prove product logic untouched
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git diff --exit-code 750623fde68ef73a58429a5fdef1b85d541c7e12...HEAD -- \
+            src/pages \
+            src/components \
+            src-tauri/src \
+            src/license-realtime.ts \
+            src/queue-state.ts \
+            src/platform-brand.ts
+          if grep -nE 'backdrop-filter|-webkit-backdrop-filter' src/cinematic-ui-polish.css; then
+            echo 'Expensive backdrop blur is forbidden for this WKWebView-safe pass.' >&2
+            exit 22
+          fi
+          grep -q "import './cinematic-ui-polish.css';" src/main.tsx
+          echo ENDLUME_1011_UI_SOURCE_SAFETY_GREEN
+
+  web-build:
+    name: TypeScript + Vite production build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - run: npm run build
+
+  macos-candidate:
+    name: macOS ARM64 • candidate app • no publish
+    needs: [source-safety, web-build]
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify candidate identity and ancestry
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git merge-base --is-ancestor 750623fde68ef73a58429a5fdef1b85d541c7e12 HEAD
+          node -e "const p=require('./package.json'); if(p.version!=='10.0.11') process.exit(31)"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          c=json.loads(Path('src-tauri/tauri.conf.json').read_text())
+          assert c['version']=='10.0.11', c['version']
+          assert c['identifier']=='studio.endlume.desktop', c['identifier']
+          print('ENDLUME_1011_IDENTITY_GREEN')
+          PY
+
+      - name: Stage native Apple Silicon FFmpeg
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          FOUNDATION="$HOME/.endlume-local-builder/endlume-desktop-8.40-bootstrap"
+          mkdir -p src-tauri/binaries
+          rsync -a "$FOUNDATION/src-tauri/binaries/" src-tauri/binaries/
+          chmod +x src-tauri/binaries/ffmpeg* src-tauri/binaries/ffprobe*
+          test -x src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          test -x src-tauri/binaries/ffprobe-aarch64-apple-darwin
+
+      - name: Disable updater artifacts for private candidate
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('src-tauri/tauri.conf.json')
+          c=json.loads(p.read_text())
+          c['bundle']['createUpdaterArtifacts']=False
+          p.write_text(json.dumps(c,ensure_ascii=False,indent=2)+'\n')
+          PY
+
+      - name: Build clean macOS ARM64 candidate
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export CARGO_TARGET_DIR="$HOME/.endlume-build-cache/target-1011-ui-motion"
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
+          npm ci
+          npm run check
+          npm run build
+          npm run tauri build -- --bundles app
+          APP="$(find "$CARGO_TARGET_DIR/release/bundle/macos" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          test -n "$APP" -a -d "$APP"
+          VER="$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist")"
+          BID="$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$APP/Contents/Info.plist")"
+          EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
+          test "$VER" = '10.0.11'
+          test "$BID" = 'studio.endlume.desktop'
+          /usr/bin/lipo -archs "$APP/Contents/MacOS/$EXE" | grep -qw arm64
+          if strings "$APP/Contents/MacOS/$EXE" | grep -q 'ENDLUME_E2E_RENDER_JOB'; then
+            echo 'E2E marker leaked into candidate binary' >&2
+            exit 43
+          fi
+          /usr/bin/codesign --force --deep --sign - "$APP"
+          /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP"
+          echo "CANDIDATE_APP=$APP" >> "$GITHUB_ENV"
+          echo ENDLUME_1011_UI_MAC_BUILD_GREEN
+
+      - name: Package candidate without publishing
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          OUT="$GITHUB_WORKSPACE/candidate-1011-ui"
+          mkdir -p "$OUT"
+          PKG="$OUT/ENDLUME-10.0.11-macOS-ARM64-UI-Motion-Candidate.app.tar.gz"
+          /usr/bin/tar -czf "$PKG" -C "$(dirname "$CANDIDATE_APP")" "$(basename "$CANDIDATE_APP")"
+          shasum -a 256 "$PKG" > "$PKG.sha256"
+          printf 'version=10.0.11\ncommit=%s\npublished=false\nstable_manifest_unchanged=true\nsource_release=750623fde68ef73a58429a5fdef1b85d541c7e12\n' "$GITHUB_SHA" > "$OUT/CANDIDATE-INFO.txt"
+          echo "CANDIDATE_BYTES=$(stat -f%z "$PKG")"
+          echo "CANDIDATE_SHA256=$(awk '{print $1}' "$PKG.sha256")"
+
+      - name: Upload private CI candidate artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ENDLUME-10.0.11-macOS-ARM64-UI-Motion-Candidate
+          path: candidate-1011-ui/
+          if-no-files-found: error
+          retention-days: 7

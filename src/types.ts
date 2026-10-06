@@ -5,6 +5,7 @@ export type LoopMode = 'image'|'crossfade'|'pingpong'|'original';
 export type EffectMode = 'chromakey'|'luma'|'screen';
 export type EncoderPreference = 'auto'|'quality'|'speed';
 export type EffectUsageMode = 'off'|'always'|'interval';
+export type EffectAssetState = 'ready'|'repair-required';
 export type SubscribeFirstAppearance = 'after-interval'|'immediate'|'custom';
 
 export interface AnchorPoint {
@@ -76,6 +77,8 @@ export interface EffectPreset {
   endSec: number | null;
   cacheKey?: string;
   cacheReady?: boolean;
+  assetState?: EffectAssetState;
+  assetError?: string;
   usageMode?: EffectUsageMode;
   intervalSec?: number;
   usageDurationSec?: number;

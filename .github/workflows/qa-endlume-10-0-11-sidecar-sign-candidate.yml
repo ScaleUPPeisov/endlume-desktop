@@ -1,0 +1,103 @@
+name: QA ENDLUME 10.0.11 signed sidecar candidate
+
+on:
+  push:
+    branches:
+      - qa/endlume-10.0.11-sidecar-sign-candidate-8a0b29b
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PRODUCT_SHA: 8a0b29b0468b5e665705e20c6a8635ca4c73ba90
+
+jobs:
+  validate-signed-sidecars:
+    runs-on: [self-hosted, macOS, ARM64]
+    timeout-minutes: 35
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.PRODUCT_SHA }}
+          fetch-depth: 1
+
+      - name: Prove exact candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$PRODUCT_SHA"
+          test "$(git status --porcelain)" = ""
+          echo "EXACT_CANDIDATE=PASS"
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Stage Apple Silicon FFmpeg sidecars
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p src-tauri/binaries
+          cp "$(command -v ffmpeg)" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp "$(command -v ffprobe)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          chmod +x src-tauri/binaries/ffmpeg-aarch64-apple-darwin src-tauri/binaries/ffprobe-aarch64-apple-darwin
+
+      - name: Prepare and sign portable runtime closure
+        shell: bash
+        run: |
+          set -euo pipefail
+          ENDLUME_TAURI_TARGET=aarch64-apple-darwin node scripts/prepare-macos-ffmpeg-runtime.mjs
+          ENDLUME_TAURI_TARGET=aarch64-apple-darwin node scripts/sign-macos-ffmpeg-runtime.mjs
+
+      - name: Prove sidecars launch without Homebrew environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          FFMPEG="$GITHUB_WORKSPACE/src-tauri/binaries/ffmpeg-aarch64-apple-darwin"
+          FFPROBE="$GITHUB_WORKSPACE/src-tauri/binaries/ffprobe-aarch64-apple-darwin"
+          env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin "$FFMPEG" -version | head -n 1
+          env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin "$FFPROBE" -version | head -n 1
+          echo "SIGNED_CLEAN_ENV_RUNTIME=PASS"
+
+      - name: TypeScript and Vite build
+        run: npm run build
+
+      - name: Rust check and tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo check --manifest-path src-tauri/Cargo.toml
+          cargo test --manifest-path src-tauri/Cargo.toml
+
+      - name: Package exact macOS app without updater signing
+        shell: bash
+        run: |
+          set -euo pipefail
+          config="src-tauri/tauri.conf.json"
+          backup="$RUNNER_TEMP/tauri.conf.product.json"
+          cp "$config" "$backup"
+          restore_config() { cp "$backup" "$config"; }
+          trap restore_config EXIT
+          node - <<'NODE'
+          const fs=require('fs');
+          const p='src-tauri/tauri.conf.json';
+          const cfg=JSON.parse(fs.readFileSync(p,'utf8'));
+          cfg.bundle={...(cfg.bundle||{}),createUpdaterArtifacts:false};
+          fs.writeFileSync(p,JSON.stringify(cfg,null,2)+'\n');
+          NODE
+          npm run tauri -- build --bundles app
+          restore_config
+          trap - EXIT
+          git diff --exit-code -- "$config"
+          test "$(git rev-parse HEAD)" = "$PRODUCT_SHA"
+
+      - name: Verify packaged app and clean-env bundled sidecars
+        shell: bash
+        run: |
+          set -euo pipefail
+          app="$(find src-tauri/target/release/bundle/macos -maxdepth 2 -type d -name '*.app' -print -quit)"
+          test -n "$app"
+          echo "PACKAGED_APP=$app"
+          ENDLUME_APP_PATH="$app" ENDLUME_TAURI_TARGET=aarch64-apple-darwin node scripts/verify-macos-ffmpeg-bundle.mjs
+          echo "PACKAGED_APP_FFMPEG_RUNTIME=PASS"

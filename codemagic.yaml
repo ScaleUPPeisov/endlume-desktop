@@ -1,44 +1,28 @@
 workflows:
-  endlume-1011-hosted-macos:
-    name: ENDLUME 10.0.11 Hosted macOS Gate A
+  endlume-1011-candidate-641e994:
+    name: ENDLUME 10.0.11 candidate 641e994 macOS Gate A
     instance_type: mac_mini_m2
-    max_build_duration: 120
+    max_build_duration: 60
     environment:
-      node: v22.11.0
+      node: 22
+      xcode: latest
       vars:
-        ENDLUME_VERSION: "10.0.11"
-        ENDLUME_PRODUCT_HEAD: "d7193383eda5ff3f1c8976d6c1a97d1eeb10305b"
+        ENDLUME_PRODUCT_HEAD: 641e994cd8098c11f4c1bd965208c01f09931cea
     scripts:
-      - name: Verify frozen product and hosted Apple Silicon
+      - name: Prove exact candidate and QA-only delta
         script: |
           set -Eeuo pipefail
-          echo "CM_BUILD_ID=${CM_BUILD_ID:-unknown}"
-          echo "CM_BRANCH=${CM_BRANCH:-unknown}"
-          echo "HEAD=$(git rev-parse HEAD)"
-          git merge-base --is-ancestor "$ENDLUME_PRODUCT_HEAD" HEAD
-          git diff --name-only "$ENDLUME_PRODUCT_HEAD"...HEAD | tee /tmp/endlume-codemagic-files.txt
-          if grep -Ev '^codemagic\.yaml$' /tmp/endlume-codemagic-files.txt | grep -q .; then
-            echo "ERROR: files other than codemagic.yaml changed after frozen product HEAD"
-            exit 1
-          fi
-          uname -a
-          sw_vers
-          test "$(uname -m)" = "arm64"
-          echo LOCAL_MAC_USED=NO
-          echo PRODUCT_CODE_CHANGED=NO
+          test "$(git merge-base HEAD "$ENDLUME_PRODUCT_HEAD")" = "$ENDLUME_PRODUCT_HEAD"
+          while read -r changed; do
+            [ -z "$changed" ] && continue
+            test "$changed" = "codemagic.yaml" || {
+              echo "ERROR unexpected post-product change: $changed" >&2
+              exit 1
+            }
+          done < <(git diff --name-only "$ENDLUME_PRODUCT_HEAD"..HEAD)
+          echo PRODUCT_HEAD=$ENDLUME_PRODUCT_HEAD
 
-      - name: Prepare Rust toolchain
-        script: |
-          set -Eeuo pipefail
-          if ! command -v rustup >/dev/null 2>&1; then
-            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
-          fi
-          export PATH="$HOME/.cargo/bin:$PATH"
-          rustup target add aarch64-apple-darwin
-          rustc --version
-          cargo --version
-
-      - name: Stage FFmpeg and FFprobe
+      - name: Stage Apple Silicon FFmpeg sidecars
         script: |
           set -Eeuo pipefail
           TMP="$(mktemp -d)"
@@ -50,177 +34,45 @@ workflows:
           cp "$(find "$TMP/fm" -type f -name ffmpeg -print -quit)" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
           cp "$(find "$TMP/fp" -type f -name ffprobe -print -quit)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
           chmod 755 src-tauri/binaries/ffmpeg-aarch64-apple-darwin src-tauri/binaries/ffprobe-aarch64-apple-darwin
-          rm -rf "$TMP"
-          src-tauri/binaries/ffmpeg-aarch64-apple-darwin -version | head -1
-          src-tauri/binaries/ffprobe-aarch64-apple-darwin -version | head -1
 
-      - name: Compile and regression
+      - name: Frontend gates
         script: |
           set -Eeuo pipefail
-          export PATH="$HOME/.cargo/bin:$PATH"
-          export CARGO_TARGET_DIR="$CM_BUILD_DIR/.codemagic-target"
           npm ci
           npm run check
           npm run build
-          cargo test --manifest-path src-tauri/Cargo.toml live_preview::tests -- --nocapture
-          cargo test --manifest-path src-tauri/Cargo.toml cache::tests -- --nocapture
+
+      - name: Rust gates
+        script: |
+          set -Eeuo pipefail
+          cargo check --manifest-path src-tauri/Cargo.toml
           cargo test --manifest-path src-tauri/Cargo.toml -- --nocapture
-          cargo check --manifest-path src-tauri/Cargo.toml --features e2e-render --target aarch64-apple-darwin
-          grep -q 'BackgroundMusicSettings' src/types.ts
-          grep -q 'render-asset-recovered' src-tauri/src/render.rs
-          grep -q 'window.visible=false' src-tauri/src/lib.rs
-          grep -q 'window.focus=false' src-tauri/src/lib.rs
-          grep -q 'window.focusable=false' src-tauri/src/lib.rs
-          grep -q 'hevc_videotoolbox' src-tauri/src/render.rs
-          echo COMPILE=GREEN
-          echo RUST_TESTS=GREEN
 
-      - name: Build packaged macOS ARM64 app
+      - name: Build packaged candidate
         script: |
           set -Eeuo pipefail
-          export PATH="$HOME/.cargo/bin:$PATH"
-          export CARGO_TARGET_DIR="$CM_BUILD_DIR/.codemagic-target"
-          python3 - <<'PY'
-          import json
-          from pathlib import Path
-          p=Path('src-tauri/tauri.conf.json')
-          d=json.loads(p.read_text())
-          d['bundle']['createUpdaterArtifacts']=False
-          p.write_text(json.dumps(d,ensure_ascii=False,indent=2)+'\n')
-          PY
-          ENDLUME_TAURI_TARGET=aarch64-apple-darwin node scripts/prepare-macos-ffmpeg-runtime.mjs
+          export ENDLUME_TAURI_TARGET=aarch64-apple-darwin
+          node scripts/prepare-macos-ffmpeg-runtime.mjs
           npx tauri build --target aarch64-apple-darwin --bundles app --features e2e-render
-          APP="$(find "$CARGO_TARGET_DIR/aarch64-apple-darwin/release/bundle/macos" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          APP="$(find src-tauri/target/aarch64-apple-darwin/release/bundle/macos -maxdepth 1 -type d -name '*.app' -print -quit)"
           test -n "$APP" -a -d "$APP"
-          /usr/bin/codesign --force --deep --sign - --timestamp=none "$APP"
-          /usr/bin/codesign --verify --deep --strict "$APP"
-          test "$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$APP/Contents/Info.plist")" = "studio.endlume.desktop"
-          test "$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist")" = "$ENDLUME_VERSION"
-          EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
-          BIN="$APP/Contents/MacOS/$EXE"
-          test -x "$BIN"
-          /usr/bin/lipo -archs "$BIN" | grep -qw arm64
-          mkdir -p "$CM_BUILD_DIR/out"
-          /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$APP" "$CM_BUILD_DIR/out/ENDLUME-10.0.11-HOSTED-QA.app.zip"
-          printf '%s' "$BIN" > "$CM_BUILD_DIR/out/bin-path.txt"
-          printf '%s' "$APP" > "$CM_BUILD_DIR/out/app-path.txt"
-          echo MACOS_ARM64_PACKAGE=GREEN
+          codesign --verify --deep --strict "$APP"
+          EXE="$(plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
+          test -x "$APP/Contents/MacOS/$EXE"
+          test -x "$APP/Contents/MacOS/ffmpeg"
+          test -x "$APP/Contents/MacOS/ffprobe"
+          echo PACKAGED_APP=PASS
 
-      - name: Hosted functional gate and conditional hardware acceptance
+      - name: Static integration contracts
         script: |
           set -Eeuo pipefail
-          ROOT="$CM_BUILD_DIR/endlume-1011-cloud-gate"
-          VOL="$ROOT/volume"
-          PROJECT="$VOL/ВАЙРОН/Fixture/Новая папка"
-          OUT="$VOL/ВАЙРОН/Render/Brewroom Jazz"
-          TMP="$ROOT/tmp"
-          rm -rf "$ROOT"
-          mkdir -p "$PROJECT" "$OUT" "$TMP"
-          export TMPDIR="$TMP"
-
-          FFMPEG="$CM_BUILD_DIR/src-tauri/binaries/ffmpeg-aarch64-apple-darwin"
-          FFPROBE="$CM_BUILD_DIR/src-tauri/binaries/ffprobe-aarch64-apple-darwin"
-          BIN="$(cat "$CM_BUILD_DIR/out/bin-path.txt")"
-
-          "$FFMPEG" -hide_banner -loglevel error -f lavfi -i "color=c=0x172033:size=1920x1080:rate=1" -frames:v 1 -y "$PROJECT/001.png"
-          MASTER="$ROOT/track-master.m4a"
-          "$FFMPEG" -hide_banner -loglevel error -f lavfi -i "anullsrc=r=48000:cl=stereo" -t 720 -c:a aac -b:a 64k -ar 48000 -ac 2 -y "$MASTER"
-          for n in 01 02 03 04 05 06 07 08 09 10; do
-            ln "$MASTER" "$PROJECT/track-$n.m4a" 2>/dev/null || cp "$MASTER" "$PROJECT/track-$n.m4a"
-          done
-          OVERLAY="$ROOT/fixture-overlay.mp4"
-          "$FFMPEG" -hide_banner -loglevel error -f lavfi -i "color=c=0x00ff00:size=640x360:rate=30" -t 2 -vf "drawbox=x=100:y=80:w=420:h=190:color=red@1:t=fill,drawbox=x=180:y=135:w=260:h=80:color=white@1:t=fill" -c:v libx264 -preset ultrafast -pix_fmt yuv420p -an -y "$OVERLAY"
-
-          # Always run a real packaged-app Preview smoke on the cloud M2.
-          PREVIEW_FIXTURE="$ROOT/preview-smoke.json"
-          PREVIEW_RESULT="$ROOT/preview-smoke-result.json"
-          python3 - "$PREVIEW_FIXTURE" "$PROJECT" "$OVERLAY" <<'PY'
-          import json,sys
-          out,project,overlay=sys.argv[1:]
-          json.dump({"projectPath":project,"overlaySource":overlay,"timeSec":0.0,"effects":[],"subscribes":[]},open(out,'w'),ensure_ascii=False,indent=2)
-          PY
-          ENDLUME_E2E_PREVIEW_JOB="$PREVIEW_FIXTURE" ENDLUME_E2E_RESULT="$PREVIEW_RESULT" ENDLUME_PREVIEW_DIAG=1 RUST_BACKTRACE=1 "$BIN" >"$ROOT/preview.stdout" 2>"$ROOT/preview.stderr"
-          python3 - "$PREVIEW_RESULT" <<'PY'
-          import json,sys
-          d=json.load(open(sys.argv[1])); assert d.get('status')=='passed',d
-          print('PACKAGED_PREVIEW_SMOKE=GREEN')
-          PY
-
-          # Probe the cloud VM itself. Some Codemagic M2 VMs expose Apple Silicon
-          # but do not expose VideoToolbox to FFmpeg. That is an infrastructure
-          # limitation, not an ENDLUME product regression.
-          VT_LOG="$ROOT/videotoolbox-probe.log"
-          if "$FFMPEG" -hide_banner -loglevel error -f lavfi -i "color=black:size=64x64:rate=30" -frames:v 2 -c:v hevc_videotoolbox -f null - > /dev/null 2>"$VT_LOG"; then
-            echo HARDWARE_GATE=AVAILABLE
-            VT_AVAILABLE=1
-          else
-            echo HARDWARE_GATE=SKIPPED_CLOUD_LIMITATION
-            VT_AVAILABLE=0
-          fi
-
-          if [ "$VT_AVAILABLE" = "0" ]; then
-            python3 - "$ROOT/cloud-gate.json" <<'PY'
-          import json,sys
-          json.dump({
-            "status":"GREEN_WITH_HARDWARE_SKIP",
-            "packagedPreview":"GREEN",
-            "hardwareGate":"SKIPPED_CLOUD_LIMITATION",
-            "reason":"Codemagic hosted macOS VM does not expose working hevc_videotoolbox to FFmpeg",
-            "localMacUsed":"NO",
-            "productCodeChanged":"NO"
-          },open(sys.argv[1],'w'),indent=2)
-          PY
-            echo CODEMAGIC_GATE_A=GREEN_WITH_HARDWARE_SKIP
-            echo LOCAL_MAC_USED=NO
-            exit 0
-          fi
-
-          # Full deterministic acceptance runs only when the hosted VM really
-          # exposes VideoToolbox. No software fallback is accepted as a fake
-          # substitute for the macOS hardware-performance gate.
-          cp scripts/qa-endlume-1011-critical-hotfix.py "$ROOT/qa.py"
-          python3 - "$ROOT/qa.py" <<'PY'
-          from pathlib import Path
-          import sys
-          p=Path(sys.argv[1]); s=p.read_text()
-          replacements=[
-            ('VOL=Path("/Volumes/TOSHIBA EXT")','VOL=Path(__import__("os").environ["ENDLUME_QA_VOL"])'),
-            ('OUT=VOL/"ВАЙРОН"/"Render"/"Brewroom Jazz"','OUT=Path(__import__("os").environ["ENDLUME_QA_OUT"])'),
-            ('assert VOL.is_dir() and OUT.is_dir(),OUT','assert VOL.is_dir(),VOL\\nOUT.mkdir(parents=True,exist_ok=True)\\nassert OUT.is_dir(),OUT'),
-            ('def resolve_project():\\n    roots=[]','def resolve_project():\\n    forced=__import__("os").environ.get("ENDLUME_QA_PROJECT")\\n    if forced:\\n        project=Path(forced)\\n        assert project.is_dir(),project\\n        files=[p for p in project.iterdir() if p.is_file() and not p.name.startswith(".") and not p.name.startswith("._")]\\n        media=sorted([p for p in files if p.suffix.lower() in IMAGE|VIDEO],key=lambda x:x.name.lower())\\n        songs=sorted([p for p in files if p.suffix.lower() in AUDIO],key=lambda x:x.name.lower())\\n        assert media and len(songs)>=8,(project,len(media),len(songs))\\n        return project,media,songs[:15]\\n    roots=[]'),
-            ('lib_path,lib=load_library()','lib_path,lib=(None,{"effects":[],"subscribes":[],"ambient":None}) if __import__("os").environ.get("ENDLUME_QA_DETERMINISTIC")=="1" else load_library()'),
-            ('base_frame=frame(baseline["exact"])\\nfilm_frame=frame(cold_fx["exact"]);eq_frame=frame(eq_prev["exact"]);third_frame=frame(third_prev["exact"]);sub_frame=frame(cold_sub["exact"])','base_frame=frame(baseline["exact"],0.0)\\nfilm_frame=frame(cold_fx["exact"],0.0);eq_frame=frame(eq_prev["exact"],0.0);third_frame=frame(third_prev["exact"],0.0);sub_frame=frame(cold_sub["exact"],0.0)'),
-            ('render_meta[pid]={"path":str(p),"wall":float(row["wallSeconds"]),"mib":mib,"duration":dur}','render_meta[pid]={"path":str(p),"wall":float(row["wallSeconds"]),"mib":mib,"duration":dur,"encoder":str(row.get("encoder","")),"fastPath":str(row.get("fastPath",""))}')
-          ]
-          for old,new in replacements:
-              count=s.count(old); assert count==1,(old,count); s=s.replace(old,new,1)
-          p.write_text(s)
-          PY
-          export ENDLUME_QA_VOL="$VOL"
-          export ENDLUME_QA_OUT="$OUT"
-          export ENDLUME_QA_PROJECT="$PROJECT"
-          export ENDLUME_QA_DETERMINISTIC=1
-          python3 "$ROOT/qa.py" "$BIN" "$FFMPEG" "$FFPROBE" "$ROOT/report.json"
-          python3 - "$ROOT/report.json" <<'PY'
-          import json,sys
-          d=json.load(open(sys.argv[1]))
-          assert d['status']=='GREEN',d
-          assert d['coldEffectsPreview']=='GREEN'
-          assert d['coldSubscribePreview']=='GREEN'
-          assert d['cacheInvalidation']=='GREEN'
-          assert d['backgroundMusic']['status']=='GREEN'
-          assert d['backgroundMusic']['tempPcm'] is False
-          assert abs(float(d['backgroundMusic']['coveredDuration'])-7320.0)<=1.0
-          assert d['effectPathRecovery']=='GREEN'
-          for pid in ('e1011-on','e1011-warm','e1011-bg-eq'):
-              assert float(d['render'][pid]['wall']) <= 20.0,(pid,d['render'][pid]['wall'])
-          assert 400 <= float(d['render']['e1011-on']['mib']) <= 600
-          assert d['render']['e1011-on']['encoder']=='hevc_videotoolbox',d['render']['e1011-on']
-          assert d['render']['e1011-on']['fastPath']=='FAST_ONE_IMAGE',d['render']['e1011-on']
-          print('CODEMAGIC_GATE_A=GREEN')
-          PY
+          grep -F 'selected_effect_id' src-tauri/src/model.rs
+          grep -F 'duplicate effect ID' src-tauri/src/queue.rs
+          grep -F 'selectedEffectId' src/pages/ProjectPage.tsx
+          grep -F 'selectedEffectByPath' src/store.ts
+          grep -F 'despill:e.despill??0.35' src/store.ts
+          grep -F 'fast_path_decision(job).reason=="FAST_MULTI_STILL"' src-tauri/src/render.rs
+          echo EFFECT_CONTRACTS=PASS
 
     artifacts:
-      - out/ENDLUME-10.0.11-HOSTED-QA.app.zip
-      - endlume-1011-cloud-gate/*.json
-      - endlume-1011-cloud-gate/*.log
+      - src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app

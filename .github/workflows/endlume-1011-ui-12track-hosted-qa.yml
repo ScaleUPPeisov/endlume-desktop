@@ -1,0 +1,170 @@
+name: ENDLUME 10.0.11 UI 12-Track Hosted QA
+
+on:
+  push:
+    branches:
+      - qa/endlume-10.0.11-ui-12track-hosted
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  full-render-gate:
+    name: macOS ARM64 • 1 image + 12 tracks • 2h E2E
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Prove candidate source and stage Apple Silicon FFmpeg
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(uname -m)" = 'arm64'
+          git merge-base --is-ancestor c8278ebd8ff5d99a86dc6cddb6d9bc1cd25ff684 HEAD
+          test -z "$(git diff --name-only c8278ebd8ff5d99a86dc6cddb6d9bc1cd25ff684...HEAD -- src src-tauri package.json package-lock.json)"
+          rustup target add aarch64-apple-darwin
+          TMP="$(mktemp -d)"
+          curl -fL --retry 4 "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffmpeg.zip" -o "$TMP/ffmpeg.zip"
+          curl -fL --retry 4 "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffprobe.zip" -o "$TMP/ffprobe.zip"
+          mkdir -p "$TMP/fm" "$TMP/fp" src-tauri/binaries
+          ditto -x -k "$TMP/ffmpeg.zip" "$TMP/fm"
+          ditto -x -k "$TMP/ffprobe.zip" "$TMP/fp"
+          cp "$(find "$TMP/fm" -type f -name ffmpeg -print -quit)" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp "$(find "$TMP/fp" -type f -name ffprobe -print -quit)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          chmod 755 src-tauri/binaries/ffmpeg-aarch64-apple-darwin src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          echo UI_12TRACK_SOURCE_GREEN
+
+      - name: Build packaged E2E app from exact candidate product source
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="$HOME/.cargo/bin:$PATH"
+          export CARGO_TARGET_DIR="$RUNNER_TEMP/endlume-1011-full-render-target"
+          npm ci
+          npm run check
+          cargo check --manifest-path src-tauri/Cargo.toml --features e2e-render --target aarch64-apple-darwin
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('src-tauri/tauri.conf.json')
+          c=json.loads(p.read_text())
+          c['bundle']['createUpdaterArtifacts']=False
+          p.write_text(json.dumps(c,ensure_ascii=False,indent=2)+'\n')
+          PY
+          ENDLUME_TAURI_TARGET=aarch64-apple-darwin node scripts/prepare-macos-ffmpeg-runtime.mjs
+          npx tauri build --target aarch64-apple-darwin --bundles app --features e2e-render
+          APP="$(find "$CARGO_TARGET_DIR/aarch64-apple-darwin/release/bundle/macos" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          test -n "$APP" -a -d "$APP"
+          EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
+          /usr/bin/codesign --force --deep --sign - --timestamp=none "$APP"
+          /usr/bin/codesign --verify --deep --strict "$APP"
+          echo "E2E_BIN=$APP/Contents/MacOS/$EXE" >> "$GITHUB_ENV"
+          echo UI_12TRACK_E2E_APP_GREEN
+
+      - name: Exact 2-hour 12-track render acceptance
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ROOT="$RUNNER_TEMP/endlume-1011-ui-full-render"
+          rm -rf "$ROOT"
+          mkdir -p "$ROOT/project" "$ROOT/output" "$ROOT/effects" "$ROOT/report"
+          FFMPEG="$GITHUB_WORKSPACE/src-tauri/binaries/ffmpeg-aarch64-apple-darwin"
+          FFPROBE="$GITHUB_WORKSPACE/src-tauri/binaries/ffprobe-aarch64-apple-darwin"
+          "$FFMPEG" -hide_banner -loglevel error -f lavfi -i "color=c=0x142039:size=1920x1080:rate=1" -frames:v 1 -y "$ROOT/project/base.png"
+          for i in $(seq 1 12); do
+            freq=$((180 + i * 35))
+            "$FFMPEG" -hide_banner -loglevel error -f lavfi -i "sine=frequency=${freq}:sample_rate=48000:duration=30" -c:a libmp3lame -b:a 192k -ar 48000 -ac 2 -y "$ROOT/project/track-$(printf '%02d' "$i").mp3"
+          done
+          "$FFMPEG" -hide_banner -loglevel error -f lavfi -i "color=c=0x00ff00:size=640x360:rate=30" -t 2 -vf "drawbox=x=60:y=70:w=360:h=160:color=red@1:t=fill" -c:v libx264 -preset ultrafast -pix_fmt yuv420p -y "$ROOT/effects/film.mp4"
+          "$FFMPEG" -hide_banner -loglevel error -f lavfi -i "color=c=0x00ff00:size=640x360:rate=30" -t 2 -vf "drawbox=x=140:y=100:w=300:h=130:color=blue@1:t=fill" -c:v libx264 -preset ultrafast -pix_fmt yuv420p -y "$ROOT/effects/equalizer.mp4"
+          "$FFMPEG" -hide_banner -loglevel error -f lavfi -i "color=c=0x00ff00:size=640x360:rate=30" -t 2 -vf "drawbox=x=220:y=45:w=280:h=150:color=yellow@1:t=fill" -c:v libx264 -preset ultrafast -pix_fmt yuv420p -y "$ROOT/effects/third.mp4"
+          "$FFMPEG" -hide_banner -loglevel error -f lavfi -i "color=c=0x00ff00:size=640x360:rate=30" -t 2 -vf "drawbox=x=110:y=135:w=420:h=110:color=magenta@1:t=fill" -c:v libx264 -preset ultrafast -pix_fmt yuv420p -y "$ROOT/effects/subscribe.mp4"
+          python3 - "$ROOT" <<'PY'
+          import json,sys
+          from pathlib import Path
+          root=Path(sys.argv[1])
+          tracks=sorted(str(x) for x in (root/'project').glob('track-*.mp3'))
+          assert len(tracks)==12,tracks
+          def fx(eid,name,src,x,y,scale,opacity=1.0):
+              return {"id":eid,"name":name,"source":str(src),"enabled":True,"mode":"chromakey","keyColor":"#00ff00","similarity":0.10,"blend":0.06,"despill":0.35,"lumaThreshold":0.03,"lumaTolerance":0.08,"saturation":1.0,"x":x,"y":y,"scale":scale,"fullscreen":False,"previewFrameTime":0.0,"startSec":0.0,"endSec":None,"cacheKey":None,"cacheReady":False,"usageMode":"always","intervalSec":240.0,"usageDurationSec":30.0,"target":None,"offsetX":None,"offsetY":None,"opacity":opacity}
+          film=fx('uiqa-film','UI QA Film',root/'effects/film.mp4',0.22,0.28,0.34,0.72)
+          eq=fx('uiqa-eq','UI QA Equalizer',root/'effects/equalizer.mp4',0.63,0.67,0.52,0.86)
+          third=fx('uiqa-third','UI QA Third',root/'effects/third.mp4',0.78,0.24,0.27,0.55)
+          sub=fx('uiqa-sub','UI QA Subscribe',root/'effects/subscribe.mp4',0.50,0.83,0.42,1.0)
+          sub.update({"usageMode":"interval","intervalSec":240.0,"usageDurationSec":8.0,"firstAtSec":0.0,"secondAtSec":240.0,"repeatEverySec":240.0,"firstAppearance":"immediate","customFirstAtSec":0.0,"showDurationSec":8.0})
+          settings={"width":1920,"height":1080,"fps":60,"codec":"h265","bitrateMbps":8.0,"durationHours":2.0,"durationMode":"exact","loopMode":"image","crossfadeSec":0.0,"normalizeLufs":False,"outputDir":str(root/'output'),"preset":"fast","encoderPreference":"auto"}
+          project={"path":str(root/'project'),"media":[str(root/'project/base.png')],"audio":tracks,"valid":True,"error":None,"anchors":{}}
+          def job(pid,name,effects,subs):
+              return {"project":dict(project,id=pid,name=name),"settings":dict(settings),"effects":effects,"subscribes":subs,"ambient":None,"ambientSettings":{"volumePct":18.0,"bassDb":0.0,"midDb":0.0,"trebleDb":0.0}}
+          payload={"jobs":[job('uiqa-base','UI QA 12 TRACK BASE',[],[]),job('uiqa-effects','UI QA 12 TRACK EFFECTS',[film,eq,third],[sub])]}
+          (root/'render-jobs.json').write_text(json.dumps(payload,ensure_ascii=False,indent=2))
+          PY
+          export ENDLUME_E2E_RENDER_JOB="$ROOT/render-jobs.json"
+          export ENDLUME_E2E_RESULT="$ROOT/render-result.json"
+          export RUST_BACKTRACE=1
+          "$E2E_BIN" >"$ROOT/app.stdout" 2>"$ROOT/app.stderr"
+          python3 - "$ROOT" "$FFMPEG" "$FFPROBE" <<'PY'
+          import json,subprocess,sys
+          from pathlib import Path
+          root=Path(sys.argv[1]); ffmpeg=sys.argv[2]; ffprobe=sys.argv[3]
+          raw=json.loads((root/'render-result.json').read_text())
+          assert raw.get('status')=='passed',raw
+          rows={r['id']:r for r in raw.get('results',[])}
+          assert set(rows)=={'uiqa-base','uiqa-effects'},rows.keys()
+          report={'status':'GREEN','tracks':12,'durationTargetSec':7200.0,'sizeTargetMiB':[400,600],'performanceContractSec':20.0,'strictTargetSec':15.0,'renders':{}}
+          outputs={}
+          for pid,row in rows.items():
+              assert row.get('status')=='passed',row
+              p=Path(row['outputPath']); assert p.is_file(),p
+              meta=json.loads(subprocess.run([ffprobe,'-v','error','-show_entries','stream=codec_type,codec_name,width,height,avg_frame_rate,sample_rate,channels:format=duration,size','-of','json',str(p)],check=True,stdout=subprocess.PIPE,text=True).stdout)
+              v=next(x for x in meta['streams'] if x.get('codec_type')=='video')
+              a=next(x for x in meta['streams'] if x.get('codec_type')=='audio')
+              duration=float(meta['format']['duration']); mib=p.stat().st_size/1048576.0; wall=float(row['wallSeconds'])
+              assert v['codec_name']=='hevc' and v['width']==1920 and v['height']==1080 and v['avg_frame_rate']=='60/1',(pid,v)
+              assert a['codec_name']=='aac' and int(a['sample_rate'])==48000 and int(a['channels'])==2,(pid,a)
+              assert abs(duration-7200.0)<=1.0,(pid,duration)
+              assert 400.0<=mib<=600.0,(pid,mib)
+              assert wall<=20.0,(pid,wall)
+              outputs[pid]=p
+              report['renders'][pid]={'wallSeconds':wall,'strict15':wall<=15.0,'mib':mib,'duration':duration,'videoCodec':v['codec_name'],'audioCodec':a['codec_name'],'fastPath':row.get('fastPath'),'fastPathReason':row.get('fastPathReason'),'encoder':row.get('encoder')}
+          def frame(path):
+              r=subprocess.run([ffmpeg,'-hide_banner','-loglevel','error','-ss','1','-i',str(path),'-map','0:v:0','-frames:v','1','-f','rawvideo','-pix_fmt','rgb24','-'],check=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=90)
+              return r.stdout
+          base=frame(outputs['uiqa-base']); fxo=frame(outputs['uiqa-effects']); assert len(base)==len(fxo) and len(base)>1000000
+          changed=0; total=0; sumd=0
+          for i in range(0,len(base)-2,12):
+              d=max(abs(base[i]-fxo[i]),abs(base[i+1]-fxo[i+1]),abs(base[i+2]-fxo[i+2])); total+=1; sumd+=d
+              if d>=8: changed+=1
+          ratio=changed/max(1,total); mean=sumd/max(1,total)
+          assert changed>=1000 and mean>=0.5,(changed,ratio,mean)
+          report['effectsSubscribeVisualDelta']={'status':'GREEN','changedSamples':changed,'ratio':ratio,'meanMaxDiff':mean}
+          (root/'report/full-render-report.json').write_text(json.dumps(report,ensure_ascii=False,indent=2))
+          print('FULL_RENDER_REPORT='+json.dumps(report,ensure_ascii=False,sort_keys=True))
+          print('ENDLUME_1011_UI_12_TRACK_2H_E2E_GREEN')
+          for p in outputs.values():
+              try:p.unlink()
+              except Exception:pass
+          PY
+
+      - name: Upload QA report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ENDLUME-10.0.11-UI-12TRACK-2H-E2E
+          path: |
+            ${{ runner.temp }}/endlume-1011-ui-full-render/report/full-render-report.json
+            ${{ runner.temp }}/endlume-1011-ui-full-render/render-result.json
+            ${{ runner.temp }}/endlume-1011-ui-full-render/app.stderr
+          if-no-files-found: warn
+          retention-days: 7

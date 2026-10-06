@@ -57,6 +57,18 @@ def make_job(case_id, image, audio, outdir, cf, lufs, ambient=None):
     }
 
 
+def smart_whole_track_duration(target, durations, crossfade):
+    if not durations:
+        return float(target)
+    t = 0.0
+    i = 0
+    while t < float(target):
+        add = max(0.1, float(durations[i % len(durations)]) - (float(crossfade) if t > 0.0 else 0.0))
+        t += add
+        i += 1
+    return t
+
+
 def parse_tool_commands(stderr_text):
     commands=[]
     for line in stderr_text.splitlines():
@@ -162,10 +174,14 @@ def main():
         cases=[('wav-cf0',wav,0,False,None,True),('wav-cf5',wav,5,False,None,True),('wav-cf10',wav,10,False,None,True),('wav-cf5-lufs',wav,5,True,None,True),('wav-cf10-lufs',wav,10,True,None,True),('mixed-wav-cf10-lufs',mixed,10,True,None,True),('wav-cf10-ambient',wav,10,False,ambient,True),('mp3-regression',mp3,0,False,None,False)]
     global_max=0
     for case_id,tracks,cf,lufs,ambient,expect_bounded in cases:
-        job_path=root/'results'/f'{case_id}.job.json'; result_path=root/'results'/f'{case_id}.result.json'; job_path.write_text(json.dumps(make_job(case_id,image,tracks,root/'outputs',cf,lufs,ambient),ensure_ascii=False,indent=2),encoding='utf-8')
+        job=make_job(case_id,image,tracks,root/'outputs',cf,lufs,ambient)
+        job_path=root/'results'/f'{case_id}.job.json'; result_path=root/'results'/f'{case_id}.result.json'; job_path.write_text(json.dumps(job,ensure_ascii=False,indent=2),encoding='utf-8')
         resource=monitor_run(app,job_path,result_path,root/'results'/case_id,cache_root); verified=verify_result(ffprobe,result_path,case_id); bounded=analyze_bounded_commands(resource['toolCommands'],len(tracks),cf,expect_bounded)
         if expect_bounded:
-            expected_audio=max(0.2,sum(media_duration(ffprobe,x) for x in tracks)-float(cf)*bounded['transitionCount']); observed=float(verified['durationSeconds']); tol=max(expected_audio*0.003,0.75)
+            source_durations=[media_duration(ffprobe,x) for x in tracks]
+            target=float(job['settings']['durationHours'])*3600.0
+            expected_audio=smart_whole_track_duration(target,source_durations,float(cf))
+            observed=float(verified['durationSeconds']); tol=max(expected_audio*0.003,0.75)
             if abs(observed-expected_audio)>tol: raise RuntimeError(f'{case_id}: duration expected={expected_audio:.3f} output={observed:.3f} tolerance={tol:.3f}')
             bounded['expectedAudioDuration']=expected_audio; bounded['verifiedOutputDuration']=observed
         global_max=max(global_max,bounded['maxSimultaneousInputs']); record={'id':case_id,**verified,'audio1013':bounded,**resource}; summary['cases'].append(record)

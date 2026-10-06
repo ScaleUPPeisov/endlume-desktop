@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 env:
-  PRODUCT_SHA: 804468ebc9bfa77c740c2d89f9536d2fc1118ded
+  PRODUCT_SHA: 016571ccc0031feb511e225f749d718df5f89a58
 
 jobs:
   apple-silicon-exact:

@@ -14,98 +14,51 @@ jobs:
     runs-on: [self-hosted, macOS, ARM64]
     timeout-minutes: 15
     steps:
-      - name: Read-only canonical Effects fingerprint map
+      - name: Read-only historical canonical Effect records
         shell: bash
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import json, pathlib, hashlib, os
+          import pathlib,re,json
           home=pathlib.Path.home()
-          support=home/'Library'/'Application Support'
-          media_ext={'.mp4','.mov','.m4v','.webm','.avi','.mkv'}
-
-          def fp(path):
-            p=path.resolve()
-            st=p.stat()
-            h=hashlib.sha256()
-            h.update(str(p).encode())
-            h.update(int(st.st_size).to_bytes(8,'little',signed=False))
-            h.update(int(st.st_mtime_ns).to_bytes(16,'little',signed=False))
-            return h.hexdigest()[:32]
-
-          print('=== ENDLUME LIBRARIES ===')
-          for appid in ['studio.endlume.desktop','studio.endlume.app']:
-            root=support/appid
-            lib=root/'library.json'
-            print(f'APP_ROOT={root} exists={root.exists()}')
-            if lib.is_file():
-              raw=lib.read_text(errors='ignore')
-              print(f'LIBRARY={lib} bytes={lib.stat().st_size}')
-              try:
-                data=json.loads(raw)
-                print('  TOP_KEYS='+json.dumps(list(data.keys()) if isinstance(data,dict) else [],ensure_ascii=False))
-                effects=(data.get('effects') or []) if isinstance(data,dict) else []
-                print(f'  EFFECT_COUNT={len(effects)}')
-                for i,e in enumerate(effects):
-                  if isinstance(e,dict):
-                    src=str(e.get('source') or '')
-                    print('  EFFECT='+json.dumps({'index':i,'id':e.get('id'),'name':e.get('name'),'source':src,'sourceExists':pathlib.Path(src).is_file() if src else False,'enabled':e.get('enabled'),'usageMode':e.get('usageMode')},ensure_ascii=False))
-              except Exception as ex:
-                print(f'  JSON_ERROR={ex}')
-            for kind in ['effects','subscribe']:
-              d=root/'library-assets'/kind
-              if d.is_dir():
-                for p in sorted(d.iterdir()):
-                  try:
-                    if p.is_file(): print(f'  MANAGED {kind} name={p.name} bytes={p.stat().st_size} path={p}')
-                  except Exception: pass
-
-          print('=== RELEVANT SOURCE MEDIA ===')
-          terms=['футаж','пыль','царап','плен','плён','smoke','дым','green screen','greenscreen','equalizer','эквал','steam green']
-          roots=[home/'Desktop',home/'Documents',home/'Downloads',home/'.Trash']
-          candidates=[]
-          for root in roots:
-            if not root.exists(): continue
-            try: it=root.rglob('*')
+          diag=home/'.github-runners'/'endlume-desktop-macos-arm64'/'_diag'
+          exact=['825dd7a4-f0cf-4032-a3c9-64290cb5756d','9951d1c3-5ff6-4a37-891f-1c323889a663']
+          smoke_terms=['smoke or steam','get-save.com','smoke green screen','smoke effect','smoke preset','smoke_effect','smoke id','"name":"smoke','"name": "smoke','дым']
+          interesting=[]
+          for p in sorted(diag.glob('Worker_*.log')):
+            try: lines=p.read_text(errors='ignore').splitlines()
             except Exception: continue
-            for p in it:
-              try:
-                if not p.is_file() or p.suffix.lower() not in media_ext: continue
-              except Exception: continue
-              n=p.name.lower()
-              if any(t in n for t in terms): candidates.append(p)
-          for p in sorted(set(candidates),key=lambda x:str(x)):
-            try:
-              print('SOURCE='+json.dumps({'path':str(p),'name':p.name,'bytes':p.stat().st_size,'managedFingerprint':fp(p)},ensure_ascii=False))
-            except Exception as ex: print(f'SOURCE_ERROR={p}:{ex}')
+            for i,line in enumerate(lines):
+              low=line.lower()
+              reason=[]
+              for x in exact:
+                if x.lower() in low: reason.append(x)
+              for x in smoke_terms:
+                if x in low: reason.append(x)
+              if reason:
+                # Ignore bare workflow/script names unless nearby context contains record-like details.
+                lo=max(0,i-5); hi=min(len(lines),i+6)
+                ctx='\n'.join(lines[lo:hi])
+                ctxlow=ctx.lower()
+                recordish=(any(x.lower() in ctxlow for x in exact) or any(k in ctxlow for k in ['source','library.json','effect','preset','uuid','get-save.com','enabled','usage']))
+                if recordish:
+                  interesting.append((str(p),i+1,reason,ctx))
+          # Deduplicate contexts by file + approximate line window and cap noise.
+          emitted=0; last={}
+          for p,line,reason,ctx in interesting:
+            if emitted>=160: break
+            prev=last.get(p,-999)
+            if line-prev<8: continue
+            last[p]=line
+            print(f'=== CONTEXT file={p} line={line} reason={json.dumps(reason,ensure_ascii=False)} ===')
+            print(ctx)
+            emitted+=1
+          print(f'CONTEXTS_EMITTED={emitted}')
 
-          print('=== FINGERPRINT MATCHES ===')
-          managed=[]
-          for appid in ['studio.endlume.desktop','studio.endlume.app']:
-            d=support/appid/'library-assets'/'effects'
-            if d.is_dir():
-              managed += [p for p in d.iterdir() if p.is_file()]
-          byname={p.stem:p for p in managed}
-          for p in candidates:
-            try:
-              key=fp(p)
-              if key in byname:
-                print(f'MATCH source={p} -> managed={byname[key]}')
-            except Exception: pass
-
-          print('=== EXACT PRODUCTION ID SEARCH IN ENDLUME-RELATED TEXT ===')
-          needles=['825dd7a4-f0cf-4032-a3c9-64290cb5756d','9951d1c3-5ff6-4a37-891f-1c323889a663','эквалайзер круглый','пыль и царапины 80-х','80s film','qa round equalizer','smoke']
-          roots=[support/'studio.endlume.desktop',support/'studio.endlume.app',home/'.github-runners'/'endlume-desktop-macos-arm64']
-          for root in roots:
-            if not root.exists(): continue
-            try: it=root.rglob('*')
-            except Exception: continue
-            for p in it:
-              try:
-                if not p.is_file() or p.suffix.lower() not in {'.json','.txt','.md','.log','.yml','.yaml','.toml','.rs','.ts','.tsx','.py','.sh'} or p.stat().st_size>8_000_000: continue
-                raw=p.read_text(errors='ignore').lower()
-              except Exception: continue
-              hits=[n for n in needles if n.lower() in raw]
-              if hits: print(f'TEXT_MATCH file={p} hits='+json.dumps(hits,ensure_ascii=False))
-          print('READ_ONLY_FINGERPRINT_MAP_DONE')
+          print('=== CURRENT MANAGED EFFECT ASSETS ===')
+          d=home/'Library'/'Application Support'/'studio.endlume.desktop'/'library-assets'/'effects'
+          if d.is_dir():
+            for p in sorted(d.iterdir()):
+              if p.is_file(): print(f'{p.name}\t{p.stat().st_size}\t{p}')
+          print('READ_ONLY_HISTORY_EXTRACT_DONE')
           PY

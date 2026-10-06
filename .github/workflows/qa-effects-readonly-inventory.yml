@@ -14,51 +14,90 @@ jobs:
     runs-on: [self-hosted, macOS, ARM64]
     timeout-minutes: 15
     steps:
-      - name: Read-only historical canonical Effect records
+      - name: Resolve exact Smoke source and preset identity read-only
         shell: bash
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import pathlib,re,json
+          import pathlib,re,json,hashlib
           home=pathlib.Path.home()
-          diag=home/'.github-runners'/'endlume-desktop-macos-arm64'/'_diag'
-          exact=['825dd7a4-f0cf-4032-a3c9-64290cb5756d','9951d1c3-5ff6-4a37-891f-1c323889a663']
-          smoke_terms=['smoke or steam','get-save.com','smoke green screen','smoke effect','smoke preset','smoke_effect','smoke id','"name":"smoke','"name": "smoke','дым']
-          interesting=[]
-          for p in sorted(diag.glob('Worker_*.log')):
-            try: lines=p.read_text(errors='ignore').splitlines()
-            except Exception: continue
-            for i,line in enumerate(lines):
-              low=line.lower()
-              reason=[]
-              for x in exact:
-                if x.lower() in low: reason.append(x)
-              for x in smoke_terms:
-                if x in low: reason.append(x)
-              if reason:
-                # Ignore bare workflow/script names unless nearby context contains record-like details.
-                lo=max(0,i-5); hi=min(len(lines),i+6)
-                ctx='\n'.join(lines[lo:hi])
-                ctxlow=ctx.lower()
-                recordish=(any(x.lower() in ctxlow for x in exact) or any(k in ctxlow for k in ['source','library.json','effect','preset','uuid','get-save.com','enabled','usage']))
-                if recordish:
-                  interesting.append((str(p),i+1,reason,ctx))
-          # Deduplicate contexts by file + approximate line window and cap noise.
-          emitted=0; last={}
-          for p,line,reason,ctx in interesting:
-            if emitted>=160: break
-            prev=last.get(p,-999)
-            if line-prev<8: continue
-            last[p]=line
-            print(f'=== CONTEXT file={p} line={line} reason={json.dumps(reason,ensure_ascii=False)} ===')
-            print(ctx)
-            emitted+=1
-          print(f'CONTEXTS_EMITTED={emitted}')
+          exact_name='Steam green screen videos smoke green screen Smoke or steam effect animated on green screen [get-save.com].mp4'
+          terms=['get-save.com','smoke or steam effect animated on green screen','steam green screen videos smoke green screen']
+          uuid_re=re.compile(r'\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b')
 
-          print('=== CURRENT MANAGED EFFECT ASSETS ===')
-          d=home/'Library'/'Application Support'/'studio.endlume.desktop'/'library-assets'/'effects'
-          if d.is_dir():
-            for p in sorted(d.iterdir()):
-              if p.is_file(): print(f'{p.name}\t{p.stat().st_size}\t{p}')
-          print('READ_ONLY_HISTORY_EXTRACT_DONE')
+          def managed_fp(p:pathlib.Path):
+            p=p.resolve(); st=p.stat(); h=hashlib.sha256()
+            h.update(str(p).encode())
+            h.update(int(st.st_size).to_bytes(8,'little',signed=False))
+            h.update(int(st.st_mtime_ns).to_bytes(16,'little',signed=False))
+            return h.hexdigest()[:32]+p.suffix.lower()
+
+          print('=== EXACT SMOKE MEDIA ===')
+          media=[]
+          for root in [home/'Desktop',home/'Documents',home/'Downloads',home/'.Trash']:
+            if not root.exists(): continue
+            try: it=root.rglob('*')
+            except Exception: continue
+            for p in it:
+              try:
+                if not p.is_file(): continue
+              except Exception: continue
+              low=p.name.lower()
+              if p.name==exact_name or any(t in low for t in terms):
+                media.append(p)
+          for p in sorted(set(media),key=lambda x:str(x)):
+            try:
+              print('SMOKE_MEDIA='+json.dumps({'path':str(p),'name':p.name,'bytes':p.stat().st_size,'managedName':managed_fp(p)},ensure_ascii=False))
+            except Exception as e: print(f'SMOKE_MEDIA_ERROR={p}:{e}')
+
+          print('=== MANAGED MATCHES ===')
+          managed_dir=home/'Library'/'Application Support'/'studio.endlume.desktop'/'library-assets'/'effects'
+          managed={p.name:p for p in managed_dir.iterdir() if p.is_file()} if managed_dir.is_dir() else {}
+          for p in media:
+            try:
+              name=managed_fp(p)
+              if name in managed: print(f'SMOKE_MANAGED_MATCH source={p} managed={managed[name]} bytes={managed[name].stat().st_size}')
+              else: print(f'SMOKE_MANAGED_MISSING source={p} expected={name}')
+            except Exception as e: print(f'SMOKE_MATCH_ERROR={p}:{e}')
+
+          print('=== HISTORICAL EXACT FILENAME CONTEXTS ===')
+          roots=[home/'.github-runners'/'endlume-desktop-macos-arm64'/'_diag',home/'.github-runners'/'endlume-desktop-macos-arm64'/'_work']
+          emitted=0
+          unique_uuids={}
+          for root in roots:
+            if not root.exists(): continue
+            try: files=root.rglob('*')
+            except Exception: continue
+            for p in files:
+              try:
+                if emitted>=120: break
+                if not p.is_file() or p.stat().st_size>12_000_000: continue
+                if p.suffix.lower() not in {'.log','.json','.txt','.md','.yml','.yaml','.py','.sh','.rs','.ts','.tsx'}: continue
+                lines=p.read_text(errors='ignore').splitlines()
+              except Exception: continue
+              for i,line in enumerate(lines):
+                low=line.lower()
+                if any(t in low for t in terms):
+                  lo=max(0,i-12); hi=min(len(lines),i+13); ctx='\n'.join(lines[lo:hi])
+                  ids=uuid_re.findall(ctx)
+                  for u in ids: unique_uuids.setdefault(u,set()).add(str(p))
+                  print(f'--- SMOKE_CONTEXT file={p} line={i+1} ids={json.dumps(ids)} ---')
+                  print(ctx)
+                  emitted+=1
+                  if emitted>=120: break
+            if emitted>=120: break
+          print('SMOKE_CONTEXT_COUNT='+str(emitted))
+          print('UUIDS_NEAR_SMOKE='+json.dumps({k:len(v) for k,v in sorted(unique_uuids.items())},ensure_ascii=False))
+
+          print('=== CURRENT LIBRARY SOURCE CROSSCHECK ===')
+          lib=home/'Library'/'Application Support'/'studio.endlume.desktop'/'library.json'
+          if lib.is_file():
+            data=json.loads(lib.read_text())
+            for e in data.get('effects') or []:
+              if not isinstance(e,dict): continue
+              src=str(e.get('source') or '')
+              blob=' '.join([str(e.get('id') or ''),str(e.get('name') or ''),src]).lower()
+              if any(t in blob for t in ['smoke','steam','get-save.com','дым']):
+                print('CURRENT_SMOKE_RECORD='+json.dumps(e,ensure_ascii=False))
+          print('SMOKE_READ_ONLY_RESOLUTION_DONE')
           PY

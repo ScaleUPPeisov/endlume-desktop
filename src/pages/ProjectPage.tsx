@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { api } from '../tauri';
 import { useApp } from '../store';
-import type { EffectPreset, LoopMode, RenderProject } from '../types';
+import type { EffectPreset, LoopMode, RenderProject, SubscribePreset } from '../types';
 import { Icon,Range,Toggle } from '../components/ui';
 
 const resolutions=[{w:1920,h:1080,label:'1080P FULL HD'},{w:2560,h:1440,label:'2K QHD'},{w:3840,h:2160,label:'4K UHD'}];
@@ -38,6 +38,8 @@ export function ProjectPage(){
   const setFeature=(key:keyof FeatureFlags,value:boolean)=>setFeatures(prev=>{const next={...prev,[key]:value};localStorage.setItem(featureKey,JSON.stringify(next));return next});
   const selectableEffects=effects.filter(effectIsSelectable);
   const repairRequiredEffects=effects.filter(effectNeedsRepair);
+  const repairRequiredSubscribes=subscribes.filter(effectNeedsRepair);
+  const activeSubscribesReady=subscribes.filter(item=>item.enabled&&item.usageMode!=='off'&&!effectNeedsRepair(item));
   const effectIdCounts=effects.reduce<Record<string,number>>((acc,e)=>{const id=e.id.trim();if(id)acc[id]=(acc[id]||0)+1;return acc},{});
   const duplicateEffectIds=Object.entries(effectIdCounts).filter(([,count])=>count>1).map(([id])=>id);
   const selectedEffectIdForPath=(path:string)=>selectedEffectByPath[path]||'';
@@ -71,6 +73,20 @@ export function ProjectPage(){
     }catch(error){
       useApp.getState().setEffects(previous);
       await api.showError(`Не удалось сохранить восстановленный файл эффекта.\n${String(error)}`);
+    }
+  };
+  const repairSubscribeSource=async(subscribe:SubscribePreset)=>{
+    const source=await api.chooseVideo('subscribe');
+    if(!source)return;
+    const previous=subscribes;
+    const next=subscribes.map(item=>item.id===subscribe.id?{...item,source,assetState:'ready' as const,assetError:undefined,cacheReady:false,cacheKey:undefined}:item);
+    useApp.getState().setSubscribes(next);
+    const state=useApp.getState();
+    try{
+      await api.saveLibrary({effects:state.effects,subscribes:next,ambient:state.ambient,ambientSettings:state.ambientSettings});
+    }catch(error){
+      useApp.getState().setSubscribes(previous);
+      await api.showError(`Не удалось сохранить восстановленный файл Subscribe.\n${String(error)}`);
     }
   };
 
@@ -109,7 +125,9 @@ export function ProjectPage(){
       try{const power=await api.powerStatus();if(power.supported&&power.onBattery){await api.showInfo(`MacBook работает от аккумулятора${power.percent!=null?` (${power.percent}%)`:''}. ENDLUME продолжит рендер на полной мощности — подключите питание, если очередь большая.`);}}catch{}
       const effectRegistry=features.effects?selectableEffects:[];
       if(features.effects&&duplicateEffectIds.length){throw new Error(`Effects registry повреждён: повторяются ID ${duplicateEffectIds.join(', ')}. ENDLUME не будет угадывать или рендерить не тот эффект.`);}
-      const activeSubscribes=features.subscribe?subscribes.filter(e=>e.enabled):[];
+      const brokenActiveSubscribes=features.subscribe?subscribes.filter(item=>item.enabled&&item.usageMode!=='off'&&effectNeedsRepair(item)):[];
+      if(brokenActiveSubscribes.length){throw new Error(`Subscribe требует восстановления файла: ${brokenActiveSubscribes.map(item=>item.name).join(', ')}. ENDLUME не будет запускать рендер с отсутствующим Subscribe asset.`);}
+      const activeSubscribes=features.subscribe?activeSubscribesReady:[];
       const activeAmbient=features.ambient?ambient:undefined;
       const resolved=draftProjects.map(project=>{
         if(!features.effects)return {project,selectedEffect:undefined};
@@ -167,7 +185,11 @@ export function ProjectPage(){
       </div>
     </section>
 
-    <section className="sectionBlock"><div className="sectionTitle">КНОПКА SUBSCRIBE</div><div className="featureRow"><span className="featureIcon pink"><Icon name="subscribe"/></span><div><b>Subscribe Button</b><small>{!features.subscribe?'Отключено для текущих рендеров':subscribes.filter(s=>s.enabled).length?`Активно пресетов: ${subscribes.filter(s=>s.enabled).length}`:'Не настроено'}</small></div><div className="rowButtons"><button onClick={()=>setFeature('subscribe',!features.subscribe)}>{features.subscribe?'ВЫКЛЮЧИТЬ':'ВКЛЮЧИТЬ'}</button><button onClick={()=>openEditor({kind:'subscribe'})}>НАСТРОИТЬ →</button></div></div></section>
+    <section className="sectionBlock">
+      <div className="sectionTitle">КНОПКА SUBSCRIBE</div>
+      <div className="featureRow"><span className="featureIcon pink"><Icon name="subscribe"/></span><div><b>Subscribe Button</b><small>{!features.subscribe?'Отключено для текущих рендеров':subscribes.length?`В библиотеке: ${subscribes.length} • активно и готово: ${activeSubscribesReady.length}${repairRequiredSubscribes.length?` • восстановить: ${repairRequiredSubscribes.length}`:''}`:'Не настроено'}</small></div><div className="rowButtons"><button onClick={()=>setFeature('subscribe',!features.subscribe)}>{features.subscribe?'ВЫКЛЮЧИТЬ':'ВКЛЮЧИТЬ'}</button><button onClick={()=>openEditor({kind:'subscribe'})}>НАСТРОИТЬ →</button></div></div>
+      {features.subscribe&&repairRequiredSubscribes.length>0&&<div className="validationBox"><b>Subscribe требует восстановления:</b>{repairRequiredSubscribes.map((item,index)=><div key={`repair-subscribe-${item.id}-${index}`}><strong>{item.name}</strong> — ⚠ REPAIR REQUIRED{item.assetError?` • ${item.assetError}`:''} <button onClick={()=>void repairSubscribeSource(item)}>ВОССТАНОВИТЬ ФАЙЛ</button></div>)}</div>}
+    </section>
 
     <section className="sectionBlock">
       <div className="sectionTitle">ЭФФЕКТЫ</div>

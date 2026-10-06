@@ -32,17 +32,19 @@ jobs:
           cat > /tmp/allowed.txt <<'EOF'
           .github/workflows/endlume-1011-ui-motion-candidate.yml
           src/cinematic-ui-polish.css
+          src/loopforge-reference.css
           src/main.tsx
           EOF
           sort -o /tmp/allowed.txt /tmp/allowed.txt
           diff -u /tmp/allowed.txt /tmp/changed.txt
           git diff --exit-code 750623fde68ef73a58429a5fdef1b85d541c7e12...HEAD -- \
             src/pages src/components src-tauri/src src/license-realtime.ts src/queue-state.ts src/platform-brand.ts
-          if grep -nE '^[[:space:]]*(-webkit-)?backdrop-filter[[:space:]]*:' src/cinematic-ui-polish.css; then
+          if grep -nE '^[[:space:]]*(-webkit-)?backdrop-filter[[:space:]]*:' src/cinematic-ui-polish.css src/loopforge-reference.css; then
             echo 'Expensive backdrop blur declaration is forbidden.' >&2
             exit 22
           fi
           grep -q "import './cinematic-ui-polish.css';" src/main.tsx
+          grep -q "import './loopforge-reference.css';" src/main.tsx
           echo ENDLUME_1011_UI_SOURCE_SAFETY_GREEN
 
   web-build:

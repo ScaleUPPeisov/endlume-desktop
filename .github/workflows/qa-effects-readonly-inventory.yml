@@ -1,0 +1,120 @@
+name: QA ENDLUME Effects read-only inventory
+
+on:
+  push:
+    branches:
+      - qa/endlume-effects-readonly-inventory
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inventory:
+    runs-on: [self-hosted, macOS, ARM64]
+    timeout-minutes: 15
+    steps:
+      - name: Read-only canonical Effects inventory
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, pathlib, re, os
+          home=pathlib.Path.home()
+          needles=[
+            '825dd7a4-f0cf-4032-a3c9-64290cb5756d',
+            'эквалайзер круглый','round equalizer',
+            'пыль и царапины 80-х','80s film','80s','пленка','плёнка',
+            'smoke','дым','steam','пар'
+          ]
+          roots=[
+            home/'Library'/'Application Support',
+            home/'Desktop',home/'Documents',home/'Downloads',
+            home/'.github-runners'
+          ]
+          print('=== LIBRARY_JSON_CANDIDATES ===')
+          seen=set()
+          for root in roots:
+            if not root.exists(): continue
+            patterns=['library.json','library*.json','*endlume*.json','*effects*.json']
+            candidates=[]
+            for pat in patterns:
+              try: candidates.extend(root.rglob(pat))
+              except Exception: pass
+            for p in candidates:
+              try:
+                if p in seen or not p.is_file() or p.stat().st_size>8_000_000: continue
+                seen.add(p)
+                raw=p.read_text(errors='ignore')
+              except Exception: continue
+              low=raw.lower()
+              if '"effects"' not in low and not any(n.lower() in low for n in needles): continue
+              print(f'FILE={p}')
+              try:
+                data=json.loads(raw)
+              except Exception:
+                for n in needles:
+                  if n.lower() in low: print(f'  TEXT_MATCH={n}')
+                continue
+              effects=data.get('effects') if isinstance(data,dict) else None
+              if isinstance(effects,list):
+                for i,e in enumerate(effects):
+                  if not isinstance(e,dict): continue
+                  name=str(e.get('name') or '')
+                  sid=str(e.get('id') or '')
+                  src=str(e.get('source') or '')
+                  blob=(name+' '+sid+' '+src).lower()
+                  matched=[n for n in needles if n.lower() in blob]
+                  print('  EFFECT='+json.dumps({
+                    'index':i,'id':sid,'name':name,'source':src,
+                    'sourceExists':pathlib.Path(src).is_file() if src else False,
+                    'enabled':e.get('enabled'),'usageMode':e.get('usageMode'),
+                    'matched':matched
+                  },ensure_ascii=False))
+              else:
+                for n in needles:
+                  if n.lower() in low: print(f'  JSON_TEXT_MATCH={n}')
+
+          print('=== EXACT_TEXT_HITS ===')
+          text_ext={'.json','.txt','.md','.log','.yml','.yaml','.toml','.rs','.ts','.tsx','.py','.sh'}
+          hit_count=0
+          for root in roots:
+            if not root.exists(): continue
+            try:
+              iterator=root.rglob('*')
+            except Exception:
+              continue
+            for p in iterator:
+              try:
+                if hit_count>=250: break
+                if not p.is_file() or p.suffix.lower() not in text_ext or p.stat().st_size>4_000_000: continue
+                raw=p.read_text(errors='ignore')
+              except Exception: continue
+              low=raw.lower()
+              matches=[n for n in needles if n.lower() in low]
+              if matches:
+                print(f'TEXT_FILE={p}')
+                print('  MATCHES='+json.dumps(matches,ensure_ascii=False))
+                hit_count+=1
+            if hit_count>=250: break
+
+          print('=== MEDIA_FILENAME_HITS ===')
+          media_ext={'.mp4','.mov','.m4v','.webm','.avi','.mkv'}
+          media_count=0
+          terms=['equalizer','эквал','80s','80-s','плен','царап','smoke','дым','steam']
+          for root in [home/'Library'/'Application Support',home/'Desktop',home/'Documents',home/'Downloads']:
+            if not root.exists(): continue
+            try: iterator=root.rglob('*')
+            except Exception: continue
+            for p in iterator:
+              try:
+                if media_count>=250: break
+                if not p.is_file() or p.suffix.lower() not in media_ext: continue
+              except Exception: continue
+              n=p.name.lower()
+              if any(t in n for t in terms):
+                print(f'MEDIA={p}')
+                media_count+=1
+            if media_count>=250: break
+          print('READ_ONLY_INVENTORY_DONE')
+          PY

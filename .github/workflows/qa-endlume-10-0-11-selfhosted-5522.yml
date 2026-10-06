@@ -1,0 +1,61 @@
+name: QA ENDLUME 10.0.11 exact 5522 self-hosted
+
+on:
+  push:
+    branches:
+      - qa/endlume-10.0.11-stale-effect-gate-5522f7
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PRODUCT_SHA: 5522f7d788b745fe9871351fde7b99c8bafaeaa2
+
+jobs:
+  apple-silicon-exact:
+    runs-on: [self-hosted, macOS, ARM64]
+    timeout-minutes: 45
+    steps:
+      - name: Checkout exact product SHA
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.PRODUCT_SHA }}
+          fetch-depth: 1
+      - name: Prove exact product checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual="$(git rev-parse HEAD)"
+          echo "PRODUCT_SHA=$PRODUCT_SHA"
+          echo "CHECKED_OUT_SHA=$actual"
+          test "$actual" = "$PRODUCT_SHA"
+          test "$(git status --porcelain)" = ""
+      - name: Toolchain identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          uname -a
+          uname -m
+          sw_vers
+          node --version
+          npm --version
+          rustc --version
+          cargo --version
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: TypeScript and Vite production build
+        run: npm run build
+      - name: Rust check
+        run: cargo check --manifest-path src-tauri/Cargo.toml --locked
+      - name: Rust tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml --locked
+      - name: Tauri packaged macOS app
+        run: npm run tauri -- build --bundles app
+      - name: Prove packaged app exists
+        shell: bash
+        run: |
+          set -euo pipefail
+          app="$(find src-tauri/target/release/bundle/macos -maxdepth 2 -type d -name '*.app' -print -quit)"
+          echo "PACKAGED_APP=$app"
+          test -n "$app"

@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { listen } from '@tauri-apps/api/event';
 import type { RecoveryPayload } from '../types';
 import { api } from '../tauri';
 
@@ -7,6 +8,14 @@ export function RecoveryModal({data,onClose}:{data:RecoveryPayload;onClose:()=>v
   const count=(data.pending?.length||0)+(data.active?1:0);
   const [seconds,setSeconds]=useState(5),[running,setRunning]=useState(false);
   const resume=async()=>{if(running)return;setRunning(true);try{await api.resumeRecovery();onClose()}finally{setRunning(false)}};
+  useEffect(()=>{
+    let unlisten:(()=>void)|undefined;
+    listen<any>('render-warning',event=>{
+      const payload=event.payload;
+      if(payload?.id==='recovery-effect-contract'&&payload?.message){void api.showInfo(String(payload.message));}
+    }).then(fn=>{unlisten=fn}).catch(()=>{});
+    return()=>unlisten?.();
+  },[]);
   useEffect(()=>{
     if(running)return;
     if(seconds<=0){void resume();return}

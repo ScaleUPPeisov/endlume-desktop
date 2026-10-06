@@ -169,7 +169,7 @@ mod tests{
   fn preset(id:&str,name:&str)->EffectPreset{EffectPreset{
     id:id.into(),name:name.into(),source:"/tmp/fx.mp4".into(),enabled:true,mode:"chromakey".into(),key_color:"#0aa843".into(),
     similarity:0.6,blend:0.184,despill:0.35,luma_threshold:0.03,luma_tolerance:0.08,saturation:1.0,x:0.5,y:0.5,scale:1.0,fullscreen:false,
-    preview_frame_time:0.0,start_sec:0.0,end_sec:None,cache_key:None,cache_ready:None,usage_mode:None,interval_sec:None,usage_duration_sec:None,target:None,offset_x:None,offset_y:None,opacity:None
+    preview_frame_time:0.0,start_sec:0.0,end_sec:None,cache_key:None,cache_ready:None,asset_state:None,asset_error:None,usage_mode:None,interval_sec:None,usage_duration_sec:None,target:None,offset_x:None,offset_y:None,opacity:None
   }}
 
   #[test]

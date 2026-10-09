@@ -210,7 +210,7 @@ async fn build_media_clip(app:&AppHandle,job:&QueueJob,media:&str,index:usize,to
       _=>{duration=d;args.extend(vec!["-i",media].into_iter().map(String::from));graph=format!("{}[outv]",base_filter(s,"0:v"));}
     }
   }
-  args.extend(vec!["-filter_complex",&graph,"-map","[outv]","-t",&duration.to_string(),"-an"].into_iter().map(String::from));if is_image(media){args.extend(static_smart_encoder_args(s));}else{args.extend(encoder_args(encoder,s,false));}args.extend(vec!["-progress","pipe:1","-y",clip.to_string_lossy().as_ref()].into_iter().map(String::from));
+  args.extend(vec!["-filter_complex",&graph,"-map","[outv]","-t",&duration.to_string(),"-an"].into_iter().map(String::from));if is_image(media){let has_subscribe=job.subscribes.iter().any(|x|x.effect.enabled);if has_subscribe{args.extend(encoder_args(encoder,s,false));}else{args.extend(static_smart_encoder_args(s));}}else{args.extend(encoder_args(encoder,s,false));}args.extend(vec!["-progress","pipe:1","-y",clip.to_string_lossy().as_ref()].into_iter().map(String::from));
   run_ffmpeg(app,job,started,timer,args,&format!("Подготавливаю медиа {}/{}",index+1,total),base,span,duration,encoder,attempt,cancel).await?;Ok((clip,duration))
 }
 

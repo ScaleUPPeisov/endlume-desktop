@@ -1,0 +1,32 @@
+name: ENDLUME inspect regression artifact
+
+on:
+  push:
+    branches: [qa/endlume-0ec9-regression-artifact-inspect]
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: endlume-legacy-regression-evidence
+          path: evidence
+          run-id: 37901958379
+          github-token: ${{ github.token }}
+      - name: Print exact Subscribe legacy evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          find evidence -maxdepth 4 -type f -print | sort
+          echo '=== receipt-subscribe.json ==='
+          cat evidence/extended/receipt-subscribe.json
+          echo '=== subscribe.log ==='
+          cat evidence/extended/logs/subscribe.log
+          echo '=== extended gate if present ==='
+          test -f evidence/extended/extended-gate.json && cat evidence/extended/extended-gate.json || true

@@ -1,4 +1,4 @@
-use crate::{fast_render,model::QueueJob,render};
+use crate::{fast_render,model::QueueJob,preview,render};
 use serde_json::{json,Value};
 use std::{collections::HashSet,fs,path::{Path,PathBuf},sync::{Arc,atomic::AtomicBool},time::{Instant,SystemTime}};
 use tauri::{AppHandle,Listener};
@@ -24,12 +24,16 @@ async fn seek_checks(app:&AppHandle,path:&Path,total:f64)->Result<Vec<Value>,Str
   points.sort_by(|a,b|a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));points.dedup_by(|a,b|(*a-*b).abs()<0.01);
   let mut rows=Vec::with_capacity(points.len());for at in points{rows.push(seek_one(app,path,at).await?);}Ok(rows)
 }
+fn capture_event(app:&AppHandle,name:&'static str,events:Arc<parking_lot::Mutex<Vec<Value>>>){app.listen(name,move |event|{let payload=serde_json::from_str::<Value>(event.payload()).unwrap_or_else(|_|json!({"raw":event.payload()}));events.lock().push(json!({"event":name,"payload":payload}));});}
 
-fn capture_event(app:&AppHandle,name:&'static str,events:Arc<parking_lot::Mutex<Vec<Value>>>){
-  app.listen(name,move |event|{
-    let payload=serde_json::from_str::<Value>(event.payload()).unwrap_or_else(|_|json!({"raw":event.payload()}));
-    events.lock().push(json!({"event":name,"payload":payload}));
-  });
+async fn preview_evidence(app:&AppHandle,job:&QueueJob)->Result<Vec<Value>,String>{
+  let raw=match std::env::var("ENDLUME_ACCEPTANCE_PREVIEW_TIMES"){Ok(v)=>v,Err(_)=>return Ok(Vec::new())};let mut rows=Vec::new();
+  for token in raw.split(',').map(str::trim).filter(|s|!s.is_empty()){
+    let at=token.parse::<f64>().map_err(|_|format!("invalid preview time: {token}"))?;
+    let path=preview::generate_preview(app.clone(),job.project.path.clone(),at,job.effects.clone(),job.subscribes.clone()).await?;
+    rows.push(json!({"at":at,"path":path}));
+  }
+  Ok(rows)
 }
 
 async fn run_inner(app:&AppHandle)->Result<Value,String>{
@@ -37,9 +41,9 @@ async fn run_inner(app:&AppHandle)->Result<Value,String>{
   let events=Arc::new(parking_lot::Mutex::new(Vec::<Value>::new()));capture_event(app,"engine-fast-path",events.clone());capture_event(app,"engine-fast-fallback",events.clone());capture_event(app,"engine-timing",events.clone());
   let mut input_durations=Vec::new();for p in &job.project.audio{let d=duration(app,Path::new(p)).await?;input_durations.push(json!({"path":p,"duration":d}));}let input_total=input_durations.iter().filter_map(|v|v.get("duration").and_then(|x|x.as_f64())).sum::<f64>();
   let cancel=Arc::new(AtomicBool::new(false));let export_started=Instant::now();let fast_used=match fast_render::try_render_job(app,&job,cancel.clone()).await?{Some(())=>true,None=>{render::render_job(app,&job,cancel).await?;false}};let export_seconds=export_started.elapsed().as_secs_f64();
-  let after=mp4_files(&out_dir);let created=after.difference(&before).cloned().collect::<Vec<_>>();let result=newest(created.into_iter()).or_else(||newest(after.into_iter())).ok_or("render succeeded but output mp4 was not found")?;let bytes=fs::metadata(&result).map_err(|e|e.to_string())?.len();let metadata=probe(app,&result).await?;let output_duration=metadata.get("format").and_then(|v|v.get("duration")).and_then(|v|v.as_str()).and_then(|v|v.parse::<f64>().ok()).unwrap_or(0.0);let decode=full_decode(app,&result).await?;let seeks=seek_checks(app,&result,output_duration).await?;let captured=events.lock().clone();
+  let after=mp4_files(&out_dir);let created=after.difference(&before).cloned().collect::<Vec<_>>();let result=newest(created.into_iter()).or_else(||newest(after.into_iter())).ok_or("render succeeded but output mp4 was not found")?;let bytes=fs::metadata(&result).map_err(|e|e.to_string())?.len();let metadata=probe(app,&result).await?;let output_duration=metadata.get("format").and_then(|v|v.get("duration")).and_then(|v|v.as_str()).and_then(|v|v.parse::<f64>().ok()).unwrap_or(0.0);let decode=full_decode(app,&result).await?;let seeks=seek_checks(app,&result,output_duration).await?;let previews=preview_evidence(app,&job).await?;let captured=events.lock().clone();
   let fallback=captured.iter().rev().find(|e|e.get("event").and_then(Value::as_str)==Some("engine-fast-fallback")).and_then(|e|e.get("payload")).cloned();
   let final_fast=captured.iter().rev().find(|e|e.get("event").and_then(Value::as_str)==Some("engine-fast-path")&&e.get("payload").and_then(|p|p.get("totalMs")).is_some()).and_then(|e|e.get("payload")).cloned();
-  Ok(json!({"source_head":std::env::var("ENDLUME_SOURCE_HEAD").unwrap_or_default(),"platform":std::env::consts::OS,"arch":std::env::consts::ARCH,"project_id":job.project.id,"track_count":job.project.audio.len(),"input_audio_duration":input_total,"input_tracks":input_durations,"fast_path_used":fast_used,"legacy_fallback_used":!fast_used,"fallback":fallback,"fast_metrics":final_fast,"events":captured,"export_seconds":export_seconds,"output_path":result,"output_bytes":bytes,"output_duration":output_duration,"probe":metadata,"full_decode":decode,"seek_checks":seeks}))
+  Ok(json!({"source_head":std::env::var("ENDLUME_SOURCE_HEAD").unwrap_or_default(),"platform":std::env::consts::OS,"arch":std::env::consts::ARCH,"project_id":job.project.id,"track_count":job.project.audio.len(),"input_audio_duration":input_total,"input_tracks":input_durations,"fast_path_used":fast_used,"legacy_fallback_used":!fast_used,"fallback":fallback,"fast_metrics":final_fast,"events":captured,"export_seconds":export_seconds,"output_path":result,"output_bytes":bytes,"output_duration":output_duration,"probe":metadata,"full_decode":decode,"seek_checks":seeks,"preview_outputs":previews}))
 }
 pub async fn run(app:AppHandle){let receipt=std::env::var("ENDLUME_ACCEPTANCE_RECEIPT").unwrap_or_else(|_|"/tmp/endlume-acceptance.json".into());let (payload,code)=match run_inner(&app).await{Ok(v)=>(json!({"status":"ok","result":v}),0),Err(e)=>(json!({"status":"error","error":e}),2)};if let Ok(text)=serde_json::to_string_pretty(&payload){let _=fs::write(&receipt,format!("{text}\n"));}app.exit(code);}

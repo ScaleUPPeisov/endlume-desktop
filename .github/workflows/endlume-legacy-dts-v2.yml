@@ -1,0 +1,155 @@
+name: ENDLUME legacy Subscribe DTS v2
+
+on:
+  push:
+    branches: [qa/endlume-04a-legacy-dts-v2]
+
+permissions:
+  contents: read
+
+jobs:
+  legacy-dts-v2:
+    runs-on: macos-15
+    timeout-minutes: 22
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Patch exact 04a candidate only
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -s)" = Darwin
+          test "$(uname -m)" = arm64
+          git merge-base --is-ancestor 04a63df522af75ece111ba4eb59dc56f48bdcb77 HEAD
+          test "$(git rev-parse 04a63df522af75ece111ba4eb59dc56f48bdcb77^{tree})" = "$(git rev-parse HEAD^:{})" || true
+          python3 scripts/patch_legacy_dts_v2.py
+          git diff --check
+          test "$(git diff --name-only | grep -v '^src-tauri/src/render.rs$' | wc -l | tr -d ' ')" = 0
+          grep -q 'fn exact_segment_frames' src-tauri/src/render.rs
+          git diff -- src-tauri/src/render.rs
+
+      - name: Build actual patched app
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v ffmpeg >/dev/null || brew install ffmpeg
+          npm install --no-audit --no-fund
+          rustup target add aarch64-apple-darwin
+          mkdir -p src-tauri/binaries
+          cp "$(command -v ffmpeg)" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp "$(command -v ffprobe)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          chmod +x src-tauri/binaries/*
+          npm run build
+          npx tauri build --target aarch64-apple-darwin --bundles app --features acceptance-harness --config '{"bundle":{"createUpdaterArtifacts":false}}'
+          APP="$(find src-tauri/target/aarch64-apple-darwin/release/bundle/macos -maxdepth 1 -type d -name '*.app' -print -quit)"
+          BIN="$APP/Contents/MacOS/endlume"
+          test -x "$BIN"
+          ROOT="$RUNNER_TEMP/legacy-dts-v2"
+          mkdir -p "$ROOT/project" "$ROOT/effects" "$ROOT/out"
+          echo "ROOT=$ROOT" >> "$GITHUB_ENV"
+          echo "BIN=$BIN" >> "$GITHUB_ENV"
+          printf 'BASE_PRODUCT_SHA=04a63df522af75ece111ba4eb59dc56f48bdcb77\nQA_HEAD=%s\nAPP=%s\n' "$(git rev-parse HEAD)" "$APP" > "$ROOT/build-info.txt"
+
+      - name: Generate corrected 14-second exact Subscribe fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          ffmpeg -hide_banner -loglevel error -f lavfi -i "color=c=0x182033:s=1920x1080" -frames:v 1 -y "$ROOT/project/cover.png"
+          ffmpeg -hide_banner -loglevel error -f lavfi -i "sine=frequency=520:sample_rate=48000:duration=14" -c:a libmp3lame -b:a 320k -ar 48000 -ac 2 -y "$ROOT/project/audio14.mp3"
+          ffmpeg -hide_banner -loglevel error -f lavfi -i "color=c=0x00ff00:s=640x360:r=60:d=3" -vf "drawbox=x='170+250*t/3':y='120+50*sin(2*PI*t/3)':w=200:h=120:color=white:t=fill" -an -c:v libx264 -preset ultrafast -g 180 -pix_fmt yuv420p -r 60 -y "$ROOT/effects/subscribe.mp4"
+          python3 - <<'PY'
+          import json,os
+          r=os.environ['ROOT']; p=os.path.join(r,'project'); src=os.path.join(r,'effects','subscribe.mp4')
+          sub={
+            'id':'subscribe','name':'Subscribe Animated 3s','source':src,'enabled':True,'mode':'chromakey',
+            'keyColor':'#00ff00','similarity':0.12,'blend':0.08,'despill':1.0,
+            'lumaThreshold':0.10,'lumaTolerance':0.05,'saturation':1.0,
+            'x':0.15,'y':0.65,'scale':0.30,'fullscreen':False,'previewFrameTime':0.0,
+            'startSec':0.0,'endSec':None,'cacheKey':None,'cacheReady':None,
+            'firstAtSec':2.0,'secondAtSec':6.0,'repeatEverySec':4.0
+          }
+          job={
+            'project':{'id':'legacy-dts-v2','name':'Legacy Subscribe DTS v2','path':p,'media':[os.path.join(p,'cover.png')],'audio':[os.path.join(p,'audio14.mp3')],'valid':True,'error':None},
+            'settings':{'width':1920,'height':1080,'fps':60,'codec':'h265','bitrateMbps':8.0,'durationHours':14.0/3600.0,'durationMode':'exact','loopMode':'image','crossfadeSec':0.0,'normalizeLufs':False,'outputDir':os.path.join(r,'out'),'preset':'fast','encoderPreference':'auto'},
+            'effects':[],'subscribes':[sub],'ambient':None
+          }
+          json.dump(job,open(os.path.join(r,'job.json'),'w'),indent=2)
+          PY
+
+      - name: Launch actual patched app
+        shell: bash
+        run: |
+          set +e
+          ENDLUME_ACCEPTANCE_JOB="$ROOT/job.json" \
+          ENDLUME_ACCEPTANCE_RECEIPT="$ROOT/receipt.json" \
+          ENDLUME_ACCEPTANCE_PREVIEW_TIMES="1,1.983333333,2,2.5,4.983333333,5,5.016666667,5.983333333,6,6.5,8.983333333,9,9.016666667,9.983333333,10,10.5,12.983333333,13,13.016666667,13.5" \
+          ENDLUME_SOURCE_HEAD="04a63df522af75ece111ba4eb59dc56f48bdcb77+legacy-dts-v2" \
+          "$BIN" > "$ROOT/app.log" 2>&1
+          rc=$?
+          echo "APP_EXIT_CODE=$rc" >> "$ROOT/app.log"
+          test -f "$ROOT/receipt.json" && cat "$ROOT/receipt.json"
+          exit 0
+
+      - name: Hard gate monotonic DTS CFR and parity
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json,os,subprocess,sys
+          root=os.environ['ROOT']; rp=os.path.join(root,'receipt.json')
+          if not os.path.exists(rp): sys.exit('NO_RECEIPT')
+          d=json.load(open(rp))
+          if d.get('status')!='ok': sys.exit('RENDER_FAIL '+str(d))
+          r=d['result']; streams=r['probe']['streams']; v=next(s for s in streams if s.get('codec_type')=='video'); fb=r.get('fallback') or {}; reason=str(fb.get('reason','')).lower()
+          checks={
+            'FAST_PATH_REJECTED':not bool(r.get('fast_path_used')),
+            'LEGACY_FALLBACK':bool(r.get('legacy_fallback_used')),
+            'EXACT_REASON':'whole-track' in reason or 'duration' in reason,
+            'FULL_DECODE':r.get('full_decode',{}).get('ok') is True,
+            'SEEKS':all(q.get('ok') for q in r.get('seek_checks',[])),
+            'HEVC':v.get('codec_name')=='hevc',
+            'RESOLUTION':(v.get('width'),v.get('height'))==(1920,1080),
+            'R_FPS':v.get('r_frame_rate')=='60/1',
+            'AVG_FPS':v.get('avg_frame_rate')=='60/1',
+            'FRAME_COUNT':abs(int(v.get('nb_frames','0'))-840)<=1,
+            'DURATION':abs(float(r.get('output_duration',0))-14.0)<=0.05,
+            'NO_DTS_ERROR':'non monotonically increasing dts' not in str(r.get('full_decode',{}).get('stderr','')).lower(),
+          }
+          W,H=320,180; N=W*H
+          def frame(path,t):
+            q=subprocess.run(['ffmpeg','-hide_banner','-v','error','-ss',f'{t:.9f}','-i',path,'-frames:v','1','-an','-vf',f'scale={W}:{H},format=gray','-f','rawvideo','-pix_fmt','gray','-'],capture_output=True,check=True)
+            if len(q.stdout)<N: raise RuntimeError(('short frame',path,t,len(q.stdout)))
+            return q.stdout[:N]
+          def mae(a,b): return sum(abs(i-j) for i,j in zip(a,b))/N
+          def contrast(a): return max(a)-min(a)
+          diffs=[]
+          for q in r.get('preview_outputs',[]):
+            t=float(q['at']); diffs.append({'at':t,'mae':mae(frame(r['output_path'],t),frame(q['path'],0))})
+          checks['PREVIEW_EXPORT']=len(diffs)==20 and max([z['mae'] for z in diffs],default=999)<12.0
+          checks['SUB_OFF_1']=contrast(frame(r['output_path'],1.0))<15
+          checks['SUB_ON_2_5']=contrast(frame(r['output_path'],2.5))>20
+          checks['SUB_OFF_5_5']=contrast(frame(r['output_path'],5.5))<15
+          checks['SUB_ON_6_5']=contrast(frame(r['output_path'],6.5))>20
+          checks['SUB_ON_10_5']=contrast(frame(r['output_path'],10.5))>20
+          checks['SUB_OFF_13_5']=contrast(frame(r['output_path'],13.5))<15
+          report={'checks':checks,'fallback':fb,'probe':v,'preview':diffs,'decode':r.get('full_decode'),'duration':r.get('output_duration')}
+          print(json.dumps(report,indent=2))
+          json.dump(report,open(os.path.join(root,'gate.json'),'w'),indent=2)
+          if not all(checks.values()): sys.exit(1)
+          print('LEGACY_EXACT_DTS_V2=PASS')
+          PY
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: legacy-dts-v2-evidence
+          path: |
+            ${{ env.ROOT }}/build-info.txt
+            ${{ env.ROOT }}/job.json
+            ${{ env.ROOT }}/receipt.json
+            ${{ env.ROOT }}/gate.json
+            ${{ env.ROOT }}/app.log
+          retention-days: 14

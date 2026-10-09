@@ -57,7 +57,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          npx tauri build --target aarch64-apple-darwin --bundles app --features acceptance-harness
+          npx tauri build --target aarch64-apple-darwin --bundles app --features acceptance-harness --config '{"bundle":{"createUpdaterArtifacts":false}}'
 
       - name: Generate real 3-hour acceptance media
         shell: bash
@@ -144,11 +144,11 @@ jobs:
           r=d['result']; probe=r.get('probe',{}); streams=probe.get('streams',[])
           v=next((x for x in streams if x.get('codec_type')=='video'),{})
           a=next((x for x in streams if x.get('codec_type')=='audio'),{})
-          mib=r['output_bytes']/1024/1024
+          mb=r['output_bytes']/1_000_000
           seeks=all(x.get('ok') for x in r.get('seek_checks',[]))
           decode=bool(r.get('full_decode',{}).get('ok'))
           print(f"EXPORT_SECONDS={r['export_seconds']:.3f}")
-          print(f"OUTPUT_MIB={mib:.2f}")
+          print(f"OUTPUT_MB={mb:.2f}")
           print(f"OUTPUT_DURATION={r['output_duration']:.3f}")
           print(f"VIDEO_CODEC={v.get('codec_name')}")
           print(f"RESOLUTION={v.get('width')}x{v.get('height')}")
@@ -158,7 +158,7 @@ jobs:
           print(f"FULL_DECODE={'PASS' if decode else 'FAIL'}")
           print(f"SEEK={'PASS' if seeks else 'FAIL'}")
           print(f"TARGET_10S={'PASS' if r['export_seconds']<=10 else 'FAIL'}")
-          print(f"TARGET_400_600_MIB={'PASS' if 400<=mib<=600 else 'FAIL'}")
+          print(f"TARGET_400_600_MB={'PASS' if 400<=mb<=600 else 'FAIL'}")
           PY
 
       - name: Upload acceptance evidence

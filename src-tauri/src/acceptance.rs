@@ -18,19 +18,28 @@ fn newest(paths:impl Iterator<Item=PathBuf>)->Option<PathBuf>{
 }
 
 async fn duration(app:&AppHandle,path:&Path)->Result<f64,String>{
-  let (_,stdout,stderr)=sidecar(app,"ffprobe",vec!["-v","error","-show_entries","format=duration","-of","default=nw=1:nk=1",path.to_string_lossy().into_owned()]).await?;
+  let args=vec![
+    "-v".into(),"error".into(),"-show_entries".into(),"format=duration".into(),"-of".into(),"default=nw=1:nk=1".into(),path.to_string_lossy().into_owned()
+  ];
+  let (_,stdout,stderr)=sidecar(app,"ffprobe",args).await?;
   stdout.trim().parse::<f64>().map_err(|_|format!("ffprobe duration failed for {}: {}",path.display(),stderr.trim()))
 }
 
 async fn probe(app:&AppHandle,path:&Path)->Result<Value,String>{
-  let (ok,stdout,stderr)=sidecar(app,"ffprobe",vec!["-v","error","-show_streams","-show_format","-of","json",path.to_string_lossy().into_owned()]).await?;
+  let args=vec![
+    "-v".into(),"error".into(),"-show_streams".into(),"-show_format".into(),"-of".into(),"json".into(),path.to_string_lossy().into_owned()
+  ];
+  let (ok,stdout,stderr)=sidecar(app,"ffprobe",args).await?;
   if !ok{return Err(format!("ffprobe failed: {}",stderr.trim()))}
   serde_json::from_str(&stdout).map_err(|e|e.to_string())
 }
 
 async fn full_decode(app:&AppHandle,path:&Path)->Result<Value,String>{
   let started=Instant::now();
-  let (ok,_stdout,stderr)=sidecar(app,"ffmpeg",vec!["-hide_banner","-v","error","-i",path.to_string_lossy().into_owned(),"-f","null","-".into()]).await?;
+  let args=vec![
+    "-hide_banner".into(),"-v".into(),"error".into(),"-i".into(),path.to_string_lossy().into_owned(),"-f".into(),"null".into(),"-".into()
+  ];
+  let (ok,_stdout,stderr)=sidecar(app,"ffmpeg",args).await?;
   Ok(json!({"ok":ok && stderr.trim().is_empty(),"seconds":started.elapsed().as_secs_f64(),"stderr":stderr.trim()}))
 }
 
@@ -39,7 +48,10 @@ async fn seek_checks(app:&AppHandle,path:&Path,total:f64)->Result<Vec<Value>,Str
   for fraction in [0.10_f64,0.25,0.50,0.75,0.90,0.99]{
     let at=(total*fraction).max(0.0);
     let started=Instant::now();
-    let (ok,_stdout,stderr)=sidecar(app,"ffmpeg",vec!["-hide_banner","-v","error","-ss",format!("{at:.6}"),"-i",path.to_string_lossy().into_owned(),"-t","0.5".into(),"-map","0:v:0".into(),"-map","0:a:0?".into(),"-f","null".into(),"-".into()]).await?;
+    let args=vec![
+      "-hide_banner".into(),"-v".into(),"error".into(),"-ss".into(),format!("{at:.6}"),"-i".into(),path.to_string_lossy().into_owned(),"-t".into(),"0.5".into(),"-map".into(),"0:v:0".into(),"-map".into(),"0:a:0?".into(),"-f".into(),"null".into(),"-".into()
+    ];
+    let (ok,_stdout,stderr)=sidecar(app,"ffmpeg",args).await?;
     rows.push(json!({"fraction":fraction,"at":at,"ok":ok && stderr.trim().is_empty(),"seconds":started.elapsed().as_secs_f64(),"stderr":stderr.trim()}));
   }
   Ok(rows)

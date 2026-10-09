@@ -98,17 +98,20 @@ jobs:
           set -euo pipefail
           BIN="$TEST_APP/Contents/MacOS/$EXE"
           env HOME="$TEST_HOME" "$BIN" > "$ROOT/app-before-update.log" 2>&1 &
-          START_PID=$!
-          echo "START_PID=$START_PID"
+          echo "START_PID=$!"
           clicked=0
           for attempt in $(seq 1 60); do
-            PID=$(ps -axo pid=,command= | awk -v needle="$TEST_APP/Contents/MacOS/$EXE" 'index($0,needle){print $1; exit}')
-            if [ -z "${PID:-}" ]; then
-              echo "attempt=$attempt waiting_for_relaunched_app_process"
+            PID=''
+            for p in $(pgrep -x "$EXE" 2>/dev/null || true); do
+              CMD=$(ps -p "$p" -o command= 2>/dev/null || true)
+              if [[ "$CMD" == "$BIN"* ]]; then PID="$p"; break; fi
+            done
+            if [ -z "$PID" ]; then
+              echo "attempt=$attempt waiting_for_real_copied_app_process"
               sleep 1
               continue
             fi
-            echo "attempt=$attempt active_pid=$PID"
+            echo "attempt=$attempt copied_app_pid=$PID"
             set +e
             OUT=$(osascript - "$PID" <<'APPLESCRIPT'
           on run argv
@@ -152,7 +155,7 @@ jobs:
           done
           if [ "$clicked" -ne 1 ]; then
             echo 'native update button was not detected/clicked'
-            ps -axo pid=,command= | grep -F "$TEST_APP" || true
+            pgrep -fl "$EXE" || true
             cat "$ROOT/app-before-update.log" || true
             exit 1
           fi
@@ -177,8 +180,12 @@ jobs:
           echo CFBundleShortVersionString=10.0.12
           echo CFBundleVersion=10.0.12
           sleep 3
-          NEW_PID=$(ps -axo pid=,command= | awk -v needle="$TEST_APP/Contents/MacOS/$EXE" 'index($0,needle){print $1; exit}')
-          test -n "${NEW_PID:-}"
+          NEW_PID=''
+          for p in $(pgrep -x "$EXE" 2>/dev/null || true); do
+            CMD=$(ps -p "$p" -o command= 2>/dev/null || true)
+            if [[ "$CMD" == "$TEST_APP/Contents/MacOS/$EXE"* ]]; then NEW_PID="$p"; break; fi
+          done
+          test -n "$NEW_PID"
           echo "RELAUNCH=PASS pid=$NEW_PID"
           if grep -R -a -q '10.0.12' "$TEST_APP/Contents"; then echo ABOUT_VERSION_PAYLOAD=PASS; else exit 1; fi
 
@@ -200,7 +207,10 @@ jobs:
           NOW=$(shasum -a 256 "$SRC/Contents/MacOS/$EXE" | awk '{print $1}')
           test "$SHORT" = '10.0.11'; test "$BUILD" = '10.0.11'; test "$NOW" = "$SRC_BIN_SHA"
           echo ORIGINAL_INSTALLED_10_0_11_UNTOUCHED=PASS
-          pkill -f "$TEST_APP/Contents/MacOS/$EXE" || true
+          for p in $(pgrep -x "$EXE" 2>/dev/null || true); do
+            CMD=$(ps -p "$p" -o command= 2>/dev/null || true)
+            if [[ "$CMD" == "$TEST_APP/Contents/MacOS/$EXE"* ]]; then kill "$p" || true; fi
+          done
 
       - name: Upload owner-Mac updater evidence
         if: always()

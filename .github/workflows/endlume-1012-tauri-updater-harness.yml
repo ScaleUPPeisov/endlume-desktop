@@ -97,7 +97,13 @@ jobs:
             "identifier": "studio.endlume.updaterharness",
             "build": { "frontendDist": "dist" },
             "app": { "windows": [] },
-            "bundle": { "active": false, "icon": ["icons/icon.png"] }
+            "bundle": { "active": false, "icon": ["icons/icon.png"] },
+            "plugins": {
+              "updater": {
+                "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEU5NDU1MkRFODQyRUM0OTUKUldTVnhDNkUzbEpGNmZmNUdyb2lUZVM0enU3WkVzdDlsSCtxcVpobitZc3Z0ZWMxQ1hucFZXRUUK",
+                "endpoints": ["https://github.com/ScaleUPPeisov/scaleup-site/releases/download/endlume-test12/latest.json"]
+              }
+            }
           }
           EOF
           cat > "$HARNESS/src/main.rs" <<'EOF'

@@ -15,6 +15,31 @@ permissions:
   contents: read
 
 jobs:
+  portable-compile-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Linux compile dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf ffmpeg
+          npm install --no-audit --no-fund
+          mkdir -p src-tauri/binaries
+          cp "$(command -v ffmpeg)" src-tauri/binaries/ffmpeg-x86_64-unknown-linux-gnu
+          cp "$(command -v ffprobe)" src-tauri/binaries/ffprobe-x86_64-unknown-linux-gnu
+          chmod +x src-tauri/binaries/*
+      - name: Frontend and Rust compile-only gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run build
+          cargo check --manifest-path src-tauri/Cargo.toml --all-targets --features acceptance-harness
+          echo PORTABLE_COMPILE_ONLY=PASS
+          echo PHYSICAL_MACOS_ACCEPTANCE=NOT_CLAIMED
+
   legacy-and-regression-macos-arm64:
     runs-on: macos-15
     timeout-minutes: 45

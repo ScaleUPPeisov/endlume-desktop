@@ -24,3 +24,4 @@ s=s.replace(old_sub,new_sub)
 
 p.write_text(s)
 print('LEGACY_DTS_PATCH_APPLIED=1')
+# integration compile trigger

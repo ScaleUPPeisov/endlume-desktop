@@ -1,0 +1,87 @@
+name: ENDLUME 10.0.12 publish exact signed bridge artifact
+
+on:
+  push:
+    branches: [release]
+    paths: ['.github/workflows/endlume-1012-publish-exact-artifact.yml']
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  publish-exact-artifact:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      ARTIFACT_ID: '11624056744'
+      EXPECTED_ZIP_SHA256: d811dd1dd2dcbc543176d9d3d8423f64e1d951796e300b58b8a8bd9b88882bbb
+      EXPECTED_TAR_SHA256: 760f1da52011cbe9745894eeb04ef3dfef3b5c0e7d85ceb3841f63d67c8ae6e9
+      TAG: endlume-10.0.12-bridge-artifact
+    steps:
+      - name: Download exact GitHub Actions artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api -H 'Accept: application/vnd.github+json' \
+            "/repos/ScaleUPPeisov/endlume-desktop/actions/artifacts/${ARTIFACT_ID}/zip" > artifact.zip
+          GOT_ZIP=$(sha256sum artifact.zip | awk '{print $1}')
+          echo "ARTIFACT_ZIP_SHA256=$GOT_ZIP"
+          test "$GOT_ZIP" = "$EXPECTED_ZIP_SHA256"
+          mkdir artifact
+          unzip -q artifact.zip -d artifact
+          ls -la artifact
+
+      - name: Verify signed updater bytes and metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAR='artifact/ENDLUME Studio.app.tar.gz'
+          SIG='artifact/ENDLUME Studio.app.tar.gz.sig'
+          META='artifact/release.json'
+          test -f "$TAR"; test -f "$SIG"; test -f "$META"
+          GOT_TAR=$(sha256sum "$TAR" | awk '{print $1}')
+          echo "UPDATER_TAR_SHA256=$GOT_TAR"
+          test "$GOT_TAR" = "$EXPECTED_TAR_SHA256"
+          python3 - "$META" "$SIG" <<'PY'
+          import json,sys
+          d=json.load(open(sys.argv[1]))
+          sig=open(sys.argv[2]).read().strip()
+          assert d['version']=='10.0.12',d
+          assert d['target']=='darwin',d
+          assert d['arch']=='aarch64',d
+          assert d['signature']==sig,d
+          print('RELEASE_METADATA=PASS')
+          PY
+          cp "$TAR" ENDLUME-macos-aarch64-10.0.12.app.tar.gz
+          cp "$SIG" ENDLUME-macos-aarch64-10.0.12.app.tar.gz.sig
+
+      - name: Publish isolated exact-byte artifact release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release delete "$TAG" --repo ScaleUPPeisov/endlume-desktop --yes --cleanup-tag >/dev/null 2>&1 || true
+          gh release create "$TAG" --repo ScaleUPPeisov/endlume-desktop --target release \
+            --title 'ENDLUME 10.0.12 signed bridge artifact' \
+            --notes 'Exact signed ARM64 updater artifact. Source of truth for bridge staging. Not updater production metadata.'
+          gh release upload "$TAG" --repo ScaleUPPeisov/endlume-desktop \
+            ENDLUME-macos-aarch64-10.0.12.app.tar.gz \
+            ENDLUME-macos-aarch64-10.0.12.app.tar.gz.sig --clobber
+
+      - name: Verify public GitHub release serves exact bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL='https://github.com/ScaleUPPeisov/endlume-desktop/releases/download/endlume-10.0.12-bridge-artifact/ENDLUME-macos-aarch64-10.0.12.app.tar.gz'
+          for i in $(seq 1 20); do
+            if curl -fsSL "$URL" -o verify.tar.gz; then break; fi
+            sleep 2
+          done
+          GOT=$(sha256sum verify.tar.gz | awk '{print $1}')
+          echo "PUBLIC_TAR_SHA256=$GOT"
+          test "$GOT" = "$EXPECTED_TAR_SHA256"
+          echo EXACT_PUBLIC_ARTIFACT=PASS

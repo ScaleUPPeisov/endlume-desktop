@@ -1,120 +1,102 @@
-name: ENDLUME Remote Update Release
+name: ENDLUME macOS updater build
 
 on:
   push:
     branches: [release]
-    paths:
-      - 'updates/release-candidate.json'
   workflow_dispatch:
-
-concurrency:
-  group: endlume-remote-release
-  cancel-in-progress: true
-
-permissions:
-  contents: write
 
 jobs:
   build-macos-arm64:
+    # Bootstrap pushes should not create releases. Future release commits start with "release:".
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.event.head_commit.message, 'release:')
     runs-on: macos-15
+    permissions:
+      contents: read
+
     steps:
-      - name: Checkout release channel
-        uses: actions/checkout@v4
-        with:
-          ref: release
+      - name: Checkout ENDLUME
+        uses: actions/checkout@v7
 
-      - name: Runner diagnostics
-        shell: bash
+      - name: Verify ARM64 runner
         run: |
-          set -euo pipefail
-          uname -a
+          uname -m
           test "$(uname -m)" = "arm64"
-          sw_vers
-          command -v python3
-          command -v gh
 
-      - name: Read release candidate
-        id: manifest
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: Install frontend dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Prepare FFmpeg sidecars
         shell: bash
         run: |
           set -euo pipefail
-          PY="$(command -v python3)"
-          MANIFEST="updates/release-candidate.json"
-          test -x "$PY"; test -s "$MANIFEST"
-          VERSION="$($PY -c 'import json;print(json.load(open("updates/release-candidate.json"))["version"])')"
-          BUILDER="$($PY -c 'import json;print(json.load(open("updates/release-candidate.json"))["ciBuilder"])')"
-          TAG="$($PY -c 'import json;print(json.load(open("updates/release-candidate.json"))["releaseTag"])')"
-          ASSET="$($PY -c 'import json;print(json.load(open("updates/release-candidate.json"))["asset"])')"
-          CHECKSUM="$($PY -c 'import json;print(json.load(open("updates/release-candidate.json"))["checksumAsset"])')"
-          test -n "$VERSION"; test -f "$BUILDER"; test -n "$TAG"; test -n "$ASSET"; test -n "$CHECKSUM"
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "builder=$BUILDER" >> "$GITHUB_OUTPUT"
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "asset=$ASSET" >> "$GITHUB_OUTPUT"
-          echo "checksum=$CHECKSUM" >> "$GITHUB_OUTPUT"
+          brew list ffmpeg >/dev/null 2>&1 || brew install ffmpeg
+          mkdir -p src-tauri/binaries
+          cp "$(command -v ffmpeg)" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp "$(command -v ffprobe)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          chmod +x src-tauri/binaries/*
 
-      - name: Build tested ENDLUME package on macOS
+      - name: Frontend check
+        run: npm run build
+
+      - name: Rust check
+        run: cargo check --manifest-path src-tauri/Cargo.toml --target aarch64-apple-darwin
+
+      - name: Build signed updater artifact
         env:
-          GH_TOKEN: ${{ github.token }}
-          ENDLUME_CI_ARTIFACT_DIR: ${{ github.workspace }}/release-out
-          ENDLUME_CI_ASSET_NAME: ${{ steps.manifest.outputs.asset }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
+        run: npx tauri build --target aarch64-apple-darwin --bundles app
+
+      - name: Prepare release metadata
         shell: bash
         run: |
           set -euo pipefail
-          chmod +x "${{ steps.manifest.outputs.builder }}"
-          /bin/bash "${{ steps.manifest.outputs.builder }}"
-          test -s "release-out/${{ steps.manifest.outputs.asset }}"
-          test -s "release-out/${{ steps.manifest.outputs.checksum }}"
+          VERSION="$(python3 -c 'import json; print(json.load(open("src-tauri/tauri.conf.json"))["version"])')"
+          BUNDLE_DIR="src-tauri/target/aarch64-apple-darwin/release/bundle/macos"
+          TAR="$(find "$BUNDLE_DIR" -maxdepth 1 -type f -name '*.app.tar.gz' -print -quit)"
+          SIG="$TAR.sig"
+          test -f "$TAR"
+          test -f "$SIG"
+          mkdir -p updater-release
+          cp "$TAR" "$SIG" updater-release/
+          SIG_CONTENT="$(cat "$SIG")"
+          ARTIFACT="$(basename "$TAR")"
+          NOTES="$(cat RELEASE_NOTES.md 2>/dev/null || echo 'ENDLUME update')"
+          python3 - "$VERSION" "$ARTIFACT" "$SIG_CONTENT" "$NOTES" <<'PY'
+          import json,sys,datetime
+          version,artifact,signature,notes=sys.argv[1:]
+          data={
+            'version':version,
+            'pub_date':datetime.datetime.now(datetime.timezone.utc).isoformat().replace('+00:00','Z'),
+            'target':'darwin',
+            'arch':'aarch64',
+            'artifact':artifact,
+            'signature':signature,
+            'notes':notes,
+          }
+          open('updater-release/release.json','w').write(json.dumps(data,ensure_ascii=False,indent=2)+'\n')
+          PY
 
-      - name: Verify package before publishing
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd release-out
-          /usr/bin/shasum -a 256 -c "${{ steps.manifest.outputs.checksum }}"
-          TMP="$(mktemp -d)"
-          /usr/bin/ditto -x -k "${{ steps.manifest.outputs.asset }}" "$TMP"
-          APP="$(find "$TMP" -maxdepth 4 -type d -name 'ENDLUME Studio.app' -print -quit)"
-          test -n "$APP"
-          test "$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$APP/Contents/Info.plist")" = "studio.endlume.desktop"
-          test "$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist")" = "${{ steps.manifest.outputs.version }}"
-          /usr/bin/codesign --verify --deep --strict "$APP"
-          rm -rf "$TMP"
-
-      - name: Publish private GitHub Release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          TAG="${{ steps.manifest.outputs.tag }}"
-          VERSION="${{ steps.manifest.outputs.version }}"
-          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            :
-          else
-            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "ENDLUME Studio $VERSION" --notes "Tested macOS update package for ENDLUME Remote Update Center."
-          fi
-          gh release upload "$TAG" \
-            "release-out/${{ steps.manifest.outputs.asset }}" \
-            "release-out/${{ steps.manifest.outputs.checksum }}" \
-            --repo "$GITHUB_REPOSITORY" --clobber
-
-      - name: Promote candidate to in-app latest only after success
-        shell: bash
-        run: |
-          set -euo pipefail
-          cp updates/release-candidate.json updates/latest.json
-          git config user.name "ENDLUME Release Bot"
-          git config user.email "actions@users.noreply.github.com"
-          git add updates/latest.json
-          if ! git diff --cached --quiet; then
-            git commit -m "Promote ENDLUME ${{ steps.manifest.outputs.version }} to in-app latest"
-            git push origin HEAD:release
-          fi
-
-      - name: Upload CI copy
+      - name: Upload signed updater artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ENDLUME-${{ steps.manifest.outputs.version }}-macos-arm64
-          path: release-out/*
+          name: ENDLUME-macOS-aarch64-updater
+          path: updater-release/*
           if-no-files-found: error
+          retention-days: 30

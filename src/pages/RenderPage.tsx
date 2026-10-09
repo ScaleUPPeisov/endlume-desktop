@@ -45,27 +45,14 @@ function LiveTelemetry({id,status,startedAt,elapsedSec,etaSec}:{id?:string;statu
   return <div className="renderTelemetry"><div><small>НАЧАЛО</small><b>{startedAt?new Date(startedAt).toLocaleTimeString():'—'}</b></div><div><small>ПРОШЛО</small><b className="liveClock">{status==='rendering'?fmtLiveSeconds(liveElapsed):fmtSeconds(elapsedSec)}</b></div><div><small>ОСТАЛОСЬ</small><b className="liveClock">{status==='rendering'?fmtLiveSeconds(liveEta):fmtSeconds(etaSec)}</b></div><div><small>≈ ЗАВЕРШЕНИЕ</small><b>{finishAt(liveEta)}</b></div></div>;
 }
 
-function useDiskStatus(path:string,status?:string){
-  const [disk,setDisk]=useState<{totalBytes:number;freeBytes:number;usedBytes:number;mount:string}>();
-  useEffect(()=>{
-    let alive=true;let timer:number|undefined;
-    const read=()=>api.diskStatus(path).then(v=>alive&&setDisk(v)).catch(()=>{});
-    void read();
-    if(status==='rendering')timer=window.setInterval(read,1000);
-    return()=>{alive=false;if(timer)window.clearInterval(timer)};
-  },[path,status]);
-  return disk;
-}
-
 const stageNames=[
   'Анализ файлов','Проверяю самый быстрый движок','Подготавливаю медиа','Собираю master-loop','Проверяю кэш Effects и Subscribe','Кэш Effects и Subscribe готов','Подготавливаю музыку','Аудио-цикл готов — без лишней многочасовой копии','Собираю длинный аудио-кэш','Подготавливаю вариант Effects','Собираю визуальные сегменты','Добавляю Subscribe','Склеиваю визуальную дорожку','Собираю итоговое видео','Финальная проверка FFprobe','Готово'
 ];
 
 export function RenderPage(){
-  const projects=useApp(s=>s.projects),settings=useApp(s=>s.settings),setPage=useApp(s=>s.setPage),removeProject=useApp(s=>s.removeProject),clearFinished=useApp(s=>s.clearFinished),setDraftProjects=useApp(s=>s.setDraftProjects),patchProject=useApp(s=>s.patchProject);
+  const projects=useApp(s=>s.projects),setPage=useApp(s=>s.setPage),removeProject=useApp(s=>s.removeProject),clearFinished=useApp(s=>s.clearFinished),setDraftProjects=useApp(s=>s.setDraftProjects),patchProject=useApp(s=>s.patchProject);
   const [selected,setSelected]=useState<string|undefined>();
   const active=projects.find(p=>p.id===selected)||projects.find(p=>p.status==='rendering')||projects.find(p=>p.status==='done')||projects[0];
-  const disk=useDiskStatus(settings.outputDir,active?.status);
   const done=projects.filter(p=>p.status==='done').length, errors=projects.filter(p=>p.status==='error').length;
   const remain=projects.filter(p=>!['done','error'].includes(p.status)).length;
   const avg=useMemo(()=>{const a=projects.filter(p=>p.status==='done'&&p.elapsedSec>0);return a.length?a.reduce((s,p)=>s+p.elapsedSec,0)/a.length:undefined},[projects]);
@@ -97,7 +84,7 @@ export function RenderPage(){
         <LiveTelemetry id={active.id} status={active.status} startedAt={active.startedAt} elapsedSec={active.elapsedSec} etaSec={active.etaSec}/>
         <div className="renderBodyGrid">
           <div className="stageCard"><div className="stageCardTitle">ПРОЦЕСС</div>{(()=>{const lower=active.stage.toLowerCase();const currentIndex=stageNames.findIndex(s=>lower.includes(s.toLowerCase()));return stageNames.map((s,i)=>{const cur=i===currentIndex;const completed=active.status==='done'||(currentIndex>=0&&i<currentIndex);return <div className={`stageLine ${cur?'current':''} ${completed?'complete':''}`} key={s}><span>{completed?'✓':cur?'●':i+1}</span><b>{s}</b>{cur&&<em>выполняется</em>}</div>})})()}</div>
-          <div className="systemCard"><div className="stageCardTitle">РЕСУРСЫ</div><Metric name="CPU" value={active.cpuPct} unit="%"/><Metric name="RAM ENDLUME" value={active.ramBytes&&active.ramTotalBytes?Math.min(100,(active.ramBytes/active.ramTotalBytes)*100):undefined} label={active.ramBytes?fmtBytes(active.ramBytes):'—'}/><div className="memoryStats"><span><small>ДИСК · ИСПОЛЬЗОВАНО</small><b>{fmtBytes(disk?.usedBytes)}</b></span><span><small>ДИСК · СВОБОДНО</small><b>{fmtBytes(disk?.freeBytes)}</b></span><span><small>ДИСК · ВСЕГО</small><b>{fmtBytes(disk?.totalBytes)}</b></span></div><Metric name="GPU" value={active.gpuPct} unit="%"/><div className="engineName"><small>ДВИЖОК</small><b>{active.encoder||'Автовыбор'}</b>{disk?.mount&&<small>{disk.mount}</small>}</div></div>
+          <div className="systemCard"><div className="stageCardTitle">РЕСУРСЫ</div><Metric name="CPU" value={active.cpuPct} unit="%"/><Metric name="RAM приложения" value={active.ramBytes&&active.ramTotalBytes?Math.min(100,(active.ramBytes/active.ramTotalBytes)*100):undefined} label={active.ramBytes?fmtBytes(active.ramBytes):'—'}/><div className="memoryStats"><span><small>ПАМЯТИ ВСЕГО</small><b>{fmtBytes(active.ramTotalBytes)}</b></span><span><small>СВОБОДНО</small><b>{fmtBytes(active.ramAvailableBytes)}</b></span><span><small>ЗАНЯТО СИСТЕМОЙ</small><b>{active.ramTotalBytes&&active.ramAvailableBytes?fmtBytes(Math.max(0,active.ramTotalBytes-active.ramAvailableBytes)):'—'}</b></span></div><Metric name="GPU" value={active.gpuPct} unit="%"/><div className="engineName"><small>ДВИЖОК</small><b>{active.encoder||'Автовыбор'}</b></div></div>
         </div>
         {active.status==='rendering'&&<div className="activeRenderActions"><button className="endlumeAction dangerAction" onClick={async()=>{await api.cancelProject(active.id);patchProject(active.id,{stage:'Останавливаю FFmpeg…'})}}>ОСТАНОВИТЬ ТЕКУЩИЙ</button><button className="endlumeAction ghostAction" onClick={()=>setPage('project')}>← ВЕРНУТЬСЯ К ПРОЕКТУ</button></div>}
         {active.status==='queued'&&<div className="activeRenderActions"><button className="endlumeAction dangerAction" onClick={async()=>{await api.cancelProject(active.id);removeProject(active.id)}}>УДАЛИТЬ ИЗ ОЧЕРЕДИ</button></div>}

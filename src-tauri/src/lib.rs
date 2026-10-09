@@ -2,14 +2,17 @@ mod model;
 mod scan;
 mod persistence;
 mod render;
+mod fast_render;
+mod visual_spec;
 mod preview;
-mod live_preview;
-mod assets;
 mod license;
 mod benchmark;
 mod queue;
 mod cache;
 mod system;
+#[cfg(feature="acceptance-harness")]
+mod acceptance;
+pub mod mp4_manifest;
 
 use std::sync::Arc;
 use tauri::Manager;
@@ -27,15 +30,20 @@ pub fn run(){
     .invoke_handler(tauri::generate_handler![
       scan::scan_root,
       queue::enqueue_projects,queue::queue_snapshot,queue::reorder_queue,queue::cancel_project,queue::resume_recovery,
-      preview::generate_preview,live_preview::prepare_live_preview,assets::import_library_asset,
+      preview::generate_preview,
       persistence::load_library,persistence::save_library,persistence::load_recovery,persistence::dismiss_recovery,
       benchmark::benchmark_engine,
       license::activate_license,license::license_status,
       cache::cache_stats,cache::clear_effect_cache,
-      system::power_status,system::disk_status,system::cleanup_duplicate_apps,system::normalize_current_app_name,system::open_result_path,system::reveal_result_path
+      system::power_status,system::open_result_path,system::reveal_result_path
     ])
     .setup(|app|{
       persistence::mark_session_open(&app.handle().clone())?;
+      #[cfg(feature="acceptance-harness")]
+      if std::env::var_os("ENDLUME_ACCEPTANCE_JOB").is_some(){
+        let handle=app.handle().clone();
+        tauri::async_runtime::spawn(async move{acceptance::run(handle).await;});
+      }
       Ok(())
     })
     .on_window_event(|window,event|{

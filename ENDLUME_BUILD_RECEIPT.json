@@ -1,9 +1,0 @@
-{
-  "version": "1.0.0-alpha.8.16",
-  "run_id": 32651653136,
-  "source_sha": "ca65036ac12968e16da826955bdeb8e53cf8792a",
-  "status": "verified",
-  "loop_smoke_checks": 100,
-  "motion_ui_checks": 16,
-  "platform": "macos-arm64"
-}

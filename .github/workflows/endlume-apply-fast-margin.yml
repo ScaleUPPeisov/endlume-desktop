@@ -1,0 +1,36 @@
+name: ENDLUME apply fast-path stability margin
+
+on:
+  push:
+    branches: [perf/endlume-subscribe-stability-margin]
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Apply deterministic runtime patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/patch_fast_margin.py
+          git diff --check
+          CHANGED="$(git diff --name-only)"
+          printf '%s\n' "$CHANGED"
+          test "$CHANGED" = "src-tauri/src/fast_render.rs"
+      - name: Commit runtime-only patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- src-tauri/src/fast_render.rs; then exit 0; fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src-tauri/src/fast_render.rs
+          git commit -m 'perf: add fast-path timing margin without output changes'
+          git push origin HEAD:perf/endlume-subscribe-stability-margin

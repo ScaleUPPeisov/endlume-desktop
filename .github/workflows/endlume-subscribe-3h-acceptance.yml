@@ -1,0 +1,218 @@
+name: ENDLUME macOS Subscribe 3h acceptance
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - perf/endlume-macos-subscribe-3h-fastpath
+      - perf/endlume-macos-3h-10s-acceptance
+
+concurrency:
+  group: endlume-subscribe-3h-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  production-subscribe-macos-arm64:
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Assert Apple Silicon and source ancestry
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -s)" = Darwin
+          test "$(uname -m)" = arm64
+          git merge-base --is-ancestor e2896da7702891a5b760ecd4daad4fd54bc90b82 HEAD
+          git diff --exit-code e2896da7702891a5b760ecd4daad4fd54bc90b82 -- src-tauri/tauri.conf.json
+          git diff --exit-code e2896da7702891a5b760ecd4daad4fd54bc90b82 -- src-tauri/src/license.rs
+          printf 'SUBSCRIBE_TEST_HEAD=%s\n' "$(git rev-parse HEAD)"
+
+      - name: Build actual ENDLUME app
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v ffmpeg >/dev/null || brew install ffmpeg
+          npm install --no-audit --no-fund
+          rustup target add aarch64-apple-darwin
+          mkdir -p src-tauri/binaries
+          cp "$(command -v ffmpeg)" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp "$(command -v ffprobe)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          chmod +x src-tauri/binaries/*
+          npm run build
+          cargo test --manifest-path src-tauri/Cargo.toml --target aarch64-apple-darwin --features acceptance-harness
+          BUILD_STARTED=$(python3 -c 'import time;print(time.time())')
+          npx tauri build --target aarch64-apple-darwin --bundles app --features acceptance-harness --config '{"bundle":{"createUpdaterArtifacts":false}}'
+          BUILD_ENDED=$(python3 -c 'import time;print(time.time())')
+          APP="$(find src-tauri/target/aarch64-apple-darwin/release/bundle/macos -maxdepth 1 -type d -name '*.app' -print -quit)"
+          BIN="$APP/Contents/MacOS/endlume"; test -x "$BIN"
+          ROOT="$RUNNER_TEMP/endlume-subscribe-3h"; MEDIA="$ROOT/project"; FX="$ROOT/effects"; OUT="$ROOT/out"
+          mkdir -p "$MEDIA" "$FX" "$OUT"
+          VERSION="$(python3 -c 'import json;print(json.load(open("src-tauri/tauri.conf.json"))["version"])')"
+          BUNDLE_BYTES="$(du -sk "$APP" | awk '{print $1*1024}')"
+          python3 - "$BUILD_STARTED" "$BUILD_ENDED" "$(git rev-parse HEAD)" "$VERSION" "$APP" "$BUNDLE_BYTES" > "$ROOT/build-info.json" <<'PY'
+          import json,sys
+          a,b,sha,version,path,size=sys.argv[1:]
+          print(json.dumps({'sha':sha,'version':version,'app_path':path,'build_seconds':float(b)-float(a),'bundle_bytes':int(size)},indent=2))
+          PY
+          cat "$ROOT/build-info.json"
+          echo "ROOT=$ROOT" >> "$GITHUB_ENV"; echo "MEDIA=$MEDIA" >> "$GITHUB_ENV"; echo "FX=$FX" >> "$GITHUB_ENV"; echo "OUT=$OUT" >> "$GITHUB_ENV"; echo "BIN=$BIN" >> "$GITHUB_ENV"
+
+      - name: Generate physical 3-hour production workload and animated Subscribe
+        shell: bash
+        run: |
+          set -euo pipefail
+          ffmpeg -hide_banner -loglevel error -f lavfi -i "color=c=0x182033:s=1920x1080" -frames:v 1 -y "$MEDIA/cover.png"
+          for i in $(seq -w 1 12); do
+            n=$((10#$i)); hz=$((180+n*23))
+            ffmpeg -hide_banner -loglevel error -f lavfi -i "sine=frequency=${hz}:sample_rate=48000:duration=900" -c:a libmp3lame -b:a 320k -ar 48000 -ac 2 -metadata title="Subscribe Track ${i}" -y "$MEDIA/track-${i}.mp3"
+          done
+          ffmpeg -hide_banner -loglevel error \
+            -f lavfi -i "color=c=0x00ff00:s=640x360:r=60:d=3" \
+            -f lavfi -i "color=c=white:s=180x100:r=60:d=3" \
+            -filter_complex "[0:v][1:v]overlay=x='70+300*t/3':y='120+45*sin(2*PI*t/3)':eval=frame:shortest=1" \
+            -an -c:v libx264 -preset ultrafast -g 180 -pix_fmt yuv420p -r 60 -y "$FX/subscribe.mp4"
+          test "$(ffprobe -v error -show_entries stream=nb_frames -of csv=p=0 "$FX/subscribe.mp4")" = 180
+
+      - name: Create 3-hour Subscribe QueueJob
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import glob,json,os
+          media=os.environ['MEDIA']; fx=os.environ['FX']; out=os.environ['OUT']; root=os.environ['ROOT']
+          sub={'id':'subscribe','name':'Subscribe Animated 3s','source':os.path.join(fx,'subscribe.mp4'),'enabled':True,'mode':'chromakey','keyColor':'#00ff00','similarity':0.12,'blend':0.08,'despill':1.0,'lumaThreshold':0.10,'lumaTolerance':0.05,'saturation':1.0,'x':0.15,'y':0.65,'scale':0.30,'fullscreen':False,'previewFrameTime':0.0,'startSec':0.0,'endSec':None,'cacheKey':None,'cacheReady':None,'firstAtSec':600.0,'secondAtSec':3600.0,'repeatEverySec':3600.0}
+          job={'project':{'id':'acceptance-subscribe-3h','name':'ENDLUME Subscribe 3H Acceptance','path':media,'media':[os.path.join(media,'cover.png')],'audio':sorted(glob.glob(os.path.join(media,'track-*.mp3'))),'valid':True,'error':None},'settings':{'width':1920,'height':1080,'fps':60,'codec':'h265','bitrateMbps':30.0,'durationHours':3.0,'durationMode':'whole-track','loopMode':'image','crossfadeSec':0.0,'normalizeLufs':False,'outputDir':out,'preset':'fast','encoderPreference':'auto'},'effects':[],'subscribes':[sub],'ambient':None}
+          json.dump(job,open(os.path.join(root,'job.json'),'w'),indent=2)
+          PY
+
+      - name: Launch actual app export and exact-boundary previews
+        shell: bash
+        run: |
+          set +e
+          TIMES="599,599.9,600,600.1,600.5,601.5,602.983333333,603,603.1,604,3599.9,3600,3600.5,3602.983333333,3603,3603.1,7199.9,7200,7200.5,7202.983333333,7203,7203.1,10799"
+          ENDLUME_ACCEPTANCE_JOB="$ROOT/job.json" ENDLUME_ACCEPTANCE_RECEIPT="$ROOT/receipt.json" ENDLUME_SOURCE_HEAD="$GITHUB_SHA" ENDLUME_ACCEPTANCE_PREVIEW_TIMES="$TIMES" "$BIN" > "$ROOT/app.log" 2>&1
+          rc=$?; echo "APP_EXIT_CODE=$rc" >> "$ROOT/app.log"; test -f "$ROOT/receipt.json" && cat "$ROOT/receipt.json"; exit 0
+
+      - name: Validate event boundaries animation position and preview parity
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json,os,subprocess,sys
+          root=os.environ['ROOT']; d=json.load(open(os.path.join(root,'receipt.json')))
+          if d.get('status')!='ok':sys.exit(str(d))
+          r=d['result']; out=r['output_path']; W,H=480,270; N=W*H
+          def frame(path,t):
+              q=subprocess.run(['ffmpeg','-hide_banner','-v','error','-ss',f'{t:.9f}','-i',path,'-frames:v','1','-an','-vf',f'scale={W}:{H},format=gray','-f','rawvideo','-pix_fmt','gray','-'],capture_output=True,check=True)
+              if len(q.stdout)<N: raise RuntimeError(('short frame',path,t,len(q.stdout)))
+              return q.stdout[:N]
+          def contrast(x): return max(x)-min(x)
+          def mae(a,b): return sum(abs(x-y) for x,y in zip(a,b))/N
+          base=frame(out,599.0)
+          off_times=[599.0,599.9,603.0,603.1,604.0,3599.9,3603.0,3603.1,7199.9,7203.0,7203.1,10799.0]
+          on_times=[600.0,600.1,600.5,601.5,602.983333333,3600.0,3600.5,3602.983333333,7200.0,7200.5,7202.983333333]
+          checks={}
+          checks['no_early_or_lingering']=all(mae(base,frame(out,t))<0.20 and contrast(frame(out,t))<15 for t in off_times)
+          checks['visible_exactly_on_events']=all(contrast(frame(out,t))>20 and mae(base,frame(out,t))>0.10 for t in on_times)
+          a=frame(out,600.1); b=frame(out,601.5); c=frame(out,602.983333333)
+          checks['animation_moves']=mae(a,b)>0.20 and mae(b,c)>0.20
+          checks['first_middle_last_phase']=mae(frame(out,600.5),frame(out,3600.5))<0.20 and mae(frame(out,600.5),frame(out,7200.5))<0.20
+          delta=[abs(x-y) for x,y in zip(frame(out,600.5),base)]; pts=[(i%W,i//W) for i,v in enumerate(delta) if v>15]
+          cx=sum(x for x,y in pts)/len(pts) if pts else 999; cy=sum(y for x,y in pts)/len(pts) if pts else -1
+          checks['position_lower_left']=bool(pts) and cx<W*0.5 and cy>H*0.4
+          rows=[]
+          for item in r.get('preview_outputs',[]):
+              t=float(item['at']); diff=mae(frame(out,t),frame(item['path'],0.0)); rows.append({'at':t,'mae':diff,'pass':diff<12.0})
+          checks['preview_export']=len(rows)==23 and all(x['pass'] for x in rows)
+          boundary={str(t):{'contrast':contrast(frame(out,t)),'base_mae':mae(base,frame(out,t))} for t in sorted(set(off_times+on_times))}
+          report={'checks':checks,'centroid':[cx,cy],'preview':rows,'boundary':boundary}
+          json.dump(report,open(os.path.join(root,'visual-gate.json'),'w'),indent=2); print(json.dumps(report,indent=2))
+          if not all(checks.values()):sys.exit(1)
+          PY
+
+      - name: Prove MP3 packet preservation
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import glob,json,os,subprocess,sys
+          r=json.load(open(os.path.join(os.environ['ROOT'],'receipt.json')))['result']; out=r['output_path']
+          def hashes(path):
+              d=json.loads(subprocess.check_output(['ffprobe','-v','error','-select_streams','a:0','-show_packets','-show_entries','packet=data_hash','-show_data_hash','sha256','-of','json',path],text=True))
+              return [p['data_hash'] for p in d.get('packets',[]) if p.get('data_hash')]
+          src=[]
+          for p in sorted(glob.glob(os.path.join(os.environ['MEDIA'],'track-*.mp3'))): src.extend(hashes(p))
+          dst=hashes(out); report={'source_packets':len(src),'output_packets':len(dst),'packet_perfect':src==dst,'last_packet':bool(src and dst and src[-1]==dst[-1])}
+          json.dump(report,open(os.path.join(os.environ['ROOT'],'audio-gate.json'),'w'),indent=2); print(json.dumps(report,indent=2))
+          if not report['packet_perfect']:sys.exit(1)
+          PY
+
+      - name: Compute physical byte breakdown
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json,os,subprocess
+          root=os.environ['ROOT']; r=json.load(open(os.path.join(root,'receipt.json')))['result']; out=r['output_path']
+          def unique_bytes(sel):
+              d=json.loads(subprocess.check_output(['ffprobe','-v','error','-select_streams',sel,'-show_packets','-show_entries','packet=pos,size','-of','json',out],text=True)); seen=set(); total=0
+              for p in d.get('packets',[]):
+                  if 'pos' not in p or 'size' not in p: continue
+                  key=(int(p['pos']),int(p['size']))
+                  if key not in seen: seen.add(key); total+=key[1]
+              return total,len(seen)
+          vb,vn=unique_bytes('v:0'); ab,an=unique_bytes('a:0'); total=r['output_bytes']; overhead=total-vb-ab
+          report={'VIDEO_BYTES':vb,'AUDIO_BYTES':ab,'OVERHEAD_BYTES':overhead,'TOTAL_BYTES':total,'UNIQUE_VIDEO_SAMPLES':vn,'UNIQUE_AUDIO_PACKETS':an}
+          if overhead<0: raise SystemExit('invalid byte accounting')
+          json.dump(report,open(os.path.join(root,'byte-gate.json'),'w'),indent=2); print(json.dumps(report,indent=2))
+          PY
+
+      - name: Hard gate 3-hour Subscribe production output
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json,os,sys
+          root=os.environ['ROOT']; d=json.load(open(os.path.join(root,'receipt.json')))
+          if d.get('status')!='ok':sys.exit(str(d))
+          r=d['result']; m=r.get('fast_metrics') or {}; streams=r['probe']['streams']
+          v=next(x for x in streams if x.get('codec_type')=='video'); a=next(x for x in streams if x.get('codec_type')=='audio')
+          mb=r['output_bytes']/1_000_000; visual=json.load(open(os.path.join(root,'visual-gate.json'))); audio=json.load(open(os.path.join(root,'audio-gate.json'))); byte=json.load(open(os.path.join(root,'byte-gate.json')))
+          total_ms=r['export_seconds']*1000.0; expected=float(r['input_audio_duration'])
+          checks={'FAST_PATH':r.get('fast_path_used') is True,'NO_LEGACY':not bool(r.get('legacy_fallback_used')),'MODE':m.get('mode')=='static-subscribe-hevc-mp3-packet-copy','TEN_SECONDS':total_ms<=10000.0,'DURATION':abs(r['output_duration']-expected)<=0.10,'SIZE_400_600_MB':400<=mb<=600,'HEVC':v.get('codec_name')=='hevc','RESOLUTION':(v.get('width'),v.get('height'))==(1920,1080),'FPS':v.get('r_frame_rate')=='60/1' and v.get('avg_frame_rate')=='60/1','MP3':a.get('codec_name')=='mp3','PACKET_COPY':audio.get('packet_perfect') is True and audio.get('last_packet') is True,'FULL_DECODE':r.get('full_decode',{}).get('ok') is True,'DTS_CLEAN':'non monotonically increasing dts' not in r.get('full_decode',{}).get('stderr','').lower(),'SEEKS':all(x.get('ok') for x in r.get('seek_checks',[])),'VISUAL':all(visual.get('checks',{}).values()),'BYTE_ACCOUNTING':byte.get('TOTAL_BYTES')==r['output_bytes']}
+          print(f"MASTER_RENDER_MS={m.get('masterMs')} TIMELINE_BUILD_MS={m.get('timelineMs')} AUDIO_MS={m.get('audioMs')} MUX_MS={m.get('muxMs')} FINALIZE_MS={m.get('finalizeMs')} TOTAL_MS={total_ms:.3f}")
+          print(f"OUTPUT_MB={mb:.3f} DURATION={r['output_duration']:.6f}")
+          print(json.dumps(byte,indent=2))
+          for k,vv in checks.items(): print(f"{k}={'PASS' if vv else 'FAIL'}")
+          json.dump({'checks':checks,'total_ms':total_ms,'fast_metrics':m,'byte_breakdown':byte},open(os.path.join(root,'gate.json'),'w'),indent=2)
+          if not all(checks.values()):sys.exit(1)
+          print('SUBSCRIBE_PRODUCTION_3H=PASS')
+          PY
+
+      - name: Upload Subscribe evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: endlume-subscribe-3h-evidence
+          path: |
+            ${{ env.ROOT }}/build-info.json
+            ${{ env.ROOT }}/job.json
+            ${{ env.ROOT }}/receipt.json
+            ${{ env.ROOT }}/app.log
+            ${{ env.ROOT }}/visual-gate.json
+            ${{ env.ROOT }}/audio-gate.json
+            ${{ env.ROOT }}/byte-gate.json
+            ${{ env.ROOT }}/gate.json
+          if-no-files-found: warn
+          retention-days: 30

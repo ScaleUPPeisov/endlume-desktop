@@ -1,6 +1,0 @@
-/* Specific hover transforms live after the global motion layer. */
-.appShell .topnav button:not(:disabled):hover{transform:translateY(-1px) translateZ(0)}
-.appShell .modeCard:not(:disabled):hover{transform:translateY(-1px) translateZ(0)}
-.appShell .chipRow button:not(:disabled):hover,.appShell .durationPresets button:not(:disabled):hover{transform:translateY(-1px) translateZ(0)}
-.appShell .featureRow button:not(:disabled):hover,.appShell .rowButtons button:not(:disabled):hover{transform:translateY(-1px) translateZ(0)}
-.appShell .endlumeAction:not(:disabled):hover,.appShell .settingsAction:not(:disabled):hover,.appShell .primaryQueue:not(:disabled):hover{transform:translateY(-1px) translateZ(0)}

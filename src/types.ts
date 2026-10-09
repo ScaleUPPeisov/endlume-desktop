@@ -105,13 +105,9 @@ export interface QueueJob {
 }
 
 export interface BenchmarkResult {
-  selected?: string | null;
-  candidates: Array<{encoder:string;ok:boolean;listed?:boolean;seconds?:number|null;note?:string}>;
-  successful?: number;
+  selected: string;
+  candidates: Array<{encoder:string;ok:boolean;seconds?:number;note?:string}>;
   platform: string;
-  arch?: string;
-  ffmpegProbeOk?: boolean;
-  ffmpegProbeError?: string | null;
 }
 
 export interface LicenseStatus {

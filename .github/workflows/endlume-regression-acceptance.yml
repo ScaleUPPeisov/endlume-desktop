@@ -11,6 +11,10 @@ on:
       - 'src/**'
       - '.github/workflows/endlume-regression-acceptance.yml'
 
+concurrency:
+  group: endlume-regression-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
@@ -35,21 +39,32 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          npm run build
+          npm run build 2>&1 | tee "$RUNNER_TEMP/frontend-build.log"
           echo FRONTEND_COMPILE=PASS
       - name: Rust library compile gate
         shell: bash
         run: |
           set -euo pipefail
-          cargo check --manifest-path src-tauri/Cargo.toml --lib --features acceptance-harness
+          cargo check --manifest-path src-tauri/Cargo.toml --lib --features acceptance-harness 2>&1 | tee "$RUNNER_TEMP/rust-lib.log"
           echo RUST_LIB_COMPILE=PASS
       - name: Rust all-targets compile gate
         shell: bash
         run: |
           set -euo pipefail
-          cargo check --manifest-path src-tauri/Cargo.toml --all-targets --features acceptance-harness
+          cargo check --manifest-path src-tauri/Cargo.toml --all-targets --features acceptance-harness 2>&1 | tee "$RUNNER_TEMP/rust-all-targets.log"
           echo RUST_ALL_TARGETS_COMPILE=PASS
           echo PHYSICAL_MACOS_ACCEPTANCE=NOT_CLAIMED
+      - name: Upload compile diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: endlume-portable-compile-diagnostics
+          path: |
+            ${{ runner.temp }}/frontend-build.log
+            ${{ runner.temp }}/rust-lib.log
+            ${{ runner.temp }}/rust-all-targets.log
+          if-no-files-found: warn
+          retention-days: 7
 
   legacy-and-regression-macos-arm64:
     runs-on: macos-15

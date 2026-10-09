@@ -1,0 +1,142 @@
+name: ENDLUME 10.0.12 corrected release smoke
+
+on:
+  push:
+    branches:
+      - release-fix/endlume-10.0.12-physical-signing-compat
+    paths:
+      - '.github/workflows/endlume-1012-corrected-release-smoke.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  smoke-macos-arm64:
+    runs-on: macos-15
+    timeout-minutes: 35
+    steps:
+      - name: Checkout exact corrected release-prep
+        uses: actions/checkout@v4
+        with:
+          ref: 0445923773dc276580fcdaf719d69a3e6bbddef5
+          fetch-depth: 0
+
+      - name: Assert accepted engine and no Rust product changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          ENGINE=a7a399e83de8b9248e2065c6dda1f9079ded6565
+          test "$(git rev-parse HEAD)" = '0445923773dc276580fcdaf719d69a3e6bbddef5'
+          test "$(uname -s)" = Darwin
+          test "$(uname -m)" = arm64
+          git merge-base --is-ancestor "$ENGINE" HEAD
+          git diff --exit-code "$ENGINE" -- src-tauri/src
+          echo 'PRODUCT_RUST_CODE_CHANGES=NONE'
+
+      - name: Prepare ARM64 smoke build
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v ffmpeg >/dev/null || brew install ffmpeg
+          npm install --no-audit --no-fund
+          rustup target add aarch64-apple-darwin
+          mkdir -p src-tauri/binaries
+          cp "$(command -v ffmpeg)" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp "$(command -v ffprobe)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          chmod +x src-tauri/binaries/*
+          npm run build
+          cargo test --manifest-path src-tauri/Cargo.toml --target aarch64-apple-darwin --features acceptance-harness
+          npx tauri build --target aarch64-apple-darwin --bundles app --features acceptance-harness --config '{"bundle":{"createUpdaterArtifacts":false}}'
+          APP="$(find src-tauri/target/aarch64-apple-darwin/release/bundle/macos -maxdepth 1 -type d -name '*.app' -print -quit)"
+          BIN="$APP/Contents/MacOS/endlume"
+          test -x "$BIN"
+          python3 - "$APP/Contents/Info.plist" <<'PY'
+          import plistlib,sys
+          with open(sys.argv[1],'rb') as f:p=plistlib.load(f)
+          assert p['CFBundleShortVersionString']=='10.0.12',p
+          assert p['CFBundleVersion']=='10.0.12',p
+          print('SMOKE_APP_VERSION=10.0.12')
+          PY
+          ROOT="$RUNNER_TEMP/endlume-1012-corrected-smoke"
+          mkdir -p "$ROOT/project" "$ROOT/fx" "$ROOT/out"
+          echo "ROOT=$ROOT" >> "$GITHUB_ENV"
+          echo "BIN=$BIN" >> "$GITHUB_ENV"
+
+      - name: Generate one-image ten-track Subscribe workload
+        shell: bash
+        run: |
+          set -euo pipefail
+          ffmpeg -hide_banner -loglevel error -f lavfi -i "color=c=0x182033:s=1920x1080" -frames:v 1 -y "$ROOT/project/cover.png"
+          for i in $(seq 1 10); do
+            freq=$((260 + i * 37))
+            ffmpeg -hide_banner -loglevel error -f lavfi -i "sine=frequency=${freq}:sample_rate=48000:duration=1.25" -c:a libmp3lame -b:a 320k -ar 48000 -ac 2 -y "$ROOT/project/track${i}.mp3"
+          done
+          ffmpeg -hide_banner -loglevel error -f lavfi -i "color=c=0x00ff00:s=640x360:r=60:d=3" -vf "drawbox=x=180:y=100:w=280:h=150:color=white:t=fill" -an -c:v libx264 -preset ultrafast -g 180 -pix_fmt yuv420p -r 60 -y "$ROOT/fx/subscribe.mp4"
+          python3 - <<'PY'
+          import json,os
+          r=os.environ['ROOT']; p=os.path.join(r,'project'); fx=os.path.join(r,'fx')
+          audio=[os.path.join(p,f'track{i}.mp3') for i in range(1,11)]
+          job={
+            'project':{'id':'endlume-1012-corrected-smoke','name':'ENDLUME 10.0.12 Corrected Smoke','path':p,'media':[os.path.join(p,'cover.png')],'audio':audio,'valid':True,'error':None},
+            'settings':{'width':1920,'height':1080,'fps':60,'codec':'h265','bitrateMbps':8.0,'durationHours':12.0/3600.0,'durationMode':'whole-track','loopMode':'image','crossfadeSec':0.0,'normalizeLufs':False,'outputDir':os.path.join(r,'out'),'preset':'fast','encoderPreference':'auto'},
+            'effects':[],
+            'subscribes':[{'id':'subscribe','name':'subscribe','source':os.path.join(fx,'subscribe.mp4'),'enabled':True,'mode':'chromakey','keyColor':'#00ff00','similarity':0.10,'blend':0.06,'despill':1.0,'lumaThreshold':0.10,'lumaTolerance':0.05,'saturation':1.0,'x':0.15,'y':0.65,'scale':0.30,'fullscreen':False,'previewFrameTime':0.0,'startSec':0.0,'endSec':None,'cacheKey':None,'cacheReady':None,'firstAtSec':2.0,'secondAtSec':6.0,'repeatEverySec':4.0}],
+            'ambient':None
+          }
+          json.dump(job,open(os.path.join(r,'job.json'),'w'),indent=2)
+          PY
+
+      - name: Run accepted ENDLUME Fast Engine smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          ENDLUME_ACCEPTANCE_JOB="$ROOT/job.json" \
+          ENDLUME_ACCEPTANCE_RECEIPT="$ROOT/receipt.json" \
+          ENDLUME_ACCEPTANCE_PREVIEW_TIMES="1,2.5,6.5,10.5" \
+          ENDLUME_SOURCE_HEAD='0445923773dc276580fcdaf719d69a3e6bbddef5' \
+          "$BIN" 2>&1 | tee "$ROOT/app.log"
+          cat "$ROOT/receipt.json"
+
+      - name: Gate Fast Engine Subscribe preview HEVC and decode
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json,os
+          r=os.environ['ROOT']; d=json.load(open(os.path.join(r,'receipt.json')))
+          assert d.get('status')=='ok',d
+          x=d['result']; streams=x['probe']['streams']
+          v=next(s for s in streams if s.get('codec_type')=='video')
+          a=next(s for s in streams if s.get('codec_type')=='audio')
+          checks={
+            'TRACK_COUNT_10':x.get('track_count')==10,
+            'FAST_ENGINE_SMOKE':x.get('fast_path_used') is True,
+            'NO_LEGACY_FALLBACK':x.get('legacy_fallback_used') is False,
+            'HEVC':v.get('codec_name') in ('hevc','h265'),
+            'MP3_STREAM_COPY':a.get('codec_name')=='mp3',
+            'RESOLUTION_1080P':(v.get('width'),v.get('height'))==(1920,1080),
+            'FPS_60':v.get('r_frame_rate') in ('60/1','60000/1000'),
+            'DURATION_WHOLE_TRACK':abs(float(x.get('output_duration',0))-12.5)<=0.5,
+            'DECODE':x.get('full_decode',{}).get('ok') is True,
+            'SEEK':all(s.get('ok') for s in x.get('seek_checks',[])),
+            'SUBSCRIBE_SMOKE':len(x.get('preview_outputs',[]))==4,
+            'PREVIEW_SMOKE':len(x.get('preview_outputs',[]))==4,
+            'OUTPUT_NONEMPTY':int(x.get('output_bytes',0))>0,
+          }
+          for k,vv in checks.items(): print(f"{k}={'PASS' if vv else 'FAIL'}")
+          print('EXPORT_SECONDS='+str(x.get('export_seconds')))
+          print('OUTPUT_BYTES='+str(x.get('output_bytes')))
+          if not all(checks.values()): raise SystemExit(1)
+          print('CORRECTED_RELEASE_SMOKE=PASS')
+          PY
+
+      - name: Upload smoke evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ENDLUME-10.0.12-corrected-release-smoke
+          path: |
+            ${{ runner.temp }}/endlume-1012-corrected-smoke/receipt.json
+            ${{ runner.temp }}/endlume-1012-corrected-smoke/app.log
+          if-no-files-found: warn
+          retention-days: 14

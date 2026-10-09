@@ -11,7 +11,7 @@ mod system;
 #[cfg(feature="acceptance-harness")]
 mod acceptance;
 #[cfg(feature="acceptance-harness")]
-mod mp4_manifest;
+pub mod mp4_manifest;
 
 use std::sync::Arc;
 use tauri::Manager;

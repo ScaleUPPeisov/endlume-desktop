@@ -49,4 +49,6 @@ jobs:
           rm -rf "$APP"
           ditto "$CAND" "$APP"
           test "$(shasum -a 256 "$APP/Contents/MacOS/$EXE"|awk '{print $1}')" = "$SHA"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist" | grep -Fx '10.0.11'
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Contents/Info.plist" | grep -Fx '10.0.11'
           echo OWNER_APP_RESTORED_EXACTLY=PASS

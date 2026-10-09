@@ -122,9 +122,11 @@ jobs:
           test -d "$APP"
           test "$(plutil -extract CFBundleIdentifier raw -o - "$APP/Contents/Info.plist")" = studio.endlume.desktop
           test "$(plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist")" = 1.0.0-alpha.8.5
-          rm -rf "$QA_ROOT/installed"; mkdir -p "$QA_ROOT/installed"
-          ditto "$APP" "$QA_ROOT/installed/ENDLUME Studio.app"
-          echo "OLD_APP=$QA_ROOT/installed/ENDLUME Studio.app" >> "$GITHUB_ENV"
+          INSTALL_ROOT="$RUNNER_TEMP/endlume-updater-installed"
+          rm -rf "$INSTALL_ROOT"; mkdir -p "$INSTALL_ROOT"
+          ditto "$APP" "$INSTALL_ROOT/ENDLUME Studio.app"
+          test "$(python3 -c 'import os,sys; p=sys.argv[1]; print(os.path.realpath(p)==p)' "$INSTALL_ROOT")" = True
+          echo "OLD_APP=$INSTALL_ROOT/ENDLUME Studio.app" >> "$GITHUB_ENV"
 
       - name: Serve signed candidate on trusted localhost HTTPS
         shell: bash

@@ -12,6 +12,10 @@ on:
       - 'package.json'
       - '.github/workflows/endlume-macos-3h-acceptance.yml'
 
+concurrency:
+  group: endlume-static-3h-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
@@ -108,7 +112,7 @@ jobs:
           import json,glob,os,subprocess,sys
           receipt=json.load(open(os.path.join(os.environ['ROOT'],'receipt.json')))
           if receipt.get('status')!='ok': sys.exit('render receipt is not ok')
-          out=receipt['result']['output_path']
+          r=receipt['result']; out=r['output_path']
           def hashes(path,select=None):
               cmd=['ffprobe','-v','error']
               if select: cmd += ['-select_streams',select]
@@ -117,14 +121,17 @@ jobs:
               return [p['data_hash'] for p in d.get('packets',[]) if p.get('data_hash')]
           src=[]
           for p in sorted(glob.glob(os.path.join(os.environ['MEDIA'],'track-*.mp3'))): src.extend(hashes(p,'a:0'))
-          dst=hashes(out,'a:0')
-          ok=src==dst
+          dst=hashes(out,'a:0'); ok=src==dst
           evidence={'source_packets':len(src),'output_packets':len(dst),'first_match':bool(src and dst and src[0]==dst[0]),'last_match':bool(src and dst and src[-1]==dst[-1]),'packet_perfect':ok}
-          json.dump(evidence,open(os.path.join(os.environ['ROOT'],'audio-integrity.json'),'w'),indent=2)
-          print(json.dumps(evidence,indent=2))
+          json.dump(evidence,open(os.path.join(os.environ['ROOT'],'audio-integrity.json'),'w'),indent=2); print(json.dumps(evidence,indent=2))
           if not ok: sys.exit('MP3 packet payload mismatch')
-          for at in range(900,10800,900): subprocess.check_call(['ffmpeg','-hide_banner','-v','error','-ss',f'{at-0.15:.3f}','-i',out,'-t','0.30','-map','0:a:0','-f','null','-'])
-          subprocess.check_call(['ffmpeg','-hide_banner','-v','error','-ss','10798','-i',out,'-t','2','-map','0:a:0','-f','null','-'])
+          t=0.0
+          tracks=r.get('input_tracks',[])
+          for row in tracks[:-1]:
+              t+=float(row['duration'])
+              subprocess.check_call(['ffmpeg','-hide_banner','-v','error','-ss',f'{max(0,t-0.15):.6f}','-i',out,'-t','0.30','-map','0:a:0','-f','null','-'])
+          total=float(r['input_audio_duration'])
+          subprocess.check_call(['ffmpeg','-hide_banner','-v','error','-ss',f'{max(0,total-2):.6f}','-i',out,'-t','2','-map','0:a:0','-f','null','-'])
           PY
 
       - name: Compute physical stream byte breakdown
@@ -158,19 +165,20 @@ jobs:
           import json,os,sys
           root=os.environ['ROOT']; p=os.path.join(root,'receipt.json')
           if not os.path.exists(p): sys.exit('ACCEPTANCE=FAIL no receipt')
-          d=json.load(open(p));
+          d=json.load(open(p))
           if d.get('status')!='ok': sys.exit('ACCEPTANCE=FAIL '+str(d))
           r=d['result']; streams=r['probe']['streams']; v=next(x for x in streams if x.get('codec_type')=='video'); a=next(x for x in streams if x.get('codec_type')=='audio'); f=r['probe']['format']; integ=json.load(open(os.path.join(root,'audio-integrity.json'))); b=json.load(open(os.path.join(root,'byte-breakdown.json'))); m=r.get('fast_metrics') or {}; mb=r['output_bytes']/1_000_000
           def num(x):
               try:return float(x)
               except:return 0.0
-          total_ms=r['export_seconds']*1000.0
+          expected=float(r['input_audio_duration']); total_ms=r['export_seconds']*1000.0
           checks={
+            'SOURCE_APPROX_3H':abs(expected-10800.0)<=1.0,
             'FAST_PATH_SELECTED':bool(r.get('fast_path_used')),
             'LEGACY_FALLBACK_NOT_USED':not bool(r.get('legacy_fallback_used')),
-            'FORMAT_DURATION':abs(num(f.get('duration'))-10800.0)<=0.10,
-            'VIDEO_DURATION':abs(num(v.get('duration'))-10800.0)<=0.10,
-            'AUDIO_DURATION':abs(num(a.get('duration'))-10800.0)<=0.10,
+            'FORMAT_DURATION':abs(num(f.get('duration'))-expected)<=0.10,
+            'VIDEO_DURATION':abs(num(v.get('duration'))-expected)<=0.10,
+            'AUDIO_DURATION':abs(num(a.get('duration'))-expected)<=0.10,
             'HEVC':v.get('codec_name')=='hevc',
             'RESOLUTION':(v.get('width'),v.get('height'))==(1920,1080),
             'R_FPS':v.get('r_frame_rate')=='60/1',
@@ -184,6 +192,7 @@ jobs:
             'SIZE_400_600_MB':400<=mb<=600,
             'TEN_SECONDS':total_ms<=10000.0,
           }
+          print(f"SOURCE_DURATION={expected:.6f}")
           print(f"MASTER_RENDER_MS={m.get('masterMs')}")
           print(f"VIDEO_TIMELINE_BUILD_MS={m.get('timelineMs')}")
           print(f"AUDIO_MS={m.get('audioMs')}")
@@ -196,7 +205,7 @@ jobs:
           print(f"OUTPUT_BYTES={r['output_bytes']} OUTPUT_MB={mb:.3f}")
           print(json.dumps(b,indent=2))
           for k,vv in checks.items(): print(f"{k}={'PASS' if vv else 'FAIL'}")
-          json.dump({'checks':checks,'total_ms':total_ms,'fast_metrics':m},open(os.path.join(root,'gate.json'),'w'),indent=2)
+          json.dump({'checks':checks,'source_duration':expected,'total_ms':total_ms,'fast_metrics':m},open(os.path.join(root,'gate.json'),'w'),indent=2)
           if not all(checks.values()): sys.exit(1)
           print('STATIC_PRODUCTION_3H=PASS')
           PY

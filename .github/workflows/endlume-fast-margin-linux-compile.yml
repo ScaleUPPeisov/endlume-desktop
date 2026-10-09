@@ -1,0 +1,34 @@
+name: ENDLUME fast margin portable compile
+
+on:
+  push:
+    branches: [qa/endlume-04a-fast-margin-compile]
+
+permissions:
+  contents: read
+
+jobs:
+  compile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 04a63df522af75ece111ba4eb59dc56f48bdcb77
+      - name: Install Linux Tauri build deps
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update >/dev/null
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf ffmpeg >/dev/null
+          npm install --no-audit --no-fund
+          mkdir -p src-tauri/binaries
+          cp "$(command -v ffmpeg)" src-tauri/binaries/ffmpeg-x86_64-unknown-linux-gnu
+          cp "$(command -v ffprobe)" src-tauri/binaries/ffprobe-x86_64-unknown-linux-gnu
+      - name: Frontend and Rust compile
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run build
+          cargo check --manifest-path src-tauri/Cargo.toml --all-targets --features acceptance-harness
+          echo FAST_MARGIN_PORTABLE_COMPILE=PASS

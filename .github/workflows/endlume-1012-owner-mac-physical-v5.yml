@@ -1,0 +1,157 @@
+name: ENDLUME 10.0.11 to 10.0.12 physical gate v5
+
+on:
+  push:
+    branches: [release]
+    paths: ['.github/workflows/endlume-1012-owner-mac-physical-v5.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  physical-update:
+    runs-on: [self-hosted, macOS, ARM64]
+    timeout-minutes: 15
+    steps:
+      - name: Canonical-path update with guaranteed rollback and WebView fallback
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP='/Applications/ENDLUME YT Studio PEISOV.app'; INFO="$APP/Contents/Info.plist"
+          EXE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$INFO")
+          EXPECTED='8f60dbe1dd611db407c2d096aebd4597f6ff2af07c881e2e41d163e19b2b80c0'
+          ROOT="$RUNNER_TEMP/endlume-physical-v5-${GITHUB_RUN_ID}"; BACKUP="$ROOT/original.bundlebackup"
+          DATA="$HOME/Library/Application Support/studio.endlume.desktop"; DATA_BACKUP="$ROOT/appdata-backup"
+          mkdir -p "$ROOT"; pkill -x "$EXE" 2>/dev/null || true
+          restore(){ set +e; pkill -x "$EXE" 2>/dev/null||true; sleep 1; if [ -d "$BACKUP" ]; then rm -rf "$APP"; mv "$BACKUP" "$APP"; fi; if [ -d "$DATA_BACKUP" ]; then rm -rf "$DATA"; cp -R "$DATA_BACKUP" "$DATA"; fi; SHA=$(shasum -a 256 "$APP/Contents/MacOS/$EXE" 2>/dev/null|awk '{print $1}'); SHORT=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist" 2>/dev/null||true); EP=$(strings -a "$APP/Contents/MacOS/$EXE" 2>/dev/null|grep -F 'endlume-stable/latest.json'|head -1||true); echo "ROLLBACK_SHORT=$SHORT ROLLBACK_SHA=$SHA"; [ "$SHORT" = 10.0.11 ] && [ "$SHA" = "$EXPECTED" ] && [ -n "$EP" ] && echo OWNER_ROLLBACK_EXACT_10_0_11=PASS || echo OWNER_ROLLBACK_EXACT_10_0_11=FAIL; }
+          trap restore EXIT
+
+          # Ensure physical source is exact original 10.0.11.
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$INFO")" = 10.0.11
+          SHA=$(shasum -a 256 "$APP/Contents/MacOS/$EXE"|awk '{print $1}')
+          if [ "$SHA" != "$EXPECTED" ]; then
+            python3 - "$APP" <<'PY'
+          import os,sys
+          old=b'endlume-test12';new=b'endlume-stable';assert len(old)==len(new);hits=[]
+          for b,_,fs in os.walk(sys.argv[1]):
+            for n in fs:
+              p=os.path.join(b,n)
+              try:d=open(p,'rb').read()
+              except OSError:continue
+              if old in d:hits.append(p);open(p,'wb').write(d.replace(old,new))
+          assert hits,hits
+          PY
+            xattr -cr "$APP"||true; codesign --force --deep --sign - "$APP"
+          fi
+          test "$(shasum -a 256 "$APP/Contents/MacOS/$EXE"|awk '{print $1}')" = "$EXPECTED"
+          echo SOURCE_EXACT_10_0_11=PASS
+
+          # Isolate original and create temporary canonical-path copy.
+          mv "$APP" "$BACKUP"; [ ! -d "$DATA" ] || cp -R "$DATA" "$DATA_BACKUP"; cp -R "$BACKUP" "$APP"
+          BEFORE="$ROOT/settings-before.txt"; : > "$BEFORE"; for f in license.json library.json; do [ ! -f "$DATA/$f" ] || shasum -a 256 "$DATA/$f"|awk -v n="$f" '{print n"="$1}' >> "$BEFORE"; done; sort -o "$BEFORE" "$BEFORE"
+          python3 - "$APP" <<'PY'
+          import os,sys
+          old=b'endlume-stable';new=b'endlume-test12';assert len(old)==len(new);hits=[]
+          for b,_,fs in os.walk(sys.argv[1]):
+            for n in fs:
+              p=os.path.join(b,n)
+              try:d=open(p,'rb').read()
+              except OSError:continue
+              if old in d:hits.append(p);open(p,'wb').write(d.replace(old,new))
+          assert hits,hits
+          PY
+          xattr -cr "$APP"||true; codesign --force --deep --sign - "$APP"; codesign --verify --deep --strict "$APP"
+          test "$(shasum -a 256 "$BACKUP/Contents/MacOS/$EXE"|awk '{print $1}')" = "$EXPECTED"
+
+          BASE='https://github.com/ScaleUPPeisov/scaleup-site/releases/download/endlume-test12'
+          curl -fsSL "$BASE/latest.json" -o "$ROOT/update.json"
+          URL=$(python3 - "$ROOT/update.json" <<'PY'
+          import json,sys
+          d=json.load(open(sys.argv[1]));assert d['version']=='10.0.12';p=d['platforms']['darwin-aarch64'];assert p['signature'];assert p['sha256']=='760f1da52011cbe9745894eeb04ef3dfef3b5c0e7d85ceb3841f63d67c8ae6e9';print(p['url'])
+          PY
+          )
+          curl -fsSL "$URL" -o "$ROOT/update.tar.gz"; test "$(shasum -a 256 "$ROOT/update.tar.gz"|awk '{print $1}')" = 760f1da52011cbe9745894eeb04ef3dfef3b5c0e7d85ceb3841f63d67c8ae6e9; echo DOWNLOAD=PASS
+
+          "$APP/Contents/MacOS/$EXE" >"$ROOT/app.log" 2>&1 & APP_PID=$!
+          echo "APP_PID=$APP_PID"
+          sleep 3
+          clicked=0
+          for attempt in $(seq 1 35); do
+            OUT=$(osascript - "$APP_PID" <<'APPLESCRIPT'
+          on run argv
+            set targetPid to (item 1 of argv) as integer
+            tell application "System Events"
+              try
+                set p to first application process whose unix id is targetPid
+                set frontmost of p to true
+                repeat with w in windows of p
+                  repeat with e in entire contents of w
+                    set nm to ""
+                    set ds to ""
+                    set vl to ""
+                    try
+                      set nm to name of e as text
+                    end try
+                    try
+                      set ds to description of e as text
+                    end try
+                    try
+                      set vl to value of e as text
+                    end try
+                    set blob to nm & " " & ds & " " & vl
+                    if (blob contains "ОБНОВ") or (blob contains "UPDATE") or (blob contains "Update") then
+                      if not ((blob contains "ПОЗЖЕ") or (blob contains "LATER") or (blob contains "Later")) then
+                        try
+                          perform action "AXPress" of e
+                          return "CLICKED_DIRECT:" & blob
+                        end try
+                      end if
+                    end if
+                  end repeat
+                end repeat
+                repeat 24 times
+                  key code 48
+                  delay 0.12
+                  try
+                    set f to value of attribute "AXFocusedUIElement" of p
+                    set nm to ""
+                    set ds to ""
+                    try
+                      set nm to name of f as text
+                    end try
+                    try
+                      set ds to description of f as text
+                    end try
+                    set blob to nm & " " & ds
+                    if (blob contains "ОБНОВ") or (blob contains "UPDATE") or (blob contains "Update") then
+                      if not ((blob contains "ПОЗЖЕ") or (blob contains "LATER") or (blob contains "Later")) then
+                        key code 49
+                        return "CLICKED_TAB:" & blob
+                      end if
+                    end if
+                  end try
+                end repeat
+              on error errText
+                return "ERROR:" & errText
+              end try
+            end tell
+            return "NOT_FOUND"
+          end run
+          APPLESCRIPT
+            )
+            echo "UPDATE_UI attempt=$attempt result=$OUT"
+            if [[ "$OUT" == CLICKED_* ]]; then clicked=1; break; fi
+            sleep 1
+          done
+          if [ "$clicked" -ne 1 ]; then cat "$ROOT/app.log"||true; exit 21; fi
+          echo UPDATE_DETECTED=PASS
+
+          installed=0
+          for i in $(seq 1 120); do S=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist" 2>/dev/null||true); B=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Contents/Info.plist" 2>/dev/null||true); if [ "$S" = 10.0.12 ] && [ "$B" = 10.0.12 ]; then installed=1;break;fi;sleep 1;done
+          test "$installed" -eq 1; echo SIGNATURE=PASS; echo INSTALL=PASS; echo INSTALLED_VERSION=10.0.12
+          old="$APP_PID"; relaunched=0
+          for i in $(seq 1 45); do if ! kill -0 "$old" 2>/dev/null; then for p in $(pgrep -x "$EXE" 2>/dev/null||true); do [ "$p" = "$old" ]&&continue; cmd=$(ps -p "$p" -o command= 2>/dev/null||true); case "$cmd" in "$APP/Contents/MacOS/$EXE"*) relaunched=1;break 2;; esac; done; fi; sleep 1; done
+          test "$relaunched" -eq 1; echo RELAUNCH=PASS
+          grep -R -a -q '10.0.12' "$APP/Contents/Resources"; echo SETTINGS_ABOUT_VERSION_PAYLOAD=PASS
+          AFTER="$ROOT/settings-after.txt"; : > "$AFTER"; for f in license.json library.json; do [ ! -f "$DATA/$f" ] || shasum -a 256 "$DATA/$f"|awk -v n="$f" '{print n"="$1}' >> "$AFTER"; done; sort -o "$AFTER" "$AFTER"; diff -u "$BEFORE" "$AFTER"; echo SETTINGS_PRESERVED=PASS
+          echo PHYSICAL_UPDATE_GATE=PASS

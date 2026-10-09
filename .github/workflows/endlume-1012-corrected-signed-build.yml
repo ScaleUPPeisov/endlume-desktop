@@ -1,0 +1,187 @@
+name: ENDLUME 10.0.12 corrected signed build
+
+on:
+  push:
+    branches:
+      - release-fix/endlume-10.0.12-physical-signing-compat
+    paths:
+      - '.github/workflows/endlume-1012-corrected-signed-build.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build-corrected-macos:
+    runs-on: [self-hosted, macOS, ARM64]
+    timeout-minutes: 90
+    steps:
+      - name: Checkout exact corrected release-prep source
+        uses: actions/checkout@v4
+        with:
+          ref: 0445923773dc276580fcdaf719d69a3e6bbddef5
+          fetch-depth: 0
+
+      - name: Freeze product source and physical owner app
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = '0445923773dc276580fcdaf719d69a3e6bbddef5'
+          BASE='a7a399e83de8b9248e2065c6dda1f9079ded6565'
+          changed="$(git diff --name-only "$BASE"..HEAD)"
+          printf '%s\n' "$changed"
+          while IFS= read -r p; do
+            [ -z "$p" ] && continue
+            case "$p" in
+              package.json|src-tauri/Cargo.toml|src-tauri/tauri.conf.json|src/pages/SettingsPage.tsx|src/tauri.ts) ;;
+              *) echo "FORBIDDEN_PRODUCT_CHANGE=$p"; exit 41 ;;
+            esac
+          done <<< "$changed"
+          test -z "$(git diff --name-only "$BASE"..HEAD -- src-tauri/src)"
+          test -z "$(git diff --name-only "$BASE"..HEAD -- src-tauri/src/fast_render.rs src-tauri/src/queue.rs src-tauri/src/mp4_manifest.rs)"
+          echo 'PRODUCT_CODE_CHANGES=NONE'
+          python3 - <<'PY'
+          import json
+          c=json.load(open('src-tauri/tauri.conf.json'))
+          assert c['version']=='10.0.12'
+          expected='dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEQzMjJDRDUwNDkxRDM1MDAKUldRQU5SMUpVTTBpMCs2TTF5UjZkS1h3K0N5UUlBb0srYmVtN1lianVCdEY2ZkxuN2FlM1AyQmoK'
+          assert c['plugins']['updater']['pubkey']==expected
+          print('CORRECTED_SOURCE_UPDATER_PUBKEY=PHYSICAL_10_0_11_MATCH')
+          PY
+          APP='/Applications/ENDLUME YT Studio PEISOV.app'
+          INFO="$APP/Contents/Info.plist"
+          EXE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$INFO")
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$INFO")" = '10.0.11'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$INFO")" = '10.0.11'
+          OWNER_SHA="$(shasum -a 256 "$APP/Contents/MacOS/$EXE" | awk '{print $1}')"
+          test "$OWNER_SHA" = '8f60dbe1dd611db407c2d096aebd4597f6ff2af07c881e2e41d163e19b2b80c0'
+          echo "OWNER_PRE_BUILD_BINARY_SHA256=$OWNER_SHA"
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          export HOMEBREW_NO_AUTO_UPDATE=1
+          npm install --no-audit --no-fund
+          brew list ffmpeg >/dev/null 2>&1 || brew install ffmpeg
+          brew list minisign >/dev/null 2>&1 || brew install minisign
+          mkdir -p src-tauri/binaries
+          cp "$(command -v ffmpeg)" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp "$(command -v ffprobe)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          chmod +x src-tauri/binaries/*
+
+      - name: Frontend and Rust gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run build
+          cargo check --manifest-path src-tauri/Cargo.toml --target aarch64-apple-darwin
+
+      - name: Build macOS ARM64 app with historical ENDLUME signer
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY_PATH: /Users/peisov/.endlume-updater/endlume.key
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
+        run: |
+          set -euo pipefail
+          test -s "$TAURI_SIGNING_PRIVATE_KEY_PATH"
+          npx tauri build --target aarch64-apple-darwin --bundles app
+
+      - name: Produce exact corrected stable updater package and verify physical trust root
+        shell: bash
+        run: |
+          set -euo pipefail
+          BUNDLE='src-tauri/target/aarch64-apple-darwin/release/bundle/macos'
+          APP="$(find "$BUNDLE" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          test -n "$APP" -a -d "$APP"
+          INFO="$APP/Contents/Info.plist"
+          EXE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$INFO")
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$INFO")" = '10.0.12'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$INFO")" = '10.0.12'
+          /usr/bin/lipo -archs "$APP/Contents/MacOS/$EXE" | grep -qw arm64
+          /usr/bin/codesign --verify --deep --strict "$APP"
+
+          # The corrected 10.0.12 itself must keep the exact physical 10.0.11 trust root.
+          python3 - "$APP/Contents/MacOS/$EXE" "$RUNNER_TEMP/physical.pub" <<'PY'
+          import sys,base64,hashlib
+          data=open(sys.argv[1],'rb').read(); prefix=b'dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6I'; found=[]; start=0
+          while True:
+              i=data.find(prefix,start)
+              if i<0: break
+              for n in range(120,241,4):
+                  s=data[i:i+n]
+                  try:
+                      raw=base64.b64decode(s,validate=True); text=raw.decode(); lines=text.strip().splitlines()
+                      if len(lines)==2 and lines[0].startswith('untrusted comment: minisign public key: '):
+                          pkt=base64.b64decode(lines[1],validate=True)
+                          if len(pkt)==42 and pkt[:2]==b'Ed': found.append((s.decode(),text,pkt))
+                  except Exception: pass
+              start=i+1
+          uniq={x[0]:x for x in found}
+          if len(uniq)!=1: raise SystemExit(f'built pubkey candidates={len(uniq)}')
+          b64,text,pkt=next(iter(uniq.values()))
+          expected='dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEQzMjJDRDUwNDkxRDM1MDAKUldRQU5SMUpVTTBpMCs2TTF5UjZkS1h3K0N5UUlBb0srYmVtN1lianVCdEY2ZkxuN2FlM1AyQmoK'
+          assert b64==expected
+          assert pkt[2:10].hex()=='00351d4950cd22d3'
+          open(sys.argv[2],'w').write(text)
+          print('BUILT_10_0_12_EMBEDDED_KEYID='+pkt[2:10].hex())
+          PY
+
+          mkdir -p corrected-release
+          TAR="$GITHUB_WORKSPACE/corrected-release/ENDLUME-macos-aarch64.app.tar.gz"
+          /usr/bin/tar -czf "$TAR" -C "$(dirname "$APP")" "$(basename "$APP")"
+          rm -f "$TAR.sig"
+          TAURI_SIGNING_PRIVATE_KEY_PATH='/Users/peisov/.endlume-updater/endlume.key' TAURI_SIGNING_PRIVATE_KEY_PASSWORD='' npx tauri signer sign --app-version 10.0.12 "$TAR" >/dev/null
+          test -s "$TAR.sig"
+          python3 - "$TAR.sig" "$RUNNER_TEMP/corrected.minisig" <<'PY'
+          import sys,base64
+          s=open(sys.argv[1]).read().strip(); text=s+'\n' if s.startswith('untrusted comment:') else base64.b64decode(s,validate=True).decode(); open(sys.argv[2],'w').write(text)
+          PY
+          minisign -Vm "$TAR" -x "$RUNNER_TEMP/corrected.minisig" -p "$RUNNER_TEMP/physical.pub" >/dev/null
+          echo 'CORRECTED_SIGNATURE_VERIFY_WITH_PHYSICAL_10_0_11=PASS'
+
+          APP_BINARY_SHA="$(shasum -a 256 "$APP/Contents/MacOS/$EXE" | awk '{print $1}')"
+          APP_TREE_SHA="$(find "$APP" -type f -print0 | sort -z | xargs -0 shasum -a 256 | shasum -a 256 | awk '{print $1}')"
+          TAR_SHA="$(shasum -a 256 "$TAR" | awk '{print $1}')"
+          SIG_SHA="$(shasum -a 256 "$TAR.sig" | awk '{print $1}')"
+          echo "APP_BINARY_SHA256=$APP_BINARY_SHA"
+          echo "APP_TREE_SHA256=$APP_TREE_SHA"
+          echo "TAR_GZ_SHA256=$TAR_SHA"
+          echo "SIG_SHA256=$SIG_SHA"
+          SIG_CONTENT="$(cat "$TAR.sig")"
+          python3 - "$SIG_CONTENT" <<'PY'
+          import sys,json,datetime
+          sig=sys.argv[1]
+          data={
+            'version':'10.0.12',
+            'notes':'ENDLUME macOS 10.0.12 physical 10.0.11 signing-key compatibility correction',
+            'pub_date':datetime.datetime.now(datetime.timezone.utc).isoformat().replace('+00:00','Z'),
+            'platforms':{
+              'darwin-aarch64':{
+                'signature':sig,
+                'url':'https://github.com/ScaleUPPeisov/scaleup-site/releases/download/endlume-stable/ENDLUME-macos-aarch64.app.tar.gz'
+              }
+            }
+          }
+          open('corrected-release/macos-manifest-fragment.json','w').write(json.dumps(data,indent=2)+'\n')
+          PY
+          printf '%s\n' "APP_BINARY_SHA256=$APP_BINARY_SHA" "APP_TREE_SHA256=$APP_TREE_SHA" "TAR_GZ_SHA256=$TAR_SHA" "SIG_SHA256=$SIG_SHA" > corrected-release/hashes.txt
+
+      - name: Prove owner physical app was not modified by build
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP='/Applications/ENDLUME YT Studio PEISOV.app'
+          INFO="$APP/Contents/Info.plist"
+          EXE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$INFO")
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$INFO")" = '10.0.11'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$INFO")" = '10.0.11'
+          test "$(shasum -a 256 "$APP/Contents/MacOS/$EXE" | awk '{print $1}')" = '8f60dbe1dd611db407c2d096aebd4597f6ff2af07c881e2e41d163e19b2b80c0'
+          echo 'OWNER_PHYSICAL_APP_UNCHANGED=PASS'
+
+      - name: Upload corrected signed package
+        uses: actions/upload-artifact@v4
+        with:
+          name: ENDLUME-10.0.12-physical-compatible-macos-aarch64
+          path: corrected-release/*
+          if-no-files-found: error
+          retention-days: 30

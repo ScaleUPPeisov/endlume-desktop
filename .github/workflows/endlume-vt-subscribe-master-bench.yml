@@ -1,0 +1,94 @@
+name: ENDLUME Subscribe VideoToolbox master microbenchmark
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [qa/endlume-d91-vt-master-bench]
+
+permissions:
+  contents: read
+
+jobs:
+  vt-master-benchmark:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: d91ae43391b7b8773c37444a4002c713e4d17b52
+      - name: Assert Apple Silicon
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -s)" = Darwin
+          test "$(uname -m)" = arm64
+          test "$(git rev-parse HEAD)" = d91ae43391b7b8773c37444a4002c713e4d17b52
+      - name: Install ffmpeg and fixtures
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v ffmpeg >/dev/null || brew install ffmpeg
+          ROOT="$RUNNER_TEMP/vt-master-bench"; mkdir -p "$ROOT"
+          echo "ROOT=$ROOT" >> "$GITHUB_ENV"
+          ffmpeg -hide_banner -loglevel error -f lavfi -i "color=c=0x182033:s=1920x1080" -frames:v 1 -y "$ROOT/cover.png"
+          ffmpeg -hide_banner -loglevel error \
+            -f lavfi -i "color=c=0x00ff00:s=640x360:r=60:d=3" \
+            -f lavfi -i "color=c=white:s=180x100:r=60:d=3" \
+            -filter_complex "[0:v][1:v]overlay=x='70+300*t/3':y='120+45*sin(2*PI*t/3)':eval=frame:shortest=1" \
+            -an -c:v libx264 -preset ultrafast -g 180 -pix_fmt yuv420p -r 60 -y "$ROOT/subscribe.mp4"
+          test "$(ffprobe -v error -show_entries stream=nb_frames -of csv=p=0 "$ROOT/subscribe.mp4")" = 180
+      - name: Benchmark exact production graph
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$ROOT/bench.py" <<'PY'
+          import json,os,re,statistics,subprocess,time
+          root=os.environ['ROOT']
+          graph="[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,fps=60,setsar=1[base];[base]split=2[stillbase][subbase];[1:v]fps=60,format=rgba,chromakey=0x00ff00:0.12:0.08,scale=iw*0.3:ih*0.3[fx0];[subbase][fx0]overlay=x='(W-w)*0.15':y='(H-h)*0.65':shortest=1:eof_action=repeat[b1];[stillbase]trim=end_frame=1,setpts=PTS-STARTPTS[still];[b1]trim=end_frame=180,setpts=PTS-STARTPTS[subseg];[still][subseg]concat=n=2:v=1:a=0,format=yuv420p[outv]"
+          common=['ffmpeg','-hide_banner','-loglevel','error','-loop','1','-framerate','60','-i',root+'/cover.png','-stream_loop','-1','-i',root+'/subscribe.mp4','-filter_complex',graph,'-map','[outv]','-frames:v','181','-an','-c:v','hevc_videotoolbox']
+          profiles={
+            'current':['-realtime','0','-prio_speed','1','-q:v','75','-b:v','8M','-maxrate','20M','-bufsize','80M','-g','1','-tag:v','hvc1','-fps_mode','cfr','-r','60','-video_track_timescale','60000'],
+            'rt1_same_quality':['-realtime','1','-prio_speed','1','-q:v','75','-b:v','8M','-maxrate','20M','-bufsize','80M','-g','1','-tag:v','hvc1','-fps_mode','cfr','-r','60','-video_track_timescale','60000'],
+            'rt1_no_vbv':['-realtime','1','-prio_speed','1','-q:v','75','-g','1','-tag:v','hvc1','-fps_mode','cfr','-r','60','-video_track_timescale','60000'],
+            'rt1_power_perf':['-realtime','1','-prio_speed','1','-power_efficient','0','-q:v','75','-b:v','8M','-maxrate','20M','-bufsize','80M','-g','1','-tag:v','hvc1','-fps_mode','cfr','-r','60','-video_track_timescale','60000'],
+          }
+          rows={}
+          # warm encoder once; excluded
+          subprocess.run(common+profiles['current']+['-y',root+'/warm.mp4'],check=True)
+          for name,args in profiles.items():
+              times=[]; files=[]
+              for i in range(3):
+                  out=f'{root}/{name}-{i}.mp4'; t=time.perf_counter(); subprocess.run(common+args+['-y',out],check=True); times.append((time.perf_counter()-t)*1000); files.append(out)
+              probe=json.loads(subprocess.check_output(['ffprobe','-v','error','-show_streams','-of','json',files[-1]],text=True))['streams'][0]
+              rows[name]={'runs_ms':times,'median_ms':statistics.median(times),'min_ms':min(times),'max_ms':max(times),'bytes':os.path.getsize(files[-1]),'codec':probe.get('codec_name'),'fps':probe.get('avg_frame_rate'),'frames':probe.get('nb_frames')}
+          ref=root+'/current-2.mp4'
+          for name in profiles:
+              if name=='current': rows[name]['ssim_vs_current']=1.0; continue
+              cand=root+f'/{name}-2.mp4'
+              q=subprocess.run(['ffmpeg','-hide_banner','-i',ref,'-i',cand,'-lavfi','ssim','-f','null','-'],capture_output=True,text=True)
+              m=re.search(r'All:([0-9.]+)',q.stderr); rows[name]['ssim_vs_current']=float(m.group(1)) if m else None
+          print(json.dumps(rows,indent=2)); json.dump(rows,open(root+'/benchmark.json','w'),indent=2)
+          best=min(rows,key=lambda k:rows[k]['median_ms'])
+          print('BEST_PROFILE='+best); print('BEST_MEDIAN_MS=%.3f'%rows[best]['median_ms']); print('CURRENT_MEDIAN_MS=%.3f'%rows['current']['median_ms'])
+          PY
+          python3 "$ROOT/bench.py"
+      - name: Gate benchmark integrity
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json,os
+          d=json.load(open(os.environ['ROOT']+'/benchmark.json'))
+          for k,v in d.items():
+              assert v['codec']=='hevc' and v['fps']=='60/1' and v['frames']=='181',(k,v)
+          candidates=[(k,v) for k,v in d.items() if k!='current' and (v.get('ssim_vs_current') or 0)>=0.995]
+          assert candidates,'no quality-safe candidate'
+          best=min(candidates,key=lambda kv:kv[1]['median_ms'])
+          print('QUALITY_SAFE_BEST='+best[0]); print('SSIM='+str(best[1]['ssim_vs_current'])); print('MEDIAN_MS='+str(best[1]['median_ms']))
+          PY
+      - name: Upload microbenchmark
+        uses: actions/upload-artifact@v4
+        with:
+          name: endlume-vt-master-benchmark
+          path: ${{ env.ROOT }}/benchmark.json
+          retention-days: 7

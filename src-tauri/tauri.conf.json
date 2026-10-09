@@ -75,7 +75,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEU5NDU1MkRFODQyRUM0OTUKUldTVnhDNkUzbEpGNmZmNUdyb2lUZVM0enU3WkVzdDlsSCtxcVpobitZc3Z0ZWMxQ1hucFZXRUUK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEQzMjJDRDUwNDkxRDM1MDAKUldRQU5SMUpVTTBpMCs2TTF5UjZkS1h3K0N5UUlBb0srYmVtN1lianVCdEY2ZkxuN2FlM1AyQmoK",
       "endpoints": [
         "https://endlume-updates.vercel.app/api/update?target={{target}}&arch={{arch}}&current_version={{current_version}}"
       ]

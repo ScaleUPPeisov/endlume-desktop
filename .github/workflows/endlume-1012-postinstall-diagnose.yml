@@ -1,0 +1,42 @@
+name: ENDLUME 10.0.12 post-install diagnose
+
+on:
+  push:
+    branches: [release]
+    paths: ['.github/workflows/endlume-1012-postinstall-diagnose.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: [self-hosted, macOS, ARM64]
+    timeout-minutes: 5
+    steps:
+      - name: Inspect preserved updater test tree
+        shell: bash
+        run: |
+          set -u
+          ROOT="$RUNNER_TEMP/endlume-tauri-v2-37954809084"
+          echo "ROOT=$ROOT"
+          find "$ROOT" -maxdepth 5 -type f -name Info.plist -print 2>/dev/null || true
+          echo '--- APP DIRS ---'
+          find "$ROOT" -maxdepth 4 -type d -name '*.app' -print 2>/dev/null || true
+          echo '--- PLIST VERSIONS ---'
+          while IFS= read -r p; do
+            echo "PLIST=$p"
+            /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$p" 2>/dev/null || true
+            /usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$p" 2>/dev/null || true
+            /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$p" 2>/dev/null || true
+          done < <(find "$ROOT" -maxdepth 6 -type f -name Info.plist -print 2>/dev/null)
+          echo '--- RECEIPT ---'
+          cat "$ROOT/receipt.txt" 2>/dev/null || true
+          echo '--- TOP TREE ---'
+          find "$ROOT" -maxdepth 3 -print 2>/dev/null | head -n 200 || true
+          echo '--- OWNER ---'
+          APP='/Applications/ENDLUME YT Studio PEISOV.app'
+          if [ -f "$APP/Contents/Info.plist" ]; then
+            /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist"
+            /usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Contents/Info.plist"
+            shasum -a 256 "$APP/Contents/MacOS/endlume"
+          fi

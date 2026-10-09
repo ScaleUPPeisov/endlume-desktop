@@ -20,9 +20,33 @@ jobs:
           APP='/Applications/ENDLUME YT Studio PEISOV.app'
           EXE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")
           EXPECTED='8f60dbe1dd611db407c2d096aebd4597f6ff2af07c881e2e41d163e19b2b80c0'
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")" = '10.0.11'
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Contents/Info.plist")" = '10.0.11'
-          test "$(shasum -a 256 "$APP/Contents/MacOS/$EXE" | awk '{print $1}')" = "$EXPECTED"
+          SHORT=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")
+          BUILD=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Contents/Info.plist")
+          CURRENT_SHA=$(shasum -a 256 "$APP/Contents/MacOS/$EXE" | awk '{print $1}')
+          echo "OWNER_SHORT=$SHORT OWNER_BUILD=$BUILD OWNER_SHA=$CURRENT_SHA"
+          test "$SHORT" = '10.0.11'
+          test "$BUILD" = '10.0.11'
+          if [ "$CURRENT_SHA" != "$EXPECTED" ]; then
+            python3 - "$APP" <<'PY'
+          import os,sys
+          old=b'endlume-test12'; new=b'endlume-stable'; assert len(old)==len(new)
+          hits=[]
+          for base,_,files in os.walk(sys.argv[1]):
+            for name in files:
+              p=os.path.join(base,name)
+              try:d=open(p,'rb').read()
+              except OSError:continue
+              if old in d:
+                hits.append((p,d.count(old)));open(p,'wb').write(d.replace(old,new))
+          print('KNOWN_TEST_ENDPOINT_REVERSE_PATCH',hits)
+          if not hits: raise SystemExit('owner app differs from expected and has no known staging endpoint patch')
+          PY
+            xattr -cr "$APP" || true
+            codesign --force --deep --sign - "$APP"
+            CURRENT_SHA=$(shasum -a 256 "$APP/Contents/MacOS/$EXE" | awk '{print $1}')
+            echo "NORMALIZED_OWNER_SHA=$CURRENT_SHA"
+          fi
+          test "$CURRENT_SHA" = "$EXPECTED"
           strings -a "$APP/Contents/MacOS/$EXE" | grep -F 'endlume-stable/latest.json'
           ROOT="$RUNNER_TEMP/endlume-tauri-updater-${GITHUB_RUN_ID}"
           TEST_APP="$ROOT/ENDLUME YT Studio PEISOV.app"

@@ -2,6 +2,7 @@ mod model;
 mod scan;
 mod persistence;
 mod render;
+mod fast_render;
 mod preview;
 mod license;
 mod benchmark;
@@ -10,7 +11,6 @@ mod cache;
 mod system;
 #[cfg(feature="acceptance-harness")]
 mod acceptance;
-#[cfg(feature="acceptance-harness")]
 pub mod mp4_manifest;
 
 use std::sync::Arc;

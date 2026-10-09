@@ -78,13 +78,14 @@ jobs:
 
       - name: Build macOS ARM64 app with historical ENDLUME signer
         shell: bash
-        env:
-          TAURI_SIGNING_PRIVATE_KEY_PATH: /Users/peisov/.endlume-updater/endlume.key
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
         run: |
           set -euo pipefail
-          test -s "$TAURI_SIGNING_PRIVATE_KEY_PATH"
+          KEY='/Users/peisov/.endlume-updater/endlume.key'
+          test -s "$KEY"
+          export TAURI_SIGNING_PRIVATE_KEY="$(cat "$KEY")"
+          export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=''
           npx tauri build --target aarch64-apple-darwin --bundles app
+          unset TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD
 
       - name: Produce exact corrected stable updater package and verify physical trust root
         shell: bash
@@ -100,9 +101,8 @@ jobs:
           /usr/bin/lipo -archs "$APP/Contents/MacOS/$EXE" | grep -qw arm64
           /usr/bin/codesign --verify --deep --strict "$APP"
 
-          # The corrected 10.0.12 itself must keep the exact physical 10.0.11 trust root.
           python3 - "$APP/Contents/MacOS/$EXE" "$RUNNER_TEMP/physical.pub" <<'PY'
-          import sys,base64,hashlib
+          import sys,base64
           data=open(sys.argv[1],'rb').read(); prefix=b'dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6I'; found=[]; start=0
           while True:
               i=data.find(prefix,start)

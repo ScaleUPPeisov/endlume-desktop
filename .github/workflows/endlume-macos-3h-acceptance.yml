@@ -1,4 +1,4 @@
-name: ENDLUME macOS 3h acceptance baseline
+name: ENDLUME macOS production 3h fast-path acceptance
 
 on:
   workflow_dispatch:
@@ -14,16 +14,14 @@ permissions:
   contents: read
 
 jobs:
-  baseline-macos-arm64:
+  production-fast-macos-arm64:
     runs-on: macos-15
     timeout-minutes: 90
     steps:
-      - name: Checkout exact branch state
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
-      - name: Assert Apple Silicon and source ancestry
+      - name: Assert Apple Silicon and stable ancestry
         shell: bash
         run: |
           set -euo pipefail
@@ -31,146 +29,102 @@ jobs:
           test "$(uname -m)" = arm64
           git merge-base --is-ancestor e2896da7702891a5b760ecd4daad4fd54bc90b82 HEAD
           echo "HEAD=$(git rev-parse HEAD)"
-          echo "BASE=e2896da7702891a5b760ecd4daad4fd54bc90b82"
-
       - name: Install build dependencies
         shell: bash
         run: |
           set -euo pipefail
           command -v ffmpeg >/dev/null || brew install ffmpeg
-          command -v ffprobe >/dev/null || brew install ffmpeg
           npm install --no-audit --no-fund
           rustup target add aarch64-apple-darwin
           mkdir -p src-tauri/binaries
           cp "$(command -v ffmpeg)" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
           cp "$(command -v ffprobe)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
           chmod +x src-tauri/binaries/*
-
       - name: Frontend and Rust compile gates
         shell: bash
         run: |
           set -euo pipefail
           npm run build
           cargo check --manifest-path src-tauri/Cargo.toml --target aarch64-apple-darwin --features acceptance-harness
-
-      - name: Build acceptance-only app bundle
+      - name: Build actual acceptance app bundle
         shell: bash
         run: |
           set -euo pipefail
           npx tauri build --target aarch64-apple-darwin --bundles app --features acceptance-harness --config '{"bundle":{"createUpdaterArtifacts":false}}'
-
-      - name: Generate real 3-hour acceptance media
+      - name: Generate exact 3-hour production-profile media
         shell: bash
         run: |
           set -euo pipefail
-          ROOT="$RUNNER_TEMP/endlume-3h"
-          MEDIA="$ROOT/project"
-          OUT="$ROOT/out"
+          ROOT="$RUNNER_TEMP/endlume-3h-fast"
+          MEDIA="$ROOT/project"; OUT="$ROOT/out"
           mkdir -p "$MEDIA" "$OUT"
           ffmpeg -hide_banner -loglevel error -f lavfi -i "color=c=0x182033:s=1920x1080" -frames:v 1 -y "$MEDIA/cover.png"
           for i in $(seq -w 1 12); do
-            n=$((10#$i))
-            hz=$((180 + n * 23))
+            n=$((10#$i)); hz=$((180+n*23))
             ffmpeg -hide_banner -loglevel error -f lavfi -i "sine=frequency=${hz}:sample_rate=48000:duration=900" -c:a libmp3lame -b:a 320k -ar 48000 -ac 2 -y "$MEDIA/track-${i}.mp3"
           done
-          ffmpeg -hide_banner -loglevel error -f lavfi -i "color=c=black:s=640x360:r=60:d=6" -vf "drawbox=x='mod(t*90,560)':y=120:w=80:h=80:color=white@0.85:t=fill" -an -c:v libx264 -preset ultrafast -pix_fmt yuv420p -y "$ROOT/fx-screen.mp4"
-          ffmpeg -hide_banner -loglevel error -f lavfi -i "color=c=0x00ff00:s=640x360:r=60:d=6" -vf "drawbox=x='mod(t*100,540)':y=130:w=100:h=100:color=red:t=fill" -an -c:v libx264 -preset ultrafast -pix_fmt yuv420p -y "$ROOT/fx-chroma.mp4"
-          ffmpeg -hide_banner -loglevel error -f lavfi -i "color=c=black:s=640x360:r=60:d=6" -vf "drawbox=x=250:y='mod(t*80,280)':w=140:h=80:color=white:t=fill" -an -c:v libx264 -preset ultrafast -pix_fmt yuv420p -y "$ROOT/fx-luma.mp4"
-          ffmpeg -hide_banner -loglevel error -f lavfi -i "color=c=0x00ff00:s=480x180:r=60:d=4" -vf "drawbox=x=40:y=40:w=400:h=100:color=white:t=fill" -an -c:v libx264 -preset ultrafast -pix_fmt yuv420p -y "$ROOT/fx-subscribe.mp4"
-          echo "ROOT=$ROOT" >> "$GITHUB_ENV"
-          echo "MEDIA=$MEDIA" >> "$GITHUB_ENV"
-          echo "OUT=$OUT" >> "$GITHUB_ENV"
-
-      - name: Create production-profile QueueJob
+          echo "ROOT=$ROOT" >> "$GITHUB_ENV"; echo "MEDIA=$MEDIA" >> "$GITHUB_ENV"; echo "OUT=$OUT" >> "$GITHUB_ENV"
+      - name: Create fast-path QueueJob
         shell: bash
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import json, os, glob
+          import json,os,glob
           root=os.environ['ROOT']; media=os.environ['MEDIA']; out=os.environ['OUT']
-          tracks=sorted(glob.glob(os.path.join(media,'track-*.mp3')))
-          def fx(i,name,source,mode,**kw):
-              d=dict(id=i,name=name,source=source,enabled=True,mode=mode,keyColor='#00ff00',similarity=0.18,blend=0.08,despill=0.0,lumaThreshold=0.12,lumaTolerance=0.12,saturation=1.0,x=0.5,y=0.5,scale=1.0,fullscreen=True,previewFrameTime=0.0,startSec=0.0,endSec=None,cacheKey=None,cacheReady=None)
-              d.update(kw); return d
-          effects=[
-              fx('fx-screen','Screen',os.path.join(root,'fx-screen.mp4'),'screen'),
-              fx('fx-chroma','Chroma',os.path.join(root,'fx-chroma.mp4'),'chroma',fullscreen=False,scale=0.55,x=0.75,y=0.72),
-              fx('fx-luma','Luma',os.path.join(root,'fx-luma.mp4'),'luma',fullscreen=False,scale=0.45,x=0.12,y=0.10),
-          ]
-          subfx=fx('fx-sub','Subscribe',os.path.join(root,'fx-subscribe.mp4'),'chroma',fullscreen=False,scale=0.55,x=0.5,y=0.78)
           job={
-            'project':{'id':'acceptance-3h','name':'ENDLUME 3H Acceptance','path':media,'media':[os.path.join(media,'cover.png')],'audio':tracks,'valid':True,'error':None},
+            'project':{'id':'acceptance-fast-3h','name':'ENDLUME 3H Fast Acceptance','path':media,'media':[os.path.join(media,'cover.png')],'audio':sorted(glob.glob(os.path.join(media,'track-*.mp3'))),'valid':True,'error':None},
             'settings':{'width':1920,'height':1080,'fps':60,'codec':'h265','bitrateMbps':30.0,'durationHours':3.0,'durationMode':'whole-track','loopMode':'image','crossfadeSec':0.0,'normalizeLufs':False,'outputDir':out,'preset':'fast','encoderPreference':'auto'},
-            'effects':effects,
-            'subscribes':[dict(subfx,firstAtSec=600.0,secondAtSec=3600.0,repeatEverySec=3600.0)],
-            'ambient':None,
+            'effects':[],'subscribes':[],'ambient':None,
           }
-          path=os.path.join(root,'job.json')
-          with open(path,'w') as f: json.dump(job,f,indent=2)
-          print(path)
+          json.dump(job,open(os.path.join(root,'job.json'),'w'),indent=2)
           PY
-
-      - name: Run the actual ENDLUME render_job baseline
+      - name: Run actual built ENDLUME app
         shell: bash
         run: |
           set +e
           APP="$(find src-tauri/target/aarch64-apple-darwin/release/bundle/macos -maxdepth 1 -type d -name '*.app' -print -quit)"
           BIN="$APP/Contents/MacOS/endlume"
-          echo "APP=$APP"
-          echo "BIN=$BIN"
-          if [ ! -x "$BIN" ]; then
-            echo "ACTUAL_APP_BINARY_NOT_FOUND" | tee "$ROOT/app.log"
-            find "$APP/Contents/MacOS" -maxdepth 1 -type f -print | sort | tee -a "$ROOT/app.log"
-            exit 0
-          fi
-          ENDLUME_ACCEPTANCE_JOB="$ROOT/job.json" \
-          ENDLUME_ACCEPTANCE_RECEIPT="$ROOT/receipt.json" \
-          ENDLUME_SOURCE_HEAD="e2896da7702891a5b760ecd4daad4fd54bc90b82" \
-          "$BIN" > "$ROOT/app.log" 2>&1
-          rc=$?
-          echo "APP_EXIT_CODE=$rc" | tee -a "$ROOT/app.log"
+          echo "APP=$APP"; echo "BIN=$BIN"
+          test -x "$BIN" || { echo ACTUAL_APP_BINARY_NOT_FOUND | tee "$ROOT/app.log"; exit 0; }
+          ENDLUME_ACCEPTANCE_JOB="$ROOT/job.json" ENDLUME_ACCEPTANCE_RECEIPT="$ROOT/receipt.json" ENDLUME_SOURCE_HEAD="$GITHUB_SHA" "$BIN" > "$ROOT/app.log" 2>&1
+          echo "APP_EXIT_CODE=$?" >> "$ROOT/app.log"
           test -f "$ROOT/receipt.json" && cat "$ROOT/receipt.json" || true
           exit 0
-
-      - name: Evaluate hard-gate evidence without faking PASS
+      - name: Hard-gate actual output
         if: always()
         shell: bash
         run: |
-          set +e
+          set -euo pipefail
           python3 - <<'PY'
-          import json, os
-          p=os.path.join(os.environ.get('ROOT','/tmp'),'receipt.json')
-          if not os.path.exists(p):
-              print('BASELINE_STATUS=NO_RECEIPT'); raise SystemExit(0)
-          d=json.load(open(p))
-          if d.get('status')!='ok':
-              print('BASELINE_STATUS=RENDER_ERROR')
-              print(d.get('error','unknown')); raise SystemExit(0)
-          r=d['result']; probe=r.get('probe',{}); streams=probe.get('streams',[])
-          v=next((x for x in streams if x.get('codec_type')=='video'),{})
-          a=next((x for x in streams if x.get('codec_type')=='audio'),{})
-          mb=r['output_bytes']/1_000_000
-          seeks=all(x.get('ok') for x in r.get('seek_checks',[]))
-          decode=bool(r.get('full_decode',{}).get('ok'))
-          print(f"EXPORT_SECONDS={r['export_seconds']:.3f}")
-          print(f"OUTPUT_MB={mb:.2f}")
-          print(f"OUTPUT_DURATION={r['output_duration']:.3f}")
-          print(f"VIDEO_CODEC={v.get('codec_name')}")
-          print(f"RESOLUTION={v.get('width')}x{v.get('height')}")
-          print(f"FPS={v.get('avg_frame_rate') or v.get('r_frame_rate')}")
-          print(f"AUDIO_CODEC={a.get('codec_name')}")
-          print(f"AUDIO_BITRATE={a.get('bit_rate')}")
-          print(f"FULL_DECODE={'PASS' if decode else 'FAIL'}")
-          print(f"SEEK={'PASS' if seeks else 'FAIL'}")
-          print(f"TARGET_10S={'PASS' if r['export_seconds']<=10 else 'FAIL'}")
-          print(f"TARGET_400_600_MB={'PASS' if 400<=mb<=600 else 'FAIL'}")
+          import json,os,sys
+          p=os.path.join(os.environ['ROOT'],'receipt.json')
+          if not os.path.exists(p): print('ACCEPTANCE=FAIL no receipt'); sys.exit(1)
+          d=json.load(open(p));
+          if d.get('status')!='ok': print('ACCEPTANCE=FAIL',d); sys.exit(1)
+          r=d['result']; streams=r['probe']['streams']; v=next(x for x in streams if x.get('codec_type')=='video'); a=next(x for x in streams if x.get('codec_type')=='audio')
+          mb=r['output_bytes']/1_000_000; seeks=all(x.get('ok') for x in r['seek_checks']); decode=bool(r['full_decode']['ok'])
+          checks={
+            'FAST_PATH_USED':bool(r.get('fast_path_used')),
+            'DURATION':abs(r['output_duration']-10800.0)<=0.1,
+            'SIZE_400_600_MB':400<=mb<=600,
+            'HEVC':v.get('codec_name')=='hevc',
+            'RESOLUTION':(v.get('width'),v.get('height'))==(1920,1080),
+            'FPS':(v.get('avg_frame_rate') or v.get('r_frame_rate'))=='60/1',
+            'MP3_COPY':a.get('codec_name')=='mp3',
+            'FULL_DECODE':decode,
+            'SEEKS':seeks,
+            'TEN_SECONDS':r['export_seconds']<=10.0,
+          }
+          print(f"EXPORT_SECONDS={r['export_seconds']:.6f}"); print(f"OUTPUT_BYTES={r['output_bytes']}"); print(f"OUTPUT_MB={mb:.3f}"); print(f"OUTPUT_DURATION={r['output_duration']:.6f}")
+          for k,vv in checks.items(): print(f"{k}={'PASS' if vv else 'FAIL'}")
+          if not all(checks.values()): sys.exit(1)
+          print('PRODUCTION_FAST_3H=PASS')
           PY
-
-      - name: Upload acceptance evidence
+      - name: Upload evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: endlume-macos-3h-baseline-evidence
+          name: endlume-production-fast-3h-evidence
           path: |
             ${{ env.ROOT }}/receipt.json
             ${{ env.ROOT }}/app.log

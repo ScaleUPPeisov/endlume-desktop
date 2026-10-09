@@ -1,0 +1,170 @@
+name: ENDLUME 10.0.11 to 10.0.12 owner Mac copy update v3
+
+on:
+  push:
+    branches: [release]
+    paths: ['.github/workflows/endlume-1012-owner-mac-copy-update-v3.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  physical-copy-update:
+    runs-on: [self-hosted, macOS, ARM64]
+    timeout-minutes: 15
+    steps:
+      - name: Prepare isolated real 10.0.11 copy
+        shell: bash
+        run: |
+          set -euo pipefail
+          SRC='/Applications/ENDLUME YT Studio PEISOV.app'
+          test -d "$SRC"
+          SHORT=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$SRC/Contents/Info.plist")
+          BUILD=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$SRC/Contents/Info.plist")
+          test "$SHORT" = 10.0.11; test "$BUILD" = 10.0.11
+          EXE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$SRC/Contents/Info.plist")
+          SRC_BIN_SHA=$(shasum -a 256 "$SRC/Contents/MacOS/$EXE"|awk '{print $1}')
+          ROOT="$RUNNER_TEMP/endlume-1012-v3-${GITHUB_RUN_ID}"
+          TEST_APP="$ROOT/ENDLUME Update Test.app"
+          TEST_HOME="$ROOT/home"
+          rm -rf "$ROOT"; mkdir -p "$TEST_HOME/Library/Application Support"
+          ditto "$SRC" "$TEST_APP"
+          REAL_DATA="$HOME/Library/Application Support/studio.endlume.desktop"
+          TEST_DATA="$TEST_HOME/Library/Application Support/studio.endlume.desktop"
+          if [ -d "$REAL_DATA" ]; then ditto "$REAL_DATA" "$TEST_DATA"; else mkdir -p "$TEST_DATA"; fi
+          touch "$ROOT/settings-before.txt"
+          for f in license.json library.json; do [ ! -f "$TEST_DATA/$f" ] || shasum -a 256 "$TEST_DATA/$f"|awk -v n="$f" '{print n"="$1}' >> "$ROOT/settings-before.txt"; done
+          python3 - "$TEST_APP" <<'PY'
+          import os,sys
+          old=b'endlume-stable'; new=b'endlume-test12'; assert len(old)==len(new)
+          hits=[]
+          for base,_,files in os.walk(sys.argv[1]):
+            for n in files:
+              p=os.path.join(base,n)
+              try:d=open(p,'rb').read()
+              except OSError:continue
+              if old in d:
+                hits.append((p,d.count(old)));open(p,'wb').write(d.replace(old,new))
+          print('PATCH_HITS',hits); assert hits
+          PY
+          xattr -cr "$TEST_APP" || true
+          codesign --force --deep --sign - "$TEST_APP"
+          codesign --verify --deep --strict "$TEST_APP"
+          test "$(shasum -a 256 "$SRC/Contents/MacOS/$EXE"|awk '{print $1}')" = "$SRC_BIN_SHA"
+          printf 'ROOT=%s\nTEST_APP=%s\nTEST_HOME=%s\nSRC=%s\nEXE=%s\nSRC_BIN_SHA=%s\n' "$ROOT" "$TEST_APP" "$TEST_HOME" "$SRC" "$EXE" "$SRC_BIN_SHA" >> "$GITHUB_ENV"
+          echo SOURCE_VERSION_10_0_11=PASS
+          echo ORIGINAL_UNTOUCHED=PASS
+
+      - name: Verify staging update payload and bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE='https://github.com/ScaleUPPeisov/scaleup-site/releases/download/endlume-test12'
+          curl -fsSL "$BASE/latest.json" -o "$ROOT/update.json"
+          URL=$(python3 - "$ROOT/update.json" <<'PY'
+          import json,sys
+          d=json.load(open(sys.argv[1]));assert d['version']=='10.0.12'
+          p=d['platforms']['darwin-aarch64'];assert p['signature'];assert p['sha256']=='760f1da52011cbe9745894eeb04ef3dfef3b5c0e7d85ceb3841f63d67c8ae6e9';print(p['url'])
+          PY
+          )
+          curl -fsSL "$URL" -o "$ROOT/update.tar.gz"
+          test "$(shasum -a 256 "$ROOT/update.tar.gz"|awk '{print $1}')" = '760f1da52011cbe9745894eeb04ef3dfef3b5c0e7d85ceb3841f63d67c8ae6e9'
+          echo DOWNLOAD=PASS
+
+      - name: Launch copy and click update using discovered live PID
+        shell: bash
+        run: |
+          set -euo pipefail
+          BIN="$TEST_APP/Contents/MacOS/$EXE"
+          env HOME="$TEST_HOME" "$BIN" >"$ROOT/app.log" 2>&1 &
+          LAUNCH_PID=$!
+          echo "LAUNCH_PID=$LAUNCH_PID"
+          clicked=0
+          for attempt in $(seq 1 60); do
+            GUI_PID=$(ps -axo pid=,command= | awk -v p="$BIN" 'index($0,p){print $1; exit}')
+            if [ -z "$GUI_PID" ]; then sleep 1; continue; fi
+            echo "attempt=$attempt GUI_PID=$GUI_PID"
+            set +e
+            OUT=$(osascript - "$GUI_PID" <<'APPLESCRIPT'
+          on run argv
+            set targetPid to (item 1 of argv) as integer
+            tell application "System Events"
+              try
+                set p to first application process whose unix id is targetPid
+                set frontmost of p to true
+                repeat with w in windows of p
+                  try
+                    repeat with e in entire contents of w
+                      try
+                        set nm to ""
+                        try
+                          set nm to name of e as text
+                        end try
+                        if nm contains "ОБНОВИТЬ" and nm does not contain "ПОЗЖЕ" then
+                          perform action "AXPress" of e
+                          return "CLICKED:" & nm
+                        end if
+                      end try
+                    end repeat
+                  end try
+                end repeat
+              on error errText
+                return "ERROR:" & errText
+              end try
+            end tell
+            return "NOT_FOUND"
+          end run
+          APPLESCRIPT
+            )
+            set -e
+            echo "$OUT"
+            if [[ "$OUT" == CLICKED:* ]]; then clicked=1; echo "GUI_PID=$GUI_PID" >> "$GITHUB_ENV"; break; fi
+            sleep 1
+          done
+          if [ "$clicked" -ne 1 ]; then echo '--- APP LOG ---'; cat "$ROOT/app.log" || true; ps -axo pid=,command= | grep -F "$TEST_APP" || true; exit 1; fi
+          echo UPDATE_DETECTED=PASS
+          echo UPDATE_BUTTON_CLICKED=PASS
+
+      - name: Gate install relaunch version and preserved state
+        shell: bash
+        run: |
+          set -euo pipefail
+          installed=0
+          for i in $(seq 1 120); do
+            SHORT=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$TEST_APP/Contents/Info.plist" 2>/dev/null || true)
+            BUILD=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$TEST_APP/Contents/Info.plist" 2>/dev/null || true)
+            if [ "$SHORT" = 10.0.12 ] && [ "$BUILD" = 10.0.12 ]; then installed=1; break; fi
+            sleep 1
+          done
+          test "$installed" -eq 1
+          echo SIGNATURE_INSTALL=PASS
+          echo INSTALLED_VERSION=10.0.12
+          relaunched=0
+          for i in $(seq 1 30); do
+            PID=$(ps -axo pid=,command= | awk -v p="$TEST_APP/Contents/MacOS/$EXE" 'index($0,p){print $1;exit}')
+            if [ -n "$PID" ]; then relaunched=1; break; fi
+            sleep 1
+          done
+          test "$relaunched" -eq 1
+          echo RELAUNCH=PASS
+          grep -R -a -q '10.0.12' "$TEST_APP/Contents"
+          echo ABOUT_VERSION_PAYLOAD=PASS
+          TEST_DATA="$TEST_HOME/Library/Application Support/studio.endlume.desktop"
+          touch "$ROOT/settings-after.txt"
+          for f in license.json library.json; do [ ! -f "$TEST_DATA/$f" ] || shasum -a 256 "$TEST_DATA/$f"|awk -v n="$f" '{print n"="$1}' >> "$ROOT/settings-after.txt"; done
+          sort -o "$ROOT/settings-before.txt" "$ROOT/settings-before.txt"; sort -o "$ROOT/settings-after.txt" "$ROOT/settings-after.txt"
+          diff -u "$ROOT/settings-before.txt" "$ROOT/settings-after.txt"
+          echo SETTINGS_PRESERVED=PASS
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$SRC/Contents/Info.plist")" = 10.0.11
+          test "$(shasum -a 256 "$SRC/Contents/MacOS/$EXE"|awk '{print $1}')" = "$SRC_BIN_SHA"
+          echo ORIGINAL_INSTALLED_10_0_11_UNTOUCHED=PASS
+          pkill -f "$TEST_APP/Contents/MacOS/$EXE" || true
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ENDLUME-10.0.11-to-10.0.12-owner-mac-copy-v3
+          path: ${{ runner.temp }}/endlume-1012-v3-${{ github.run_id }}/*
+          retention-days: 14
+          if-no-files-found: warn

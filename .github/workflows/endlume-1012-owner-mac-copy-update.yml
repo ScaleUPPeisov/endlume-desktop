@@ -98,11 +98,17 @@ jobs:
           set -euo pipefail
           BIN="$TEST_APP/Contents/MacOS/$EXE"
           env HOME="$TEST_HOME" "$BIN" > "$ROOT/app-before-update.log" 2>&1 &
-          PID=$!
-          echo "OLD_PID=$PID" >> "$GITHUB_ENV"
+          START_PID=$!
+          echo "START_PID=$START_PID"
           clicked=0
-          for attempt in $(seq 1 45); do
-            if ! kill -0 "$PID" 2>/dev/null; then echo 'copied app exited before updater click'; cat "$ROOT/app-before-update.log"; exit 1; fi
+          for attempt in $(seq 1 60); do
+            PID=$(ps -axo pid=,command= | awk -v needle="$TEST_APP/Contents/MacOS/$EXE" 'index($0,needle){print $1; exit}')
+            if [ -z "${PID:-}" ]; then
+              echo "attempt=$attempt waiting_for_relaunched_app_process"
+              sleep 1
+              continue
+            fi
+            echo "attempt=$attempt active_pid=$PID"
             set +e
             OUT=$(osascript - "$PID" <<'APPLESCRIPT'
           on run argv
@@ -141,10 +147,15 @@ jobs:
             RC=$?
             set -e
             echo "attempt=$attempt rc=$RC result=$OUT"
-            if [[ "$OUT" == CLICKED:* ]]; then clicked=1; break; fi
+            if [[ "$OUT" == CLICKED:* ]]; then clicked=1; echo "UPDATE_PID=$PID" >> "$GITHUB_ENV"; break; fi
             sleep 1
           done
-          test "$clicked" -eq 1
+          if [ "$clicked" -ne 1 ]; then
+            echo 'native update button was not detected/clicked'
+            ps -axo pid=,command= | grep -F "$TEST_APP" || true
+            cat "$ROOT/app-before-update.log" || true
+            exit 1
+          fi
           echo UPDATE_DETECTED=PASS
           echo UPDATE_BUTTON_CLICKED=PASS
 
@@ -166,12 +177,9 @@ jobs:
           echo CFBundleShortVersionString=10.0.12
           echo CFBundleVersion=10.0.12
           sleep 3
-          if ps -axo command= | grep -F "$TEST_APP/Contents/MacOS/$EXE" | grep -v grep >/dev/null; then
-            echo RELAUNCH=PASS
-          else
-            echo 'updated test copy installed but relaunch process not found'
-            exit 1
-          fi
+          NEW_PID=$(ps -axo pid=,command= | awk -v needle="$TEST_APP/Contents/MacOS/$EXE" 'index($0,needle){print $1; exit}')
+          test -n "${NEW_PID:-}"
+          echo "RELAUNCH=PASS pid=$NEW_PID"
           if grep -R -a -q '10.0.12' "$TEST_APP/Contents"; then echo ABOUT_VERSION_PAYLOAD=PASS; else exit 1; fi
 
       - name: Verify copied settings survived and original app remains 10.0.11

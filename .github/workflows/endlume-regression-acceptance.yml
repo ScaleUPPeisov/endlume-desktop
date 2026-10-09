@@ -140,22 +140,22 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          EXT="$ROOT/extended"; MEDIA="$EXT/project"; mkdir -p "$MEDIA" "$EXT/logs"
+          EXT="$ROOT/extended"; MEDIA="$EXT/project"; FX="$EXT/effects"; mkdir -p "$MEDIA" "$FX" "$EXT/logs"
           pmset -g batt > "$EXT/power-before.txt" 2>&1 || true
           pmset -g therm > "$EXT/thermal-before.txt" 2>&1 || true
           ffmpeg -hide_banner -loglevel error -f lavfi -i "color=c=0x182033:s=1920x1080" -frames:v 1 -y "$MEDIA/cover.png"
           ffmpeg -hide_banner -loglevel error -f lavfi -i "sine=frequency=440:sample_rate=48000:duration=12" -c:a libmp3lame -b:a 320k -ar 48000 -ac 2 -y "$MEDIA/audio12.mp3"
           ffmpeg -hide_banner -loglevel error -f lavfi -i "sine=frequency=520:sample_rate=48000:duration=14" -c:a libmp3lame -b:a 320k -ar 48000 -ac 2 -y "$MEDIA/audio14.mp3"
-          ffmpeg -hide_banner -loglevel error -f lavfi -i "color=c=black:s=640x360:r=60:d=5" -vf "drawbox=x='260+180*sin(2*PI*t/5)':y='130+70*cos(2*PI*t/5)':w=100:h=100:color=white:t=fill" -an -c:v libx264 -preset ultrafast -g 300 -pix_fmt yuv420p -r 60 -y "$MEDIA/screen.mp4"
-          ffmpeg -hide_banner -loglevel error -f lavfi -i "color=c=0x00ff00:s=640x360:r=60:d=5" -vf "drawbox=x='250+160*sin(2*PI*t/5)':y='120+60*cos(2*PI*t/5)':w=120:h=120:color=red:t=fill" -an -c:v libx264 -preset ultrafast -g 300 -pix_fmt yuv420p -r 60 -y "$MEDIA/chromakey.mp4"
-          ffmpeg -hide_banner -loglevel error -f lavfi -i "color=c=black:s=640x360:r=60:d=5" -vf "drawbox=x='250+160*sin(2*PI*t/5)':y='120+60*cos(2*PI*t/5)':w=120:h=120:color=white:t=fill" -an -c:v libx264 -preset ultrafast -g 300 -pix_fmt yuv420p -r 60 -y "$MEDIA/luma.mp4"
-          ffmpeg -hide_banner -loglevel error -f lavfi -i "color=c=0x00ff00:s=640x360:r=60:d=3" -vf "drawbox=x=220:y=120:w=200:h=120:color=white:t=fill" -an -c:v libx264 -preset ultrafast -g 180 -pix_fmt yuv420p -r 60 -y "$MEDIA/subscribe.mp4"
+          ffmpeg -hide_banner -loglevel error -f lavfi -i "color=c=black:s=640x360:r=60:d=5" -vf "drawbox=x='260+180*sin(2*PI*t/5)':y='130+70*cos(2*PI*t/5)':w=100:h=100:color=white:t=fill" -an -c:v libx264 -preset ultrafast -g 300 -pix_fmt yuv420p -r 60 -y "$FX/screen.mp4"
+          ffmpeg -hide_banner -loglevel error -f lavfi -i "color=c=0x00ff00:s=640x360:r=60:d=5" -vf "drawbox=x='250+160*sin(2*PI*t/5)':y='120+60*cos(2*PI*t/5)':w=120:h=120:color=red:t=fill" -an -c:v libx264 -preset ultrafast -g 300 -pix_fmt yuv420p -r 60 -y "$FX/chromakey.mp4"
+          ffmpeg -hide_banner -loglevel error -f lavfi -i "color=c=black:s=640x360:r=60:d=5" -vf "drawbox=x='250+160*sin(2*PI*t/5)':y='120+60*cos(2*PI*t/5)':w=120:h=120:color=white:t=fill" -an -c:v libx264 -preset ultrafast -g 300 -pix_fmt yuv420p -r 60 -y "$FX/luma.mp4"
+          ffmpeg -hide_banner -loglevel error -f lavfi -i "color=c=0x00ff00:s=640x360:r=60:d=3" -vf "drawbox=x=220:y=120:w=200:h=120:color=white:t=fill" -an -c:v libx264 -preset ultrafast -g 180 -pix_fmt yuv420p -r 60 -y "$FX/subscribe.mp4"
           python3 - <<'PY'
           import json,os
-          ext=os.path.join(os.environ['ROOT'],'extended'); media=os.path.join(ext,'project')
+          ext=os.path.join(os.environ['ROOT'],'extended'); media=os.path.join(ext,'project'); fxdir=os.path.join(ext,'effects')
           def settings(out,duration,mode='whole-track',crossfade=0.0):return {'width':1920,'height':1080,'fps':60,'codec':'h265','bitrateMbps':8.0,'durationHours':duration/3600.0,'durationMode':mode,'loopMode':'image','crossfadeSec':crossfade,'normalizeLufs':False,'outputDir':os.path.join(ext,out),'preset':'fast','encoderPreference':'auto'}
           def project(pid,audio):return {'id':pid,'name':pid,'path':media,'media':[os.path.join(media,'cover.png')],'audio':[os.path.join(media,audio)],'valid':True,'error':None}
-          def effect(mode,source):return {'id':mode,'name':mode,'source':os.path.join(media,source),'enabled':True,'mode':mode,'keyColor':'#00ff00','similarity':0.12,'blend':0.08,'despill':1.0,'lumaThreshold':0.10,'lumaTolerance':0.05,'saturation':1.0,'x':0.20,'y':0.65,'scale':0.50,'fullscreen':mode=='screen','previewFrameTime':0.0,'startSec':0.0,'endSec':None,'cacheKey':None,'cacheReady':None}
+          def effect(mode,source):return {'id':mode,'name':mode,'source':os.path.join(fxdir,source),'enabled':True,'mode':mode,'keyColor':'#00ff00','similarity':0.12,'blend':0.08,'despill':1.0,'lumaThreshold':0.10,'lumaTolerance':0.05,'saturation':1.0,'x':0.20,'y':0.65,'scale':0.50,'fullscreen':mode=='screen','previewFrameTime':0.0,'startSec':0.0,'endSec':None,'cacheKey':None,'cacheReady':None}
           for mode in ['screen','chromakey','luma']:
               fx=effect(mode,mode+'.mp4'); job={'project':project('effect-'+mode,'audio12.mp3'),'settings':settings('out-'+mode,12.0),'effects':[fx],'subscribes':[],'ambient':None}; os.makedirs(job['settings']['outputDir'],exist_ok=True); json.dump(job,open(os.path.join(ext,'job-'+mode+'.json'),'w'),indent=2)
           sub=effect('chromakey','subscribe.mp4'); sub.update({'id':'subscribe','name':'subscribe','scale':0.30,'x':0.15,'y':0.65,'firstAtSec':2.0,'secondAtSec':6.0,'repeatEverySec':4.0})

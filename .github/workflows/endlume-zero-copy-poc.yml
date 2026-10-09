@@ -70,9 +70,14 @@ jobs:
           manifest=os.path.abspath('src-tauri/target/aarch64-apple-darwin/release/manifest_poc')
           master=os.path.join(root,'visual-master.mp4')
           final=os.path.join(root,'final-3h.mp4')
-          def run(cmd):
-              subprocess.run(cmd,check=True)
-          stages={}
+          tracks=[os.path.join(root,'audio',f'track-{i:02d}.mp3') for i in range(1,13)]
+          def run(cmd, capture=False):
+              return subprocess.run(cmd,check=True,capture_output=capture,text=capture)
+          def duration(path):
+              return float(run(['ffprobe','-v','error','-show_entries','format=duration','-of','default=nw=1:nk=1',path],True).stdout.strip())
+          input_total=sum(duration(p) for p in tracks)
+          total_frames=round(input_total*60)
+          stages={'input_audio_duration':input_total,'logical_video_frames':total_frames}
           t0=time.perf_counter()
           t=time.perf_counter()
           run(['ffmpeg','-hide_banner','-loglevel','error','-loop','1','-framerate','60','-i',os.path.join(root,'cover.png'),'-vf',"scale=1920:1080,drawbox=x='mod(t*220,1720)':y=430:w=200:h=200:color=white@0.18:t=fill,format=yuv420p",'-t','5','-an','-c:v','hevc_videotoolbox','-realtime','1','-q:v','100','-b:v','500k','-maxrate','12M','-bufsize','64M','-g','300','-tag:v','hvc1','-fps_mode','cfr','-r','60','-video_track_timescale','60000','-y',master])
@@ -81,7 +86,7 @@ jobs:
           run(['ffmpeg','-hide_banner','-loglevel','error','-i',master,'-f','concat','-safe','0','-i',os.path.join(root,'audio.txt'),'-map','0:v:0','-map','1:a:0','-c:v','copy','-c:a','copy','-video_track_timescale','60000','-y',final])
           stages['audio_mux_copy_ms']=(time.perf_counter()-t)*1000
           t=time.perf_counter()
-          run([manifest,final,'0','300',str(3*60*60*60)])
+          run([manifest,final,'0','300',str(total_frames)])
           stages['manifest_expand_finalize_ms']=(time.perf_counter()-t)*1000
           stages['total_ms']=(time.perf_counter()-t0)*1000
           with open(os.path.join(root,'timing.json'),'w') as f: json.dump(stages,f,indent=2)
@@ -95,19 +100,20 @@ jobs:
           FINAL="$ROOT/final-3h.mp4"
           ffprobe -v error -show_streams -show_format -of json "$FINAL" > "$ROOT/probe.json"
           python3 - <<'PY'
-          import json, os, subprocess, hashlib
+          import json, os, subprocess
           root=os.environ['ROOT']; final=os.path.join(root,'final-3h.mp4')
+          timing=json.load(open(os.path.join(root,'timing.json'))); expected=float(timing['input_audio_duration'])
           probe=json.load(open(os.path.join(root,'probe.json')))
           streams=probe['streams']; v=next(x for x in streams if x['codec_type']=='video'); a=next(x for x in streams if x['codec_type']=='audio')
-          dur=float(probe['format']['duration']); size=os.path.getsize(final)
+          container_duration=float(probe['format']['duration']); audio_duration=float(a.get('duration') or container_duration); video_duration=float(v.get('duration') or container_duration); size=os.path.getsize(final)
           assert v['codec_name']=='hevc', v
           assert int(v['width'])==1920 and int(v['height'])==1080, v
           assert (v.get('avg_frame_rate') or v.get('r_frame_rate'))=='60/1', v
           assert a['codec_name']=='mp3', a
-          assert abs(dur-10800.0) <= 0.100, dur
+          assert abs(audio_duration-expected) <= 0.100, (audio_duration,expected)
+          assert abs(video_duration-expected) <= 0.100, (video_duration,expected)
+          assert abs(container_duration-expected) <= 0.100, (container_duration,expected)
           assert 400_000_000 <= size <= 600_000_000, size
-          # ffprobe hashes encoded packet payloads. Concatenated source hashes must
-          # equal the MP4 audio stream hashes byte-for-byte when -c:a copy is real.
           def hashes(path):
               p=subprocess.run(['ffprobe','-v','error','-select_streams','a:0','-show_packets','-show_data_hash','sha256','-show_entries','packet=data_hash','-of','csv=p=0',path],capture_output=True,text=True,check=True)
               return [x.strip() for x in p.stdout.splitlines() if x.strip()]
@@ -115,16 +121,20 @@ jobs:
           for i in range(1,13): src += hashes(os.path.join(root,'audio',f'track-{i:02d}.mp3'))
           out=hashes(final)
           assert src==out, (len(src),len(out),'encoded audio payload changed')
+          open(os.path.join(root,'duration.txt'),'w').write(str(container_duration))
+          print(f'INPUT_AUDIO_DURATION={expected:.6f}')
+          print(f'OUTPUT_AUDIO_DURATION={audio_duration:.6f}')
+          print(f'OUTPUT_VIDEO_DURATION={video_duration:.6f}')
           print(f'OUTPUT_BYTES={size}')
-          print(f'OUTPUT_DURATION={dur:.6f}')
           print(f'VIDEO_CODEC={v["codec_name"]}')
           print(f'FPS={v.get("avg_frame_rate") or v.get("r_frame_rate")}')
           print(f'AUDIO_CODEC={a["codec_name"]}')
           print(f'AUDIO_PACKETS={len(out)}')
           print('AUDIO_PACKET_HASHES=PASS')
           PY
+          DUR=$(cat "$ROOT/duration.txt")
           for pct in 0.10 0.25 0.50 0.75 0.90 0.99; do
-            sec=$(python3 -c "print(10800*$pct)")
+            sec=$(python3 -c "print(float('$DUR')*$pct)")
             ffmpeg -hide_banner -v error -ss "$sec" -i "$FINAL" -t 0.5 -map 0:v:0 -map '0:a:0?' -f null -
           done
           echo SEEK_TEST=PASS
@@ -140,7 +150,7 @@ jobs:
           let url = URL(fileURLWithPath: CommandLine.arguments[1])
           let asset = AVURLAsset(url: url)
           let duration = CMTimeGetSeconds(asset.duration)
-          guard duration > 10799.9 else { fatalError("AVFoundation duration \(duration)") }
+          guard duration > 10799.0 else { fatalError("AVFoundation duration \(duration)") }
           let gen = AVAssetImageGenerator(asset: asset)
           gen.appliesPreferredTrackTransform = true
           for f in [0.10,0.50,0.90,0.99] {

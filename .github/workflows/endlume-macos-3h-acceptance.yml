@@ -1,0 +1,227 @@
+name: ENDLUME macOS production static 3h acceptance
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [perf/endlume-macos-3h-10s-acceptance]
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src-tauri/**'
+      - 'src/**'
+      - 'package.json'
+      - '.github/workflows/endlume-macos-3h-acceptance.yml'
+
+concurrency:
+  group: endlume-static-3h-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  production-static-macos-arm64:
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Assert Apple Silicon and stable ancestry
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -s)" = Darwin
+          test "$(uname -m)" = arm64
+          git merge-base --is-ancestor e2896da7702891a5b760ecd4daad4fd54bc90b82 HEAD
+          echo "BUILD_HEAD=$(git rev-parse HEAD)"
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v ffmpeg >/dev/null || brew install ffmpeg
+          npm install --no-audit --no-fund
+          rustup target add aarch64-apple-darwin
+          mkdir -p src-tauri/binaries
+          cp "$(command -v ffmpeg)" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp "$(command -v ffprobe)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          chmod +x src-tauri/binaries/*
+
+      - name: Frontend Rust and unit gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run build
+          cargo test --manifest-path src-tauri/Cargo.toml --target aarch64-apple-darwin --features acceptance-harness
+          cargo check --manifest-path src-tauri/Cargo.toml --target aarch64-apple-darwin --features acceptance-harness
+
+      - name: Build actual ENDLUME app bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx tauri build --target aarch64-apple-darwin --bundles app --features acceptance-harness --config '{"bundle":{"createUpdaterArtifacts":false}}'
+          APP="$(find src-tauri/target/aarch64-apple-darwin/release/bundle/macos -maxdepth 1 -type d -name '*.app' -print -quit)"
+          BIN="$APP/Contents/MacOS/endlume"
+          test -d "$APP"; test -x "$BIN"
+          VERSION="$(python3 -c 'import json;print(json.load(open("src-tauri/tauri.conf.json"))["version"])')"
+          BUNDLE_BYTES="$(du -sk "$APP" | awk '{print $1*1024}')"
+          ROOT="$RUNNER_TEMP/endlume-static-3h"; mkdir -p "$ROOT"
+          printf 'BUILD_HEAD=%s\nAPP_VERSION=%s\nBUNDLE_PATH=%s\nBINARY_PATH=%s\nBUNDLE_SIZE=%s\n' "$(git rev-parse HEAD)" "$VERSION" "$APP" "$BIN" "$BUNDLE_BYTES" | tee "$ROOT/build-info.txt"
+          echo "APP=$APP" >> "$GITHUB_ENV"; echo "BIN=$BIN" >> "$GITHUB_ENV"; echo "ROOT=$ROOT" >> "$GITHUB_ENV"
+
+      - name: Generate exact 3-hour production-profile media
+        shell: bash
+        run: |
+          set -euo pipefail
+          MEDIA="$ROOT/project"; OUT="$ROOT/out"; mkdir -p "$MEDIA" "$OUT"
+          ffmpeg -hide_banner -loglevel error -f lavfi -i "color=c=0x182033:s=1920x1080" -frames:v 1 -y "$MEDIA/cover.png"
+          for i in $(seq -w 1 12); do
+            n=$((10#$i)); hz=$((180+n*23))
+            ffmpeg -hide_banner -loglevel error -f lavfi -i "sine=frequency=${hz}:sample_rate=48000:duration=900" -c:a libmp3lame -b:a 320k -ar 48000 -ac 2 -metadata title="Acceptance Track ${i}" -y "$MEDIA/track-${i}.mp3"
+          done
+          echo "MEDIA=$MEDIA" >> "$GITHUB_ENV"; echo "OUT=$OUT" >> "$GITHUB_ENV"
+
+      - name: Create static production QueueJob
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json,os,glob
+          root=os.environ['ROOT']; media=os.environ['MEDIA']; out=os.environ['OUT']
+          job={'project':{'id':'acceptance-static-3h','name':'ENDLUME Static 3H Acceptance','path':media,'media':[os.path.join(media,'cover.png')],'audio':sorted(glob.glob(os.path.join(media,'track-*.mp3'))),'valid':True,'error':None},'settings':{'width':1920,'height':1080,'fps':60,'codec':'h265','bitrateMbps':30.0,'durationHours':3.0,'durationMode':'whole-track','loopMode':'image','crossfadeSec':0.0,'normalizeLufs':False,'outputDir':out,'preset':'fast','encoderPreference':'auto'},'effects':[],'subscribes':[],'ambient':None}
+          json.dump(job,open(os.path.join(root,'job.json'),'w'),indent=2)
+          PY
+
+      - name: Launch actual built ENDLUME app and export
+        shell: bash
+        run: |
+          set +e
+          ENDLUME_ACCEPTANCE_JOB="$ROOT/job.json" ENDLUME_ACCEPTANCE_RECEIPT="$ROOT/receipt.json" ENDLUME_SOURCE_HEAD="$GITHUB_SHA" "$BIN" > "$ROOT/app.log" 2>&1
+          rc=$?; echo "APP_EXIT_CODE=$rc" >> "$ROOT/app.log"
+          test -f "$ROOT/receipt.json" && cat "$ROOT/receipt.json"
+          exit 0
+
+      - name: Prove production MP3 packet integrity and track boundaries
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json,glob,os,subprocess,sys
+          receipt=json.load(open(os.path.join(os.environ['ROOT'],'receipt.json')))
+          if receipt.get('status')!='ok': sys.exit('render receipt is not ok')
+          r=receipt['result']; out=r['output_path']
+          def hashes(path,select=None):
+              cmd=['ffprobe','-v','error']
+              if select: cmd += ['-select_streams',select]
+              cmd += ['-show_packets','-show_entries','packet=data_hash','-show_data_hash','sha256','-of','json',path]
+              d=json.loads(subprocess.check_output(cmd,text=True))
+              return [p['data_hash'] for p in d.get('packets',[]) if p.get('data_hash')]
+          src=[]
+          for p in sorted(glob.glob(os.path.join(os.environ['MEDIA'],'track-*.mp3'))): src.extend(hashes(p,'a:0'))
+          dst=hashes(out,'a:0'); ok=src==dst
+          evidence={'source_packets':len(src),'output_packets':len(dst),'first_match':bool(src and dst and src[0]==dst[0]),'last_match':bool(src and dst and src[-1]==dst[-1]),'packet_perfect':ok}
+          json.dump(evidence,open(os.path.join(os.environ['ROOT'],'audio-integrity.json'),'w'),indent=2); print(json.dumps(evidence,indent=2))
+          if not ok: sys.exit('MP3 packet payload mismatch')
+          t=0.0
+          tracks=r.get('input_tracks',[])
+          for row in tracks[:-1]:
+              t+=float(row['duration'])
+              subprocess.check_call(['ffmpeg','-hide_banner','-v','error','-ss',f'{max(0,t-0.15):.6f}','-i',out,'-t','0.30','-map','0:a:0','-f','null','-'])
+          total=float(r['input_audio_duration'])
+          subprocess.check_call(['ffmpeg','-hide_banner','-v','error','-ss',f'{max(0,total-2):.6f}','-i',out,'-t','2','-map','0:a:0','-f','null','-'])
+          PY
+
+      - name: Compute physical stream byte breakdown
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json,os,subprocess
+          r=json.load(open(os.path.join(os.environ['ROOT'],'receipt.json')))['result']; out=r['output_path']
+          def unique_bytes(sel):
+              d=json.loads(subprocess.check_output(['ffprobe','-v','error','-select_streams',sel,'-show_packets','-show_entries','packet=pos,size','-of','json',out],text=True))
+              seen=set(); total=0
+              for p in d.get('packets',[]):
+                  if 'pos' not in p or 'size' not in p: continue
+                  key=(int(p['pos']),int(p['size']))
+                  if key not in seen: seen.add(key); total+=key[1]
+              return total,len(seen)
+          vb,vn=unique_bytes('v:0'); ab,an=unique_bytes('a:0'); total=r['output_bytes']; overhead=total-vb-ab
+          d={'AUDIO_BYTES':ab,'VIDEO_BYTES':vb,'MP4_OVERHEAD_BYTES':overhead,'TOTAL_BYTES':total,'UNIQUE_AUDIO_PACKETS':an,'UNIQUE_VIDEO_PACKETS':vn}
+          json.dump(d,open(os.path.join(os.environ['ROOT'],'byte-breakdown.json'),'w'),indent=2); print(json.dumps(d,indent=2))
+          if overhead<0: raise SystemExit('invalid physical byte accounting')
+          PY
+
+      - name: Hard gate actual product output
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json,os,sys
+          root=os.environ['ROOT']; p=os.path.join(root,'receipt.json')
+          if not os.path.exists(p): sys.exit('ACCEPTANCE=FAIL no receipt')
+          d=json.load(open(p))
+          if d.get('status')!='ok': sys.exit('ACCEPTANCE=FAIL '+str(d))
+          r=d['result']; streams=r['probe']['streams']; v=next(x for x in streams if x.get('codec_type')=='video'); a=next(x for x in streams if x.get('codec_type')=='audio'); f=r['probe']['format']; integ=json.load(open(os.path.join(root,'audio-integrity.json'))); b=json.load(open(os.path.join(root,'byte-breakdown.json'))); m=r.get('fast_metrics') or {}; mb=r['output_bytes']/1_000_000
+          def num(x):
+              try:return float(x)
+              except:return 0.0
+          expected=float(r['input_audio_duration']); total_ms=r['export_seconds']*1000.0
+          checks={
+            'SOURCE_APPROX_3H':abs(expected-10800.0)<=1.0,
+            'FAST_PATH_SELECTED':bool(r.get('fast_path_used')),
+            'LEGACY_FALLBACK_NOT_USED':not bool(r.get('legacy_fallback_used')),
+            'FORMAT_DURATION':abs(num(f.get('duration'))-expected)<=0.10,
+            'VIDEO_DURATION':abs(num(v.get('duration'))-expected)<=0.10,
+            'AUDIO_DURATION':abs(num(a.get('duration'))-expected)<=0.10,
+            'HEVC':v.get('codec_name')=='hevc',
+            'RESOLUTION':(v.get('width'),v.get('height'))==(1920,1080),
+            'R_FPS':v.get('r_frame_rate')=='60/1',
+            'AVG_FPS':v.get('avg_frame_rate')=='60/1',
+            'MP3':a.get('codec_name')=='mp3',
+            'MP3_PACKET_PRESERVATION':bool(integ.get('packet_perfect')),
+            'LAST_AUDIO_PACKET':bool(integ.get('last_match')),
+            'FULL_DECODE':bool(r.get('full_decode',{}).get('ok')),
+            'DTS_CLEAN':'non monotonically increasing dts' not in r.get('full_decode',{}).get('stderr','').lower(),
+            'SEEKS':all(x.get('ok') for x in r.get('seek_checks',[])),
+            'SIZE_400_600_MB':400<=mb<=600,
+            'TEN_SECONDS':total_ms<=10000.0,
+          }
+          print(f"SOURCE_DURATION={expected:.6f}")
+          print(f"MASTER_RENDER_MS={m.get('masterMs')}")
+          print(f"VIDEO_TIMELINE_BUILD_MS={m.get('timelineMs')}")
+          print(f"AUDIO_MS={m.get('audioMs')}")
+          print(f"MUX_MS={m.get('muxMs')}")
+          print(f"FINALIZE_MS={m.get('finalizeMs')}")
+          print(f"TOTAL_MS={total_ms:.3f}")
+          print(f"FORMAT_DURATION={f.get('duration')} VIDEO_DURATION={v.get('duration')} AUDIO_DURATION={a.get('duration')}")
+          print(f"VIDEO={v.get('codec_name')} {v.get('width')}x{v.get('height')} r={v.get('r_frame_rate')} avg={v.get('avg_frame_rate')} tb={v.get('time_base')} start={v.get('start_time')} bitrate={v.get('bit_rate')}")
+          print(f"AUDIO={a.get('codec_name')} tb={a.get('time_base')} start={a.get('start_time')} bitrate={a.get('bit_rate')}")
+          print(f"OUTPUT_BYTES={r['output_bytes']} OUTPUT_MB={mb:.3f}")
+          print(json.dumps(b,indent=2))
+          for k,vv in checks.items(): print(f"{k}={'PASS' if vv else 'FAIL'}")
+          json.dump({'checks':checks,'source_duration':expected,'total_ms':total_ms,'fast_metrics':m},open(os.path.join(root,'gate.json'),'w'),indent=2)
+          if not all(checks.values()): sys.exit(1)
+          print('STATIC_PRODUCTION_3H=PASS')
+          PY
+
+      - name: Upload production acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: endlume-production-static-3h-evidence
+          path: |
+            ${{ env.ROOT }}/build-info.txt
+            ${{ env.ROOT }}/receipt.json
+            ${{ env.ROOT }}/app.log
+            ${{ env.ROOT }}/job.json
+            ${{ env.ROOT }}/audio-integrity.json
+            ${{ env.ROOT }}/byte-breakdown.json
+            ${{ env.ROOT }}/gate.json
+          if-no-files-found: warn
+          retention-days: 30

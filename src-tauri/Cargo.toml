@@ -4,6 +4,10 @@ version = "1.0.0-alpha.8.5"
 description = "ENDLUME Studio"
 authors = ["ENDLUME Studio"]
 edition = "2021"
+default-run = "endlume"
+
+[features]
+acceptance-harness = []
 
 [lib]
 name = "endlume_lib"

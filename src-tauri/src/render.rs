@@ -210,7 +210,7 @@ async fn build_media_clip(app:&AppHandle,job:&QueueJob,media:&str,index:usize,to
       _=>{duration=d;args.extend(vec!["-i",media].into_iter().map(String::from));graph=format!("{}[outv]",base_filter(s,"0:v"));}
     }
   }
-  args.extend(vec!["-filter_complex",&graph,"-map","[outv]","-t",&duration.to_string(),"-an"].into_iter().map(String::from));if is_image(media){args.extend(static_smart_encoder_args(s));}else{args.extend(encoder_args(encoder,s,false));}args.extend(vec!["-progress","pipe:1","-y",clip.to_string_lossy().as_ref()].into_iter().map(String::from));
+  args.extend(vec!["-filter_complex",&graph,"-map","[outv]","-t",&duration.to_string(),"-an"].into_iter().map(String::from));if is_image(media){let has_subscribe=job.subscribes.iter().any(|x|x.effect.enabled);if has_subscribe{args.extend(encoder_args(encoder,s,false));}else{args.extend(static_smart_encoder_args(s));}}else{args.extend(encoder_args(encoder,s,false));}args.extend(vec!["-progress","pipe:1","-y",clip.to_string_lossy().as_ref()].into_iter().map(String::from));
   run_ffmpeg(app,job,started,timer,args,&format!("Подготавливаю медиа {}/{}",index+1,total),base,span,duration,encoder,attempt,cancel).await?;Ok((clip,duration))
 }
 
@@ -236,7 +236,7 @@ fn apply_effects_filter(mut graph:String,mut base:String,effects:&[EffectPreset]
     }else{
       let prep=if e.mode=="prealpha"{format!("[{idx}:v]fps={},format=argb",s.fps)}else if e.mode=="luma"{format!("[{idx}:v]fps={},format=rgba,eq=saturation={},lumakey=threshold={}:tolerance={}:softness=0.08",s.fps,e.saturation,e.luma_threshold,e.luma_tolerance)}else{format!("[{idx}:v]fps={},format=rgba,chromakey={}:{}:{}",s.fps,color_ffmpeg(&e.key_color),e.similarity.max(0.00001),e.blend)};
       let scale=if e.fullscreen{format!("scale={}:{}",s.width,s.height)}else{format!("scale=iw*{}:ih*{}",e.scale.max(0.01),e.scale.max(0.01))};let x=if e.fullscreen{"0".into()}else{format!("(W-w)*{}",e.x.clamp(0.0,1.0))};let y=if e.fullscreen{"0".into()}else{format!("(H-h)*{}",e.y.clamp(0.0,1.0))};
-      graph.push_str(&format!(";{prep},{scale}[{fx}];[{base}][{fx}]overlay=x='{x}':y='{y}':shortest=1:eof_action=repeat[{next}]"));
+      graph.push_str(&format!(";{prep},{scale}[{fx}];[{base}][{fx}]overlay=x='{x}':y='{y}':shortest=0:eof_action=repeat[{next}]"));
     }
     base=next;
   }
@@ -310,16 +310,17 @@ async fn subscribe_events(app:&AppHandle,subs:&[SubscribePreset],final_duration:
 }
 
 fn timed_effects(effects:&[EffectPreset],final_duration:f64)->bool{effects.iter().any(|e|e.enabled&&(e.start_sec>0.01||e.end_sec.map(|x|x<final_duration-0.01).unwrap_or(false)))}
+fn exact_segment_frames(len:f64,fps:u32)->u64{(len.max(0.0)*fps.max(1) as f64).round().max(1.0) as u64}
 
 async fn copy_segment(app:&AppHandle,job:&QueueJob,variant:&Path,variant_duration:f64,start:f64,len:f64,out:&Path,encoder:&str,attempt:u32,cancel:&AtomicBool,base:f64,span:f64,started:i64,timer:&Instant)->Result<(),String>{
-  let phase=(start%variant_duration.max(0.1)).max(0.0);let args=vec!["-hide_banner","-loglevel","error","-stream_loop","-1","-ss",&phase.to_string(),"-i",variant.to_string_lossy().as_ref(),"-t",&len.to_string(),"-an","-c:v","copy","-avoid_negative_ts","make_zero","-progress","pipe:1","-y",out.to_string_lossy().as_ref()].into_iter().map(String::from).collect();run_ffmpeg(app,job,started,timer,args,"Собираю визуальные сегменты",base,span,len,encoder,attempt,cancel).await
+  let phase=(start%variant_duration.max(0.1)).max(0.0);let fps=job.settings.fps.max(1);let frames=exact_segment_frames(len,fps);let vf=format!("fps={fps},trim=end_frame={frames},setpts=N/({fps}*TB),format=yuv420p");let mut args:Vec<String>=vec!["-hide_banner","-loglevel","error","-stream_loop","-1","-ss",&phase.to_string(),"-i",variant.to_string_lossy().as_ref(),"-vf",&vf,"-frames:v",&frames.to_string(),"-an"].into_iter().map(String::from).collect();args.extend(encoder_args(encoder,&job.settings,false));args.extend(vec!["-r",&fps.to_string(),"-fps_mode","cfr","-video_track_timescale","60000","-progress","pipe:1","-y",out.to_string_lossy().as_ref()].into_iter().map(String::from));run_ffmpeg(app,job,started,timer,args,"Собираю визуальные сегменты",base,span,len,encoder,attempt,cancel).await
 }
 
 async fn render_sub_segment(app:&AppHandle,job:&QueueJob,variant:&Path,variant_duration:f64,start:f64,len:f64,active:&[SubEvent],out:&Path,encoder:&str,attempt:u32,cancel:&AtomicBool,base:f64,span:f64,started:i64,timer:&Instant)->Result<(),String>{
-  let phase=(start%variant_duration.max(0.1)).max(0.0);let mut args:Vec<String>=vec!["-hide_banner","-loglevel","error","-stream_loop","-1","-ss",&phase.to_string(),"-i",variant.to_string_lossy().as_ref()].into_iter().map(String::from).collect();
+  let phase=(start%variant_duration.max(0.1)).max(0.0);let fps=job.settings.fps.max(1);let frames=exact_segment_frames(len,fps);let mut args:Vec<String>=vec!["-hide_banner","-loglevel","error","-stream_loop","-1","-ss",&phase.to_string(),"-i",variant.to_string_lossy().as_ref()].into_iter().map(String::from).collect();
   for ev in active{let offset=(start-ev.event_start).max(0.0);args.extend(vec!["-ss",&offset.to_string(),"-i",ev.sub.effect.source.as_str()].into_iter().map(String::from));}
-  let sub_effects=active.iter().map(|e|e.sub.effect.clone()).collect::<Vec<_>>();let (graph,last)=apply_effects_filter("[0:v]setpts=PTS-STARTPTS[b0]".into(),"b0".into(),&sub_effects,&job.settings,1);let graph=format!("{graph};[{last}]format=yuv420p[outv]");
-  args.extend(vec!["-filter_complex",&graph,"-map","[outv]","-t",&len.to_string(),"-an"].into_iter().map(String::from));args.extend(encoder_args(encoder,&job.settings,false));args.extend(vec!["-progress","pipe:1","-y",out.to_string_lossy().as_ref()].into_iter().map(String::from));run_ffmpeg(app,job,started,timer,args,"Добавляю Subscribe",base,span,len,encoder,attempt,cancel).await
+  let sub_effects=active.iter().map(|e|e.sub.effect.clone()).collect::<Vec<_>>();let (graph,last)=apply_effects_filter("[0:v]setpts=PTS-STARTPTS[b0]".into(),"b0".into(),&sub_effects,&job.settings,1);let graph=format!("{graph};[{last}]fps={fps},trim=end_frame={frames},setpts=N/({fps}*TB),format=yuv420p[outv]");
+  args.extend(vec!["-filter_complex",&graph,"-map","[outv]","-frames:v",&frames.to_string(),"-an"].into_iter().map(String::from));args.extend(encoder_args(encoder,&job.settings,false));args.extend(vec!["-r",&fps.to_string(),"-fps_mode","cfr","-video_track_timescale","60000","-progress","pipe:1","-y",out.to_string_lossy().as_ref()].into_iter().map(String::from));run_ffmpeg(app,job,started,timer,args,"Добавляю Subscribe",base,span,len,encoder,attempt,cancel).await
 }
 
 async fn assemble_visual(app:&AppHandle,job:&QueueJob,source_master:&Path,master_duration:f64,effects:&[EffectPreset],subs:&[SubscribePreset],final_duration:f64,work:&Path,encoder:&str,attempt:u32,cancel:&AtomicBool,started:i64,timer:&Instant)->Result<VisualSource,String>{

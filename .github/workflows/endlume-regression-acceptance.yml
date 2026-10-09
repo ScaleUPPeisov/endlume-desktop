@@ -1,0 +1,309 @@
+name: ENDLUME macOS product regression acceptance
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [perf/endlume-macos-3h-10s-acceptance]
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src-tauri/**'
+      - 'src/**'
+      - '.github/workflows/endlume-regression-acceptance.yml'
+
+concurrency:
+  group: endlume-regression-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  portable-compile-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Linux compile dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf ffmpeg
+          npm install --no-audit --no-fund
+          mkdir -p src-tauri/binaries
+          cp "$(command -v ffmpeg)" src-tauri/binaries/ffmpeg-x86_64-unknown-linux-gnu
+          cp "$(command -v ffprobe)" src-tauri/binaries/ffprobe-x86_64-unknown-linux-gnu
+          chmod +x src-tauri/binaries/*
+      - name: Frontend compile gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run build 2>&1 | tee "$RUNNER_TEMP/frontend-build.log"
+          echo FRONTEND_COMPILE=PASS
+      - name: Rust library compile gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo check --manifest-path src-tauri/Cargo.toml --lib --features acceptance-harness 2>&1 | tee "$RUNNER_TEMP/rust-lib.log"
+          echo RUST_LIB_COMPILE=PASS
+      - name: Rust all-targets compile gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo check --manifest-path src-tauri/Cargo.toml --all-targets --features acceptance-harness 2>&1 | tee "$RUNNER_TEMP/rust-all-targets.log"
+          echo RUST_ALL_TARGETS_COMPILE=PASS
+          echo PHYSICAL_MACOS_ACCEPTANCE=NOT_CLAIMED
+      - name: Upload compile diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: endlume-portable-compile-diagnostics
+          path: |
+            ${{ runner.temp }}/frontend-build.log
+            ${{ runner.temp }}/rust-lib.log
+            ${{ runner.temp }}/rust-all-targets.log
+          if-no-files-found: warn
+          retention-days: 7
+
+  legacy-and-regression-macos-arm64:
+    runs-on: macos-15
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Assert lineage and protected product surfaces unchanged
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -s)" = Darwin; test "$(uname -m)" = arm64
+          git merge-base --is-ancestor e2896da7702891a5b760ecd4daad4fd54bc90b82 HEAD
+          git diff --exit-code e2896da7702891a5b760ecd4daad4fd54bc90b82 -- src-tauri/tauri.conf.json
+          git diff --exit-code e2896da7702891a5b760ecd4daad4fd54bc90b82 -- src-tauri/src/license.rs
+          echo UPDATER_UNTOUCHED=PASS
+          echo LICENSE_SUBSCRIPTION_BACKEND_UNTOUCHED=PASS
+      - name: Install compile and build actual app
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v ffmpeg >/dev/null || brew install ffmpeg
+          npm install --no-audit --no-fund
+          rustup target add aarch64-apple-darwin
+          mkdir -p src-tauri/binaries
+          cp "$(command -v ffmpeg)" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp "$(command -v ffprobe)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          chmod +x src-tauri/binaries/*
+          npm run build
+          cargo test --manifest-path src-tauri/Cargo.toml --target aarch64-apple-darwin --features acceptance-harness
+          npx tauri build --target aarch64-apple-darwin --bundles app --features acceptance-harness --config '{"bundle":{"createUpdaterArtifacts":false}}'
+          APP="$(find src-tauri/target/aarch64-apple-darwin/release/bundle/macos -maxdepth 1 -type d -name '*.app' -print -quit)"; BIN="$APP/Contents/MacOS/endlume"; test -x "$BIN"
+          ROOT="$RUNNER_TEMP/endlume-regression"; mkdir -p "$ROOT/project" "$ROOT/out"
+          echo "ROOT=$ROOT" >> "$GITHUB_ENV"; echo "BIN=$BIN" >> "$GITHUB_ENV"
+      - name: Generate processed-audio legacy workload
+        shell: bash
+        run: |
+          set -euo pipefail
+          ffmpeg -hide_banner -loglevel error -f lavfi -i "color=c=0x182033:s=1920x1080" -frames:v 1 -y "$ROOT/project/cover.png"
+          ffmpeg -hide_banner -loglevel error -f lavfi -i "sine=frequency=330:sample_rate=48000:duration=20" -c:a libmp3lame -b:a 256k -ar 48000 -ac 2 -y "$ROOT/project/a.mp3"
+          ffmpeg -hide_banner -loglevel error -f lavfi -i "sine=frequency=550:sample_rate=48000:duration=20" -c:a libmp3lame -b:a 192k -ar 48000 -ac 2 -y "$ROOT/project/b.mp3"
+          python3 - <<'PY'
+          import json,os
+          r=os.environ['ROOT']; p=os.path.join(r,'project')
+          job={'project':{'id':'legacy-crossfade','name':'Legacy Crossfade Regression','path':p,'media':[os.path.join(p,'cover.png')],'audio':[os.path.join(p,'a.mp3'),os.path.join(p,'b.mp3')],'valid':True,'error':None},'settings':{'width':1920,'height':1080,'fps':60,'codec':'h265','bitrateMbps':8.0,'durationHours':30.0/3600.0,'durationMode':'exact','loopMode':'image','crossfadeSec':1.0,'normalizeLufs':False,'outputDir':os.path.join(r,'out'),'preset':'fast','encoderPreference':'auto'},'effects':[],'subscribes':[],'ambient':None}
+          json.dump(job,open(os.path.join(r,'legacy-job.json'),'w'),indent=2)
+          PY
+      - name: Launch actual app through mandatory legacy fallback
+        shell: bash
+        run: |
+          set +e
+          ENDLUME_ACCEPTANCE_JOB="$ROOT/legacy-job.json" ENDLUME_ACCEPTANCE_RECEIPT="$ROOT/legacy-receipt.json" ENDLUME_SOURCE_HEAD="$GITHUB_SHA" ENDLUME_ACCEPTANCE_SYSTEM_ACTIONS=1 "$BIN" > "$ROOT/legacy-app.log" 2>&1
+          echo "APP_EXIT_CODE=$?" >> "$ROOT/legacy-app.log"; test -f "$ROOT/legacy-receipt.json" && cat "$ROOT/legacy-receipt.json"; exit 0
+      - name: Gate legacy fallback correctness
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json,os,sys
+          root=os.environ['ROOT']; d=json.load(open(os.path.join(root,'legacy-receipt.json')))
+          if d.get('status')!='ok':sys.exit(str(d))
+          r=d['result']; streams=r['probe']['streams']; a=next(x for x in streams if x.get('codec_type')=='audio'); v=next(x for x in streams if x.get('codec_type')=='video'); fb=r.get('fallback') or {}; reason=str(fb.get('reason','')).lower(); actions=r.get('system_actions') or {}
+          checks={'FAST_PATH_REJECTED':not bool(r.get('fast_path_used')),'LEGACY_FALLBACK_USED':bool(r.get('legacy_fallback_used')),'FALLBACK_REASON_CROSSFADE':'crossfade' in reason,'LEGACY_AUDIO_AAC':a.get('codec_name')=='aac','VIDEO_HEVC':v.get('codec_name')=='hevc','RESOLUTION':(v.get('width'),v.get('height'))==(1920,1080),'FULL_DECODE':r.get('full_decode',{}).get('ok') is True,'SEEK':all(x.get('ok') for x in r.get('seek_checks',[])),'DURATION':abs(r.get('output_duration',0)-30.0)<=4.0,'POWER_STATUS':r.get('power_before',{}).get('supported') is True and r.get('power_after',{}).get('supported') is True,'OPEN_RESULT':actions.get('open')=='ok','REVEAL_RESULT':actions.get('reveal')=='ok'}
+          print('FALLBACK_REASON='+reason)
+          for k,vv in checks.items():print(f"{k}={'PASS' if vv else 'FAIL'}")
+          json.dump({'checks':checks,'fallback':fb,'power_before':r.get('power_before'),'power_after':r.get('power_after'),'system_actions':actions},open(os.path.join(root,'legacy-gate.json'),'w'),indent=2)
+          if not all(checks.values()):sys.exit(1)
+          print('LEGACY_FALLBACK=PASS')
+          PY
+      - name: Extended actual app visual queue and recovery gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXT="$ROOT/extended"; MEDIA="$EXT/project"; FX="$EXT/effects"; mkdir -p "$MEDIA" "$FX" "$EXT/logs"
+          pmset -g batt > "$EXT/power-before.txt" 2>&1 || true
+          pmset -g therm > "$EXT/thermal-before.txt" 2>&1 || true
+          ffmpeg -hide_banner -loglevel error -f lavfi -i "color=c=0x182033:s=1920x1080" -frames:v 1 -y "$MEDIA/cover.png"
+          ffmpeg -hide_banner -loglevel error -f lavfi -i "sine=frequency=440:sample_rate=48000:duration=12" -c:a libmp3lame -b:a 320k -ar 48000 -ac 2 -y "$MEDIA/audio12.mp3"
+          ffmpeg -hide_banner -loglevel error -f lavfi -i "sine=frequency=520:sample_rate=48000:duration=14" -c:a libmp3lame -b:a 320k -ar 48000 -ac 2 -y "$MEDIA/audio14.mp3"
+          ffmpeg -hide_banner -loglevel error -f lavfi -i "color=c=black:s=640x360:r=60:d=5" -vf "drawbox=x='260+180*sin(2*PI*t/5)':y='130+70*cos(2*PI*t/5)':w=100:h=100:color=white:t=fill" -an -c:v libx264 -preset ultrafast -g 300 -pix_fmt yuv420p -r 60 -y "$FX/screen.mp4"
+          ffmpeg -hide_banner -loglevel error -f lavfi -i "color=c=0x00ff00:s=640x360:r=60:d=5" -vf "drawbox=x='250+160*sin(2*PI*t/5)':y='120+60*cos(2*PI*t/5)':w=120:h=120:color=red:t=fill" -an -c:v libx264 -preset ultrafast -g 300 -pix_fmt yuv420p -r 60 -y "$FX/chromakey.mp4"
+          ffmpeg -hide_banner -loglevel error -f lavfi -i "color=c=black:s=640x360:r=60:d=5" -vf "drawbox=x='250+160*sin(2*PI*t/5)':y='120+60*cos(2*PI*t/5)':w=120:h=120:color=white:t=fill" -an -c:v libx264 -preset ultrafast -g 300 -pix_fmt yuv420p -r 60 -y "$FX/luma.mp4"
+          ffmpeg -hide_banner -loglevel error -f lavfi -i "color=c=0x00ff00:s=640x360:r=60:d=3" -vf "drawbox=x=220:y=120:w=200:h=120:color=white:t=fill" -an -c:v libx264 -preset ultrafast -g 180 -pix_fmt yuv420p -r 60 -y "$FX/subscribe.mp4"
+          python3 - <<'PY'
+          import json,os
+          ext=os.path.join(os.environ['ROOT'],'extended'); media=os.path.join(ext,'project'); fxdir=os.path.join(ext,'effects')
+          def settings(out,duration,mode='whole-track',crossfade=0.0):return {'width':1920,'height':1080,'fps':60,'codec':'h265','bitrateMbps':8.0,'durationHours':duration/3600.0,'durationMode':mode,'loopMode':'image','crossfadeSec':crossfade,'normalizeLufs':False,'outputDir':os.path.join(ext,out),'preset':'fast','encoderPreference':'auto'}
+          def project(pid,audio):return {'id':pid,'name':pid,'path':media,'media':[os.path.join(media,'cover.png')],'audio':[os.path.join(media,audio)],'valid':True,'error':None}
+          def effect(mode,source):return {'id':mode,'name':mode,'source':os.path.join(fxdir,source),'enabled':True,'mode':mode,'keyColor':'#00ff00','similarity':0.12,'blend':0.08,'despill':1.0,'lumaThreshold':0.10,'lumaTolerance':0.05,'saturation':1.0,'x':0.20,'y':0.65,'scale':0.50,'fullscreen':mode=='screen','previewFrameTime':0.0,'startSec':0.0,'endSec':None,'cacheKey':None,'cacheReady':None}
+          for mode in ['screen','chromakey','luma']:
+              fx=effect(mode,mode+'.mp4'); job={'project':project('effect-'+mode,'audio12.mp3'),'settings':settings('out-'+mode,12.0),'effects':[fx],'subscribes':[],'ambient':None}; os.makedirs(job['settings']['outputDir'],exist_ok=True); json.dump(job,open(os.path.join(ext,'job-'+mode+'.json'),'w'),indent=2)
+          sub=effect('chromakey','subscribe.mp4'); sub.update({'id':'subscribe','name':'subscribe','scale':0.30,'x':0.15,'y':0.65,'firstAtSec':2.0,'secondAtSec':6.0,'repeatEverySec':4.0})
+          sj={'project':project('subscribe-regression','audio14.mp3'),'settings':settings('out-subscribe',14.0,'exact'),'effects':[],'subscribes':[sub],'ambient':None}; os.makedirs(sj['settings']['outputDir'],exist_ok=True); json.dump(sj,open(os.path.join(ext,'job-subscribe.json'),'w'),indent=2)
+          qj={'project':project('queue-cancel','audio14.mp3'),'settings':settings('out-cancel',120.0,'exact',1.0),'effects':[],'subscribes':[],'ambient':None}; os.makedirs(qj['settings']['outputDir'],exist_ok=True); json.dump(qj,open(os.path.join(ext,'job-cancel.json'),'w'),indent=2)
+          PY
+          for mode in screen chromakey luma; do
+            set +e
+            ENDLUME_ACCEPTANCE_JOB="$EXT/job-$mode.json" ENDLUME_ACCEPTANCE_RECEIPT="$EXT/receipt-$mode.json" ENDLUME_ACCEPTANCE_PREVIEW_TIMES="1,4.983333333,5,5.016666667,10" ENDLUME_SOURCE_HEAD="$GITHUB_SHA" "$BIN" > "$EXT/logs/$mode.log" 2>&1
+            rc=$?; set -e; echo "$mode rc=$rc"; test "$rc" -eq 0
+          done
+          set +e
+          ENDLUME_ACCEPTANCE_JOB="$EXT/job-subscribe.json" ENDLUME_ACCEPTANCE_RECEIPT="$EXT/receipt-subscribe.json" ENDLUME_ACCEPTANCE_PREVIEW_TIMES="1,2.5,5.5,6.5,10.5,13.5" ENDLUME_SOURCE_HEAD="$GITHUB_SHA" "$BIN" > "$EXT/logs/subscribe.log" 2>&1
+          subrc=$?; set -e; test "$subrc" -eq 0
+          set +e
+          ENDLUME_ACCEPTANCE_JOB="$EXT/job-cancel.json" ENDLUME_ACCEPTANCE_RECEIPT="$EXT/receipt-cancel.json" ENDLUME_ACCEPTANCE_QUEUE_CANCEL=1 ENDLUME_ACCEPTANCE_CANCEL_AFTER_MS=150 ENDLUME_SOURCE_HEAD="$GITHUB_SHA" "$BIN" > "$EXT/logs/cancel.log" 2>&1
+          cancelrc=$?; set -e; test "$cancelrc" -eq 0
+          rm -f "$EXT/receipt-seed.json" "$EXT/receipt-recovery.json"
+          set +e
+          ENDLUME_ACCEPTANCE_JOB="$EXT/job-cancel.json" ENDLUME_ACCEPTANCE_RECEIPT="$EXT/receipt-seed.json" ENDLUME_ACCEPTANCE_SEED_CRASH=1 ENDLUME_SOURCE_HEAD="$GITHUB_SHA" "$BIN" > "$EXT/logs/seed-crash.log" 2>&1
+          seedrc=$?; set -e; echo "SEED_CRASH_RC=$seedrc"; test "$seedrc" -eq 77
+          set +e
+          ENDLUME_ACCEPTANCE_JOB="$EXT/job-cancel.json" ENDLUME_ACCEPTANCE_RECEIPT="$EXT/receipt-recovery.json" ENDLUME_ACCEPTANCE_RECOVERY_ONLY=1 ENDLUME_SOURCE_HEAD="$GITHUB_SHA" "$BIN" > "$EXT/logs/recovery.log" 2>&1
+          recrc=$?; set -e; test "$recrc" -eq 0
+          pmset -g batt > "$EXT/power-after.txt" 2>&1 || true
+          pmset -g therm > "$EXT/thermal-after.txt" 2>&1 || true
+          python3 - <<'PY'
+          import json,os,subprocess,statistics,sys
+          ext=os.path.join(os.environ['ROOT'],'extended'); W,H=320,180; N=W*H
+          def frame(path,t):
+              q=subprocess.run(['ffmpeg','-hide_banner','-v','error','-ss',f'{t:.9f}','-i',path,'-frames:v','1','-an','-vf',f'scale={W}:{H},format=gray','-f','rawvideo','-pix_fmt','gray','-'],capture_output=True,check=True)
+              if len(q.stdout)<N: raise RuntimeError(('short frame',path,t,len(q.stdout)))
+              return q.stdout[:N]
+          def contrast(a): return max(a)-min(a)
+          def mae(a,b): return sum(abs(x-y) for x,y in zip(a,b))/N
+          report={'effects':{},'subscribe':{},'queue_cancel':{},'recovery':{}}
+          for mode in ['screen','chromakey','luma']:
+              d=json.load(open(os.path.join(ext,'receipt-'+mode+'.json'))); assert d['status']=='ok',d; r=d['result']; out=r['output_path']; rows=[]
+              for item in r.get('preview_outputs',[]):
+                  t=float(item['at']); diff=mae(frame(out,t),frame(item['path'],0)); rows.append({'at':t,'mae':diff})
+              checks={'fast_path':r.get('fast_path_used') is True,'periodic_mode':(r.get('fast_metrics') or {}).get('mode')=='periodic-hevc-mp3-packet-copy','full_decode':r.get('full_decode',{}).get('ok') is True,'seeks':all(x.get('ok') for x in r.get('seek_checks',[])),'visible':contrast(frame(out,1.0))>20,'preview_export':len(rows)==5 and all(x['mae']<12 for x in rows)}
+              report['effects'][mode]={'checks':checks,'preview':rows}
+              if not all(checks.values()): raise SystemExit('effect gate failed '+mode+' '+str(report['effects'][mode]))
+          d=json.load(open(os.path.join(ext,'receipt-subscribe.json'))); assert d['status']=='ok',d; r=d['result']; out=r['output_path']; fb=(r.get('fallback') or {}).get('reason','').lower(); off1=frame(out,1.0); on1=frame(out,2.5); off2=frame(out,5.5); on2=frame(out,6.5); on3=frame(out,10.5); off3=frame(out,13.5); rows=[]
+          for item in r.get('preview_outputs',[]): rows.append({'at':float(item['at']),'mae':mae(frame(out,float(item['at'])),frame(item['path'],0))})
+          delta=[abs(a-b) for a,b in zip(on1,off1)]; pts=[(i%W,i//W) for i,v in enumerate(delta) if v>15]; cx=sum(x for x,y in pts)/len(pts) if pts else 999; cy=sum(y for x,y in pts)/len(pts) if pts else -1
+          checks={'legacy_fallback':r.get('legacy_fallback_used') is True,'subscribe_reason':'subscribe' in fb,'on_2_5':contrast(on1)>20,'off_1':contrast(off1)<15,'off_5_5':contrast(off2)<15,'on_6_5':contrast(on2)>20,'on_10_5':contrast(on3)>20,'off_13_5':contrast(off3)<15,'position_lower_left':bool(pts) and cx<W*0.5 and cy>H*0.4,'preview_export':len(rows)==6 and all(x['mae']<12 for x in rows),'decode':r.get('full_decode',{}).get('ok') is True}
+          report['subscribe']={'checks':checks,'fallback':fb,'centroid':[cx,cy],'preview':rows}
+          if not all(checks.values()): raise SystemExit('subscribe gate failed '+str(report['subscribe']))
+          d=json.load(open(os.path.join(ext,'receipt-cancel.json'))); assert d['status']=='ok',d; r=d['result']; q=r.get('queue_cancel',{}); snap=q.get('snapshot',{}); persisted=q.get('persisted',{}); events=r.get('events',[]); names=[x.get('event') for x in events]; cancel_stage=' '.join(str(x.get('payload',{}).get('stage','')) for x in events if x.get('event')=='render-error').lower()
+          checks={'mode':r.get('mode')=='queue-cancel','active_seen':q.get('activeSeen') is True,'idle':snap.get('running') is False and snap.get('active') is None and snap.get('pending')==[],'persisted_idle':persisted.get('active') is None and persisted.get('pending')==[],'render_error_event':'render-error' in names,'queue_idle_event':'queue-idle' in names,'cancel_message':'остановлено' in cancel_stage,'no_completed_output':len(r.get('output_files',[]))==0}
+          report['queue_cancel']={'checks':checks,'events':names,'stage':cancel_stage}
+          if not all(checks.values()): raise SystemExit('queue cancel gate failed '+str(report['queue_cancel']))
+          d=json.load(open(os.path.join(ext,'receipt-recovery.json'))); assert d['status']=='ok',d; r=d['result']; rec=r.get('recovery',{}); active=rec.get('active') or {}; project=active.get('project') or {}; checks={'mode':r.get('mode')=='recovery-only','interrupted':rec.get('interrupted') is True,'active_recovered':project.get('id')=='queue-cancel'}
+          report['recovery']={'checks':checks,'recovery':rec}
+          if not all(checks.values()): raise SystemExit('recovery gate failed '+str(report['recovery']))
+          json.dump(report,open(os.path.join(ext,'extended-gate.json'),'w'),indent=2); print(json.dumps(report,indent=2)); print('EXTENDED_PRODUCT_REGRESSION=PASS')
+          PY
+      - name: Upload regression evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: endlume-legacy-regression-evidence
+          path: |
+            ${{ env.ROOT }}/legacy-job.json
+            ${{ env.ROOT }}/legacy-receipt.json
+            ${{ env.ROOT }}/legacy-app.log
+            ${{ env.ROOT }}/legacy-gate.json
+            ${{ env.ROOT }}/extended/
+          if-no-files-found: warn
+          retention-days: 30
+
+  intel-legacy-fallback-macos:
+    runs-on: macos-15-intel
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Assert real Intel macOS and stable ancestry
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -s)" = Darwin
+          test "$(uname -m)" = x86_64
+          git merge-base --is-ancestor e2896da7702891a5b760ecd4daad4fd54bc90b82 HEAD
+          echo INTEL_RUNNER=PASS
+      - name: Build actual Intel ENDLUME app
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v ffmpeg >/dev/null || brew install ffmpeg
+          npm install --no-audit --no-fund
+          rustup target add x86_64-apple-darwin
+          mkdir -p src-tauri/binaries
+          cp "$(command -v ffmpeg)" src-tauri/binaries/ffmpeg-x86_64-apple-darwin
+          cp "$(command -v ffprobe)" src-tauri/binaries/ffprobe-x86_64-apple-darwin
+          chmod +x src-tauri/binaries/*
+          npm run build
+          cargo test --manifest-path src-tauri/Cargo.toml --target x86_64-apple-darwin --features acceptance-harness
+          npx tauri build --target x86_64-apple-darwin --bundles app --features acceptance-harness --config '{"bundle":{"createUpdaterArtifacts":false}}'
+          APP="$(find src-tauri/target/x86_64-apple-darwin/release/bundle/macos -maxdepth 1 -type d -name '*.app' -print -quit)"; BIN="$APP/Contents/MacOS/endlume"; test -x "$BIN"
+          ROOT="$RUNNER_TEMP/endlume-intel"; mkdir -p "$ROOT/project" "$ROOT/out"
+          echo "ROOT=$ROOT" >> "$GITHUB_ENV"; echo "BIN=$BIN" >> "$GITHUB_ENV"
+      - name: Generate otherwise fast-eligible Intel workload
+        shell: bash
+        run: |
+          set -euo pipefail
+          ffmpeg -hide_banner -loglevel error -f lavfi -i "color=c=0x182033:s=1920x1080" -frames:v 1 -y "$ROOT/project/cover.png"
+          ffmpeg -hide_banner -loglevel error -f lavfi -i "sine=frequency=440:sample_rate=48000:duration=12" -c:a libmp3lame -b:a 320k -ar 48000 -ac 2 -y "$ROOT/project/a.mp3"
+          python3 - <<'PY'
+          import json,os
+          r=os.environ['ROOT']; p=os.path.join(r,'project')
+          job={'project':{'id':'intel-fallback','name':'Intel Fallback','path':p,'media':[os.path.join(p,'cover.png')],'audio':[os.path.join(p,'a.mp3')],'valid':True,'error':None},'settings':{'width':1920,'height':1080,'fps':60,'codec':'h265','bitrateMbps':8.0,'durationHours':12.0/3600.0,'durationMode':'whole-track','loopMode':'image','crossfadeSec':0.0,'normalizeLufs':False,'outputDir':os.path.join(r,'out'),'preset':'fast','encoderPreference':'auto'},'effects':[],'subscribes':[],'ambient':None}
+          json.dump(job,open(os.path.join(r,'job.json'),'w'),indent=2)
+          PY
+      - name: Launch actual Intel app
+        shell: bash
+        run: |
+          set +e
+          ENDLUME_ACCEPTANCE_JOB="$ROOT/job.json" ENDLUME_ACCEPTANCE_RECEIPT="$ROOT/receipt.json" ENDLUME_SOURCE_HEAD="$GITHUB_SHA" "$BIN" > "$ROOT/app.log" 2>&1
+          echo "APP_EXIT_CODE=$?" >> "$ROOT/app.log"; test -f "$ROOT/receipt.json" && cat "$ROOT/receipt.json"; exit 0
+      - name: Gate Intel legacy fallback correctness
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json,os,sys
+          root=os.environ['ROOT']; d=json.load(open(os.path.join(root,'receipt.json')))
+          if d.get('status')!='ok':sys.exit(str(d))
+          r=d['result']; fb=r.get('fallback') or {}; reason=str(fb.get('reason','')).lower(); streams=r['probe']['streams']; v=next(x for x in streams if x.get('codec_type')=='video'); a=next(x for x in streams if x.get('codec_type')=='audio')
+          checks={'ARCH_X86_64':r.get('arch')=='x86_64','FAST_PATH_REJECTED':not bool(r.get('fast_path_used')),'LEGACY_FALLBACK_USED':bool(r.get('legacy_fallback_used')),'APPLE_SILICON_REASON':'apple silicon' in reason or 'intel' in reason,'HEVC':v.get('codec_name')=='hevc','RESOLUTION':(v.get('width'),v.get('height'))==(1920,1080),'AUDIO_PRESENT':a.get('codec_type')=='audio','FULL_DECODE':r.get('full_decode',{}).get('ok') is True,'SEEKS':all(x.get('ok') for x in r.get('seek_checks',[]))}
+          print('FALLBACK_REASON='+reason)
+          for k,vv in checks.items():print(f"{k}={'PASS' if vv else 'FAIL'}")
+          json.dump({'checks':checks,'fallback':fb},open(os.path.join(root,'gate.json'),'w'),indent=2)
+          if not all(checks.values()):sys.exit(1)
+          print('INTEL_LEGACY_FALLBACK=PASS')
+          PY
+      - name: Upload Intel evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: endlume-intel-fallback-evidence
+          path: |
+            ${{ env.ROOT }}/job.json
+            ${{ env.ROOT }}/receipt.json
+            ${{ env.ROOT }}/app.log
+            ${{ env.ROOT }}/gate.json
+          if-no-files-found: warn
+          retention-days: 30

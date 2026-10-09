@@ -1,4 +1,4 @@
-use crate::{model::{EffectPreset,ProjectScanItem,QueueJob,RenderSettings,SubscribePreset},persistence,render};
+use crate::{fast_render,model::{EffectPreset,ProjectScanItem,QueueJob,RenderSettings,SubscribePreset},persistence,render};
 use parking_lot::Mutex;
 use serde_json::{json,Value};
 use std::{collections::{HashSet,VecDeque},fs,path::PathBuf,sync::{Arc,atomic::{AtomicBool,Ordering}}};
@@ -75,7 +75,11 @@ fn start_worker_if_needed(app:AppHandle,runtime:Arc<QueueRuntime>){
       let id=job.project.id.clone();
       let cancel=Arc::new(AtomicBool::new(false));
       *runtime.active_cancel.lock()=Some(cancel.clone());
-      let outcome=render::render_job(&app,&job,cancel).await;
+      let outcome=match fast_render::try_render_job(&app,&job,cancel.clone()).await{
+        Ok(Some(()))=>Ok(()),
+        Ok(None)=>render::render_job(&app,&job,cancel).await,
+        Err(e)=>Err(e),
+      };
       *runtime.active_cancel.lock()=None;
       if runtime.cancelled.lock().remove(&id){
         let _=app.emit("render-error",json!({"id":id,"status":"error","progress":100.0,"stage":"Остановлено пользователем"}));
@@ -153,4 +157,39 @@ pub fn resume_recovery(app:AppHandle,runtime:State<'_,Arc<QueueRuntime>>)->Resul
   runtime.persist(&app);
   start_worker_if_needed(app,runtime.inner().clone());
   Ok(())
+}
+
+#[cfg(feature="acceptance-harness")]
+pub async fn acceptance_cancel_job(app:AppHandle,runtime:Arc<QueueRuntime>,job:QueueJob,cancel_after_ms:u64)->Result<Value,String>{
+  let id=job.project.id.clone();
+  {
+    let mut q=runtime.pending.lock();
+    q.push_back(job);
+  }
+  runtime.persist(&app);
+  let _=app.emit("queue-changed",queue_snapshot_value(runtime.as_ref()));
+  start_worker_if_needed(app.clone(),runtime.clone());
+
+  let mut active_seen=false;
+  for _ in 0..500{
+    if runtime.active.lock().as_ref().map(|j|j.project.id.as_str())==Some(id.as_str()){
+      active_seen=true;break
+    }
+    if !runtime.running.load(Ordering::SeqCst){break}
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+  }
+  if !active_seen{return Err("acceptance queue job never became active".into())}
+  tokio::time::sleep(std::time::Duration::from_millis(cancel_after_ms)).await;
+  runtime.cancelled.lock().insert(id.clone());
+  if let Some(flag)=runtime.active_cancel.lock().as_ref(){flag.store(true,Ordering::SeqCst);}
+  runtime.persist(&app);
+  let _=app.emit("queue-changed",queue_snapshot_value(runtime.as_ref()));
+
+  for _ in 0..1000{
+    if !runtime.running.load(Ordering::SeqCst)&&runtime.active.lock().is_none(){break}
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+  }
+  let snapshot=queue_snapshot_value(runtime.as_ref());
+  let persisted=persistence::read_value(&app,"queue.json");
+  Ok(json!({"id":id,"activeSeen":active_seen,"snapshot":snapshot,"persisted":persisted}))
 }

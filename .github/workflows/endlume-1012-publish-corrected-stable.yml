@@ -1,0 +1,154 @@
+name: ENDLUME 10.0.12 publish corrected stable
+
+on:
+  push:
+    branches:
+      - release-fix/endlume-10.0.12-physical-signing-compat
+    paths:
+      - '.github/workflows/endlume-1012-publish-corrected-stable.yml'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      SOURCE_REPO: ScaleUPPeisov/endlume-desktop
+      STABLE_REPO: ScaleUPPeisov/scaleup-site
+      STABLE_TAG: endlume-stable
+      BUILD_RUN_ID: '37959757976'
+      ARTIFACT_NAME: ENDLUME-10.0.12-physical-compatible-macos-aarch64
+      EXPECTED_TAR_SHA: 62da0292f2bb3f2cd5e10860d1a196ec50c90b4332dd3529ed9cef169928b209
+      EXPECTED_SIG_SHA: e0244ab656f7a664a75d0053a0f206e4ff91d5d5003c8f2c0a07f40d4eff107f
+      MAC_URL: https://github.com/ScaleUPPeisov/scaleup-site/releases/download/endlume-stable/ENDLUME-macos-aarch64.app.tar.gz
+    steps:
+      - name: Download exact corrected artifact
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir corrected
+          cd corrected
+          gh run download "$BUILD_RUN_ID" -R "$SOURCE_REPO" -n "$ARTIFACT_NAME"
+          test -s ENDLUME-macos-aarch64.app.tar.gz
+          test -s ENDLUME-macos-aarch64.app.tar.gz.sig
+          test "$(sha256sum ENDLUME-macos-aarch64.app.tar.gz | awk '{print $1}')" = "$EXPECTED_TAR_SHA"
+          test "$(sha256sum ENDLUME-macos-aarch64.app.tar.gz.sig | awk '{print $1}')" = "$EXPECTED_SIG_SHA"
+          grep -q '^TAR_GZ_SHA256=62da0292f2bb3f2cd5e10860d1a196ec50c90b4332dd3529ed9cef169928b209$' hashes.txt
+          grep -q '^SIG_SHA256=e0244ab656f7a664a75d0053a0f206e4ff91d5d5003c8f2c0a07f40d4eff107f$' hashes.txt
+          echo 'EXACT_CORRECTED_ARTIFACT=PASS'
+
+      - name: Snapshot stable Windows assets and manifest
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.ENDLUME_RELEASE_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$GH_TOKEN"
+          mkdir snapshot
+          gh api "repos/$STABLE_REPO/releases/tags/$STABLE_TAG" > snapshot/release-before.json
+          python3 - <<'PY'
+          import json
+          r=json.load(open('snapshot/release-before.json'))
+          names=['ENDLUME-windows-x86_64-setup.exe','ENDLUME-windows-x86_64-setup.exe.sig']
+          out={}
+          for name in names:
+              a=next((x for x in r['assets'] if x['name']==name),None)
+              assert a, name
+              out[name]={'id':a['id'],'digest':a.get('digest'),'size':a['size']}
+          json.dump(out,open('snapshot/windows-before.json','w'),sort_keys=True,indent=2)
+          print('WINDOWS_BEFORE='+json.dumps(out,sort_keys=True))
+          PY
+          gh release download "$STABLE_TAG" -R "$STABLE_REPO" -p latest.json -D snapshot --clobber
+          cp snapshot/latest.json snapshot/latest-before.json
+          python3 - <<'PY'
+          import json
+          m=json.load(open('snapshot/latest-before.json'))
+          assert m['version']=='10.0.12',m.get('version')
+          assert 'darwin-aarch64' in m['platforms']
+          nonmac={k:v for k,v in m['platforms'].items() if k!='darwin-aarch64'}
+          json.dump(nonmac,open('snapshot/nonmac-before.json','w'),sort_keys=True,indent=2)
+          print('NONMAC_MANIFEST_KEYS='+','.join(sorted(nonmac)))
+          PY
+
+      - name: Build corrected stable latest.json preserving all non-mac platforms
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json,datetime
+          m=json.load(open('snapshot/latest-before.json'))
+          frag=json.load(open('corrected/macos-manifest-fragment.json'))
+          assert frag['version']=='10.0.12'
+          mac=frag['platforms']['darwin-aarch64']
+          assert mac['url']=='https://github.com/ScaleUPPeisov/scaleup-site/releases/download/endlume-stable/ENDLUME-macos-aarch64.app.tar.gz'
+          assert mac['signature']
+          before_nonmac={k:v for k,v in m['platforms'].items() if k!='darwin-aarch64'}
+          m['version']='10.0.12'
+          m['notes']='ENDLUME macOS 10.0.12 physical 10.0.11 signing-key compatibility correction'
+          m['pub_date']=datetime.datetime.now(datetime.timezone.utc).isoformat().replace('+00:00','Z')
+          m['platforms']['darwin-aarch64']=mac
+          after_nonmac={k:v for k,v in m['platforms'].items() if k!='darwin-aarch64'}
+          assert before_nonmac==after_nonmac
+          json.dump(m,open('corrected/latest.json','w'),indent=2)
+          print('MANIFEST_NONMAC_PRESERVED=PASS')
+          PY
+
+      - name: Publish corrected macOS artifacts only
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.ENDLUME_RELEASE_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release upload "$STABLE_TAG" -R "$STABLE_REPO" \
+            corrected/ENDLUME-macos-aarch64.app.tar.gz \
+            corrected/ENDLUME-macos-aarch64.app.tar.gz.sig \
+            corrected/latest.json \
+            --clobber
+          echo 'MAC_STABLE_UPLOAD=PASS'
+
+      - name: Verify live stable bytes, manifest, and unchanged Windows assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.ENDLUME_RELEASE_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir live
+          curl -fL --retry 4 --retry-delay 2 "$MAC_URL" -o live/mac.tar.gz
+          curl -fL --retry 4 --retry-delay 2 "$MAC_URL.sig" -o live/mac.tar.gz.sig
+          curl -fL --retry 4 --retry-delay 2 'https://github.com/ScaleUPPeisov/scaleup-site/releases/download/endlume-stable/latest.json' -o live/latest.json
+          test "$(sha256sum live/mac.tar.gz | awk '{print $1}')" = "$EXPECTED_TAR_SHA"
+          test "$(sha256sum live/mac.tar.gz.sig | awk '{print $1}')" = "$EXPECTED_SIG_SHA"
+          cmp -s corrected/ENDLUME-macos-aarch64.app.tar.gz.sig live/mac.tar.gz.sig
+          python3 - <<'PY'
+          import json
+          local=json.load(open('corrected/latest.json'))
+          live=json.load(open('live/latest.json'))
+          assert live['version']=='10.0.12'
+          assert live['platforms']['darwin-aarch64']==local['platforms']['darwin-aarch64']
+          before=json.load(open('snapshot/nonmac-before.json'))
+          after={k:v for k,v in live['platforms'].items() if k!='darwin-aarch64'}
+          assert before==after
+          print('LIVE_MANIFEST=PASS')
+          print('LIVE_MAC_URL='+live['platforms']['darwin-aarch64']['url'])
+          PY
+          gh api "repos/$STABLE_REPO/releases/tags/$STABLE_TAG" > live/release-after.json
+          python3 - <<'PY'
+          import json
+          before=json.load(open('snapshot/windows-before.json'))
+          r=json.load(open('live/release-after.json'))
+          after={}
+          for name in before:
+              a=next((x for x in r['assets'] if x['name']==name),None)
+              assert a,name
+              after[name]={'id':a['id'],'digest':a.get('digest'),'size':a['size']}
+          assert before==after,(before,after)
+          print('WINDOWS_ASSET_UNCHANGED=PASS')
+          print('WINDOWS_AFTER='+json.dumps(after,sort_keys=True))
+          PY
+          echo "LIVE_TAR_SHA256=$(sha256sum live/mac.tar.gz | awk '{print $1}')"
+          echo "LIVE_SIG_SHA256=$(sha256sum live/mac.tar.gz.sig | awk '{print $1}')"

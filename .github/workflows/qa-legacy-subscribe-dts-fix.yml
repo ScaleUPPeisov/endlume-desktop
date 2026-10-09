@@ -5,59 +5,28 @@ on:
     branches: [qa/endlume-04a-legacy-subscribe-dts]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  patch-and-prove:
+  legacy-dts:
     runs-on: macos-15
-    timeout-minutes: 35
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Apply narrow legacy segment timestamp fix
+      - name: Assert main candidate ancestry and patch only render.rs
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD^)" = 04a63df522af75ece111ba4eb59dc56f48bdcb77 || true
-          python3 - <<'PY'
-          from pathlib import Path
-          p=Path('src-tauri/src/render.rs'); s=p.read_text()
-          a=s.index('async fn copy_segment(')
-          b=s.index('\nasync fn render_sub_segment(',a)
-          c=s.index('\nasync fn assemble_visual(',b)
-          copy=r'''async fn copy_segment(app:&AppHandle,job:&QueueJob,variant:&Path,variant_duration:f64,start:f64,len:f64,out:&Path,encoder:&str,attempt:u32,cancel:&AtomicBool,base:f64,span:f64,started:i64,timer:&Instant)->Result<(),String>{
-  let phase=(start%variant_duration.max(0.1)).max(0.0);let fps=job.settings.fps.max(1).to_string();let gop=(job.settings.fps.max(1)*2).to_string();let filter=format!("setpts=PTS-STARTPTS,fps={},format=yuv420p",fps);
-  let mut args:Vec<String>=vec!["-hide_banner","-loglevel","error","-stream_loop","-1","-ss",&phase.to_string(),"-i",variant.to_string_lossy().as_ref()].into_iter().map(String::from).collect();
-  args.extend(vec!["-vf",filter.as_str(),"-t",&len.to_string(),"-an"].into_iter().map(String::from));args.extend(encoder_args(encoder,&job.settings,false));args.extend(vec!["-bf","0","-g",gop.as_str(),"-fps_mode","cfr","-r",fps.as_str(),"-avoid_negative_ts","make_zero","-progress","pipe:1","-y",out.to_string_lossy().as_ref()].into_iter().map(String::from));run_ffmpeg(app,job,started,timer,args,"Собираю визуальные сегменты",base,span,len,encoder,attempt,cancel).await
-}
-'''
-          sub=r'''async fn render_sub_segment(app:&AppHandle,job:&QueueJob,variant:&Path,variant_duration:f64,start:f64,len:f64,active:&[SubEvent],out:&Path,encoder:&str,attempt:u32,cancel:&AtomicBool,base:f64,span:f64,started:i64,timer:&Instant)->Result<(),String>{
-  let phase=(start%variant_duration.max(0.1)).max(0.0);let fps=job.settings.fps.max(1).to_string();let gop=(job.settings.fps.max(1)*2).to_string();let mut args:Vec<String>=vec!["-hide_banner","-loglevel","error","-stream_loop","-1","-ss",&phase.to_string(),"-i",variant.to_string_lossy().as_ref()].into_iter().map(String::from).collect();
-  for ev in active{let offset=(start-ev.event_start).max(0.0);args.extend(vec!["-ss",&offset.to_string(),"-i",ev.sub.effect.source.as_str()].into_iter().map(String::from));}
-  let sub_effects=active.iter().map(|e|e.sub.effect.clone()).collect::<Vec<_>>();let (graph,last)=apply_effects_filter("[0:v]setpts=PTS-STARTPTS[b0]".into(),"b0".into(),&sub_effects,&job.settings,1);let graph=format!("{graph};[{last}]format=yuv420p[outv]");
-  args.extend(vec!["-filter_complex",&graph,"-map","[outv]","-t",&len.to_string(),"-an"].into_iter().map(String::from));args.extend(encoder_args(encoder,&job.settings,false));args.extend(vec!["-bf","0","-g",gop.as_str(),"-fps_mode","cfr","-r",fps.as_str(),"-avoid_negative_ts","make_zero","-progress","pipe:1","-y",out.to_string_lossy().as_ref()].into_iter().map(String::from));run_ffmpeg(app,job,started,timer,args,"Добавляю Subscribe",base,span,len,encoder,attempt,cancel).await
-}
-'''
-          s=s[:a]+copy+'\n'+sub+s[c:]
-          old='let args=vec!["-hide_banner","-loglevel","error","-f","concat","-safe","0","-i",list.to_string_lossy().as_ref(),"-an","-c:v","copy","-progress","pipe:1","-y",long.to_string_lossy().as_ref()]'
-          new='let args=vec!["-hide_banner","-loglevel","error","-fflags","+genpts","-f","concat","-safe","0","-i",list.to_string_lossy().as_ref(),"-an","-c:v","copy","-avoid_negative_ts","make_zero","-progress","pipe:1","-y",long.to_string_lossy().as_ref()]'
-          if s.count(old)!=1: raise SystemExit('concat anchor mismatch')
-          s=s.replace(old,new)
-          p.write_text(s)
-          PY
+          test "$(uname -s)" = Darwin
+          test "$(uname -m)" = arm64
+          git merge-base --is-ancestor 04a63df522af75ece111ba4eb59dc56f48bdcb77 HEAD
+          python3 scripts/patch_legacy_dts.py
           git diff --check
           git diff -- src-tauri/src/render.rs
-      - name: Commit narrow product fix
-        shell: bash
-        run: |
-          set -euo pipefail
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add src-tauri/src/render.rs
-          git commit -m 'fix: make legacy Subscribe segment timestamps monotonic'
-          git push origin HEAD:qa/endlume-04a-legacy-subscribe-dts
-      - name: Build actual app
+          test "$(git diff --name-only | grep -v '^src-tauri/src/render.rs$' | wc -l | tr -d ' ')" = 0
+      - name: Build actual patched ENDLUME app
         shell: bash
         run: |
           set -euo pipefail
@@ -71,40 +40,63 @@ jobs:
           npm run build
           cargo test --manifest-path src-tauri/Cargo.toml --target aarch64-apple-darwin --features acceptance-harness
           npx tauri build --target aarch64-apple-darwin --bundles app --features acceptance-harness --config '{"bundle":{"createUpdaterArtifacts":false}}'
-          APP="$(find src-tauri/target/aarch64-apple-darwin/release/bundle/macos -maxdepth 1 -type d -name '*.app' -print -quit)"; BIN="$APP/Contents/MacOS/endlume"; test -x "$BIN"
-          ROOT="$RUNNER_TEMP/legacy-sub-dts"; mkdir -p "$ROOT/project" "$ROOT/effects" "$ROOT/out"; echo "ROOT=$ROOT" >> "$GITHUB_ENV"; echo "BIN=$BIN" >> "$GITHUB_ENV"
-      - name: Generate exact legacy Subscribe fixture
+          APP="$(find src-tauri/target/aarch64-apple-darwin/release/bundle/macos -maxdepth 1 -type d -name '*.app' -print -quit)"
+          BIN="$APP/Contents/MacOS/endlume"; test -x "$BIN"
+          ROOT="$RUNNER_TEMP/legacy-dts"; mkdir -p "$ROOT/project" "$ROOT/effects" "$ROOT/out"
+          echo "ROOT=$ROOT" >> "$GITHUB_ENV"; echo "BIN=$BIN" >> "$GITHUB_ENV"
+      - name: Generate 14-second exact Subscribe fixture
         shell: bash
         run: |
           set -euo pipefail
           ffmpeg -hide_banner -loglevel error -f lavfi -i "color=c=0x182033:s=1920x1080" -frames:v 1 -y "$ROOT/project/cover.png"
           ffmpeg -hide_banner -loglevel error -f lavfi -i "sine=frequency=520:sample_rate=48000:duration=14" -c:a libmp3lame -b:a 320k -ar 48000 -ac 2 -y "$ROOT/project/audio14.mp3"
-          ffmpeg -hide_banner -loglevel error -f lavfi -i "color=c=0x00ff00:s=640x360:r=60:d=3" -vf "drawbox=x=220:y=120:w=200:h=120:color=white:t=fill" -an -c:v libx264 -preset ultrafast -g 180 -pix_fmt yuv420p -r 60 -y "$ROOT/effects/subscribe.mp4"
+          ffmpeg -hide_banner -loglevel error -f lavfi -i "color=c=0x00ff00:s=640x360:r=60:d=3" -vf "drawbox=x='170+250*t/3':y='120+50*sin(2*PI*t/3)':w=200:h=120:color=white:t=fill" -an -c:v libx264 -preset ultrafast -g 180 -pix_fmt yuv420p -r 60 -y "$ROOT/effects/subscribe.mp4"
           python3 - <<'PY'
           import json,os
-          r=os.environ['ROOT']; p=os.path.join(r,'project'); fx=os.path.join(r,'effects','subscribe.mp4')
-          effect={'id':'subscribe','name':'subscribe','source':fx,'enabled':True,'mode':'chromakey','keyColor':'#00ff00','similarity':0.12,'blend':0.08,'despill':1.0,'lumaThreshold':0.10,'lumaTolerance':0.05,'saturation':1.0,'x':0.15,'y':0.65,'scale':0.30,'fullscreen':False,'previewFrameTime':0.0,'startSec':0.0,'endSec':None,'cacheKey':None,'cacheReady':None,'firstAtSec':2.0,'secondAtSec':6.0,'repeatEverySec':4.0}
-          job={'project':{'id':'legacy-sub-dts','name':'Legacy Subscribe DTS','path':p,'media':[os.path.join(p,'cover.png')],'audio':[os.path.join(p,'audio14.mp3')],'valid':True,'error':None},'settings':{'width':1920,'height':1080,'fps':60,'codec':'h265','bitrateMbps':8.0,'durationHours':14/3600,'durationMode':'exact','loopMode':'image','crossfadeSec':0.0,'normalizeLufs':False,'outputDir':os.path.join(r,'out'),'preset':'fast','encoderPreference':'auto'},'effects':[],'subscribes':[effect],'ambient':None}
+          r=os.environ['ROOT']; p=os.path.join(r,'project'); f=os.path.join(r,'effects')
+          effect={'id':'subscribe','name':'subscribe','source':os.path.join(f,'subscribe.mp4'),'enabled':True,'mode':'chromakey','keyColor':'#00ff00','similarity':0.12,'blend':0.08,'despill':1.0,'lumaThreshold':0.10,'lumaTolerance':0.05,'saturation':1.0,'x':0.15,'y':0.65,'scale':0.30,'fullscreen':False,'previewFrameTime':0.0,'startSec':0.0,'endSec':None,'cacheKey':None,'cacheReady':None}
+          sub={'effect':effect,'firstAtSec':2.0,'secondAtSec':6.0,'repeatEverySec':4.0}
+          job={'project':{'id':'legacy-dts-target','name':'legacy-dts-target','path':p,'media':[os.path.join(p,'cover.png')],'audio':[os.path.join(p,'audio14.mp3')],'valid':True,'error':None},'settings':{'width':1920,'height':1080,'fps':60,'codec':'h265','bitrateMbps':8.0,'durationHours':14.0/3600.0,'durationMode':'exact','loopMode':'image','crossfadeSec':0.0,'normalizeLufs':False,'outputDir':os.path.join(r,'out'),'preset':'fast','encoderPreference':'auto'},'effects':[],'subscribes':[sub],'ambient':None}
           json.dump(job,open(os.path.join(r,'job.json'),'w'),indent=2)
           PY
-      - name: Run actual app and gate DTS
+      - name: Launch actual patched app
         shell: bash
         run: |
           set -euo pipefail
-          ENDLUME_ACCEPTANCE_JOB="$ROOT/job.json" ENDLUME_ACCEPTANCE_RECEIPT="$ROOT/receipt.json" ENDLUME_ACCEPTANCE_PREVIEW_TIMES="1,2.5,5.5,6.5,10.5,13.5" ENDLUME_SOURCE_HEAD="$(git rev-parse HEAD)" "$BIN" > "$ROOT/app.log" 2>&1
+          ENDLUME_ACCEPTANCE_JOB="$ROOT/job.json" ENDLUME_ACCEPTANCE_RECEIPT="$ROOT/receipt.json" ENDLUME_ACCEPTANCE_PREVIEW_TIMES="1,1.983333333,2,2.5,4.983333333,5,5.016666667,5.983333333,6,6.5,8.983333333,9,9.016666667,9.983333333,10,10.5,12.983333333,13,13.016666667,13.5" ENDLUME_SOURCE_HEAD="04a63df522af75ece111ba4eb59dc56f48bdcb77" "$BIN" > "$ROOT/app.log" 2>&1
+          cat "$ROOT/receipt.json"
+      - name: Hard gate monotonic DTS exact CFR and preview parity
+        shell: bash
+        run: |
+          set -euo pipefail
           python3 - <<'PY'
-          import json,os,sys
-          d=json.load(open(os.path.join(os.environ['ROOT'],'receipt.json'))); r=d['result']; v=next(x for x in r['probe']['streams'] if x.get('codec_type')=='video')
-          checks={'STATUS':d.get('status')=='ok','LEGACY':r.get('legacy_fallback_used') is True,'DECODE':r.get('full_decode',{}).get('ok') is True,'SEEKS':all(x.get('ok') for x in r.get('seek_checks',[])),'FPS':v.get('r_frame_rate')=='60/1' and v.get('avg_frame_rate')=='60/1','DURATION':abs(r.get('output_duration',0)-14.0)<0.1}
-          print(json.dumps({'checks':checks,'decode':r.get('full_decode'),'fps':[v.get('r_frame_rate'),v.get('avg_frame_rate')],'duration':r.get('output_duration'),'fallback':r.get('fallback')},indent=2))
+          import json,os,subprocess,sys
+          r=os.environ['ROOT']; d=json.load(open(os.path.join(r,'receipt.json'))); assert d.get('status')=='ok',d
+          x=d['result']; streams=x['probe']['streams']; v=next(s for s in streams if s.get('codec_type')=='video'); fb=x.get('fallback') or {}; reason=str(fb.get('reason','')).lower()
+          checks={'FAST_PATH_REJECTED':not bool(x.get('fast_path_used')),'LEGACY_FALLBACK':bool(x.get('legacy_fallback_used')),'EXACT_REASON':'whole-track' in reason,'FULL_DECODE':x.get('full_decode',{}).get('ok') is True,'SEEKS':all(q.get('ok') for q in x.get('seek_checks',[])),'HEVC':v.get('codec_name')=='hevc','RESOLUTION':(v.get('width'),v.get('height'))==(1920,1080),'R_FPS':v.get('r_frame_rate')=='60/1','AVG_FPS':v.get('avg_frame_rate')=='60/1','FRAME_COUNT':abs(int(v.get('nb_frames','0'))-840)<=1,'DURATION':abs(float(x.get('output_duration',0))-14.0)<=0.05,'NO_DTS_ERROR':'non monotonically increasing dts' not in str(x.get('full_decode',{}).get('stderr','')).lower()}
+          W,H=320,180; N=W*H
+          def frame(path,t):
+            q=subprocess.run(['ffmpeg','-hide_banner','-v','error','-ss',f'{t:.9f}','-i',path,'-frames:v','1','-an','-vf',f'scale={W}:{H},format=gray','-f','rawvideo','-pix_fmt','gray','-'],capture_output=True,check=True)
+            if len(q.stdout)<N: raise RuntimeError(('short frame',path,t,len(q.stdout)))
+            return q.stdout[:N]
+          def mae(a,b): return sum(abs(i-j) for i,j in zip(a,b))/N
+          diffs=[]
+          for q in x.get('preview_outputs',[]):
+            t=float(q['at']); diffs.append({'at':t,'mae':mae(frame(x['output_path'],t),frame(q['path'],0))})
+          checks['PREVIEW_EXPORT']=bool(diffs) and max(z['mae'] for z in diffs)<8.0
+          for k,val in checks.items(): print(f"{k}={'PASS' if val else 'FAIL'}")
+          print('VIDEO_FRAMES='+str(v.get('nb_frames'))); print('AVG_FPS='+str(v.get('avg_frame_rate'))); print('PREVIEW_MAX_MAE='+str(max([z['mae'] for z in diffs],default=None)))
+          json.dump({'checks':checks,'preview':diffs,'probe':v,'fallback':fb},open(os.path.join(r,'gate.json'),'w'),indent=2)
           if not all(checks.values()): sys.exit(1)
-          print('LEGACY_SUBSCRIBE_DTS=PASS')
+          print('LEGACY_EXACT_DTS_GATE=PASS')
           PY
-      - uses: actions/upload-artifact@v4
+      - name: Upload targeted evidence
         if: always()
+        uses: actions/upload-artifact@v4
         with:
-          name: legacy-subscribe-dts-evidence
+          name: endlume-legacy-dts-04a-evidence
           path: |
             ${{ env.ROOT }}/receipt.json
+            ${{ env.ROOT }}/gate.json
             ${{ env.ROOT }}/app.log
           retention-days: 14

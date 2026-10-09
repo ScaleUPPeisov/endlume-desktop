@@ -3,6 +3,7 @@ mod scan;
 mod persistence;
 mod render;
 mod fast_render;
+mod visual_spec;
 mod preview;
 mod license;
 mod benchmark;

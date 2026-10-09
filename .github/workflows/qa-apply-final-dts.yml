@@ -1,0 +1,62 @@
+name: QA apply final DTS integration
+
+on:
+  push:
+    branches: [integration/endlume-04a-final-dts]
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-compile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Apply product DTS fix and harness expectation
+        id: patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -q 'fn exact_segment_frames(' src-tauri/src/render.rs; then
+            echo changed=false >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          python3 scripts/patch_legacy_dts.py
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('.github/workflows/endlume-regression-acceptance.yml'); s=p.read_text()
+          old="'subscribe_reason':'subscribe' in fb"
+          new="'subscribe_reason':'whole-track' in fb"
+          if s.count(old)!=1: raise SystemExit('regression expectation anchor mismatch')
+          p.write_text(s.replace(old,new))
+          PY
+          git diff --check
+          test "$(git diff --name-only | sort | tr '\n' ' ')" = ".github/workflows/endlume-regression-acceptance.yml src-tauri/src/render.rs "
+          echo changed=true >> "$GITHUB_OUTPUT"
+      - name: Commit integration patch
+        if: steps.patch.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src-tauri/src/render.rs .github/workflows/endlume-regression-acceptance.yml
+          git commit -m 'fix: make legacy Subscribe CFR timestamps deterministic'
+          git push origin HEAD:integration/endlume-04a-final-dts
+      - name: Portable compile after product patch
+        if: steps.patch.outputs.changed == 'false'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update >/dev/null
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf ffmpeg >/dev/null
+          npm install --no-audit --no-fund
+          mkdir -p src-tauri/binaries
+          cp "$(command -v ffmpeg)" src-tauri/binaries/ffmpeg-x86_64-unknown-linux-gnu
+          cp "$(command -v ffprobe)" src-tauri/binaries/ffprobe-x86_64-unknown-linux-gnu
+          npm run build
+          cargo check --manifest-path src-tauri/Cargo.toml --all-targets --features acceptance-harness
+          echo FINAL_DTS_PORTABLE_COMPILE=PASS

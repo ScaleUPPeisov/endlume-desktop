@@ -64,11 +64,24 @@ jobs:
           MEDIA="$ROOT/project"; OUT="$ROOT/out"; mkdir -p "$MEDIA" "$OUT"
           ffmpeg -hide_banner -loglevel error -f lavfi -i "color=c=0x182033:s=1920x1080" -frames:v 1 -y "$MEDIA/cover.png"
           for i in $(seq -w 1 12); do n=$((10#$i)); hz=$((190+n*19)); ffmpeg -hide_banner -loglevel error -f lavfi -i "sine=frequency=${hz}:sample_rate=48000:duration=900" -c:a libmp3lame -b:a 320k -ar 48000 -ac 2 -metadata title="Periodic Track ${i}" -y "$MEDIA/track-${i}.mp3"; done
-          ffmpeg -hide_banner -loglevel error -f lavfi -i "color=c=black:s=640x360:r=60:d=5" -vf "drawbox=x='280+220*sin(2*PI*t/5)':y='140+80*sin(2*PI*t/5+PI/2)':w=80:h=80:color=white@0.95:t=fill" -an -c:v libx264 -preset ultrafast -g 300 -pix_fmt yuv420p -r 60 -y "$ROOT/periodic-screen.mp4"
+          ffmpeg -hide_banner -loglevel error \
+            -f lavfi -i "color=c=black:s=640x360:r=60:d=5" \
+            -f lavfi -i "color=c=white:s=80x80:r=60:d=5" \
+            -filter_complex "[0:v][1:v]overlay=x='280+220*sin(2*PI*t/5)':y='140+80*sin(2*PI*t/5+PI/2)':eval=frame:shortest=1" \
+            -an -c:v libx264 -preset ultrafast -g 300 -pix_fmt yuv420p -r 60 -y "$ROOT/periodic-screen.mp4"
           D="$(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 "$ROOT/periodic-screen.mp4")"
-          python3 - "$D" <<'PY'
-          import sys
-          d=float(sys.argv[1]); assert abs(d-5.0)<0.001,d
+          python3 - "$D" "$ROOT/periodic-screen.mp4" <<'PY'
+          import hashlib,subprocess,sys
+          d=float(sys.argv[1]); path=sys.argv[2]; assert abs(d-5.0)<0.001,d
+          W,H=320,180; size=W*H
+          def frame(t):
+              q=subprocess.run(['ffmpeg','-hide_banner','-v','error','-ss',str(t),'-i',path,'-frames:v','1','-an','-vf',f'scale={W}:{H},format=gray','-f','rawvideo','-pix_fmt','gray','-'],capture_output=True,check=True)
+              assert len(q.stdout)>=size,(t,len(q.stdout)); return q.stdout[:size]
+          a,b=frame(1.0),frame(1.2); mae=sum(abs(x-y) for x,y in zip(a,b))/size
+          print('FIXTURE_FRAME_1S_SHA256='+hashlib.sha256(a).hexdigest())
+          print('FIXTURE_FRAME_1_2S_SHA256='+hashlib.sha256(b).hexdigest())
+          print(f'FIXTURE_MOTION_MAE={mae:.6f}')
+          assert mae>0.02,'periodic fixture is static; acceptance would be invalid'
           PY
           echo "MEDIA=$MEDIA" >> "$GITHUB_ENV"; echo "OUT=$OUT" >> "$GITHUB_ENV"; echo "EFFECT=$ROOT/periodic-screen.mp4" >> "$GITHUB_ENV"
 

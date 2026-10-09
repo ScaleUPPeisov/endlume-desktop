@@ -1,0 +1,254 @@
+name: ENDLUME d91 timestamp and MP4 sample-table audit
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [qa/endlume-d91-timestamp-sampletable-audit]
+
+concurrency:
+  group: endlume-d91-timestamp-sampletable-audit
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  TARGET_SHA: d91ae43391b7b8773c37444a4002c713e4d17b52
+
+jobs:
+  physical-macos-arm64-audit:
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: d91ae43391b7b8773c37444a4002c713e4d17b52
+          fetch-depth: 0
+
+      - name: Assert exact product SHA and Apple Silicon
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -s)" = Darwin
+          test "$(uname -m)" = arm64
+          test "$(git rev-parse HEAD)" = "$TARGET_SHA"
+          git merge-base --is-ancestor e2896da7702891a5b760ecd4daad4fd54bc90b82 HEAD
+          git diff --exit-code e2896da7702891a5b760ecd4daad4fd54bc90b82 -- src-tauri/tauri.conf.json
+          git diff --exit-code e2896da7702891a5b760ecd4daad4fd54bc90b82 -- src-tauri/src/license.rs
+          echo "AUDIT_PRODUCT_SHA=$(git rev-parse HEAD)"
+
+      - name: Build actual ENDLUME app from exact target SHA
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v ffmpeg >/dev/null || brew install ffmpeg
+          npm install --no-audit --no-fund
+          rustup target add aarch64-apple-darwin
+          mkdir -p src-tauri/binaries
+          cp "$(command -v ffmpeg)" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp "$(command -v ffprobe)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          chmod +x src-tauri/binaries/*
+          npm run build
+          cargo test --manifest-path src-tauri/Cargo.toml --target aarch64-apple-darwin --features acceptance-harness
+          npx tauri build --target aarch64-apple-darwin --bundles app --features acceptance-harness --config '{"bundle":{"createUpdaterArtifacts":false}}'
+          APP="$(find src-tauri/target/aarch64-apple-darwin/release/bundle/macos -maxdepth 1 -type d -name '*.app' -print -quit)"
+          BIN="$APP/Contents/MacOS/endlume"; test -x "$BIN"
+          ROOT="$RUNNER_TEMP/endlume-d91-audit"; MEDIA="$ROOT/project"; FX="$ROOT/effects"; OUT="$ROOT/out"
+          mkdir -p "$MEDIA" "$FX" "$OUT"
+          echo "ROOT=$ROOT" >> "$GITHUB_ENV"; echo "MEDIA=$MEDIA" >> "$GITHUB_ENV"; echo "FX=$FX" >> "$GITHUB_ENV"; echo "OUT=$OUT" >> "$GITHUB_ENV"; echo "BIN=$BIN" >> "$GITHUB_ENV"
+
+      - name: Generate physical 3-hour workload and animated Subscribe
+        shell: bash
+        run: |
+          set -euo pipefail
+          ffmpeg -hide_banner -loglevel error -f lavfi -i "color=c=0x182033:s=1920x1080" -frames:v 1 -y "$MEDIA/cover.png"
+          for i in $(seq -w 1 12); do
+            n=$((10#$i)); hz=$((180+n*23))
+            ffmpeg -hide_banner -loglevel error -f lavfi -i "sine=frequency=${hz}:sample_rate=48000:duration=900" -c:a libmp3lame -b:a 320k -ar 48000 -ac 2 -metadata title="Audit Track ${i}" -y "$MEDIA/track-${i}.mp3"
+          done
+          ffmpeg -hide_banner -loglevel error \
+            -f lavfi -i "color=c=0x00ff00:s=640x360:r=60:d=3" \
+            -f lavfi -i "color=c=white:s=180x100:r=60:d=3" \
+            -filter_complex "[0:v][1:v]overlay=x='70+300*t/3':y='120+45*sin(2*PI*t/3)':eval=frame:shortest=1" \
+            -an -c:v libx264 -preset ultrafast -g 180 -pix_fmt yuv420p -r 60 -y "$FX/subscribe.mp4"
+          test "$(ffprobe -v error -show_entries stream=nb_frames -of csv=p=0 "$FX/subscribe.mp4")" = 180
+
+      - name: Create exact 3-hour QueueJob
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import glob,json,os
+          media=os.environ['MEDIA']; fx=os.environ['FX']; out=os.environ['OUT']; root=os.environ['ROOT']
+          sub={'id':'subscribe','name':'Audit Subscribe Animated 3s','source':os.path.join(fx,'subscribe.mp4'),'enabled':True,'mode':'chromakey','keyColor':'#00ff00','similarity':0.12,'blend':0.08,'despill':1.0,'lumaThreshold':0.10,'lumaTolerance':0.05,'saturation':1.0,'x':0.15,'y':0.65,'scale':0.30,'fullscreen':False,'previewFrameTime':0.0,'startSec':0.0,'endSec':None,'cacheKey':None,'cacheReady':None,'firstAtSec':600.0,'secondAtSec':3600.0,'repeatEverySec':3600.0}
+          job={'project':{'id':'audit-d91-3h','name':'ENDLUME D91 3H Sample Table Audit','path':media,'media':[os.path.join(media,'cover.png')],'audio':sorted(glob.glob(os.path.join(media,'track-*.mp3'))),'valid':True,'error':None},'settings':{'width':1920,'height':1080,'fps':60,'codec':'h265','bitrateMbps':30.0,'durationHours':3.0,'durationMode':'whole-track','loopMode':'image','crossfadeSec':0.0,'normalizeLufs':False,'outputDir':out,'preset':'fast','encoderPreference':'auto'},'effects':[],'subscribes':[sub],'ambient':None}
+          json.dump(job,open(os.path.join(root,'job.json'),'w'),indent=2)
+          PY
+
+      - name: Run actual built product
+        shell: bash
+        run: |
+          set +e
+          ENDLUME_ACCEPTANCE_JOB="$ROOT/job.json" ENDLUME_ACCEPTANCE_RECEIPT="$ROOT/receipt.json" ENDLUME_SOURCE_HEAD="$TARGET_SHA" "$BIN" > "$ROOT/app.log" 2>&1
+          rc=$?; echo "APP_EXIT_CODE=$rc" >> "$ROOT/app.log"; test -f "$ROOT/receipt.json" && cat "$ROOT/receipt.json"; exit 0
+
+      - name: Audit all 648000 video packet timestamps
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json,os,subprocess,sys
+          root=os.environ['ROOT']; d=json.load(open(os.path.join(root,'receipt.json')))
+          if d.get('status')!='ok': raise SystemExit(d)
+          r=d['result']; out=r['output_path']; expected=648000; delta=1000
+          cmd=['ffprobe','-v','error','-select_streams','v:0','-show_packets','-show_entries','packet=pts,dts,duration,pos,size,flags','-of','compact=p=0:nk=0',out]
+          p=subprocess.Popen(cmd,stdout=subprocess.PIPE,text=True,bufsize=1)
+          count=0; first_pts=first_dts=None; prev_pts=prev_dts=None; last_pts=last_dts=None; unique_pos=set(); bad=[]
+          for raw in p.stdout:
+              raw=raw.strip()
+              if not raw: continue
+              row={}
+              for part in raw.split('|'):
+                  if '=' in part:
+                      k,v=part.split('=',1); row[k]=v
+              try:
+                  pts=int(row['pts']); dts=int(row['dts']); dur=int(row['duration']); pos=int(row['pos'])
+              except Exception as e:
+                  bad.append({'index':count,'raw':raw,'error':str(e)}); continue
+              if first_pts is None: first_pts,first_dts=pts,dts
+              if pts!=dts: bad.append({'index':count,'reason':'pts!=dts','pts':pts,'dts':dts})
+              if dur!=delta: bad.append({'index':count,'reason':'duration','duration':dur})
+              if prev_pts is not None and pts-prev_pts!=delta: bad.append({'index':count,'reason':'pts_delta','delta':pts-prev_pts})
+              if prev_dts is not None and dts-prev_dts!=delta: bad.append({'index':count,'reason':'dts_delta','delta':dts-prev_dts})
+              if pts<0 or dts<0: bad.append({'index':count,'reason':'negative_ts','pts':pts,'dts':dts})
+              unique_pos.add(pos); prev_pts,last_pts=pts,pts; prev_dts,last_dts=dts,dts; count+=1
+              if len(bad)>20: break
+          rc=p.wait()
+          checks={
+            'ffprobe_rc':rc==0,
+            'packet_count':count==expected,
+            'first_pts_zero':first_pts==0 and first_dts==0,
+            'last_pts_exact':last_pts==(expected-1)*delta and last_dts==(expected-1)*delta,
+            'all_deltas_1_60':not bad,
+            'unique_physical_positions':len(unique_pos)==181,
+          }
+          report={'checks':checks,'packet_count':count,'first_pts':first_pts,'last_pts':last_pts,'expected_delta_ticks':delta,'unique_physical_positions':len(unique_pos),'errors':bad}
+          json.dump(report,open(os.path.join(root,'timestamp-audit.json'),'w'),indent=2); print(json.dumps(report,indent=2))
+          if not all(checks.values()): raise SystemExit(1)
+          PY
+
+      - name: Audit MP4 video sample tables
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json,os,struct
+          root=os.environ['ROOT']; rec=json.load(open(os.path.join(root,'receipt.json')))['result']; path=rec['output_path']; size=os.path.getsize(path)
+          def u32(b,o): return struct.unpack_from('>I',b,o)[0]
+          def u64(b,o): return struct.unpack_from('>Q',b,o)[0]
+          def file_boxes(f,start,end):
+              out=[]; p=start
+              while p+8<=end:
+                  f.seek(p); h=f.read(16); n=u32(h,0); typ=h[4:8].decode('latin1'); hdr=8
+                  if n==1: n=u64(h,8); hdr=16
+                  elif n==0: n=end-p
+                  if n<hdr or p+n>end: raise RuntimeError((typ,p,n,end))
+                  out.append((typ,p,n,hdr)); p+=n
+              if p!=end: raise RuntimeError(('trailing',p,end))
+              return out
+          def boxes(b,start=0,end=None):
+              if end is None:end=len(b)
+              out=[]; p=start
+              while p+8<=end:
+                  n=u32(b,p); typ=b[p+4:p+8].decode('latin1'); hdr=8
+                  if n==1: n=u64(b,p+8); hdr=16
+                  elif n==0: n=end-p
+                  if n<hdr or p+n>end: raise RuntimeError((typ,p,n,end))
+                  out.append((typ,p,n,hdr)); p+=n
+              if p!=end: raise RuntimeError(('nested trailing',p,end))
+              return out
+          def child(b,box,typ):
+              _,off,n,hdr=box
+              for x in boxes(b,off+hdr,off+n):
+                  if x[0]==typ:return x
+              return None
+          def payload(b,box):
+              _,off,n,hdr=box; return b[off+hdr:off+n]
+          with open(path,'rb') as f:
+              top=file_boxes(f,0,size); moov_box=next(x for x in top if x[0]=='moov'); mdats=[x for x in top if x[0]=='mdat']
+              f.seek(moov_box[1]); moov=f.read(moov_box[2])
+          root_box=boxes(moov)[0]; video=None
+          for trak in [x for x in boxes(moov,root_box[1]+root_box[3],root_box[1]+root_box[2]) if x[0]=='trak']:
+              mdia=child(moov,trak,'mdia'); hdlr=child(moov,mdia,'hdlr') if mdia else None
+              hp=payload(moov,hdlr) if hdlr else b''
+              if len(hp)>=12 and hp[8:12]==b'vide': video=(trak,mdia); break
+          if not video: raise SystemExit('video trak missing')
+          trak,mdia=video; minf=child(moov,mdia,'minf'); stbl=child(moov,minf,'stbl'); mdhd=child(moov,mdia,'mdhd')
+          kids={x[0]:x for x in boxes(moov,stbl[1]+stbl[3],stbl[1]+stbl[2])}
+          for req in ['stts','stsc','stsz']:
+              if req not in kids: raise SystemExit(req+' missing')
+          offbox=kids.get('stco') or kids.get('co64')
+          if not offbox: raise SystemExit('stco/co64 missing')
+          p=payload(moov,kids['stts']); stts_n=u32(p,4); stts=[]
+          for i in range(stts_n): stts.append((u32(p,8+i*8),u32(p,12+i*8)))
+          p=payload(moov,kids['stsz']); fixed=u32(p,4); sample_count=u32(p,8)
+          p=payload(moov,kids['stsc']); stsc_n=u32(p,4); stsc=[]
+          for i in range(stsc_n): stsc.append((u32(p,8+i*12),u32(p,12+i*12),u32(p,16+i*12)))
+          p=payload(moov,offbox); chunk_count=u32(p,4); wide=offbox[0]=='co64'; step=8 if wide else 4
+          offsets=[u64(p,8+i*8) if wide else u32(p,8+i*4) for i in range(chunk_count)]
+          mdat_ranges=[(o+h,o+n) for _,o,n,h in mdats]
+          offsets_in_mdat=all(any(a<=x<b for a,b in mdat_ranges) for x in set(offsets))
+          stss=kids.get('stss'); stss_count=None
+          if stss: stss_count=u32(payload(moov,stss),4)
+          mp=payload(moov,mdhd); ver=mp[0]; timescale=u32(mp,20 if ver==1 else 12); duration=u64(mp,24) if ver==1 else u32(mp,16)
+          checks={
+            'stts_exact':stts==[(648000,1000)],
+            'stsz_count':sample_count==648000 and fixed==0,
+            'stsc_one_sample_chunks':stsc==[(1,1,1)],
+            'chunk_count':chunk_count==648000,
+            'unique_chunk_offsets':len(set(offsets))==181,
+            'offsets_inside_mdat':offsets_in_mdat,
+            'stss_all_sync_or_absent':stss_count is None or stss_count==648000,
+            'ctts_absent':'ctts' not in kids,
+            'mdhd_timescale':timescale==60000,
+            'mdhd_duration':duration==648000000,
+          }
+          report={'checks':checks,'stts':stts,'stsz_sample_count':sample_count,'stsc':stsc,'offset_atom':offbox[0],'chunk_count':chunk_count,'unique_chunk_offsets':len(set(offsets)),'stss_count':stss_count,'mdhd_timescale':timescale,'mdhd_duration':duration,'top_level':[x[0] for x in top]}
+          json.dump(report,open(os.path.join(root,'sample-table-audit.json'),'w'),indent=2); print(json.dumps(report,indent=2))
+          if not all(checks.values()): raise SystemExit(1)
+          PY
+
+      - name: Final audit gate
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json,os
+          root=os.environ['ROOT']; d=json.load(open(os.path.join(root,'receipt.json'))); ts=json.load(open(os.path.join(root,'timestamp-audit.json'))); st=json.load(open(os.path.join(root,'sample-table-audit.json')))
+          if d.get('status')!='ok': raise SystemExit(d)
+          r=d['result']; m=r.get('fast_metrics') or {}; mb=r['output_bytes']/1_000_000
+          checks={'EXACT_PRODUCT_SHA':r.get('source_head')==os.environ['TARGET_SHA'],'FAST_PATH':r.get('fast_path_used') is True,'MODE':m.get('mode')=='static-subscribe-hevc-mp3-packet-copy','TEN_SECONDS':r.get('export_seconds',999)*1000<=10000,'SIZE':400<=mb<=600,'FULL_DECODE':r.get('full_decode',{}).get('ok') is True,'SEEKS':all(x.get('ok') for x in r.get('seek_checks',[])),'TIMESTAMPS':all(ts.get('checks',{}).values()),'SAMPLE_TABLES':all(st.get('checks',{}).values())}
+          print('AUDIT_SHA='+os.environ['TARGET_SHA']); print(f"AUDIT_EXPORT_MS={r['export_seconds']*1000:.3f}"); print(f"AUDIT_OUTPUT_MB={mb:.3f}")
+          for k,v in checks.items(): print(f"{k}={'PASS' if v else 'FAIL'}")
+          json.dump({'checks':checks,'export_ms':r['export_seconds']*1000,'output_mb':mb},open(os.path.join(root,'final-audit.json'),'w'),indent=2)
+          if not all(checks.values()): raise SystemExit(1)
+          print('TIMESTAMP_SAMPLE_TABLE_AUDIT=PASS')
+          PY
+
+      - name: Upload audit evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: endlume-d91-timestamp-sampletable-audit
+          path: |
+            ${{ env.ROOT }}/job.json
+            ${{ env.ROOT }}/receipt.json
+            ${{ env.ROOT }}/app.log
+            ${{ env.ROOT }}/timestamp-audit.json
+            ${{ env.ROOT }}/sample-table-audit.json
+            ${{ env.ROOT }}/final-audit.json
+          if-no-files-found: warn
+          retention-days: 30

@@ -1,0 +1,160 @@
+name: ENDLUME 10.0.12 resume verify corrected artifact
+
+on:
+  push:
+    branches:
+      - release-fix/endlume-10.0.12-physical-signing-compat
+    paths:
+      - '.github/workflows/endlume-1012-resume-verify-corrected-artifact.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  verify-existing-build:
+    runs-on: [self-hosted, macOS, ARM64]
+    timeout-minutes: 15
+    steps:
+      - name: Verify exact persisted build workspace and owner physical app
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          test "$(git rev-parse HEAD)" = '0445923773dc276580fcdaf719d69a3e6bbddef5'
+          BASE='a7a399e83de8b9248e2065c6dda1f9079ded6565'
+          test -z "$(git diff --name-only "$BASE"..HEAD -- src-tauri/src)"
+          echo 'PRODUCT_CODE_CHANGES=NONE'
+
+          OWNER='/Applications/ENDLUME YT Studio PEISOV.app'
+          OINFO="$OWNER/Contents/Info.plist"
+          OEXE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$OINFO")
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$OINFO")" = '10.0.11'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$OINFO")" = '10.0.11'
+          test "$(shasum -a 256 "$OWNER/Contents/MacOS/$OEXE" | awk '{print $1}')" = '8f60dbe1dd611db407c2d096aebd4597f6ff2af07c881e2e41d163e19b2b80c0'
+          echo 'OWNER_PHYSICAL_10_0_11_UNCHANGED=PASS'
+
+          python3 - "$OWNER/Contents/MacOS/$OEXE" "$RUNNER_TEMP/physical.pub" <<'PY'
+          import sys,base64,hashlib
+          data=open(sys.argv[1],'rb').read(); prefix=b'dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6I'; found=[]; start=0
+          while True:
+              i=data.find(prefix,start)
+              if i<0: break
+              for n in range(120,241,4):
+                  s=data[i:i+n]
+                  try:
+                      raw=base64.b64decode(s,validate=True); text=raw.decode(); lines=text.strip().splitlines()
+                      if len(lines)==2 and lines[0].startswith('untrusted comment: minisign public key: '):
+                          pkt=base64.b64decode(lines[1],validate=True)
+                          if len(pkt)==42 and pkt[:2]==b'Ed': found.append((s.decode(),text,pkt))
+                  except Exception: pass
+              start=i+1
+          uniq={x[0]:x for x in found}
+          if len(uniq)!=1: raise SystemExit(f'physical pubkey candidates={len(uniq)}')
+          b64,text,pkt=next(iter(uniq.values()))
+          assert pkt[2:10].hex()=='00351d4950cd22d3'
+          open(sys.argv[2],'w').write(text)
+          print('PHYSICAL_PUBKEY_SHA256='+hashlib.sha256(b64.encode()).hexdigest())
+          print('PHYSICAL_KEYID='+pkt[2:10].hex())
+          PY
+
+      - name: Verify Tauri-built 10.0.12 package with exact physical 10.0.11 trust root
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          BUNDLE='src-tauri/target/aarch64-apple-darwin/release/bundle/macos'
+          APP="$BUNDLE/ENDLUME Studio.app"
+          GEN_TAR="$BUNDLE/ENDLUME Studio.app.tar.gz"
+          GEN_SIG="$GEN_TAR.sig"
+          test -d "$APP"
+          test -s "$GEN_TAR"
+          test -s "$GEN_SIG"
+          INFO="$APP/Contents/Info.plist"
+          EXE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$INFO")
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$INFO")" = '10.0.12'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$INFO")" = '10.0.12'
+          /usr/bin/lipo -archs "$APP/Contents/MacOS/$EXE" | grep -qw arm64
+
+          python3 - "$APP/Contents/MacOS/$EXE" <<'PY'
+          import sys,base64
+          data=open(sys.argv[1],'rb').read(); prefix=b'dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6I'; found=[]; start=0
+          while True:
+              i=data.find(prefix,start)
+              if i<0: break
+              for n in range(120,241,4):
+                  s=data[i:i+n]
+                  try:
+                      raw=base64.b64decode(s,validate=True); text=raw.decode(); lines=text.strip().splitlines()
+                      if len(lines)==2 and lines[0].startswith('untrusted comment: minisign public key: '):
+                          pkt=base64.b64decode(lines[1],validate=True)
+                          if len(pkt)==42 and pkt[:2]==b'Ed': found.append((s.decode(),pkt))
+                  except Exception: pass
+              start=i+1
+          uniq={x[0]:x for x in found}
+          if len(uniq)!=1: raise SystemExit(f'built pubkey candidates={len(uniq)}')
+          b64,pkt=next(iter(uniq.values()))
+          expected='dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEQzMjJDRDUwNDkxRDM1MDAKUldRQU5SMUpVTTBpMCs2TTF5UjZkS1h3K0N5UUlBb0srYmVtN1lianVCdEY2ZkxuN2FlM1AyQmoK'
+          assert b64==expected
+          assert pkt[2:10].hex()=='00351d4950cd22d3'
+          print('BUILT_10_0_12_EMBEDDED_PHYSICAL_KEY=PASS')
+          PY
+
+          python3 - "$GEN_SIG" "$RUNNER_TEMP/corrected.minisig" <<'PY'
+          import sys,base64
+          s=open(sys.argv[1]).read().strip()
+          text=s+'\n' if s.startswith('untrusted comment:') else base64.b64decode(s,validate=True).decode()
+          open(sys.argv[2],'w').write(text)
+          PY
+          minisign -Vm "$GEN_TAR" -x "$RUNNER_TEMP/corrected.minisig" -p "$RUNNER_TEMP/physical.pub" >/dev/null
+          echo 'PHYSICAL_TAURI_SIGNATURE_OFFLINE_VERIFY=PASS'
+
+          rm -rf corrected-release
+          mkdir corrected-release
+          cp "$GEN_TAR" corrected-release/ENDLUME-macos-aarch64.app.tar.gz
+          cp "$GEN_SIG" corrected-release/ENDLUME-macos-aarch64.app.tar.gz.sig
+          TAR='corrected-release/ENDLUME-macos-aarch64.app.tar.gz'
+          SIG="$TAR.sig"
+          APP_BINARY_SHA="$(shasum -a 256 "$APP/Contents/MacOS/$EXE" | awk '{print $1}')"
+          APP_TREE_SHA="$(find "$APP" -type f -print0 | sort -z | xargs -0 shasum -a 256 | shasum -a 256 | awk '{print $1}')"
+          TAR_SHA="$(shasum -a 256 "$TAR" | awk '{print $1}')"
+          SIG_SHA="$(shasum -a 256 "$SIG" | awk '{print $1}')"
+          echo "APP_BINARY_SHA256=$APP_BINARY_SHA"
+          echo "APP_TREE_SHA256=$APP_TREE_SHA"
+          echo "TAR_GZ_SHA256=$TAR_SHA"
+          echo "SIG_SHA256=$SIG_SHA"
+          printf '%s\n' "APP_BINARY_SHA256=$APP_BINARY_SHA" "APP_TREE_SHA256=$APP_TREE_SHA" "TAR_GZ_SHA256=$TAR_SHA" "SIG_SHA256=$SIG_SHA" > corrected-release/hashes.txt
+
+          SIG_CONTENT="$(cat "$SIG")"
+          python3 - "$SIG_CONTENT" <<'PY'
+          import sys,json,datetime
+          data={
+            'version':'10.0.12',
+            'notes':'ENDLUME macOS 10.0.12 physical 10.0.11 signing-key compatibility correction',
+            'pub_date':datetime.datetime.now(datetime.timezone.utc).isoformat().replace('+00:00','Z'),
+            'platforms':{'darwin-aarch64':{
+              'signature':sys.argv[1],
+              'url':'https://github.com/ScaleUPPeisov/scaleup-site/releases/download/endlume-stable/ENDLUME-macos-aarch64.app.tar.gz'
+            }}
+          }
+          open('corrected-release/macos-manifest-fragment.json','w').write(json.dumps(data,indent=2)+'\n')
+          PY
+
+      - name: Re-prove owner physical app untouched
+        shell: bash
+        run: |
+          set -euo pipefail
+          OWNER='/Applications/ENDLUME YT Studio PEISOV.app'
+          INFO="$OWNER/Contents/Info.plist"
+          EXE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$INFO")
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$INFO")" = '10.0.11'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$INFO")" = '10.0.11'
+          test "$(shasum -a 256 "$OWNER/Contents/MacOS/$EXE" | awk '{print $1}')" = '8f60dbe1dd611db407c2d096aebd4597f6ff2af07c881e2e41d163e19b2b80c0'
+          echo 'OWNER_PHYSICAL_APP_UNCHANGED=PASS'
+
+      - name: Upload corrected signed package
+        uses: actions/upload-artifact@v4
+        with:
+          name: ENDLUME-10.0.12-physical-compatible-macos-aarch64
+          path: corrected-release/*
+          if-no-files-found: error
+          retention-days: 30

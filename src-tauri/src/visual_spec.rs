@@ -24,7 +24,7 @@ pub fn fast_periodic_effect_supported(e:&EffectPreset)->bool{
     && !e.source.trim().is_empty()
     && e.start_sec.abs()<=0.000_1
     && e.end_sec.is_none()
-    && matches!(e.mode.as_str(),"screen"|"screen-cache"|"chromakey"|"luma"|"prealpha")
+    && matches!(e.mode.as_str(),"screen"|"chromakey"|"luma")
 }
 
 pub fn effect_phase_at(t:f64,e:&EffectPreset,period:f64)->f64{
@@ -97,6 +97,7 @@ pub fn apply_effects_filter(
 #[cfg(test)]
 mod tests{
   use super::*;
+  fn effect(mode:&str)->EffectPreset{EffectPreset{id:"x".into(),name:"x".into(),source:"/tmp/x.mp4".into(),enabled:true,mode:mode.into(),key_color:"#00ff00".into(),similarity:0.18,blend:0.08,despill:0.0,luma_threshold:0.12,luma_tolerance:0.12,saturation:1.0,x:0.5,y:0.5,scale:1.0,fullscreen:true,preview_frame_time:0.0,start_sec:0.0,end_sec:None,cache_key:None,cache_ready:None}}
   #[test]
   fn common_period_is_exact_and_bounded(){
     assert_eq!(common_period_frames(&[300],60),Some(300));
@@ -108,5 +109,14 @@ mod tests{
     assert_eq!(period_frames(5.0,60),Some(300));
     assert_eq!(period_frames(5.003,60),Some(300));
     assert_eq!(period_frames(5.01,60),None);
+  }
+  #[test]
+  fn fast_periodic_modes_are_allowlisted(){
+    assert!(fast_periodic_effect_supported(&effect("screen")));
+    assert!(fast_periodic_effect_supported(&effect("chromakey")));
+    assert!(fast_periodic_effect_supported(&effect("luma")));
+    assert!(!fast_periodic_effect_supported(&effect("screen-cache")));
+    assert!(!fast_periodic_effect_supported(&effect("prealpha")));
+    assert!(!fast_periodic_effect_supported(&effect("unknown")));
   }
 }

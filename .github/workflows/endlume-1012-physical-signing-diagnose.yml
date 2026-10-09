@@ -1,0 +1,140 @@
+name: ENDLUME 10.0.12 physical signing diagnose
+
+on:
+  push:
+    branches:
+      - release-fix/endlume-10.0.12-physical-signing-compat
+    paths:
+      - '.github/workflows/endlume-1012-physical-signing-diagnose.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, macOS, ARM64]
+    timeout-minutes: 15
+    steps:
+      - name: Checkout release-fix branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Extract physical updater trust root and compare signers
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP='/Applications/ENDLUME YT Studio PEISOV.app'
+          INFO="$APP/Contents/Info.plist"
+          test -d "$APP"
+          test -f "$INFO"
+          EXE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$INFO")
+          BIN="$APP/Contents/MacOS/$EXE"
+          SHORT=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$INFO")
+          BUILD=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$INFO")
+          echo "PHYSICAL_VERSION=$SHORT/$BUILD"
+          test "$SHORT" = '10.0.11'
+          test "$BUILD" = '10.0.11'
+          echo "PHYSICAL_BINARY_SHA256=$(shasum -a 256 "$BIN" | awk '{print $1}')"
+
+          python3 - "$APP" <<'PY'
+          import os,re,base64,hashlib,sys,json
+          app=sys.argv[1]
+          prefix=b'dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6I'
+          found={}
+          def validate(s):
+              try:
+                  raw=base64.b64decode(s, validate=True)
+                  txt=raw.decode('utf-8')
+                  lines=txt.strip().splitlines()
+                  if len(lines)!=2 or not lines[0].startswith('untrusted comment: minisign public key: '): return None
+                  pkt=base64.b64decode(lines[1], validate=True)
+                  if len(pkt)!=42 or pkt[:2] != b'Ed': return None
+                  return txt, pkt
+              except Exception:
+                  return None
+          for root,dirs,files in os.walk(app):
+              for name in files:
+                  p=os.path.join(root,name)
+                  try:
+                      data=open(p,'rb').read()
+                  except Exception:
+                      continue
+                  start=0
+                  while True:
+                      i=data.find(prefix,start)
+                      if i<0: break
+                      for n in range(120,241,4):
+                          cand=data[i:i+n]
+                          v=validate(cand)
+                          if v:
+                              found[cand.decode()] = (p,v[0],v[1])
+                      start=i+1
+          if not found:
+              raise SystemExit('NO_PHYSICAL_MINISIGN_PUBKEY_FOUND')
+          print(f'PHYSICAL_PUBKEY_CANDIDATE_COUNT={len(found)}')
+          for idx,(b64,(path,txt,pkt)) in enumerate(found.items(),1):
+              print(f'PHYSICAL_PUBKEY_CANDIDATE_{idx}={b64}')
+              print(f'PHYSICAL_PUBKEY_CANDIDATE_{idx}_SHA256={hashlib.sha256(b64.encode()).hexdigest()}')
+              print(f'PHYSICAL_PUBKEY_CANDIDATE_{idx}_DECODED_SHA256={hashlib.sha256(base64.b64decode(b64)).hexdigest()}')
+              print(f'PHYSICAL_PUBKEY_CANDIDATE_{idx}_KEYID={pkt[2:10].hex()}')
+              print(f'PHYSICAL_PUBKEY_CANDIDATE_{idx}_FOUND_IN={path}')
+          if len(found)!=1:
+              raise SystemExit('AMBIGUOUS_PHYSICAL_PUBKEY')
+          b64,(path,txt,pkt)=next(iter(found.items()))
+          open(os.environ['RUNNER_TEMP']+'/physical_pubkey.b64','w').write(b64)
+          open(os.environ['RUNNER_TEMP']+'/physical_pubkey.txt','w').write(txt)
+          open(os.environ['RUNNER_TEMP']+'/physical_keyid.txt','w').write(pkt[2:10].hex())
+          PY
+
+          CURRENT=$(python3 -c 'import json;print(json.load(open("src-tauri/tauri.conf.json"))["plugins"]["updater"]["pubkey"])')
+          TAG=$(git show endlume-v10.0.11:src-tauri/tauri.conf.json | python3 -c 'import json,sys;print(json.load(sys.stdin)["plugins"]["updater"]["pubkey"])')
+          PHYSICAL=$(cat "$RUNNER_TEMP/physical_pubkey.b64")
+          [ "$PHYSICAL" = "$TAG" ] && echo 'PHYSICAL_KEY_EQUALS_V10_0_11_SOURCE=YES' || echo 'PHYSICAL_KEY_EQUALS_V10_0_11_SOURCE=NO'
+          [ "$PHYSICAL" = "$CURRENT" ] && echo 'PHYSICAL_KEY_EQUALS_CURRENT_SOURCE=YES' || echo 'PHYSICAL_KEY_EQUALS_CURRENT_SOURCE=NO'
+
+          STABLE='https://github.com/ScaleUPPeisov/scaleup-site/releases/download/endlume-stable/latest.json'
+          curl -fsSL "$STABLE" -o "$RUNNER_TEMP/latest.json"
+          python3 - "$RUNNER_TEMP/latest.json" "$RUNNER_TEMP/physical_pubkey.b64" <<'PY'
+          import sys,json,base64
+          m=json.load(open(sys.argv[1]))
+          assert m['version']=='10.0.12',m.get('version')
+          p=m['platforms']['darwin-aarch64']
+          sig_outer=p['signature']
+          sig_txt=base64.b64decode(sig_outer).decode()
+          sig_pkt=base64.b64decode(sig_txt.splitlines()[1])
+          phys_b64=open(sys.argv[2]).read().strip()
+          phys_txt=base64.b64decode(phys_b64).decode()
+          phys_pkt=base64.b64decode(phys_txt.splitlines()[1])
+          print('CURRENT_10_0_12_SIGNER_KEYID='+sig_pkt[2:10].hex())
+          print('PHYSICAL_10_0_11_KEYID='+phys_pkt[2:10].hex())
+          print('PHYSICAL_KEY_EQUALS_CURRENT_10_0_12_SIGNER='+('YES' if sig_pkt[2:10]==phys_pkt[2:10] else 'NO'))
+          print('CURRENT_STABLE_URL='+p['url'])
+          PY
+
+      - name: Inspect legitimate local signing locations without exposing secrets
+        shell: bash
+        env:
+          GH_SECRET_PRESENT: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          [ -n "${GH_SECRET_PRESENT:-}" ] && echo 'GITHUB_SECRET_TAURI_SIGNING_PRIVATE_KEY_PRESENT=YES' || echo 'GITHUB_SECRET_TAURI_SIGNING_PRIVATE_KEY_PRESENT=NO'
+          unset GH_SECRET_PRESENT
+          for d in "$HOME/.tauri" "$HOME/.config/tauri" "$HOME/Library/Application Support/ENDLUME" "$HOME/Library/Application Support/studio.endlume.desktop"; do
+            if [ -d "$d" ]; then
+              echo "SECURE_LOCATION_PRESENT=$d"
+              find "$d" -maxdepth 3 -type f \( -iname '*.key' -o -iname '*sign*' -o -iname '*tauri*' -o -iname '*endlume*' \) -print | sed 's/^/CANDIDATE_SIGNING_FILE=/' || true
+            fi
+          done
+          if launchctl getenv TAURI_SIGNING_PRIVATE_KEY >/dev/null 2>&1 && [ -n "$(launchctl getenv TAURI_SIGNING_PRIVATE_KEY 2>/dev/null || true)" ]; then
+            echo 'LAUNCHCTL_TAURI_SIGNING_PRIVATE_KEY_PRESENT=YES'
+          else
+            echo 'LAUNCHCTL_TAURI_SIGNING_PRIVATE_KEY_PRESENT=NO'
+          fi
+
+      - name: Tauri signer command help
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --no-audit --no-fund >/dev/null
+          npx tauri signer sign --help

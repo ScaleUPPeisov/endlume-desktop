@@ -1,4 +1,4 @@
-name: ENDLUME owner Mac inspect installed updater wiring
+name: ENDLUME owner Mac reconstruct exact 10.0.11
 
 on:
   push:
@@ -13,16 +13,40 @@ jobs:
     runs-on: [self-hosted, macOS, ARM64]
     timeout-minutes: 5
     steps:
-      - name: Inspect exact installed ENDLUME binary
+      - name: Reverse staging patch on a copy and compare to original physical hash
         shell: bash
         run: |
           set -euo pipefail
           APP='/Applications/ENDLUME YT Studio PEISOV.app'
           INFO="$APP/Contents/Info.plist"
           EXE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$INFO")
-          BIN="$APP/Contents/MacOS/$EXE"
-          echo CFBundleShortVersionString=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$INFO")
-          echo CFBundleVersion=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$INFO")
-          echo BINARY_SHA256=$(shasum -a 256 "$BIN" | awk '{print $1}')
-          echo '--- MATCHING STRINGS ---'
-          strings -a "$BIN" | grep -Ei 'endlume-(stable|test12)|scaleup-site/releases/download|endlume-updates\.vercel\.app|api/update' || true
+          ROOT="$RUNNER_TEMP/reconstruct-1011-${GITHUB_RUN_ID}"
+          CAND="$ROOT/ENDLUME Reconstructed 10.0.11.app"
+          rm -rf "$ROOT"; mkdir -p "$ROOT"
+          ditto "$APP" "$CAND"
+          echo CURRENT_SHA=$(shasum -a 256 "$CAND/Contents/MacOS/$EXE"|awk '{print $1}')
+          python3 - "$CAND" <<'PY'
+          import os,sys
+          old=b'endlume-test12'; new=b'endlume-stable'; assert len(old)==len(new)
+          hits=[]
+          for base,_,files in os.walk(sys.argv[1]):
+            for n in files:
+              p=os.path.join(base,n)
+              try:d=open(p,'rb').read()
+              except OSError:continue
+              if old in d:
+                hits.append((p,d.count(old)));open(p,'wb').write(d.replace(old,new))
+          print('REVERSE_PATCH_HITS',hits);assert hits
+          PY
+          xattr -cr "$CAND" || true
+          codesign --force --deep --sign - "$CAND"
+          codesign --verify --deep --strict "$CAND"
+          SHA=$(shasum -a 256 "$CAND/Contents/MacOS/$EXE"|awk '{print $1}')
+          echo RECONSTRUCTED_SHA=$SHA
+          strings -a "$CAND/Contents/MacOS/$EXE" | grep -F 'endlume-stable/latest.json'
+          test "$SHA" = '8f60dbe1dd611db407c2d096aebd4597f6ff2af07c881e2e41d163e19b2b80c0'
+          echo EXACT_PHYSICAL_10_0_11_RECONSTRUCTED=PASS
+          rm -rf "$APP"
+          ditto "$CAND" "$APP"
+          test "$(shasum -a 256 "$APP/Contents/MacOS/$EXE"|awk '{print $1}')" = "$SHA"
+          echo OWNER_APP_RESTORED_EXACTLY=PASS

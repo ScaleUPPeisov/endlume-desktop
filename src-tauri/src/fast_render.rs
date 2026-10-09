@@ -35,7 +35,7 @@ async fn video_bitrate(app:&AppHandle,path:&Path)->Option<u64>{
 }
 
 fn base_rejection(job:&QueueJob)->Option<String>{
-  if !cfg!(target_os="macos"){return Some("fast path is macOS-only".into())}
+  if !cfg!(all(target_os="macos",target_arch="aarch64")){return Some("fast path requires Apple Silicon macOS; Intel uses legacy renderer".into())}
   if job.project.media.len()!=1||!is_image(&job.project.media[0]){return Some("fast path requires exactly one still image".into())}
   if job.project.audio.is_empty(){return Some("fast path requires audio tracks".into())}
   if !job.project.audio.iter().all(|p|is_mp3(p)){return Some("clean-copy fast path requires MP3 inputs".into())}

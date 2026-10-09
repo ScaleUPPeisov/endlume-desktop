@@ -1,4 +1,4 @@
-use crate::{model::{EffectPreset,Progress,QueueJob},mp4_manifest,visual_spec};
+use crate::{model::{EffectPreset,Progress,QueueJob,SubscribePreset},mp4_manifest,visual_spec};
 use serde_json::json;
 use std::{fs,path::{Path,PathBuf},sync::{Arc,atomic::{AtomicBool,Ordering}},time::Instant};
 use tauri::{AppHandle,Emitter};
@@ -12,6 +12,8 @@ struct FastVisualPlan{
   master_seconds:f64,
   cycle_frames:usize,
   effects:Vec<EffectPreset>,
+  subscribe:Option<SubscribePreset>,
+  subscribe_frames:usize,
   mode:&'static str,
 }
 
@@ -45,17 +47,62 @@ fn base_rejection(job:&QueueJob)->Option<String>{
   if job.settings.crossfade_sec.abs()>=0.0001{return Some("crossfade requires processed audio".into())}
   if job.settings.normalize_lufs{return Some("normalization requires processed audio".into())}
   if job.ambient.as_ref().map(|x|!x.trim().is_empty()).unwrap_or(false){return Some("ambient mix requires processed audio".into())}
-  if job.subscribes.iter().any(|s|s.effect.enabled){return Some("Subscribe is absolute-time content and stays on legacy renderer".into())}
   if job.settings.duration_mode!="whole-track"{return Some("fast path currently preserves whole-track mode only".into())}
   None
+}
+
+fn supported_subscribe_effect(e:&EffectPreset)->bool{
+  e.enabled&&!e.source.trim().is_empty()&&matches!(e.mode.as_str(),"screen"|"screen-cache"|"chromakey"|"luma"|"prealpha")
+}
+fn frame_aligned(sec:f64,fps:u32)->Option<usize>{
+  if !sec.is_finite()||sec<0.0||fps==0{return None}
+  let x=sec*fps as f64;let n=x.round();if (x-n).abs()>0.001{return None}Some(n as usize)
+}
+fn subscribe_starts(sub:&SubscribePreset,final_duration:f64,fps:u32,sub_frames:usize)->Result<Vec<usize>,String>{
+  let total_frames=(final_duration*fps as f64).round() as usize;
+  let mut starts=Vec::new();
+  for sec in [sub.first_at_sec,sub.second_at_sec]{
+    if sec>=0.0&&sec<final_duration{
+      let f=frame_aligned(sec,fps).ok_or_else(||format!("Subscribe time {sec:.6}s is not frame-aligned at {fps} FPS"))?;
+      if f<total_frames&&!starts.contains(&f){starts.push(f)}
+    }
+  }
+  if sub.repeat_every_sec>0.1{
+    let repeat_frames=frame_aligned(sub.repeat_every_sec,fps).ok_or_else(||format!("Subscribe repeat {:.6}s is not frame-aligned at {fps} FPS",sub.repeat_every_sec))?;
+    if repeat_frames==0{return Err("Subscribe repeat interval is zero frames".into())}
+    let anchor_sec=sub.second_at_sec.max(sub.first_at_sec);
+    let anchor=frame_aligned(anchor_sec.max(0.0),fps).ok_or_else(||format!("Subscribe anchor {anchor_sec:.6}s is not frame-aligned at {fps} FPS"))?;
+    let mut f=anchor.saturating_add(repeat_frames);let mut guard=0usize;
+    while f<total_frames{if !starts.contains(&f){starts.push(f)}f=f.saturating_add(repeat_frames);guard+=1;if guard>10000{return Err("Subscribe event count exceeds fast-path bound".into())}}
+  }
+  starts.sort_unstable();
+  for pair in starts.windows(2){if pair[1]<pair[0].saturating_add(sub_frames){return Err("overlapping Subscribe events stay on legacy renderer".into())}}
+  Ok(starts)
+}
+fn subscribe_sample_map(sub:&SubscribePreset,final_duration:f64,fps:u32,sub_frames:usize)->Result<Vec<usize>,String>{
+  if 60000%fps!=0{return Err(format!("Subscribe fast path requires FPS dividing 60000; got {fps}"))}
+  let total_frames=(final_duration*fps as f64).round() as usize;let starts=subscribe_starts(sub,final_duration,fps,sub_frames)?;let mut selected=vec![0usize;total_frames];
+  for start in starts{for i in 0..sub_frames{let at=start+i;if at>=total_frames{break}selected[at]=1+i}}
+  Ok(selected)
 }
 
 async fn visual_plan(app:&AppHandle,job:&QueueJob)->Result<FastVisualPlan,String>{
   if let Some(reason)=base_rejection(job){return Err(reason)}
   let effects=job.effects.iter().filter(|e|e.enabled).cloned().collect::<Vec<_>>();
+  let subs=job.subscribes.iter().filter(|s|s.effect.enabled).cloned().collect::<Vec<_>>();
+  if !subs.is_empty(){
+    if subs.len()!=1{return Err("Subscribe fast path currently supports exactly one enabled Subscribe preset".into())}
+    if !effects.is_empty(){return Err("combined periodic effects + Subscribe stay on legacy renderer".into())}
+    let sub=subs[0].clone();if !supported_subscribe_effect(&sub.effect){return Err(format!("Subscribe effect mode '{}' is not supported by the proven fast path",sub.effect.mode))}
+    if !Path::new(&sub.effect.source).is_file(){return Err(format!("Subscribe source not found: {}",sub.effect.source))}
+    let d=duration(app,&sub.effect.source).await?;
+    let frames=visual_spec::period_frames(d,job.settings.fps).ok_or_else(||format!("Subscribe duration {d:.6}s is not frame-aligned at {} FPS",job.settings.fps))? as usize;
+    subscribe_starts(&sub,job.settings.duration_hours*3600.0,job.settings.fps,frames)?;
+    return Ok(FastVisualPlan{master_seconds:(frames+1) as f64/job.settings.fps as f64,cycle_frames:0,effects:Vec::new(),subscribe:Some(sub),subscribe_frames:frames,mode:"static-subscribe-hevc-mp3-packet-copy"})
+  }
   if effects.is_empty(){
     let cycle_frames=job.settings.fps as usize;
-    return Ok(FastVisualPlan{master_seconds:1.0,cycle_frames,effects,mode:"static-hevc-mp3-packet-copy"})
+    return Ok(FastVisualPlan{master_seconds:1.0,cycle_frames,effects,subscribe:None,subscribe_frames:0,mode:"static-hevc-mp3-packet-copy"})
   }
   for e in &effects{
     if !visual_spec::fast_periodic_effect_supported(e){return Err(format!("effect '{}' is not a proven always-on periodic effect",e.name))}
@@ -68,12 +115,7 @@ async fn visual_plan(app:&AppHandle,job:&QueueJob)->Result<FastVisualPlan,String
     periods.push(frames);
   }
   let common=visual_spec::common_period_frames(&periods,job.settings.fps).ok_or_else(||format!("combined periodic effect cycle is unknown or exceeds {:.0}s",visual_spec::MAX_FAST_COMMON_PERIOD_SEC))?;
-  Ok(FastVisualPlan{
-    master_seconds:common as f64/job.settings.fps as f64,
-    cycle_frames:common as usize,
-    effects,
-    mode:"periodic-hevc-mp3-packet-copy",
-  })
+  Ok(FastVisualPlan{master_seconds:common as f64/job.settings.fps as f64,cycle_frames:common as usize,effects,subscribe:None,subscribe_frames:0,mode:"periodic-hevc-mp3-packet-copy"})
 }
 
 fn final_whole_track_duration(target:f64,durations:&[f64])->Option<(f64,usize)>{
@@ -101,73 +143,42 @@ async fn verify(app:&AppHandle,out:&Path,expected:f64,job:&QueueJob)->Result<(),
   let d=duration(app,out.to_string_lossy().as_ref()).await?;
   if (d-expected).abs()>0.20{return Err(format!("fast path duration mismatch: {d:.3} vs {expected:.3}"))}
   let raw=command(app,"ffprobe",vec!["-v","error","-show_entries","stream=codec_name,width,height,r_frame_rate,avg_frame_rate","-of","json",out.to_string_lossy().as_ref()].into_iter().map(String::from).collect()).await?;
-  let v:serde_json::Value=serde_json::from_slice(&raw).map_err(|e|e.to_string())?;
-  let streams=v.get("streams").and_then(|x|x.as_array()).ok_or("ffprobe streams missing")?;
-  let video=streams.iter().find(|s|s.get("width").is_some()).ok_or("video stream missing")?;
+  let v:serde_json::Value=serde_json::from_slice(&raw).map_err(|e|e.to_string())?;let streams=v.get("streams").and_then(|x|x.as_array()).ok_or("ffprobe streams missing")?;let video=streams.iter().find(|s|s.get("width").is_some()).ok_or("video stream missing")?;
   streams.iter().find(|s|s.get("codec_name").and_then(|x|x.as_str())==Some("mp3")).ok_or("MP3 stream-copy missing")?;
   if video.get("codec_name").and_then(|x|x.as_str())!=Some("hevc"){return Err("fast path output is not HEVC".into())}
   if video.get("width").and_then(|x|x.as_u64())!=Some(job.settings.width as u64)||video.get("height").and_then(|x|x.as_u64())!=Some(job.settings.height as u64){return Err("fast path resolution mismatch".into())}
-  let fps=video.get("avg_frame_rate").and_then(|x|x.as_str()).unwrap_or("");let expected_fps=format!("{}/1",job.settings.fps);
-  if fps!=expected_fps{return Err(format!("fast path FPS mismatch: {fps} vs {expected_fps}"))}
-  Ok(())
+  let fps=video.get("avg_frame_rate").and_then(|x|x.as_str()).unwrap_or("");let expected_fps=format!("{}/1",job.settings.fps);if fps!=expected_fps{return Err(format!("fast path FPS mismatch: {fps} vs {expected_fps}"))}Ok(())
 }
 
-async fn encode_master(app:&AppHandle,job:&QueueJob,plan:&FastVisualPlan,master:&Path)->Result<(),String>{
+async fn encode_cycle_master(app:&AppHandle,job:&QueueJob,plan:&FastVisualPlan,master:&Path)->Result<(),String>{
   let fps=job.settings.fps.to_string();let master_len=format!("{:.9}",plan.master_seconds);let g=plan.cycle_frames.to_string();
-  let mut args=vec!["-hide_banner","-loglevel","error","-loop","1","-framerate",fps.as_str(),"-i",job.project.media[0].as_str()].into_iter().map(String::from).collect::<Vec<_>>();
-  for e in &plan.effects{args.extend(vec!["-stream_loop","-1","-i",e.source.as_str()].into_iter().map(String::from));}
-  let graph=format!("{}[b0]",visual_spec::base_filter("0:v",job.settings.width,job.settings.height,job.settings.fps));
-  let (mut graph,last)=visual_spec::apply_effects_filter(graph,"b0".into(),&plan.effects,job.settings.width,job.settings.height,job.settings.fps,1);
-  graph.push_str(&format!(";[{last}]format=yuv420p[outv]"));
+  let mut args=vec!["-hide_banner","-loglevel","error","-loop","1","-framerate",fps.as_str(),"-i",job.project.media[0].as_str()].into_iter().map(String::from).collect::<Vec<_>>();for e in &plan.effects{args.extend(vec!["-stream_loop","-1","-i",e.source.as_str()].into_iter().map(String::from));}
+  let graph=format!("{}[b0]",visual_spec::base_filter("0:v",job.settings.width,job.settings.height,job.settings.fps));let (mut graph,last)=visual_spec::apply_effects_filter(graph,"b0".into(),&plan.effects,job.settings.width,job.settings.height,job.settings.fps,1);graph.push_str(&format!(";[{last}]format=yuv420p[outv]"));
   args.extend(vec!["-filter_complex",graph.as_str(),"-map","[outv]","-t",master_len.as_str(),"-an","-c:v","hevc_videotoolbox","-realtime","0"].into_iter().map(String::from));
-  if plan.effects.is_empty(){args.extend(vec!["-q:v","100","-b:v","500k","-maxrate","12M","-bufsize","64M"].into_iter().map(String::from));}
-  else{args.extend(vec!["-q:v","75","-b:v","8M","-maxrate","20M","-bufsize","80M"].into_iter().map(String::from));}
-  args.extend(vec!["-g",g.as_str(),"-tag:v","hvc1","-fps_mode","cfr","-r",fps.as_str(),"-video_track_timescale","60000","-y",master.to_string_lossy().as_ref()].into_iter().map(String::from));
-  command(app,"ffmpeg",args).await.map(|_|())
+  if plan.effects.is_empty(){args.extend(vec!["-q:v","100","-b:v","500k","-maxrate","12M","-bufsize","64M"].into_iter().map(String::from));}else{args.extend(vec!["-q:v","75","-b:v","8M","-maxrate","20M","-bufsize","80M"].into_iter().map(String::from));}
+  args.extend(vec!["-g",g.as_str(),"-tag:v","hvc1","-fps_mode","cfr","-r",fps.as_str(),"-video_track_timescale","60000","-y",master.to_string_lossy().as_ref()].into_iter().map(String::from));command(app,"ffmpeg",args).await.map(|_|())
 }
+
+async fn encode_subscribe_master(app:&AppHandle,job:&QueueJob,plan:&FastVisualPlan,master:&Path)->Result<(),String>{
+  let sub=plan.subscribe.as_ref().ok_or("Subscribe plan missing")?;let fps=job.settings.fps.to_string();let physical_frames=1usize.saturating_add(plan.subscribe_frames);let frames=physical_frames.to_string();
+  let mut args=vec!["-hide_banner","-loglevel","error","-loop","1","-framerate",fps.as_str(),"-i",job.project.media[0].as_str(),"-stream_loop","-1","-i",sub.effect.source.as_str()].into_iter().map(String::from).collect::<Vec<_>>();
+  let graph=format!("{}[base];[base]split=2[stillbase][subbase]",visual_spec::base_filter("0:v",job.settings.width,job.settings.height,job.settings.fps));let one=vec![sub.effect.clone()];let (mut graph,last)=visual_spec::apply_effects_filter(graph,"subbase".into(),&one,job.settings.width,job.settings.height,job.settings.fps,1);
+  graph.push_str(&format!(";[stillbase]trim=end_frame=1,setpts=PTS-STARTPTS[still];[{last}]trim=end_frame={},setpts=PTS-STARTPTS[subseg];[still][subseg]concat=n=2:v=1:a=0,format=yuv420p[outv]",plan.subscribe_frames));
+  args.extend(vec!["-filter_complex",graph.as_str(),"-map","[outv]","-frames:v",frames.as_str(),"-an","-c:v","hevc_videotoolbox","-realtime","0","-prio_speed","1","-q:v","75","-b:v","8M","-maxrate","20M","-bufsize","80M","-g","1","-tag:v","hvc1","-fps_mode","cfr","-r",fps.as_str(),"-video_track_timescale","60000","-y",master.to_string_lossy().as_ref()].into_iter().map(String::from));command(app,"ffmpeg",args).await.map(|_|())
+}
+async fn encode_master(app:&AppHandle,job:&QueueJob,plan:&FastVisualPlan,master:&Path)->Result<(),String>{if plan.subscribe.is_some(){encode_subscribe_master(app,job,plan,master).await}else{encode_cycle_master(app,job,plan,master).await}}
 
 async fn run_fast(app:&AppHandle,job:&QueueJob,plan:&FastVisualPlan,cancel:&AtomicBool)->Result<(),String>{
-  let started_ms=chrono::Utc::now().timestamp_millis();let wall=Instant::now();cancelled(cancel)?;
-  let out_dir=PathBuf::from(&job.settings.output_dir);fs::create_dir_all(&out_dir).map_err(|e|e.to_string())?;let out=unique_output(&out_dir,&job.project.name);
-  let work=std::env::temp_dir().join(format!("endlume-fast-{}-{}",job.project.id,started_ms));let _=fs::remove_dir_all(&work);fs::create_dir_all(&work).map_err(|e|e.to_string())?;
+  let started_ms=chrono::Utc::now().timestamp_millis();let wall=Instant::now();cancelled(cancel)?;let out_dir=PathBuf::from(&job.settings.output_dir);fs::create_dir_all(&out_dir).map_err(|e|e.to_string())?;let out=unique_output(&out_dir,&job.project.name);let work=std::env::temp_dir().join(format!("endlume-fast-{}-{}",job.project.id,started_ms));let _=fs::remove_dir_all(&work);fs::create_dir_all(&work).map_err(|e|e.to_string())?;
   let result:Result<(),String>=async{
-    let audio_mark=Instant::now();
-    let mut durations=Vec::with_capacity(job.project.audio.len());for p in &job.project.audio{durations.push(duration(app,p).await?.max(0.001));}
-    let target=job.settings.duration_hours*3600.0;let (final_duration,track_count)=final_whole_track_duration(target,&durations).ok_or("fast path cannot preserve whole-track duration semantics")?;
-    let total_frames=(final_duration*job.settings.fps as f64).round() as usize;
-    let master=work.join("visual-master.mp4");let list=work.join("audio-concat.txt");
-    let mut lines=String::new();for i in 0..track_count{let p=&job.project.audio[i%job.project.audio.len()];lines.push_str(&format!("file '{}'\n",p.replace('\\',"/")));}fs::write(&list,lines).map_err(|e|e.to_string())?;
-    let audio_ms=audio_mark.elapsed().as_secs_f64()*1000.0;
-    let _=app.emit("engine-timing",json!({"id":job.project.id,"key":"fast-audio-ms","milliseconds":audio_ms}));
-
-    cancelled(cancel)?;let t=Instant::now();encode_master(app,job,plan,&master).await?;let master_ms=t.elapsed().as_secs_f64()*1000.0;
-    let _=app.emit("engine-timing",json!({"id":job.project.id,"key":"fast-master-render-ms","milliseconds":master_ms}));
-
-    cancelled(cancel)?;let t=Instant::now();
-    command(app,"ffmpeg",vec!["-hide_banner","-loglevel","error","-i",master.to_string_lossy().as_ref(),"-f","concat","-safe","0","-i",list.to_string_lossy().as_ref(),"-map","0:v:0","-map","1:a:0","-c:v","copy","-c:a","copy","-video_track_timescale","60000","-y",out.to_string_lossy().as_ref()].into_iter().map(String::from).collect()).await?;
-    let mux_ms=t.elapsed().as_secs_f64()*1000.0;let _=app.emit("engine-timing",json!({"id":job.project.id,"key":"fast-mux-ms","milliseconds":mux_ms}));
-
-    cancelled(cancel)?;let t=Instant::now();mp4_manifest::expand_video_prefix_cycle(&out,&out,0,plan.cycle_frames,total_frames)?;let timeline_ms=t.elapsed().as_secs_f64()*1000.0;
-    let _=app.emit("engine-timing",json!({"id":job.project.id,"key":"fast-video-timeline-ms","milliseconds":timeline_ms}));
-
-    let finalize_mark=Instant::now();verify(app,&out,final_duration,job).await?;write_side_files(job,&out,&durations,track_count)?;let bytes=fs::metadata(&out).ok().map(|m|m.len());let bitrate=video_bitrate(app,&out).await;let finalize_ms=finalize_mark.elapsed().as_secs_f64()*1000.0;let total_ms=wall.elapsed().as_secs_f64()*1000.0;
-    let _=app.emit("engine-timing",json!({"id":job.project.id,"key":"fast-finalize-ms","milliseconds":finalize_ms}));
-    let _=app.emit("engine-fast-path",json!({"id":job.project.id,"selected":true,"mode":plan.mode,"masterDuration":plan.master_seconds,"cycleFrames":plan.cycle_frames,"duration":final_duration,"audioMs":audio_ms,"masterMs":master_ms,"muxMs":mux_ms,"timelineMs":timeline_ms,"finalizeMs":finalize_ms,"totalMs":total_ms}));
-    let _=app.emit("render-done",Progress{id:job.project.id.clone(),status:"done".into(),progress:100.0,stage:"Готово".into(),started_at:Some(started_ms),elapsed_sec:wall.elapsed().as_secs_f64(),eta_sec:Some(0.0),result_path:Some(out.to_string_lossy().into_owned()),result_bytes:bytes,actual_video_bitrate:bitrate,cpu_pct:None,ram_bytes:None,ram_total_bytes:None,ram_available_bytes:None,gpu_pct:None,encoder:Some(format!("hevc_videotoolbox + MP3 packet-copy ({})",plan.mode)),attempt:Some(1)});
-    Ok(())
-  }.await;
-  match result{Ok(())=>{let _=fs::remove_dir_all(&work);Ok(())},Err(e)=>{let _=fs::remove_dir_all(&work);let _=fs::remove_file(&out);Err(e)}}
+    let audio_mark=Instant::now();let mut durations=Vec::with_capacity(job.project.audio.len());for p in &job.project.audio{durations.push(duration(app,p).await?.max(0.001));}let target=job.settings.duration_hours*3600.0;let(final_duration,track_count)=final_whole_track_duration(target,&durations).ok_or("fast path cannot preserve whole-track duration semantics")?;let total_frames=(final_duration*job.settings.fps as f64).round() as usize;let master=work.join("visual-master.mp4");let list=work.join("audio-concat.txt");let mut lines=String::new();for i in 0..track_count{let p=&job.project.audio[i%job.project.audio.len()];lines.push_str(&format!("file '{}'\n",p.replace('\\',"/")));}fs::write(&list,lines).map_err(|e|e.to_string())?;let audio_ms=audio_mark.elapsed().as_secs_f64()*1000.0;let _=app.emit("engine-timing",json!({"id":job.project.id,"key":"fast-audio-ms","milliseconds":audio_ms}));
+    cancelled(cancel)?;let t=Instant::now();encode_master(app,job,plan,&master).await?;let master_ms=t.elapsed().as_secs_f64()*1000.0;let _=app.emit("engine-timing",json!({"id":job.project.id,"key":"fast-master-render-ms","milliseconds":master_ms}));
+    cancelled(cancel)?;let t=Instant::now();command(app,"ffmpeg",vec!["-hide_banner","-loglevel","error","-i",master.to_string_lossy().as_ref(),"-f","concat","-safe","0","-i",list.to_string_lossy().as_ref(),"-map","0:v:0","-map","1:a:0","-c:v","copy","-c:a","copy","-video_track_timescale","60000","-y",out.to_string_lossy().as_ref()].into_iter().map(String::from).collect()).await?;let mux_ms=t.elapsed().as_secs_f64()*1000.0;let _=app.emit("engine-timing",json!({"id":job.project.id,"key":"fast-mux-ms","milliseconds":mux_ms}));
+    cancelled(cancel)?;let t=Instant::now();if let Some(sub)=plan.subscribe.as_ref(){let selected=subscribe_sample_map(sub,final_duration,job.settings.fps,plan.subscribe_frames)?;let delta=60000/job.settings.fps;mp4_manifest::remap_video_samples_fixed_delta(&out,&out,&selected,delta)?;}else{mp4_manifest::expand_video_prefix_cycle(&out,&out,0,plan.cycle_frames,total_frames)?;}let timeline_ms=t.elapsed().as_secs_f64()*1000.0;let _=app.emit("engine-timing",json!({"id":job.project.id,"key":"fast-video-timeline-ms","milliseconds":timeline_ms}));
+    let finalize_mark=Instant::now();verify(app,&out,final_duration,job).await?;write_side_files(job,&out,&durations,track_count)?;let bytes=fs::metadata(&out).ok().map(|m|m.len());let bitrate=video_bitrate(app,&out).await;let finalize_ms=finalize_mark.elapsed().as_secs_f64()*1000.0;let total_ms=wall.elapsed().as_secs_f64()*1000.0;let _=app.emit("engine-timing",json!({"id":job.project.id,"key":"fast-finalize-ms","milliseconds":finalize_ms}));let _=app.emit("engine-fast-path",json!({"id":job.project.id,"selected":true,"mode":plan.mode,"masterDuration":plan.master_seconds,"cycleFrames":plan.cycle_frames,"subscribeFrames":plan.subscribe_frames,"duration":final_duration,"audioMs":audio_ms,"masterMs":master_ms,"muxMs":mux_ms,"timelineMs":timeline_ms,"finalizeMs":finalize_ms,"totalMs":total_ms}));let _=app.emit("render-done",Progress{id:job.project.id.clone(),status:"done".into(),progress:100.0,stage:"Готово".into(),started_at:Some(started_ms),elapsed_sec:wall.elapsed().as_secs_f64(),eta_sec:Some(0.0),result_path:Some(out.to_string_lossy().into_owned()),result_bytes:bytes,actual_video_bitrate:bitrate,cpu_pct:None,ram_bytes:None,ram_total_bytes:None,ram_available_bytes:None,gpu_pct:None,encoder:Some(format!("hevc_videotoolbox + MP3 packet-copy ({})",plan.mode)),attempt:Some(1)});Ok(())
+  }.await;match result{Ok(())=>{let _=fs::remove_dir_all(&work);Ok(())},Err(e)=>{let _=fs::remove_dir_all(&work);let _=fs::remove_file(&out);Err(e)}}
 }
 
 pub async fn try_render_job(app:&AppHandle,job:&QueueJob,cancel:Arc<AtomicBool>)->Result<Option<()>,String>{
-  let plan=match visual_plan(app,job).await{
-    Ok(p)=>p,
-    Err(reason)=>{let _=app.emit("engine-fast-fallback",json!({"id":job.project.id,"selected":false,"reason":reason,"phase":"eligibility"}));return Ok(None)}
-  };
-  let _=app.emit("engine-fast-path",json!({"id":job.project.id,"selected":true,"mode":plan.mode,"masterDuration":plan.master_seconds,"cycleFrames":plan.cycle_frames}));
-  match run_fast(app,job,&plan,cancel.as_ref()).await{
-    Ok(())=>Ok(Some(())),
-    Err(e) if e==CANCELLED=>Err(e),
-    Err(e)=>{let _=app.emit("engine-fast-fallback",json!({"id":job.project.id,"selected":false,"reason":e,"phase":"execution"}));Ok(None)}
-  }
+  let plan=match visual_plan(app,job).await{Ok(p)=>p,Err(reason)=>{let _=app.emit("engine-fast-fallback",json!({"id":job.project.id,"selected":false,"reason":reason,"phase":"eligibility"}));return Ok(None)}};let _=app.emit("engine-fast-path",json!({"id":job.project.id,"selected":true,"mode":plan.mode,"masterDuration":plan.master_seconds,"cycleFrames":plan.cycle_frames,"subscribeFrames":plan.subscribe_frames}));match run_fast(app,job,&plan,cancel.as_ref()).await{Ok(())=>Ok(Some(())),Err(e) if e==CANCELLED=>Err(e),Err(e)=>{let _=app.emit("engine-fast-fallback",json!({"id":job.project.id,"selected":false,"reason":e,"phase":"execution"}));Ok(None)}}
 }

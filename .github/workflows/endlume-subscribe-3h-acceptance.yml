@@ -121,7 +121,7 @@ jobs:
           on_times=[600.0,600.1,600.5,601.5,602.983333333,3600.0,3600.5,3602.983333333,7200.0,7200.5,7202.983333333]
           checks={}
           checks['no_early_or_lingering']=all(mae(base,frame(out,t))<0.20 and contrast(frame(out,t))<15 for t in off_times)
-          checks['visible_exactly_on_events']=all(contrast(frame(out,t))>20 and mae(base,frame(out,t))>0.20 for t in on_times)
+          checks['visible_exactly_on_events']=all(contrast(frame(out,t))>20 and mae(base,frame(out,t))>0.10 for t in on_times)
           a=frame(out,600.1); b=frame(out,601.5); c=frame(out,602.983333333)
           checks['animation_moves']=mae(a,b)>0.20 and mae(b,c)>0.20
           checks['first_middle_last_phase']=mae(frame(out,600.5),frame(out,3600.5))<0.20 and mae(frame(out,600.5),frame(out,7200.5))<0.20

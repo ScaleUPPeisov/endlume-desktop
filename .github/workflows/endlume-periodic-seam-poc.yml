@@ -1,6 +1,12 @@
 name: ENDLUME periodic sample-table seam POC
 
 on:
+  push:
+    branches: [perf/endlume-macos-3h-10s-acceptance]
+    paths:
+      - '.github/workflows/endlume-periodic-seam-poc.yml'
+      - 'src-tauri/src/mp4_manifest.rs'
+      - 'src-tauri/src/bin/manifest_poc.rs'
   pull_request:
     branches: [main]
     paths:
@@ -39,8 +45,6 @@ jobs:
           set -euo pipefail
           ROOT="$RUNNER_TEMP/periodic-seam"
           mkdir -p "$ROOT"
-          # Background plus a separately generated 200x200 foreground. overlay's x expression
-          # is evaluated every frame, so the encoded master is demonstrably non-static.
           ffmpeg -hide_banner -loglevel error \
             -f lavfi -i "color=c=0x162033:s=1920x1080:r=60:d=5" \
             -f lavfi -i "color=c=white@0.85:s=200x200:r=60:d=5,format=yuva420p" \
@@ -61,7 +65,6 @@ jobs:
           v=next(s for s in probe['streams'] if s['codec_type']=='video')
           assert v['codec_name']=='hevc' and v['r_frame_rate']=='60/1', v
           assert abs(float(probe['format']['duration'])-60.0)<0.02, probe['format']['duration']
-          # Decode 13 consecutive frames straddling the first repeated-master boundary.
           start=5.0-6.0/60.0
           p=subprocess.run(['ffmpeg','-hide_banner','-v','error','-ss',f'{start:.9f}','-i',path,'-frames:v','13','-an','-vf','scale=480:270,format=gray','-f','rawvideo','-pix_fmt','gray','-'],capture_output=True,check=True)
           fs=480*270; assert len(p.stdout)>=13*fs
@@ -69,13 +72,11 @@ jobs:
           diffs=[sum(abs(x-y) for x,y in zip(a,b))/fs for a,b in zip(frames,frames[1:])]
           moving=[d for d in diffs if d>0.02]
           assert len(moving)>=8, ('animation did not move',diffs)
-          # Difference between last physical frame and first reused frame is diff index 5.
           seam=diffs[5]
           neighborhood=[d for i,d in enumerate(diffs) if i!=5]
           typical=statistics.median(neighborhood)
           assert typical>0.02, ('static false positive',typical,diffs)
           assert seam <= max(typical*2.5,0.20), ('visible loop reset/jump',seam,typical,diffs)
-          # Same phase one period apart should be visually equivalent modulo HEVC loss.
           def frame_at(t):
             q=subprocess.run(['ffmpeg','-hide_banner','-v','error','-ss',f'{t:.6f}','-i',path,'-frames:v','1','-an','-vf','scale=480:270,format=gray','-f','rawvideo','-pix_fmt','gray','-'],capture_output=True,check=True)
             return q.stdout[:fs]

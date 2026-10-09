@@ -13,23 +13,42 @@ jobs:
     runs-on: [self-hosted, macOS, ARM64]
     timeout-minutes: 15
     steps:
-      - name: Prepare isolated real 10.0.11 copy
+      - name: Fetch exact published 10.0.11 and restore owner installation
         shell: bash
         run: |
           set -euo pipefail
-          SRC='/Applications/ENDLUME YT Studio PEISOV.app'
-          SHORT=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$SRC/Contents/Info.plist")
-          BUILD=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$SRC/Contents/Info.plist")
-          test "$SHORT" = 10.0.11; test "$BUILD" = 10.0.11
-          EXE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$SRC/Contents/Info.plist")
-          SRC_BIN_SHA=$(shasum -a 256 "$SRC/Contents/MacOS/$EXE"|awk '{print $1}')
           ROOT="$RUNNER_TEMP/endlume-1012-v3-${GITHUB_RUN_ID}"
+          rm -rf "$ROOT"; mkdir -p "$ROOT/official" "$ROOT/home/Library/Application Support"
+          STABLE='https://github.com/ScaleUPPeisov/scaleup-site/releases/download/endlume-stable'
+          curl -fsSL "$STABLE/latest.json" -o "$ROOT/stable.json"
+          read OLD_URL OLD_SHA <<<"$(python3 - "$ROOT/stable.json" <<'PY'
+          import json,sys
+          d=json.load(open(sys.argv[1])); assert d['version']=='10.0.11',d
+          p=d['platforms']['darwin-aarch64']; print(p['url'],p['sha256'])
+          PY
+          )"
+          curl -fsSL "$OLD_URL" -o "$ROOT/10.0.11.app.tar.gz"
+          test "$(shasum -a 256 "$ROOT/10.0.11.app.tar.gz"|awk '{print $1}')" = "$OLD_SHA"
+          tar -xzf "$ROOT/10.0.11.app.tar.gz" -C "$ROOT/official"
+          OFFICIAL_APP=$(find "$ROOT/official" -maxdepth 2 -type d -name '*.app' -print -quit)
+          test -n "$OFFICIAL_APP"
+          EXE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$OFFICIAL_APP/Contents/Info.plist")
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$OFFICIAL_APP/Contents/Info.plist")" = 10.0.11
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$OFFICIAL_APP/Contents/Info.plist")" = 10.0.11
+          OFFICIAL_BIN_SHA=$(shasum -a 256 "$OFFICIAL_APP/Contents/MacOS/$EXE"|awk '{print $1}')
+          echo "OFFICIAL_10_0_11_BIN_SHA=$OFFICIAL_BIN_SHA"
+          test "$OFFICIAL_BIN_SHA" = '8f60dbe1dd611db407c2d096aebd4597f6ff2af07c881e2e41d163e19b2b80c0'
+          strings -a "$OFFICIAL_APP/Contents/MacOS/$EXE" | grep -F 'endlume-stable/latest.json'
+          INSTALLED='/Applications/ENDLUME YT Studio PEISOV.app'
+          rm -rf "$INSTALLED"
+          ditto "$OFFICIAL_APP" "$INSTALLED"
+          test "$(shasum -a 256 "$INSTALLED/Contents/MacOS/$EXE"|awk '{print $1}')" = "$OFFICIAL_BIN_SHA"
+          strings -a "$INSTALLED/Contents/MacOS/$EXE" | grep -F 'endlume-stable/latest.json'
+          echo OWNER_INSTALL_RESTORED_EXACT_10_0_11=PASS
           TEST_APP="$ROOT/ENDLUME Update Test.app"
-          TEST_HOME="$ROOT/home"
-          rm -rf "$ROOT"; mkdir -p "$TEST_HOME/Library/Application Support"
-          ditto "$SRC" "$TEST_APP"
+          ditto "$OFFICIAL_APP" "$TEST_APP"
           REAL_DATA="$HOME/Library/Application Support/studio.endlume.desktop"
-          TEST_DATA="$TEST_HOME/Library/Application Support/studio.endlume.desktop"
+          TEST_DATA="$ROOT/home/Library/Application Support/studio.endlume.desktop"
           if [ -d "$REAL_DATA" ]; then ditto "$REAL_DATA" "$TEST_DATA"; else mkdir -p "$TEST_DATA"; fi
           touch "$ROOT/settings-before.txt"
           for f in license.json library.json; do [ ! -f "$TEST_DATA/$f" ] || shasum -a 256 "$TEST_DATA/$f"|awk -v n="$f" '{print n"="$1}' >> "$ROOT/settings-before.txt"; done
@@ -43,18 +62,15 @@ jobs:
               try:d=open(p,'rb').read()
               except OSError:continue
               if old in d:
-                hits.append((p,d.count(old)));open(p,'wb').write(d.replace(old,new))
+                hits.append((p,d.count(old))); open(p,'wb').write(d.replace(old,new))
           print('PATCH_HITS',hits); assert hits
           PY
           xattr -cr "$TEST_APP" || true
           codesign --force --deep --sign - "$TEST_APP"
           codesign --verify --deep --strict "$TEST_APP"
-          test "$(shasum -a 256 "$SRC/Contents/MacOS/$EXE"|awk '{print $1}')" = "$SRC_BIN_SHA"
-          printf 'ROOT=%s\nTEST_APP=%s\nTEST_HOME=%s\nSRC=%s\nEXE=%s\nSRC_BIN_SHA=%s\n' "$ROOT" "$TEST_APP" "$TEST_HOME" "$SRC" "$EXE" "$SRC_BIN_SHA" >> "$GITHUB_ENV"
-          echo SOURCE_VERSION_10_0_11=PASS
-          echo ORIGINAL_UNTOUCHED=PASS
+          printf 'ROOT=%s\nTEST_APP=%s\nTEST_HOME=%s\nINSTALLED=%s\nEXE=%s\nOFFICIAL_BIN_SHA=%s\n' "$ROOT" "$TEST_APP" "$ROOT/home" "$INSTALLED" "$EXE" "$OFFICIAL_BIN_SHA" >> "$GITHUB_ENV"
 
-      - name: Verify staging update payload and bytes
+      - name: Verify exact staging update payload
         shell: bash
         run: |
           set -euo pipefail
@@ -70,18 +86,16 @@ jobs:
           test "$(shasum -a 256 "$ROOT/update.tar.gz"|awk '{print $1}')" = 760f1da52011cbe9745894eeb04ef3dfef3b5c0e7d85ceb3841f63d67c8ae6e9
           echo DOWNLOAD=PASS
 
-      - name: Launch copy and click update using discovered live PID
+      - name: Launch exact 10.0.11 copy and click detected 10.0.12 update
         shell: bash
         run: |
           set -euo pipefail
           BIN="$TEST_APP/Contents/MacOS/$EXE"
           env HOME="$TEST_HOME" "$BIN" >"$ROOT/app.log" 2>&1 &
-          echo "LAUNCH_PID=$!"
           clicked=0
           for attempt in $(seq 1 60); do
             GUI_PID=$(ps -axo pid=,command= | awk -v p="$BIN" 'index($0,p){print $1; exit}')
             if [ -z "$GUI_PID" ]; then sleep 1; continue; fi
-            echo "attempt=$attempt GUI_PID=$GUI_PID"
             OUT=$(osascript - "$GUI_PID" <<'APPLESCRIPT'
           on run argv
             set targetPid to (item 1 of argv) as integer
@@ -108,7 +122,7 @@ jobs:
           end run
           APPLESCRIPT
             )
-            echo "$OUT"
+            echo "attempt=$attempt pid=$GUI_PID $OUT"
             if [[ "$OUT" == CLICKED:* ]]; then clicked=1; break; fi
             sleep 1
           done
@@ -116,7 +130,7 @@ jobs:
           echo UPDATE_DETECTED=PASS
           echo UPDATE_BUTTON_CLICKED=PASS
 
-      - name: Gate install relaunch version and preserved state
+      - name: Gate signature install relaunch version and state
         shell: bash
         run: |
           set -euo pipefail
@@ -146,9 +160,10 @@ jobs:
           sort -o "$ROOT/settings-before.txt" "$ROOT/settings-before.txt"; sort -o "$ROOT/settings-after.txt" "$ROOT/settings-after.txt"
           diff -u "$ROOT/settings-before.txt" "$ROOT/settings-after.txt"
           echo SETTINGS_PRESERVED=PASS
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$SRC/Contents/Info.plist")" = 10.0.11
-          test "$(shasum -a 256 "$SRC/Contents/MacOS/$EXE"|awk '{print $1}')" = "$SRC_BIN_SHA"
-          echo ORIGINAL_INSTALLED_10_0_11_UNTOUCHED=PASS
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$INSTALLED/Contents/Info.plist")" = 10.0.11
+          test "$(shasum -a 256 "$INSTALLED/Contents/MacOS/$EXE"|awk '{print $1}')" = "$OFFICIAL_BIN_SHA"
+          strings -a "$INSTALLED/Contents/MacOS/$EXE" | grep -F 'endlume-stable/latest.json'
+          echo OWNER_INSTALL_REMAINS_EXACT_10_0_11=PASS
           pkill -f "$TEST_APP/Contents/MacOS/$EXE" || true
 
       - name: Upload evidence

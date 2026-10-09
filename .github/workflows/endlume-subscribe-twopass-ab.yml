@@ -1,0 +1,103 @@
+name: ENDLUME Subscribe 3h two-pass A/B
+
+on:
+  push:
+    branches: [qa/endlume-a7a-twopass-speed]
+
+permissions:
+  contents: read
+
+jobs:
+  twopass-ab:
+    runs-on: macos-15
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - name: Add QA-only early receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = arm64
+          test "$(git rev-parse HEAD^)" = a7a399e83de8b9248e2065c6dda1f9079ded6565
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('src-tauri/src/acceptance.rs');s=p.read_text()
+          a='''let output_duration=metadata.get("format").and_then(|v|v.get("duration")).and_then(|v|v.as_str()).and_then(|v|v.parse::<f64>().ok()).unwrap_or(0.0);let decode=full_decode(app,&result).await?;'''
+          b='''let output_duration=metadata.get("format").and_then(|v|v.get("duration")).and_then(|v|v.as_str()).and_then(|v|v.parse::<f64>().ok()).unwrap_or(0.0);\n  if env_enabled("ENDLUME_ACCEPTANCE_SPEED_ONLY"){let captured=events.lock().clone();let fallback=captured.iter().rev().find(|e|e.get("event").and_then(Value::as_str)==Some("engine-fast-fallback")).and_then(|e|e.get("payload")).cloned();let final_fast=captured.iter().rev().find(|e|e.get("event").and_then(Value::as_str)==Some("engine-fast-path")&&e.get("payload").and_then(|p|p.get("totalMs")).is_some()).and_then(|e|e.get("payload")).cloned();return Ok(json!({"source_head":std::env::var("ENDLUME_SOURCE_HEAD").unwrap_or_default(),"platform":std::env::consts::OS,"arch":std::env::consts::ARCH,"project_id":job.project.id,"track_count":job.project.audio.len(),"fast_path_used":fast_used,"legacy_fallback_used":!fast_used,"fallback":fallback,"fast_metrics":final_fast,"events":captured,"export_seconds":export_seconds,"output_path":result,"output_bytes":bytes,"output_duration":output_duration,"probe":metadata}));}\n  let decode=full_decode(app,&result).await?;'''
+          assert s.count(a)==1;s=s.replace(a,b);p.write_text(s)
+          PY
+      - name: Prepare and build baseline app
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v ffmpeg >/dev/null || brew install ffmpeg
+          npm install --no-audit --no-fund
+          rustup target add aarch64-apple-darwin
+          mkdir -p src-tauri/binaries
+          cp "$(command -v ffmpeg)" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp "$(command -v ffprobe)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          chmod +x src-tauri/binaries/*
+          npm run build
+          npx tauri build --target aarch64-apple-darwin --bundles app --features acceptance-harness --config '{"bundle":{"createUpdaterArtifacts":false}}'
+          APP="$(find src-tauri/target/aarch64-apple-darwin/release/bundle/macos -maxdepth 1 -type d -name '*.app' -print -quit)"
+          cp -R "$APP" "$RUNNER_TEMP/ENDLUME-baseline.app"
+      - name: Force existing two-pass Subscribe path and rebuild incrementally
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('src-tauri/src/fast_render.rs');s=p.read_text()
+          old='cancelled(cancel)?;let(master_ms,mux_ms,encode_mux_ms)=if plan.subscribe.is_some(){'
+          new='cancelled(cancel)?;let(master_ms,mux_ms,encode_mux_ms)=if false&&plan.subscribe.is_some(){'
+          assert s.count(old)==1,s.count(old);p.write_text(s.replace(old,new))
+          PY
+          git diff --check
+          npx tauri build --target aarch64-apple-darwin --bundles app --features acceptance-harness --config '{"bundle":{"createUpdaterArtifacts":false}}'
+          APP="$(find src-tauri/target/aarch64-apple-darwin/release/bundle/macos -maxdepth 1 -type d -name '*.app' -print -quit)"
+          cp -R "$APP" "$RUNNER_TEMP/ENDLUME-twopass.app"
+      - name: Generate 3h 12-file workload quickly
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$RUNNER_TEMP/twopass-ab"; MEDIA="$ROOT/project"; FX="$ROOT/effects"; mkdir -p "$MEDIA" "$FX" "$ROOT/out-two" "$ROOT/out-base"
+          echo "ROOT=$ROOT" >> "$GITHUB_ENV"; echo "MEDIA=$MEDIA" >> "$GITHUB_ENV"; echo "FX=$FX" >> "$GITHUB_ENV"
+          ffmpeg -hide_banner -loglevel error -f lavfi -i "color=c=0x182033:s=1920x1080" -frames:v 1 -y "$MEDIA/cover.png"
+          ffmpeg -hide_banner -loglevel error -f lavfi -i "sine=frequency=440:sample_rate=48000:duration=900" -c:a libmp3lame -b:a 320k -ar 48000 -ac 2 -y "$MEDIA/track-01.mp3"
+          for i in $(seq -w 2 12); do cp "$MEDIA/track-01.mp3" "$MEDIA/track-${i}.mp3"; done
+          ffmpeg -hide_banner -loglevel error -f lavfi -i "color=c=0x00ff00:s=640x360:r=60:d=3" -f lavfi -i "color=c=white:s=180x100:r=60:d=3" -filter_complex "[0:v][1:v]overlay=x='70+300*t/3':y='120+45*sin(2*PI*t/3)':eval=frame:shortest=1" -an -c:v libx264 -preset ultrafast -g 180 -pix_fmt yuv420p -r 60 -y "$FX/subscribe.mp4"
+          python3 - <<'PY'
+          import glob,json,os
+          r=os.environ['ROOT'];m=os.environ['MEDIA'];f=os.environ['FX'];sub={'id':'subscribe','name':'Subscribe','source':os.path.join(f,'subscribe.mp4'),'enabled':True,'mode':'chromakey','keyColor':'#00ff00','similarity':0.12,'blend':0.08,'despill':1.0,'lumaThreshold':0.10,'lumaTolerance':0.05,'saturation':1.0,'x':0.15,'y':0.65,'scale':0.30,'fullscreen':False,'previewFrameTime':0.0,'startSec':0.0,'endSec':None,'cacheKey':None,'cacheReady':None,'firstAtSec':600.0,'secondAtSec':3600.0,'repeatEverySec':3600.0};base={'project':{'id':'x','name':'x','path':m,'media':[os.path.join(m,'cover.png')],'audio':sorted(glob.glob(os.path.join(m,'track-*.mp3'))),'valid':True,'error':None},'settings':{'width':1920,'height':1080,'fps':60,'codec':'h265','bitrateMbps':30.0,'durationHours':3.0,'durationMode':'whole-track','loopMode':'image','crossfadeSec':0.0,'normalizeLufs':False,'outputDir':'','preset':'fast','encoderPreference':'auto'},'effects':[],'subscribes':[sub],'ambient':None}
+          for k in ['two','base']:
+            j=json.loads(json.dumps(base));j['project']['id']=k;j['project']['name']=k;j['settings']['outputDir']=os.path.join(r,'out-'+k);json.dump(j,open(os.path.join(r,'job-'+k+'.json'),'w'),indent=2)
+          PY
+      - name: Run two-pass first cold
+        shell: bash
+        run: |
+          set -euo pipefail
+          ENDLUME_ACCEPTANCE_SPEED_ONLY=1 ENDLUME_ACCEPTANCE_JOB="$ROOT/job-two.json" ENDLUME_ACCEPTANCE_RECEIPT="$ROOT/two.json" "$RUNNER_TEMP/ENDLUME-twopass.app/Contents/MacOS/endlume" > "$ROOT/two.log" 2>&1
+      - name: Run baseline second warm
+        shell: bash
+        run: |
+          set -euo pipefail
+          ENDLUME_ACCEPTANCE_SPEED_ONLY=1 ENDLUME_ACCEPTANCE_JOB="$ROOT/job-base.json" ENDLUME_ACCEPTANCE_RECEIPT="$ROOT/base.json" "$RUNNER_TEMP/ENDLUME-baseline.app/Contents/MacOS/endlume" > "$ROOT/base.log" 2>&1
+      - name: Verdict
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json,os
+          r=os.environ['ROOT'];tw=json.load(open(os.path.join(r,'two.json')))['result'];ba=json.load(open(os.path.join(r,'base.json')))['result']
+          def ok(x):
+            ss=x['probe']['streams'];v=next(q for q in ss if q.get('codec_type')=='video');a=next(q for q in ss if q.get('codec_type')=='audio');return x.get('fast_path_used') is True and abs(x['output_duration']-10800)<.1 and 400<=x['output_bytes']/1e6<=600 and v.get('codec_name')=='hevc' and v.get('r_frame_rate')=='60/1' and a.get('codec_name')=='mp3'
+          rep={'twopass_seconds':tw['export_seconds'],'baseline_seconds':ba['export_seconds'],'twopass_fast':tw.get('fast_metrics'),'baseline_fast':ba.get('fast_metrics'),'twopass_valid':ok(tw),'baseline_valid':ok(ba),'twopass_under_10':tw['export_seconds']<=10,'twopass_faster':tw['export_seconds']<ba['export_seconds']};print(json.dumps(rep,indent=2));json.dump(rep,open(os.path.join(r,'verdict.json'),'w'),indent=2);assert rep['twopass_valid'] and rep['baseline_valid']
+          PY
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: subscribe-two-pass-ab
+          path: ${{ env.ROOT }}
+          retention-days: 7

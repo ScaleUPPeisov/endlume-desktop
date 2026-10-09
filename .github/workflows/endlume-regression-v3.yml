@@ -1,0 +1,171 @@
+name: ENDLUME 04a patched regression v3
+
+on:
+  push:
+    branches: [qa/endlume-04a-regression-v2]
+    paths:
+      - 'scripts/patch_legacy_dts_v3.py'
+      - '.github/workflows/endlume-regression-v3.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  core-render-regression:
+    runs-on: macos-15
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - name: Patch and build actual app
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = arm64
+          git merge-base --is-ancestor 04a63df522af75ece111ba4eb59dc56f48bdcb77 HEAD
+          git diff --exit-code 04a63df522af75ece111ba4eb59dc56f48bdcb77 -- src-tauri/src/fast_render.rs
+          git diff --exit-code e2896da7702891a5b760ecd4daad4fd54bc90b82 -- src-tauri/tauri.conf.json src-tauri/src/license.rs
+          python3 scripts/patch_legacy_dts_v3.py
+          git diff --check
+          test "$(git diff --name-only | grep -v '^src-tauri/src/render.rs$' | wc -l | tr -d ' ')" = 0
+          command -v ffmpeg >/dev/null || brew install ffmpeg
+          npm install --no-audit --no-fund
+          rustup target add aarch64-apple-darwin
+          mkdir -p src-tauri/binaries
+          cp "$(command -v ffmpeg)" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp "$(command -v ffprobe)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          chmod +x src-tauri/binaries/*
+          npm run build
+          npx tauri build --target aarch64-apple-darwin --bundles app --features acceptance-harness --config '{"bundle":{"createUpdaterArtifacts":false}}'
+          APP="$(find src-tauri/target/aarch64-apple-darwin/release/bundle/macos -maxdepth 1 -type d -name '*.app' -print -quit)"; BIN="$APP/Contents/MacOS/endlume"; test -x "$BIN"
+          ROOT="$RUNNER_TEMP/reg-v3"; mkdir -p "$ROOT/media" "$ROOT/fx" "$ROOT/logs"
+          echo "ROOT=$ROOT" >> "$GITHUB_ENV"; echo "BIN=$BIN" >> "$GITHUB_ENV"
+      - name: Generate jobs and validated fixtures
+        shell: bash
+        run: |
+          set -euo pipefail
+          M="$ROOT/media"; F="$ROOT/fx"
+          ffmpeg -hide_banner -loglevel error -f lavfi -i "color=c=0x182033:s=1920x1080" -frames:v 1 -y "$M/cover.png"
+          ffmpeg -hide_banner -loglevel error -f lavfi -i "sine=frequency=330:sample_rate=48000:duration=20" -c:a libmp3lame -b:a 256k -ar 48000 -ac 2 -y "$M/a20.mp3"
+          ffmpeg -hide_banner -loglevel error -f lavfi -i "sine=frequency=550:sample_rate=48000:duration=20" -c:a libmp3lame -b:a 192k -ar 48000 -ac 2 -y "$M/b20.mp3"
+          ffmpeg -hide_banner -loglevel error -f lavfi -i "sine=frequency=520:sample_rate=48000:duration=14" -c:a libmp3lame -b:a 320k -ar 48000 -ac 2 -y "$M/a14.mp3"
+          ffmpeg -hide_banner -loglevel error -f lavfi -i "color=c=0x00ff00:s=640x360:r=60:d=3" -f lavfi -i "color=c=white:s=200x120:r=60:d=3" -filter_complex "[0:v][1:v]overlay=x='170+250*t/3':y='120+50*sin(2*PI*t/3)':eval=frame:shortest=1" -an -c:v libx264 -preset ultrafast -g 180 -pix_fmt yuv420p -r 60 -y "$F/subscribe.mp4"
+          python3 - <<'PY'
+          import json,os,subprocess
+          r=os.environ['ROOT']; m=os.path.join(r,'media'); f=os.path.join(r,'fx'); src=os.path.join(f,'subscribe.mp4')
+          W,H=320,180; N=W*H
+          def frame(t):
+            q=subprocess.run(['ffmpeg','-hide_banner','-v','error','-ss',str(t),'-i',src,'-frames:v','1','-an','-vf',f'scale={W}:{H},format=gray','-f','rawvideo','-pix_fmt','gray','-'],capture_output=True,check=True); return q.stdout[:N]
+          a,b=frame(.5),frame(1.5); assert len(a)==N and len(b)==N and max(a)-min(a)>100 and sum(abs(x-y) for x,y in zip(a,b))/N>.1
+          def project(pid,audio):return {'id':pid,'name':pid,'path':m,'media':[os.path.join(m,'cover.png')],'audio':audio,'valid':True,'error':None}
+          def settings(out,sec,mode='whole-track',cf=0.0):
+            o=os.path.join(r,out);os.makedirs(o,exist_ok=True);return {'width':1920,'height':1080,'fps':60,'codec':'h265','bitrateMbps':8.0,'durationHours':sec/3600.0,'durationMode':mode,'loopMode':'image','crossfadeSec':cf,'normalizeLufs':False,'outputDir':o,'preset':'fast','encoderPreference':'auto'}
+          effect={'id':'subscribe','name':'subscribe','source':src,'enabled':True,'mode':'chromakey','keyColor':'#00ff00','similarity':0.12,'blend':0.08,'despill':1.0,'lumaThreshold':0.10,'lumaTolerance':0.05,'saturation':1.0,'x':0.15,'y':0.65,'scale':0.30,'fullscreen':False,'previewFrameTime':0.0,'startSec':0.0,'endSec':None,'cacheKey':None,'cacheReady':None,'firstAtSec':2.0,'secondAtSec':6.0,'repeatEverySec':4.0}
+          legacy={'project':project('crossfade',[os.path.join(m,'a20.mp3'),os.path.join(m,'b20.mp3')]),'settings':settings('out-crossfade',30,'exact',1.0),'effects':[],'subscribes':[],'ambient':None};json.dump(legacy,open(os.path.join(r,'job-crossfade.json'),'w'),indent=2)
+          sj={'project':project('subscribe',[os.path.join(m,'a14.mp3')]),'settings':settings('out-subscribe',14,'exact'),'effects':[],'subscribes':[effect],'ambient':None};json.dump(sj,open(os.path.join(r,'job-subscribe.json'),'w'),indent=2)
+          print('VALIDATED_SUBSCRIBE_FIXTURE=PASS')
+          PY
+      - name: Crossfade fallback gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          ENDLUME_ACCEPTANCE_JOB="$ROOT/job-crossfade.json" ENDLUME_ACCEPTANCE_RECEIPT="$ROOT/crossfade.json" ENDLUME_ACCEPTANCE_SYSTEM_ACTIONS=1 "$BIN" > "$ROOT/logs/crossfade.log" 2>&1
+          python3 - <<'PY'
+          import json,os
+          r=json.load(open(os.path.join(os.environ['ROOT'],'crossfade.json')))['result']; ss=r['probe']['streams']; a=next(x for x in ss if x.get('codec_type')=='audio'); v=next(x for x in ss if x.get('codec_type')=='video'); act=r.get('system_actions') or {}; reason=str((r.get('fallback') or {}).get('reason','')).lower()
+          c={'fallback':r.get('legacy_fallback_used') is True,'reason':'crossfade' in reason,'aac':a.get('codec_name')=='aac','hevc':v.get('codec_name')=='hevc','decode':r.get('full_decode',{}).get('ok') is True,'seek':all(x.get('ok') for x in r.get('seek_checks',[])),'open':act.get('open')=='ok','reveal':act.get('reveal')=='ok'}
+          print(c);assert all(c.values()),c
+          print('CROSSFADE_FALLBACK=PASS')
+          PY
+      - name: Legacy exact Subscribe v3 gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          ENDLUME_ACCEPTANCE_JOB="$ROOT/job-subscribe.json" ENDLUME_ACCEPTANCE_RECEIPT="$ROOT/subscribe.json" ENDLUME_ACCEPTANCE_PREVIEW_TIMES="1,2.5,4.983333333,5,5.016666667,5.5,6.5,8.983333333,9,9.016666667,9.5,10.5,12.983333333,13,13.016666667,13.5" "$BIN" > "$ROOT/logs/subscribe.log" 2>&1
+          python3 - <<'PY'
+          import json,os,subprocess
+          r=json.load(open(os.path.join(os.environ['ROOT'],'subscribe.json')))['result']; v=next(x for x in r['probe']['streams'] if x.get('codec_type')=='video'); W,H=320,180;N=W*H
+          def f(path,t):
+            q=subprocess.run(['ffmpeg','-hide_banner','-v','error','-ss',str(t),'-i',path,'-frames:v','1','-an','-vf',f'scale={W}:{H},format=gray','-f','rawvideo','-pix_fmt','gray','-'],capture_output=True,check=True);return q.stdout[:N]
+          def contrast(x):return max(x)-min(x)
+          def mae(a,b):return sum(abs(x-y) for x,y in zip(a,b))/N
+          diffs=[mae(f(r['output_path'],float(x['at'])),f(x['path'],0)) for x in r.get('preview_outputs',[])]
+          c={'fallback':r.get('legacy_fallback_used') is True,'decode':r.get('full_decode',{}).get('ok') is True,'dts':'non monotonically increasing dts' not in str(r.get('full_decode',{}).get('stderr','')).lower(),'fps':v.get('r_frame_rate')=='60/1' and v.get('avg_frame_rate')=='60/1','frames':int(v.get('nb_frames','0'))==840,'vdur':abs(float(v.get('duration','0'))-14.0)<=.001,'parity':len(diffs)==16 and max(diffs)<12,'off1':contrast(f(r['output_path'],1))<15,'on2':contrast(f(r['output_path'],2.5))>50,'off5':contrast(f(r['output_path'],5.5))<15,'on6':contrast(f(r['output_path'],6.5))>50,'off9':contrast(f(r['output_path'],9.5))<15,'on10':contrast(f(r['output_path'],10.5))>50,'off13':contrast(f(r['output_path'],13.5))<15}
+          print('frames',v.get('nb_frames'),'duration',v.get('duration'),'max_mae',max(diffs));print(c);assert all(c.values()),c
+          print('LEGACY_SUBSCRIBE_V3=PASS')
+          PY
+      - name: Upload core evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: regression-v3-core
+          path: ${{ env.ROOT }}
+          retention-days: 14
+
+  queue-recovery:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - name: Patch and build actual app
+        shell: bash
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor 04a63df522af75ece111ba4eb59dc56f48bdcb77 HEAD
+          python3 scripts/patch_legacy_dts_v3.py
+          command -v ffmpeg >/dev/null || brew install ffmpeg
+          npm install --no-audit --no-fund
+          rustup target add aarch64-apple-darwin
+          mkdir -p src-tauri/binaries
+          cp "$(command -v ffmpeg)" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp "$(command -v ffprobe)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          chmod +x src-tauri/binaries/*
+          npm run build
+          npx tauri build --target aarch64-apple-darwin --bundles app --features acceptance-harness --config '{"bundle":{"createUpdaterArtifacts":false}}'
+          APP="$(find src-tauri/target/aarch64-apple-darwin/release/bundle/macos -maxdepth 1 -type d -name '*.app' -print -quit)"; BIN="$APP/Contents/MacOS/endlume"; test -x "$BIN"
+          ROOT="$RUNNER_TEMP/queue-v3"; mkdir -p "$ROOT/project" "$ROOT/out"
+          echo "ROOT=$ROOT" >> "$GITHUB_ENV"; echo "BIN=$BIN" >> "$GITHUB_ENV"
+      - name: Generate queue workload
+        shell: bash
+        run: |
+          set -euo pipefail
+          ffmpeg -hide_banner -loglevel error -f lavfi -i "color=c=0x182033:s=1920x1080" -frames:v 1 -y "$ROOT/project/cover.png"
+          ffmpeg -hide_banner -loglevel error -f lavfi -i "sine=frequency=440:sample_rate=48000:duration=14" -c:a libmp3lame -b:a 320k -ar 48000 -ac 2 -y "$ROOT/project/a.mp3"
+          python3 - <<'PY'
+          import json,os
+          r=os.environ['ROOT'];p=os.path.join(r,'project');o=os.path.join(r,'out')
+          job={'project':{'id':'queue-v3','name':'queue-v3','path':p,'media':[os.path.join(p,'cover.png')],'audio':[os.path.join(p,'a.mp3')],'valid':True,'error':None},'settings':{'width':1920,'height':1080,'fps':60,'codec':'h265','bitrateMbps':8.0,'durationHours':120/3600,'durationMode':'exact','loopMode':'image','crossfadeSec':1.0,'normalizeLufs':False,'outputDir':o,'preset':'fast','encoderPreference':'auto'},'effects':[],'subscribes':[],'ambient':None}
+          json.dump(job,open(os.path.join(r,'job.json'),'w'),indent=2)
+          PY
+      - name: Queue cancel gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          ENDLUME_ACCEPTANCE_JOB="$ROOT/job.json" ENDLUME_ACCEPTANCE_RECEIPT="$ROOT/cancel.json" ENDLUME_ACCEPTANCE_QUEUE_CANCEL=1 ENDLUME_ACCEPTANCE_CANCEL_AFTER_MS=150 "$BIN" > "$ROOT/cancel.log" 2>&1
+          python3 - <<'PY'
+          import json,os
+          d=json.load(open(os.path.join(os.environ['ROOT'],'cancel.json')));assert d['status']=='ok',d;r=d['result'];q=r.get('queue_cancel') or {};outs=r.get('output_files') or []
+          print(json.dumps(q,indent=2));assert r.get('mode')=='queue-cancel';assert not outs,outs
+          events=r.get('events') or [];assert any(e.get('event')=='queue-idle' for e in events),events
+          print('QUEUE_CANCEL=PASS')
+          PY
+      - name: Crash seed and relaunch recovery gate
+        shell: bash
+        run: |
+          set +e
+          ENDLUME_ACCEPTANCE_JOB="$ROOT/job.json" ENDLUME_ACCEPTANCE_RECEIPT="$ROOT/seed.json" ENDLUME_ACCEPTANCE_SEED_CRASH=1 "$BIN" > "$ROOT/seed.log" 2>&1
+          rc=$?; set -e; test "$rc" -eq 77
+          ENDLUME_ACCEPTANCE_JOB="$ROOT/job.json" ENDLUME_ACCEPTANCE_RECEIPT="$ROOT/recovery.json" ENDLUME_ACCEPTANCE_RECOVERY_ONLY=1 "$BIN" > "$ROOT/recovery.log" 2>&1
+          python3 - <<'PY'
+          import json,os
+          d=json.load(open(os.path.join(os.environ['ROOT'],'recovery.json')));assert d['status']=='ok',d;r=d['result'];assert r.get('mode')=='recovery-only';rec=r.get('recovery');print(json.dumps(rec,indent=2));assert rec not in (None,{},[]),rec
+          print('CRASH_RELAUNCH_RECOVERY=PASS')
+          PY
+      - name: Upload queue evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: regression-v3-queue
+          path: ${{ env.ROOT }}
+          retention-days: 14

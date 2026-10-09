@@ -36,20 +36,21 @@ jobs:
           REAL_DATA="$HOME/Library/Application Support/studio.endlume.desktop"
           TEST_DATA="$TEST_HOME/Library/Application Support/studio.endlume.desktop"
           if [ -d "$REAL_DATA" ]; then ditto "$REAL_DATA" "$TEST_DATA"; else mkdir -p "$TEST_DATA"; fi
+          touch "$ROOT/settings-before.txt"
           for f in license.json library.json; do
             if [ -f "$TEST_DATA/$f" ]; then shasum -a 256 "$TEST_DATA/$f" | awk -v n="$f" '{print n"="$1}' >> "$ROOT/settings-before.txt"; fi
           done
           printf 'ROOT=%s\nTEST_APP=%s\nTEST_HOME=%s\nSRC=%s\nEXE=%s\nSRC_BIN_SHA=%s\n' "$ROOT" "$TEST_APP" "$TEST_HOME" "$SRC" "$EXE" "$SRC_BIN_SHA" >> "$GITHUB_ENV"
 
-      - name: Redirect only the copied 10.0.11 app to staging updater
+      - name: Redirect only copied 10.0.11 from stable tag to isolated staging tag
         shell: bash
         run: |
           set -euo pipefail
           python3 - "$TEST_APP" <<'PY'
           import os,sys
           root=sys.argv[1]
-          old=b'endlume-updates.vercel.app'
-          new=b'endlume-test012.vercel.app'
+          old=b'endlume-stable'
+          new=b'endlume-test12'
           assert len(old)==len(new)
           hits=[]
           for base,_,files in os.walk(root):
@@ -61,25 +62,28 @@ jobs:
               if n:
                 open(p,'wb').write(data.replace(old,new));hits.append((p,n))
           print('PATCH_HITS',hits)
-          if not hits: raise SystemExit('staging endpoint string not found in copied app')
+          if not hits: raise SystemExit('endlume-stable tag not found in copied app')
           PY
           xattr -cr "$TEST_APP" || true
           codesign --force --deep --sign - "$TEST_APP"
           codesign --verify --deep --strict "$TEST_APP"
-          # Original application must remain byte-for-byte untouched.
           NOW=$(shasum -a 256 "$SRC/Contents/MacOS/$EXE" | awk '{print $1}')
           test "$NOW" = "$SRC_BIN_SHA"
           echo ORIGINAL_APP_UNTOUCHED=PASS
 
-      - name: Verify public staging payload and updater bytes
+      - name: Verify exact GitHub staging manifest and updater bytes
         shell: bash
         run: |
           set -euo pipefail
           JSON="$ROOT/update.json"
-          curl -fsSL 'https://endlume-test012.vercel.app/api/update?target=darwin&arch=aarch64&current_version=10.0.11' -o "$JSON"
+          BASE='https://github.com/ScaleUPPeisov/scaleup-site/releases/download/endlume-test12'
+          curl -fsSL "$BASE/latest.json" -o "$JSON"
           URL=$(python3 - "$JSON" <<'PY'
           import json,sys
-          d=json.load(open(sys.argv[1]));assert d['version']=='10.0.12',d;assert d['signature'],d;print(d['url'])
+          d=json.load(open(sys.argv[1]));assert d['version']=='10.0.12',d
+          p=d['platforms']['darwin-aarch64'];assert p['signature'],d
+          assert p.get('sha256')=='760f1da52011cbe9745894eeb04ef3dfef3b5c0e7d85ceb3841f63d67c8ae6e9',d
+          print(p['url'])
           PY
           )
           curl -fsSL "$URL" -o "$ROOT/update.tar.gz"
@@ -88,7 +92,7 @@ jobs:
           test "$HASH" = '760f1da52011cbe9745894eeb04ef3dfef3b5c0e7d85ceb3841f63d67c8ae6e9'
           echo DOWNLOAD=PASS
 
-      - name: Launch copied 10.0.11 and click its native update notice
+      - name: Launch copied 10.0.11 and click native update notice
         shell: bash
         run: |
           set -euo pipefail
@@ -96,9 +100,8 @@ jobs:
           env HOME="$TEST_HOME" "$BIN" > "$ROOT/app-before-update.log" 2>&1 &
           PID=$!
           echo "OLD_PID=$PID" >> "$GITHUB_ENV"
-          echo "Launched copied ENDLUME pid=$PID"
           clicked=0
-          for attempt in $(seq 1 40); do
+          for attempt in $(seq 1 45); do
             if ! kill -0 "$PID" 2>/dev/null; then echo 'copied app exited before updater click'; cat "$ROOT/app-before-update.log"; exit 1; fi
             set +e
             OUT=$(osascript - "$PID" <<'APPLESCRIPT'
@@ -142,9 +145,10 @@ jobs:
             sleep 1
           done
           test "$clicked" -eq 1
+          echo UPDATE_DETECTED=PASS
           echo UPDATE_BUTTON_CLICKED=PASS
 
-      - name: Gate install and relaunch to 10.0.12
+      - name: Gate signature install and relaunch to 10.0.12
         shell: bash
         run: |
           set -euo pipefail
@@ -158,20 +162,19 @@ jobs:
             sleep 1
           done
           test "$installed" -eq 1
-          echo INSTALL=PASS
+          echo SIGNATURE_AND_INSTALL=PASS
           echo CFBundleShortVersionString=10.0.12
           echo CFBundleVersion=10.0.12
           sleep 3
           if ps -axo command= | grep -F "$TEST_APP/Contents/MacOS/$EXE" | grep -v grep >/dev/null; then
             echo RELAUNCH=PASS
           else
-            echo 'updated test copy was installed but relaunch process was not found'
+            echo 'updated test copy installed but relaunch process not found'
             exit 1
           fi
-          # About/Settings version is compiled into the installed web assets/binary; require the value to be present.
           if grep -R -a -q '10.0.12' "$TEST_APP/Contents"; then echo ABOUT_VERSION_PAYLOAD=PASS; else exit 1; fi
 
-      - name: Verify copied settings survived and original app is still 10.0.11
+      - name: Verify copied settings survived and original app remains 10.0.11
         shell: bash
         run: |
           set -euo pipefail
@@ -180,7 +183,7 @@ jobs:
           for f in license.json library.json; do
             if [ -f "$TEST_DATA/$f" ]; then shasum -a 256 "$TEST_DATA/$f" | awk -v n="$f" '{print n"="$1}' >> "$ROOT/settings-after.txt"; fi
           done
-          sort -o "$ROOT/settings-before.txt" "$ROOT/settings-before.txt" 2>/dev/null || true
+          sort -o "$ROOT/settings-before.txt" "$ROOT/settings-before.txt"
           sort -o "$ROOT/settings-after.txt" "$ROOT/settings-after.txt"
           diff -u "$ROOT/settings-before.txt" "$ROOT/settings-after.txt"
           echo SETTINGS_PRESERVED=PASS

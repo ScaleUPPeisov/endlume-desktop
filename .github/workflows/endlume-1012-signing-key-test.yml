@@ -1,0 +1,164 @@
+name: ENDLUME 10.0.12 physical signing key test
+
+on:
+  push:
+    branches:
+      - release-fix/endlume-10.0.12-physical-signing-compat
+    paths:
+      - '.github/workflows/endlume-1012-signing-key-test.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  verify-key:
+    runs-on: [self-hosted, macOS, ARM64]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare verifier and exact physical public key
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP='/Applications/ENDLUME YT Studio PEISOV.app'
+          INFO="$APP/Contents/Info.plist"
+          EXE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$INFO")
+          BIN="$APP/Contents/MacOS/$EXE"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$INFO")" = '10.0.11'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$INFO")" = '10.0.11'
+          npm install --no-audit --no-fund >/dev/null
+          brew list minisign >/dev/null 2>&1 || brew install minisign >/dev/null
+          python3 - "$BIN" "$RUNNER_TEMP/physical.pub" <<'PY'
+          import sys,base64,re,hashlib
+          data=open(sys.argv[1],'rb').read()
+          prefix=b'dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6I'
+          found=[]
+          start=0
+          while True:
+              i=data.find(prefix,start)
+              if i<0: break
+              for n in range(120,241,4):
+                  s=data[i:i+n]
+                  try:
+                      raw=base64.b64decode(s,validate=True)
+                      text=raw.decode()
+                      lines=text.strip().splitlines()
+                      if len(lines)==2 and lines[0].startswith('untrusted comment: minisign public key: '):
+                          pkt=base64.b64decode(lines[1],validate=True)
+                          if len(pkt)==42 and pkt[:2]==b'Ed': found.append((s.decode(),text,pkt))
+                  except Exception: pass
+              start=i+1
+          uniq={x[0]:x for x in found}
+          if len(uniq)!=1: raise SystemExit(f'physical pubkey candidates={len(uniq)}')
+          b64,text,pkt=next(iter(uniq.values()))
+          open(sys.argv[2],'w').write(text)
+          print('PHYSICAL_PUBKEY_SHA256='+hashlib.sha256(b64.encode()).hexdigest())
+          print('PHYSICAL_PUBKEY_DECODED_SHA256='+hashlib.sha256(base64.b64decode(b64)).hexdigest())
+          print('PHYSICAL_KEYID='+pkt[2:10].hex())
+          if pkt[2:10].hex()!='00351d4950cd22d3': raise SystemExit('unexpected physical key id')
+          PY
+          printf 'ENDLUME harmless updater signing compatibility test\n' > "$RUNNER_TEMP/signing-test.txt"
+
+      - name: Test secure local key candidate
+        id: local
+        shell: bash
+        run: |
+          set -euo pipefail
+          KEY='/Users/peisov/.tauri/vyron-updater.key'
+          TEST="$RUNNER_TEMP/signing-test.txt"
+          rm -f "$TEST.sig" "$RUNNER_TEMP/local.minisig"
+          if [ ! -f "$KEY" ]; then
+            echo 'LOCAL_KEY_PRESENT=NO'
+            echo 'match=NO' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo 'LOCAL_KEY_PRESENT=YES'
+          if TAURI_SIGNING_PRIVATE_KEY_PATH="$KEY" TAURI_SIGNING_PRIVATE_KEY_PASSWORD='' npx tauri signer sign --app-version 10.0.12 "$TEST" >/dev/null 2>&1; then
+            python3 - "$TEST.sig" "$RUNNER_TEMP/local.minisig" <<'PY'
+          import sys,base64
+          s=open(sys.argv[1]).read().strip()
+          if s.startswith('untrusted comment:'):
+              text=s+'\n'
+          else:
+              text=base64.b64decode(s,validate=True).decode()
+          open(sys.argv[2],'w').write(text)
+          PY
+            if minisign -Vm "$TEST" -x "$RUNNER_TEMP/local.minisig" -p "$RUNNER_TEMP/physical.pub" >/dev/null 2>&1; then
+              echo 'LOCAL_KEY_PUBLIC_MATCH=PASS'
+              echo 'LOCAL_TEST_SIGNATURE=PASS'
+              echo 'match=YES' >> "$GITHUB_OUTPUT"
+            else
+              echo 'LOCAL_KEY_PUBLIC_MATCH=FAIL'
+              echo 'LOCAL_TEST_SIGNATURE=FAIL'
+              echo 'match=NO' >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo 'LOCAL_KEY_SIGN_OPERATION=FAIL'
+            echo 'match=NO' >> "$GITHUB_OUTPUT"
+          fi
+          rm -f "$TEST.sig" "$RUNNER_TEMP/local.minisig"
+
+      - name: Test current GitHub Actions signing secret
+        id: ghsecret
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
+        run: |
+          set -euo pipefail
+          TEST="$RUNNER_TEMP/signing-test.txt"
+          rm -f "$TEST.sig" "$RUNNER_TEMP/gh.minisig"
+          if [ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
+            echo 'GITHUB_SECRET_PRESENT=NO'
+            echo 'match=NO' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo 'GITHUB_SECRET_PRESENT=YES'
+          if npx tauri signer sign --app-version 10.0.12 "$TEST" >/dev/null 2>&1; then
+            python3 - "$TEST.sig" "$RUNNER_TEMP/gh.minisig" <<'PY'
+          import sys,base64
+          s=open(sys.argv[1]).read().strip()
+          if s.startswith('untrusted comment:'):
+              text=s+'\n'
+          else:
+              text=base64.b64decode(s,validate=True).decode()
+          open(sys.argv[2],'w').write(text)
+          PY
+            if minisign -Vm "$TEST" -x "$RUNNER_TEMP/gh.minisig" -p "$RUNNER_TEMP/physical.pub" >/dev/null 2>&1; then
+              echo 'GITHUB_SECRET_PUBLIC_MATCH=PASS'
+              echo 'GITHUB_SECRET_TEST_SIGNATURE=PASS'
+              echo 'match=YES' >> "$GITHUB_OUTPUT"
+            else
+              echo 'GITHUB_SECRET_PUBLIC_MATCH=FAIL'
+              echo 'GITHUB_SECRET_TEST_SIGNATURE=FAIL'
+              echo 'match=NO' >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo 'GITHUB_SECRET_SIGN_OPERATION=FAIL'
+            echo 'match=NO' >> "$GITHUB_OUTPUT"
+          fi
+          rm -f "$TEST.sig" "$RUNNER_TEMP/gh.minisig"
+
+      - name: Compatibility decision
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ '${{ steps.local.outputs.match }}' = 'YES' ]; then
+            echo 'CORRECT_PRIVATE_KEY_FOUND=YES'
+            echo 'PRIVATE_KEY_SOURCE=/Users/peisov/.tauri/vyron-updater.key'
+            echo 'CORRECT_PRIVATE_KEY_PUBLIC_MATCH=PASS'
+            echo 'TEST_SIGNATURE=PASS'
+            exit 0
+          fi
+          if [ '${{ steps.ghsecret.outputs.match }}' = 'YES' ]; then
+            echo 'CORRECT_PRIVATE_KEY_FOUND=YES'
+            echo 'PRIVATE_KEY_SOURCE=GitHub Actions secret TAURI_SIGNING_PRIVATE_KEY'
+            echo 'CORRECT_PRIVATE_KEY_PUBLIC_MATCH=PASS'
+            echo 'TEST_SIGNATURE=PASS'
+            exit 0
+          fi
+          echo 'CORRECT_PRIVATE_KEY_FOUND=NO'
+          echo 'CORRECT_PRIVATE_KEY_PUBLIC_MATCH=FAIL'
+          echo 'TEST_SIGNATURE=FAIL'
+          exit 1

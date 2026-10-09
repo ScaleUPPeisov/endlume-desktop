@@ -1,0 +1,178 @@
+name: ENDLUME 04a patched regression v2
+
+on:
+  push:
+    branches: [qa/endlume-04a-regression-v2]
+
+permissions:
+  contents: read
+
+jobs:
+  regression-v2:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Patch exact 04a legacy DTS path only
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -s)" = Darwin
+          test "$(uname -m)" = arm64
+          git merge-base --is-ancestor 04a63df522af75ece111ba4eb59dc56f48bdcb77 HEAD
+          git diff --exit-code 04a63df522af75ece111ba4eb59dc56f48bdcb77 -- src-tauri/src/fast_render.rs
+          git diff --exit-code e2896da7702891a5b760ecd4daad4fd54bc90b82 -- src-tauri/tauri.conf.json src-tauri/src/license.rs
+          python3 scripts/patch_legacy_dts_v2.py
+          git diff --check
+          test "$(git diff --name-only | grep -v '^src-tauri/src/render.rs$' | wc -l | tr -d ' ')" = 0
+          grep -q 'fn exact_segment_frames' src-tauri/src/render.rs
+          echo PATCH_ONLY_RENDER_RS=PASS
+          echo UPDATER_LICENSE_UNTOUCHED=PASS
+
+      - name: Build actual patched ENDLUME app
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v ffmpeg >/dev/null || brew install ffmpeg
+          npm install --no-audit --no-fund
+          rustup target add aarch64-apple-darwin
+          mkdir -p src-tauri/binaries
+          cp "$(command -v ffmpeg)" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp "$(command -v ffprobe)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          chmod +x src-tauri/binaries/*
+          npm run build
+          npx tauri build --target aarch64-apple-darwin --bundles app --features acceptance-harness --config '{"bundle":{"createUpdaterArtifacts":false}}'
+          APP="$(find src-tauri/target/aarch64-apple-darwin/release/bundle/macos -maxdepth 1 -type d -name '*.app' -print -quit)"
+          BIN="$APP/Contents/MacOS/endlume"
+          test -x "$BIN"
+          ROOT="$RUNNER_TEMP/regression-v2"
+          mkdir -p "$ROOT/media" "$ROOT/fx" "$ROOT/logs"
+          echo "ROOT=$ROOT" >> "$GITHUB_ENV"
+          echo "BIN=$BIN" >> "$GITHUB_ENV"
+          printf 'BASE_PRODUCT_SHA=04a63df522af75ece111ba4eb59dc56f48bdcb77\nQA_HEAD=%s\nAPP=%s\n' "$(git rev-parse HEAD)" "$APP" > "$ROOT/build-info.txt"
+
+      - name: Generate regression media and jobs
+        shell: bash
+        run: |
+          set -euo pipefail
+          M="$ROOT/media"; F="$ROOT/fx"
+          ffmpeg -hide_banner -loglevel error -f lavfi -i "color=c=0x182033:s=1920x1080" -frames:v 1 -y "$M/cover.png"
+          ffmpeg -hide_banner -loglevel error -f lavfi -i "sine=frequency=330:sample_rate=48000:duration=20" -c:a libmp3lame -b:a 256k -ar 48000 -ac 2 -y "$M/a20.mp3"
+          ffmpeg -hide_banner -loglevel error -f lavfi -i "sine=frequency=550:sample_rate=48000:duration=20" -c:a libmp3lame -b:a 192k -ar 48000 -ac 2 -y "$M/b20.mp3"
+          ffmpeg -hide_banner -loglevel error -f lavfi -i "sine=frequency=440:sample_rate=48000:duration=12" -c:a libmp3lame -b:a 320k -ar 48000 -ac 2 -y "$M/a12.mp3"
+          ffmpeg -hide_banner -loglevel error -f lavfi -i "sine=frequency=520:sample_rate=48000:duration=14" -c:a libmp3lame -b:a 320k -ar 48000 -ac 2 -y "$M/a14.mp3"
+          ffmpeg -hide_banner -loglevel error -f lavfi -i "color=c=black:s=640x360:r=60:d=5" -vf "drawbox=x='260+180*sin(2*PI*t/5)':y='130+70*cos(2*PI*t/5)':w=100:h=100:color=white:t=fill" -an -c:v libx264 -preset ultrafast -g 300 -pix_fmt yuv420p -r 60 -y "$F/screen.mp4"
+          ffmpeg -hide_banner -loglevel error -f lavfi -i "color=c=0x00ff00:s=640x360:r=60:d=5" -vf "drawbox=x='250+160*sin(2*PI*t/5)':y='120+60*cos(2*PI*t/5)':w=120:h=120:color=red:t=fill" -an -c:v libx264 -preset ultrafast -g 300 -pix_fmt yuv420p -r 60 -y "$F/chromakey.mp4"
+          ffmpeg -hide_banner -loglevel error -f lavfi -i "color=c=black:s=640x360:r=60:d=5" -vf "drawbox=x='250+160*sin(2*PI*t/5)':y='120+60*cos(2*PI*t/5)':w=120:h=120:color=white:t=fill" -an -c:v libx264 -preset ultrafast -g 300 -pix_fmt yuv420p -r 60 -y "$F/luma.mp4"
+          ffmpeg -hide_banner -loglevel error -f lavfi -i "color=c=0x00ff00:s=640x360:r=60:d=3" -vf "drawbox=x='170+250*t/3':y='120+50*sin(2*PI*t/3)':w=200:h=120:color=white:t=fill" -an -c:v libx264 -preset ultrafast -g 180 -pix_fmt yuv420p -r 60 -y "$F/subscribe.mp4"
+          python3 - <<'PY'
+          import json,os
+          r=os.environ['ROOT']; m=os.path.join(r,'media'); f=os.path.join(r,'fx')
+          def project(pid,audio): return {'id':pid,'name':pid,'path':m,'media':[os.path.join(m,'cover.png')],'audio':audio,'valid':True,'error':None}
+          def settings(out,sec,mode='whole-track',cf=0.0):
+              o=os.path.join(r,out); os.makedirs(o,exist_ok=True)
+              return {'width':1920,'height':1080,'fps':60,'codec':'h265','bitrateMbps':8.0,'durationHours':sec/3600.0,'durationMode':mode,'loopMode':'image','crossfadeSec':cf,'normalizeLufs':False,'outputDir':o,'preset':'fast','encoderPreference':'auto'}
+          def effect(eid,mode,src,fullscreen=False):
+              return {'id':eid,'name':eid,'source':os.path.join(f,src),'enabled':True,'mode':mode,'keyColor':'#00ff00','similarity':0.12,'blend':0.08,'despill':1.0,'lumaThreshold':0.10,'lumaTolerance':0.05,'saturation':1.0,'x':0.20,'y':0.65,'scale':0.50,'fullscreen':fullscreen,'previewFrameTime':0.0,'startSec':0.0,'endSec':None,'cacheKey':None,'cacheReady':None}
+          legacy={'project':project('legacy-crossfade',[os.path.join(m,'a20.mp3'),os.path.join(m,'b20.mp3')]),'settings':settings('out-legacy',30,'exact',1.0),'effects':[],'subscribes':[],'ambient':None}
+          json.dump(legacy,open(os.path.join(r,'job-legacy.json'),'w'),indent=2)
+          for mode,src,fs in [('screen','screen.mp4',True),('chromakey','chromakey.mp4',False),('luma','luma.mp4',False)]:
+              fx=effect(mode,mode,src,fs); job={'project':project('fx-'+mode,[os.path.join(m,'a12.mp3')]),'settings':settings('out-'+mode,12),'effects':[fx],'subscribes':[],'ambient':None}; json.dump(job,open(os.path.join(r,'job-'+mode+'.json'),'w'),indent=2)
+          sub=effect('subscribe','chromakey','subscribe.mp4',False); sub.update({'x':0.15,'y':0.65,'scale':0.30,'firstAtSec':2.0,'secondAtSec':6.0,'repeatEverySec':4.0})
+          sj={'project':project('legacy-subscribe',[os.path.join(m,'a14.mp3')]),'settings':settings('out-subscribe',14,'exact'),'effects':[],'subscribes':[sub],'ambient':None}; json.dump(sj,open(os.path.join(r,'job-subscribe.json'),'w'),indent=2)
+          cq={'project':project('cancel-recovery',[os.path.join(m,'a14.mp3')]),'settings':settings('out-cancel',120,'exact',1.0),'effects':[],'subscribes':[],'ambient':None}; json.dump(cq,open(os.path.join(r,'job-cancel.json'),'w'),indent=2)
+          PY
+
+      - name: Legacy crossfade AAC fallback open reveal
+        shell: bash
+        run: |
+          set -euo pipefail
+          ENDLUME_ACCEPTANCE_JOB="$ROOT/job-legacy.json" ENDLUME_ACCEPTANCE_RECEIPT="$ROOT/receipt-legacy.json" ENDLUME_ACCEPTANCE_SYSTEM_ACTIONS=1 ENDLUME_SOURCE_HEAD="04a63d+legacy-dts-v2" "$BIN" > "$ROOT/logs/legacy.log" 2>&1
+          python3 - <<'PY'
+          import json,os,sys
+          d=json.load(open(os.path.join(os.environ['ROOT'],'receipt-legacy.json'))); assert d['status']=='ok',d
+          r=d['result']; ss=r['probe']['streams']; a=next(x for x in ss if x.get('codec_type')=='audio'); v=next(x for x in ss if x.get('codec_type')=='video'); fb=r.get('fallback') or {}; reason=str(fb.get('reason','')).lower(); act=r.get('system_actions') or {}
+          c={'FALLBACK':r.get('legacy_fallback_used') is True and not r.get('fast_path_used'),'REASON':'crossfade' in reason,'AAC':a.get('codec_name')=='aac','HEVC':v.get('codec_name')=='hevc','RESOLUTION':(v.get('width'),v.get('height'))==(1920,1080),'DECODE':r.get('full_decode',{}).get('ok') is True,'SEEKS':all(x.get('ok') for x in r.get('seek_checks',[])),'POWER':r.get('power_before',{}).get('supported') is True and r.get('power_after',{}).get('supported') is True,'OPEN':act.get('open')=='ok','REVEAL':act.get('reveal')=='ok'}
+          print(c); json.dump(c,open(os.path.join(os.environ['ROOT'],'gate-legacy.json'),'w'),indent=2)
+          if not all(c.values()): sys.exit(1)
+          print('LEGACY_CROSSFADE=PASS')
+          PY
+
+      - name: Fast periodic screen chromakey luma
+        shell: bash
+        run: |
+          set -euo pipefail
+          for mode in screen chromakey luma; do
+            ENDLUME_ACCEPTANCE_JOB="$ROOT/job-$mode.json" ENDLUME_ACCEPTANCE_RECEIPT="$ROOT/receipt-$mode.json" ENDLUME_ACCEPTANCE_PREVIEW_TIMES="1,4.983333333,5,5.016666667,10" ENDLUME_SOURCE_HEAD="04a63d+legacy-dts-v2" "$BIN" > "$ROOT/logs/$mode.log" 2>&1
+          done
+          python3 - <<'PY'
+          import json,os,subprocess,sys
+          root=os.environ['ROOT']; W,H=320,180; N=W*H; report={}
+          def frame(path,t):
+              q=subprocess.run(['ffmpeg','-hide_banner','-v','error','-ss',str(t),'-i',path,'-frames:v','1','-an','-vf',f'scale={W}:{H},format=gray','-f','rawvideo','-pix_fmt','gray','-'],capture_output=True,check=True); return q.stdout[:N]
+          def mae(a,b):return sum(abs(x-y) for x,y in zip(a,b))/N
+          for mode in ['screen','chromakey','luma']:
+              d=json.load(open(os.path.join(root,'receipt-'+mode+'.json'))); assert d['status']=='ok',d; r=d['result']; out=r['output_path']; rows=[mae(frame(out,float(x['at'])),frame(x['path'],0)) for x in r.get('preview_outputs',[])]; v=next(x for x in r['probe']['streams'] if x.get('codec_type')=='video')
+              c={'FAST':r.get('fast_path_used') is True,'MODE':(r.get('fast_metrics') or {}).get('mode')=='periodic-hevc-mp3-packet-copy','DECODE':r.get('full_decode',{}).get('ok') is True,'SEEKS':all(x.get('ok') for x in r.get('seek_checks',[])),'FPS':v.get('r_frame_rate')=='60/1' and v.get('avg_frame_rate')=='60/1','VISIBLE':max(frame(out,1))-min(frame(out,1))>20,'PREVIEW':len(rows)==5 and max(rows)<12.0}
+              report[mode]={'checks':c,'mae':rows}; print(mode,c)
+              if not all(c.values()): sys.exit(1)
+          json.dump(report,open(os.path.join(root,'gate-effects.json'),'w'),indent=2)
+          print('EFFECTS_REGRESSION=PASS')
+          PY
+
+      - name: Patched legacy exact Subscribe
+        shell: bash
+        run: |
+          set -euo pipefail
+          ENDLUME_ACCEPTANCE_JOB="$ROOT/job-subscribe.json" ENDLUME_ACCEPTANCE_RECEIPT="$ROOT/receipt-subscribe.json" ENDLUME_ACCEPTANCE_PREVIEW_TIMES="1,2.5,5.5,6.5,10.5,13.5" ENDLUME_SOURCE_HEAD="04a63d+legacy-dts-v2" "$BIN" > "$ROOT/logs/subscribe.log" 2>&1
+          python3 - <<'PY'
+          import json,os,subprocess,sys
+          root=os.environ['ROOT']; d=json.load(open(os.path.join(root,'receipt-subscribe.json'))); assert d['status']=='ok',d; r=d['result']; v=next(x for x in r['probe']['streams'] if x.get('codec_type')=='video'); fb=str((r.get('fallback') or {}).get('reason','')).lower(); W,H=320,180; N=W*H
+          def f(t):
+              q=subprocess.run(['ffmpeg','-hide_banner','-v','error','-ss',str(t),'-i',r['output_path'],'-frames:v','1','-an','-vf',f'scale={W}:{H},format=gray','-f','rawvideo','-pix_fmt','gray','-'],capture_output=True,check=True); return q.stdout[:N]
+          c={'FALLBACK':r.get('legacy_fallback_used') is True and not r.get('fast_path_used'),'REASON':'whole-track' in fb or 'duration' in fb,'DECODE':r.get('full_decode',{}).get('ok') is True,'DTS':'non monotonically increasing dts' not in str(r.get('full_decode',{}).get('stderr','')).lower(),'FPS':v.get('r_frame_rate')=='60/1' and v.get('avg_frame_rate')=='60/1','FRAMES':abs(int(v.get('nb_frames','0'))-840)<=1,'DURATION':abs(r.get('output_duration',0)-14.0)<=0.05,'OFF1':max(f(1))-min(f(1))<15,'ON2':max(f(2.5))-min(f(2.5))>20,'OFF5':max(f(5.5))-min(f(5.5))<15,'ON6':max(f(6.5))-min(f(6.5))>20,'ON10':max(f(10.5))-min(f(10.5))>20,'OFF13':max(f(13.5))-min(f(13.5))<15}
+          print(c); json.dump({'checks':c,'fallback':fb,'probe':v},open(os.path.join(root,'gate-subscribe.json'),'w'),indent=2)
+          if not all(c.values()):sys.exit(1)
+          print('LEGACY_SUBSCRIBE_DTS=PASS')
+          PY
+
+      - name: Queue cancellation and crash recovery
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          ENDLUME_ACCEPTANCE_JOB="$ROOT/job-cancel.json" ENDLUME_ACCEPTANCE_RECEIPT="$ROOT/receipt-cancel.json" ENDLUME_ACCEPTANCE_QUEUE_CANCEL=1 ENDLUME_ACCEPTANCE_CANCEL_AFTER_MS=150 ENDLUME_SOURCE_HEAD="04a63d+legacy-dts-v2" "$BIN" > "$ROOT/logs/cancel.log" 2>&1
+          crc=$?
+          ENDLUME_ACCEPTANCE_JOB="$ROOT/job-cancel.json" ENDLUME_ACCEPTANCE_RECEIPT="$ROOT/receipt-seed.json" ENDLUME_ACCEPTANCE_SEED_CRASH=1 ENDLUME_SOURCE_HEAD="04a63d+legacy-dts-v2" "$BIN" > "$ROOT/logs/seed.log" 2>&1
+          src=$?
+          ENDLUME_ACCEPTANCE_JOB="$ROOT/job-cancel.json" ENDLUME_ACCEPTANCE_RECEIPT="$ROOT/receipt-recovery.json" ENDLUME_ACCEPTANCE_RECOVERY_ONLY=1 ENDLUME_SOURCE_HEAD="04a63d+legacy-dts-v2" "$BIN" > "$ROOT/logs/recovery.log" 2>&1
+          rrc=$?
+          set -e
+          echo "CANCEL_RC=$crc SEED_RC=$src RECOVERY_RC=$rrc"
+          test "$crc" -eq 0
+          test "$src" -eq 77
+          test "$rrc" -eq 0
+          python3 - <<'PY'
+          import json,os,sys
+          root=os.environ['ROOT']; d=json.load(open(os.path.join(root,'receipt-cancel.json'))); assert d['status']=='ok',d; r=d['result']; q=r.get('queue_cancel') or {}; s=q.get('snapshot') or {}; p=q.get('persisted') or {}; ev=r.get('events') or []; names=[x.get('event') for x in ev]; stages=' '.join(str(x.get('payload',{}).get('stage','')) for x in ev if x.get('event')=='render-error').lower()
+          c={'MODE':r.get('mode')=='queue-cancel','ACTIVE':q.get('activeSeen') is True,'IDLE':s.get('running') is False and s.get('active') is None and s.get('pending')==[],'PERSISTED':p.get('active') is None and p.get('pending')==[],'ERROR_EVENT':'render-error' in names,'IDLE_EVENT':'queue-idle' in names,'CANCEL_TEXT':'остановлено' in stages,'NO_OUTPUT':len(r.get('output_files',[]))==0}
+          rec=json.load(open(os.path.join(root,'receipt-recovery.json'))); rr=rec.get('result') or {}; c['RECOVERY_OK']=rec.get('status')=='ok' and (rr.get('recovery',{}).get('ok',True) is True)
+          print(c); json.dump(c,open(os.path.join(root,'gate-queue-recovery.json'),'w'),indent=2)
+          if not all(c.values()):sys.exit(1)
+          print('QUEUE_RECOVERY=PASS')
+          PY
+
+      - name: Upload regression evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: regression-v2-evidence
+          path: |
+            ${{ env.ROOT }}/build-info.txt
+            ${{ env.ROOT }}/receipt-*.json
+            ${{ env.ROOT }}/gate-*.json
+            ${{ env.ROOT }}/logs/*.log
+          retention-days: 14

@@ -5,6 +5,9 @@ description = "ENDLUME Studio"
 authors = ["ENDLUME Studio"]
 edition = "2021"
 
+[features]
+acceptance-harness = []
+
 [lib]
 name = "endlume_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]

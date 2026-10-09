@@ -148,3 +148,83 @@ jobs:
             ${{ env.ROOT }}/legacy-gate.json
           if-no-files-found: warn
           retention-days: 30
+
+  intel-legacy-fallback-macos:
+    runs-on: macos-15-intel
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Assert real Intel macOS and stable ancestry
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -s)" = Darwin
+          test "$(uname -m)" = x86_64
+          git merge-base --is-ancestor e2896da7702891a5b760ecd4daad4fd54bc90b82 HEAD
+          echo INTEL_RUNNER=PASS
+      - name: Build actual Intel ENDLUME app
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v ffmpeg >/dev/null || brew install ffmpeg
+          npm install --no-audit --no-fund
+          rustup target add x86_64-apple-darwin
+          mkdir -p src-tauri/binaries
+          cp "$(command -v ffmpeg)" src-tauri/binaries/ffmpeg-x86_64-apple-darwin
+          cp "$(command -v ffprobe)" src-tauri/binaries/ffprobe-x86_64-apple-darwin
+          chmod +x src-tauri/binaries/*
+          npm run build
+          cargo test --manifest-path src-tauri/Cargo.toml --target x86_64-apple-darwin --features acceptance-harness
+          npx tauri build --target x86_64-apple-darwin --bundles app --features acceptance-harness --config '{"bundle":{"createUpdaterArtifacts":false}}'
+          APP="$(find src-tauri/target/x86_64-apple-darwin/release/bundle/macos -maxdepth 1 -type d -name '*.app' -print -quit)"; BIN="$APP/Contents/MacOS/endlume"; test -x "$BIN"
+          ROOT="$RUNNER_TEMP/endlume-intel"; mkdir -p "$ROOT/project" "$ROOT/out"
+          echo "ROOT=$ROOT" >> "$GITHUB_ENV"; echo "BIN=$BIN" >> "$GITHUB_ENV"
+      - name: Generate otherwise fast-eligible Intel workload
+        shell: bash
+        run: |
+          set -euo pipefail
+          ffmpeg -hide_banner -loglevel error -f lavfi -i "color=c=0x182033:s=1920x1080" -frames:v 1 -y "$ROOT/project/cover.png"
+          ffmpeg -hide_banner -loglevel error -f lavfi -i "sine=frequency=440:sample_rate=48000:duration=12" -c:a libmp3lame -b:a 320k -ar 48000 -ac 2 -y "$ROOT/project/a.mp3"
+          python3 - <<'PY'
+          import json,os
+          r=os.environ['ROOT']; p=os.path.join(r,'project')
+          job={'project':{'id':'intel-fallback','name':'Intel Fallback','path':p,'media':[os.path.join(p,'cover.png')],'audio':[os.path.join(p,'a.mp3')],'valid':True,'error':None},'settings':{'width':1920,'height':1080,'fps':60,'codec':'h265','bitrateMbps':8.0,'durationHours':12.0/3600.0,'durationMode':'whole-track','loopMode':'image','crossfadeSec':0.0,'normalizeLufs':False,'outputDir':os.path.join(r,'out'),'preset':'fast','encoderPreference':'auto'},'effects':[],'subscribes':[],'ambient':None}
+          json.dump(job,open(os.path.join(r,'job.json'),'w'),indent=2)
+          PY
+      - name: Launch actual Intel app
+        shell: bash
+        run: |
+          set +e
+          ENDLUME_ACCEPTANCE_JOB="$ROOT/job.json" ENDLUME_ACCEPTANCE_RECEIPT="$ROOT/receipt.json" ENDLUME_SOURCE_HEAD="$GITHUB_SHA" "$BIN" > "$ROOT/app.log" 2>&1
+          echo "APP_EXIT_CODE=$?" >> "$ROOT/app.log"; test -f "$ROOT/receipt.json" && cat "$ROOT/receipt.json"; exit 0
+      - name: Gate Intel legacy fallback correctness
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json,os,sys
+          root=os.environ['ROOT']; d=json.load(open(os.path.join(root,'receipt.json')))
+          if d.get('status')!='ok':sys.exit(str(d))
+          r=d['result']; fb=r.get('fallback') or {}; reason=str(fb.get('reason','')).lower(); streams=r['probe']['streams']; v=next(x for x in streams if x.get('codec_type')=='video'); a=next(x for x in streams if x.get('codec_type')=='audio')
+          checks={'ARCH_X86_64':r.get('arch')=='x86_64','FAST_PATH_REJECTED':not bool(r.get('fast_path_used')),'LEGACY_FALLBACK_USED':bool(r.get('legacy_fallback_used')),'APPLE_SILICON_REASON':'apple silicon' in reason or 'intel' in reason,'HEVC':v.get('codec_name')=='hevc','RESOLUTION':(v.get('width'),v.get('height'))==(1920,1080),'AUDIO_PRESENT':a.get('codec_type')=='audio','FULL_DECODE':r.get('full_decode',{}).get('ok') is True,'SEEKS':all(x.get('ok') for x in r.get('seek_checks',[]))}
+          print('FALLBACK_REASON='+reason)
+          for k,vv in checks.items():print(f"{k}={'PASS' if vv else 'FAIL'}")
+          json.dump({'checks':checks,'fallback':fb},open(os.path.join(root,'gate.json'),'w'),indent=2)
+          if not all(checks.values()):sys.exit(1)
+          print('INTEL_LEGACY_FALLBACK=PASS')
+          PY
+      - name: Upload Intel evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: endlume-intel-fallback-evidence
+          path: |
+            ${{ env.ROOT }}/job.json
+            ${{ env.ROOT }}/receipt.json
+            ${{ env.ROOT }}/app.log
+            ${{ env.ROOT }}/gate.json
+          if-no-files-found: warn
+          retention-days: 30

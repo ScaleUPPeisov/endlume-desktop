@@ -31,7 +31,6 @@ jobs:
           cp -R "$INSTALLED" "$TEST_APP"
           SRC_INODE=$(stat -f '%i' "$INSTALLED/Contents/MacOS/$EXE")
           DST_INODE=$(stat -f '%i' "$TEST_APP/Contents/MacOS/$EXE")
-          echo "SOURCE_INODE=$SRC_INODE COPY_INODE=$DST_INODE"
           test "$SRC_INODE" != "$DST_INODE"
           REAL_DATA="$HOME/Library/Application Support/studio.endlume.desktop"
           TEST_DATA="$TEST_HOME/Library/Application Support/studio.endlume.desktop"
@@ -81,9 +80,18 @@ jobs:
           set -euo pipefail
           BIN="$TEST_APP/Contents/MacOS/$EXE"
           env HOME="$TEST_HOME" "$BIN" >"$ROOT/app.log" 2>&1 &
+          find_test_pid() {
+            for pid in $(pgrep -x "$EXE" 2>/dev/null || true); do
+              cmd=$(ps -p "$pid" -o command= 2>/dev/null || true)
+              case "$cmd" in
+                "$BIN"*) echo "$pid"; return 0 ;;
+              esac
+            done
+            return 1
+          }
           clicked=0
           for attempt in $(seq 1 60); do
-            GUI_PID=$(ps -axo pid=,command= | awk -v p="$BIN" 'index($0,p){print $1; exit}')
+            GUI_PID=$(find_test_pid || true)
             if [ -z "$GUI_PID" ]; then sleep 1; continue; fi
             OUT=$(osascript - "$GUI_PID" <<'APPLESCRIPT'
           on run argv
@@ -116,7 +124,7 @@ jobs:
             sleep 1
           done
           test "$(shasum -a 256 "$INSTALLED/Contents/MacOS/$EXE"|awk '{print $1}')" = "$EXPECTED"
-          if [ "$clicked" -ne 1 ]; then cat "$ROOT/app.log" || true; exit 1; fi
+          if [ "$clicked" -ne 1 ]; then cat "$ROOT/app.log" || true; pgrep -fl "$EXE" || true; exit 1; fi
           echo UPDATE_DETECTED=PASS
           echo UPDATE_BUTTON_CLICKED=PASS
 
@@ -135,9 +143,12 @@ jobs:
           echo SIGNATURE_INSTALL=PASS
           echo INSTALLED_VERSION=10.0.12
           relaunched=0
+          BIN="$TEST_APP/Contents/MacOS/$EXE"
           for i in $(seq 1 30); do
-            PID=$(ps -axo pid=,command= | awk -v p="$TEST_APP/Contents/MacOS/$EXE" 'index($0,p){print $1;exit}')
-            if [ -n "$PID" ]; then relaunched=1; break; fi
+            for pid in $(pgrep -x "$EXE" 2>/dev/null || true); do
+              cmd=$(ps -p "$pid" -o command= 2>/dev/null || true)
+              case "$cmd" in "$BIN"*) relaunched=1; break 2;; esac
+            done
             sleep 1
           done
           test "$relaunched" -eq 1

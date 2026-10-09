@@ -115,9 +115,14 @@ jobs:
         run: |
           set +e
           APP="$(find src-tauri/target/aarch64-apple-darwin/release/bundle/macos -maxdepth 1 -type d -name '*.app' -print -quit)"
-          BIN="$(find "$APP/Contents/MacOS" -maxdepth 1 -type f -perm -111 -print -quit)"
+          BIN="$APP/Contents/MacOS/endlume"
           echo "APP=$APP"
           echo "BIN=$BIN"
+          if [ ! -x "$BIN" ]; then
+            echo "ACTUAL_APP_BINARY_NOT_FOUND" | tee "$ROOT/app.log"
+            find "$APP/Contents/MacOS" -maxdepth 1 -type f -print | sort | tee -a "$ROOT/app.log"
+            exit 0
+          fi
           ENDLUME_ACCEPTANCE_JOB="$ROOT/job.json" \
           ENDLUME_ACCEPTANCE_RECEIPT="$ROOT/receipt.json" \
           ENDLUME_SOURCE_HEAD="e2896da7702891a5b760ecd4daad4fd54bc90b82" \

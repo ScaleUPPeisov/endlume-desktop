@@ -28,7 +28,7 @@ jobs:
           TEST_APP="$ROOT/ENDLUME YT Studio PEISOV.app"
           HARNESS="$ROOT/harness"
           RECEIPT="$ROOT/receipt.txt"
-          rm -rf "$ROOT"; mkdir -p "$ROOT" "$HARNESS/src" "$HARNESS/dist"
+          rm -rf "$ROOT"; mkdir -p "$ROOT" "$HARNESS/src" "$HARNESS/dist" "$HARNESS/icons"
           cp -R "$APP" "$TEST_APP"
           test "$(shasum -a 256 "$TEST_APP/Contents/MacOS/$EXE" | awk '{print $1}')" = "$EXPECTED"
           printf 'ROOT=%s\nTEST_APP=%s\nHARNESS=%s\nRECEIPT=%s\nAPP=%s\nEXE=%s\nEXPECTED=%s\n' "$ROOT" "$TEST_APP" "$HARNESS" "$RECEIPT" "$APP" "$EXE" "$EXPECTED" >> "$GITHUB_ENV"
@@ -38,6 +38,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          python3 - "$HARNESS/icons/icon.png" <<'PY'
+          import base64,sys
+          png='iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAGElEQVR42u3BAQ0AAADCoPdPbQ8HFAAAAPg1IAABF4V5LwAAAABJRU5ErkJggg=='
+          open(sys.argv[1],'wb').write(base64.b64decode(png))
+          PY
+          file "$HARNESS/icons/icon.png"
           cat > "$HARNESS/Cargo.toml" <<'EOF'
           [package]
           name = "endlume-updater-harness"
@@ -67,11 +73,11 @@ jobs:
             "identifier": "studio.endlume.updaterharness",
             "build": { "frontendDist": "dist" },
             "app": { "windows": [] },
-            "bundle": { "active": false }
+            "bundle": { "active": false, "icon": ["icons/icon.png"] }
           }
           EOF
           cat > "$HARNESS/src/main.rs" <<'EOF'
-          use std::{env, fs, path::PathBuf};
+          use std::{env, fs, io::Write, path::PathBuf};
           use tauri_plugin_updater::UpdaterExt;
           use url::Url;
 
@@ -96,12 +102,14 @@ jobs:
                       .executable_path(&target_exe)
                       .build()?;
                     let update = updater.check().await?.ok_or("no update returned")?;
-                    println!("CURRENT_VERSION={}", update.current_version);
-                    println!("REMOTE_VERSION={}", update.version);
+                    let current = update.current_version.to_string();
+                    let remote = update.version.to_string();
+                    println!("CURRENT_VERSION={current}");
+                    println!("REMOTE_VERSION={remote}");
                     println!("DOWNLOAD_URL={}", update.download_url);
-                    if update.current_version != "10.0.11" { return Err(format!("unexpected current version {}", update.current_version).into()); }
-                    if update.version != "10.0.12" { return Err(format!("unexpected remote version {}", update.version).into()); }
-                    fs::write(&receipt, format!("DETECTED=PASS\nCURRENT={}\nREMOTE={}\nURL={}\n", update.current_version, update.version, update.download_url))?;
+                    if current != "10.0.11" { return Err(format!("unexpected current version {current}").into()); }
+                    if remote != "10.0.12" { return Err(format!("unexpected remote version {remote}").into()); }
+                    fs::write(&receipt, format!("DETECTED=PASS\nCURRENT={current}\nREMOTE={remote}\nURL={}\n", update.download_url))?;
                     update.download_and_install(
                       |chunk, total| println!("CHUNK={} TOTAL={:?}", chunk, total),
                       || println!("DOWNLOAD_FINISHED=PASS")
@@ -123,8 +131,6 @@ jobs:
               .run(tauri::generate_context!())
               .expect("harness tauri runtime failed");
           }
-
-          use std::io::Write;
           EOF
           echo TEMP_HARNESS_GENERATED=PASS
 
@@ -165,7 +171,6 @@ jobs:
           echo RELAUNCH=PASS
           kill "$PID" 2>/dev/null || true
 
-          # Updater install into the isolated app copy must not touch the owner's persistent app state or installed 10.0.11.
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")" = '10.0.11'
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Contents/Info.plist")" = '10.0.11'
           test "$(shasum -a 256 "$APP/Contents/MacOS/$EXE" | awk '{print $1}')" = "$EXPECTED"

@@ -12,87 +12,28 @@ fn is_mp3(path:&str)->bool{Path::new(path).extension().and_then(|x|x.to_str()).m
 fn safe_name(name:&str)->String{name.chars().map(|c|if ['/', '\\', ':', '*', '?', '"', '<', '>', '|'].contains(&c){'_'}else{c}).collect()}
 fn unique_output(dir:&Path,name:&str)->PathBuf{let safe=safe_name(name);let mut p=dir.join(format!("{} — Ready Videos.mp4",safe));let mut n=2;while p.exists(){p=dir.join(format!("{} — Ready Videos_{}.mp4",safe,n));n+=1}p}
 
-async fn command(app:&AppHandle,name:&str,args:Vec<String>)->Result<Vec<u8>,String>{
-  let out=app.shell().sidecar(name).map_err(|e|e.to_string())?.args(args).output().await.map_err(|e|e.to_string())?;
-  if !out.status.success(){return Err(String::from_utf8_lossy(&out.stderr).trim().to_string())}
-  Ok(out.stdout)
-}
-async fn duration(app:&AppHandle,path:&str)->Result<f64,String>{
-  let out=command(app,"ffprobe",vec!["-v","error","-show_entries","format=duration","-of","default=nw=1:nk=1",path].into_iter().map(String::from).collect()).await?;
-  String::from_utf8_lossy(&out).trim().parse::<f64>().map_err(|_|format!("Не удалось определить длительность: {path}"))
-}
-async fn video_bitrate(app:&AppHandle,path:&Path)->Option<u64>{
-  command(app,"ffprobe",vec!["-v","error","-select_streams","v:0","-show_entries","stream=bit_rate","-of","default=nw=1:nk=1",path.to_string_lossy().as_ref()].into_iter().map(String::from).collect()).await.ok().and_then(|x|String::from_utf8_lossy(&x).trim().parse().ok())
-}
+async fn command(app:&AppHandle,name:&str,args:Vec<String>)->Result<Vec<u8>,String>{let out=app.shell().sidecar(name).map_err(|e|e.to_string())?.args(args).output().await.map_err(|e|e.to_string())?;if !out.status.success(){return Err(String::from_utf8_lossy(&out.stderr).trim().to_string())}Ok(out.stdout)}
+async fn duration(app:&AppHandle,path:&str)->Result<f64,String>{let out=command(app,"ffprobe",vec!["-v","error","-show_entries","format=duration","-of","default=nw=1:nk=1",path].into_iter().map(String::from).collect()).await?;String::from_utf8_lossy(&out).trim().parse::<f64>().map_err(|_|format!("Не удалось определить длительность: {path}"))}
+async fn video_bitrate(app:&AppHandle,path:&Path)->Option<u64>{command(app,"ffprobe",vec!["-v","error","-select_streams","v:0","-show_entries","stream=bit_rate","-of","default=nw=1:nk=1",path.to_string_lossy().as_ref()].into_iter().map(String::from).collect()).await.ok().and_then(|x|String::from_utf8_lossy(&x).trim().parse().ok())}
 fn cancelled(flag:&AtomicBool)->Result<(),String>{if flag.load(Ordering::SeqCst){Err(CANCELLED.into())}else{Ok(())}}
 
 fn eligible(job:&QueueJob)->bool{
-  cfg!(target_os="macos")
-    && job.project.media.len()==1
-    && is_image(&job.project.media[0])
-    && !job.project.audio.is_empty()
-    && job.project.audio.iter().all(|p|is_mp3(p))
-    && job.settings.codec.eq_ignore_ascii_case("h265")
-    && job.settings.fps>0
-    && job.settings.crossfade_sec.abs()<0.0001
-    && !job.settings.normalize_lufs
-    && job.ambient.as_ref().map(|x|x.trim().is_empty()).unwrap_or(true)
-    && job.effects.iter().all(|e|!e.enabled)
-    && job.subscribes.iter().all(|s|!s.effect.enabled)
-    && job.settings.duration_mode=="whole-track"
+  cfg!(target_os="macos")&&job.project.media.len()==1&&is_image(&job.project.media[0])&&!job.project.audio.is_empty()&&job.project.audio.iter().all(|p|is_mp3(p)&&!p.contains('\''))&&job.settings.codec.eq_ignore_ascii_case("h265")&&job.settings.fps>0&&job.settings.crossfade_sec.abs()<0.0001&&!job.settings.normalize_lufs&&job.ambient.as_ref().map(|x|x.trim().is_empty()).unwrap_or(true)&&job.effects.iter().all(|e|!e.enabled)&&job.subscribes.iter().all(|s|!s.effect.enabled)&&job.settings.duration_mode=="whole-track"
 }
+fn final_whole_track_duration(target:f64,durations:&[f64])->Option<(f64,usize)>{if durations.is_empty(){return None}let mut total=0.0;let mut count=0usize;while total<target-0.0001{total+=durations[count%durations.len()];count+=1;if count>10000{return None}}if total-target>240.0{return None}Some((total,count))}
+fn write_side_files(job:&QueueJob,out:&Path,durations:&[f64],track_count:usize)->Result<(),String>{let out_dir=out.parent().ok_or("output parent missing")?;let stem=out.file_stem().and_then(|x|x.to_str()).unwrap_or(&job.project.name);let safe=safe_name(stem);let time_dir=out_dir.join("timecodes");let log_dir=out_dir.join("logs");fs::create_dir_all(&time_dir).map_err(|e|e.to_string())?;fs::create_dir_all(&log_dir).map_err(|e|e.to_string())?;let mut t=0.0;let mut tc=String::new();for i in 0..track_count{let p=&job.project.audio[i%job.project.audio.len()];let title=Path::new(p).file_stem().and_then(|x|x.to_str()).unwrap_or("Track");let s=t.round() as u64;tc.push_str(&format!("{:02}:{:02}:{:02} {}\n",s/3600,(s%3600)/60,s%60,title));t+=durations[i%durations.len()];}fs::write(time_dir.join(format!("{} — timecodes.txt",safe)),tc).map_err(|e|e.to_string())?;let list=job.project.audio.iter().enumerate().map(|(i,p)|format!("{}. {}",i+1,Path::new(p).file_name().and_then(|x|x.to_str()).unwrap_or(p))).collect::<Vec<_>>().join("\n");fs::write(out_dir.join(format!("{} — tracklist.txt",safe)),list).map_err(|e|e.to_string())?;fs::write(log_dir.join(format!("{} — project.json",safe)),serde_json::to_vec_pretty(job).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;Ok(())}
 
-fn final_whole_track_duration(target:f64,durations:&[f64])->Option<(f64,usize)>{
-  if durations.is_empty(){return None}
-  let mut total=0.0;let mut count=0usize;
-  while total<target-0.0001{
-    total+=durations[count%durations.len()];count+=1;
-    if count>10000{return None}
-  }
-  // Match legacy whole-track semantics only where it really ends on a whole track.
-  if total-target>240.0{return None}
-  Some((total,count))
-}
-
-fn write_side_files(job:&QueueJob,out:&Path,durations:&[f64],track_count:usize)->Result<(),String>{
-  let out_dir=out.parent().ok_or("output parent missing")?;let stem=out.file_stem().and_then(|x|x.to_str()).unwrap_or(&job.project.name);let safe=safe_name(stem);
-  let time_dir=out_dir.join("timecodes");let log_dir=out_dir.join("logs");fs::create_dir_all(&time_dir).map_err(|e|e.to_string())?;fs::create_dir_all(&log_dir).map_err(|e|e.to_string())?;
-  let mut t=0.0;let mut tc=String::new();for i in 0..track_count{let p=&job.project.audio[i%job.project.audio.len()];let title=Path::new(p).file_stem().and_then(|x|x.to_str()).unwrap_or("Track");let s=t.round() as u64;tc.push_str(&format!("{:02}:{:02}:{:02} {}\n",s/3600,(s%3600)/60,s%60,title));t+=durations[i%durations.len()];}
-  fs::write(time_dir.join(format!("{} — timecodes.txt",safe)),tc).map_err(|e|e.to_string())?;
-  let list=job.project.audio.iter().enumerate().map(|(i,p)|format!("{}. {}",i+1,Path::new(p).file_name().and_then(|x|x.to_str()).unwrap_or(p))).collect::<Vec<_>>().join("\n");fs::write(out_dir.join(format!("{} — tracklist.txt",safe)),list).map_err(|e|e.to_string())?;
-  fs::write(log_dir.join(format!("{} — project.json",safe)),serde_json::to_vec_pretty(job).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;Ok(())
-}
-
-async fn verify(app:&AppHandle,out:&Path,expected:f64,job:&QueueJob)->Result<(),String>{
-  let d=duration(app,out.to_string_lossy().as_ref()).await?;if (d-expected).abs()>0.20{return Err(format!("fast path duration mismatch: {d:.3} vs {expected:.3}"))}
-  let raw=command(app,"ffprobe",vec!["-v","error","-show_entries","stream=codec_name,width,height,r_frame_rate,avg_frame_rate","-of","json",out.to_string_lossy().as_ref()].into_iter().map(String::from).collect()).await?;let v:serde_json::Value=serde_json::from_slice(&raw).map_err(|e|e.to_string())?;let streams=v.get("streams").and_then(|x|x.as_array()).ok_or("ffprobe streams missing")?;
-  let video=streams.iter().find(|s|s.get("width").is_some()).ok_or("video stream missing")?;let audio=streams.iter().find(|s|s.get("codec_name").and_then(|x|x.as_str())==Some("mp3")).ok_or("MP3 stream-copy missing")?;let _=audio;
-  if video.get("codec_name").and_then(|x|x.as_str())!=Some("hevc"){return Err("fast path output is not HEVC".into())}
-  if video.get("width").and_then(|x|x.as_u64())!=Some(job.settings.width as u64)||video.get("height").and_then(|x|x.as_u64())!=Some(job.settings.height as u64){return Err("fast path resolution mismatch".into())}
-  let fps=video.get("avg_frame_rate").and_then(|x|x.as_str()).unwrap_or("");let expected_fps=format!("{}/1",job.settings.fps);if fps!=expected_fps{return Err(format!("fast path FPS mismatch: {fps} vs {expected_fps}"))}Ok(())
-}
+async fn verify(app:&AppHandle,out:&Path,expected:f64,job:&QueueJob)->Result<(),String>{let d=duration(app,out.to_string_lossy().as_ref()).await?;if (d-expected).abs()>0.20{return Err(format!("fast path duration mismatch: {d:.3} vs {expected:.3}"))}let raw=command(app,"ffprobe",vec!["-v","error","-show_entries","stream=codec_name,width,height,r_frame_rate,avg_frame_rate","-of","json",out.to_string_lossy().as_ref()].into_iter().map(String::from).collect()).await?;let v:serde_json::Value=serde_json::from_slice(&raw).map_err(|e|e.to_string())?;let streams=v.get("streams").and_then(|x|x.as_array()).ok_or("ffprobe streams missing")?;let video=streams.iter().find(|s|s.get("width").is_some()).ok_or("video stream missing")?;streams.iter().find(|s|s.get("codec_name").and_then(|x|x.as_str())==Some("mp3")).ok_or("MP3 stream-copy missing")?;if video.get("codec_name").and_then(|x|x.as_str())!=Some("hevc"){return Err("fast path output is not HEVC".into())}if video.get("width").and_then(|x|x.as_u64())!=Some(job.settings.width as u64)||video.get("height").and_then(|x|x.as_u64())!=Some(job.settings.height as u64){return Err("fast path resolution mismatch".into())}let fps=video.get("avg_frame_rate").and_then(|x|x.as_str()).unwrap_or("");let expected_fps=format!("{}/1",job.settings.fps);if fps!=expected_fps{return Err(format!("fast path FPS mismatch: {fps} vs {expected_fps}"))}Ok(())}
 
 async fn run_fast(app:&AppHandle,job:&QueueJob,cancel:&AtomicBool)->Result<(),String>{
-  let started_ms=chrono::Utc::now().timestamp_millis();let wall=Instant::now();cancelled(cancel)?;
-  let out_dir=PathBuf::from(&job.settings.output_dir);fs::create_dir_all(&out_dir).map_err(|e|e.to_string())?;let out=unique_output(&out_dir,&job.project.name);let work=std::env::temp_dir().join(format!("endlume-fast-{}-{}",job.project.id,started_ms));let _=fs::remove_dir_all(&work);fs::create_dir_all(&work).map_err(|e|e.to_string())?;
+  let started_ms=chrono::Utc::now().timestamp_millis();let wall=Instant::now();cancelled(cancel)?;let out_dir=PathBuf::from(&job.settings.output_dir);fs::create_dir_all(&out_dir).map_err(|e|e.to_string())?;let out=unique_output(&out_dir,&job.project.name);let work=std::env::temp_dir().join(format!("endlume-fast-{}-{}",job.project.id,started_ms));let _=fs::remove_dir_all(&work);fs::create_dir_all(&work).map_err(|e|e.to_string())?;
   let result:Result<(),String>=async{
-    let mut durations=Vec::with_capacity(job.project.audio.len());for p in &job.project.audio{durations.push(duration(app,p).await?.max(0.001));}let target=job.settings.duration_hours*3600.0;let (final_duration,track_count)=final_whole_track_duration(target,&durations).ok_or("fast path cannot preserve whole-track duration semantics")?;let total_frames=(final_duration*job.settings.fps as f64).round() as usize;
-    let master_seconds=5.0f64;let cycle_frames=(master_seconds*job.settings.fps as f64).round() as usize;let master=work.join("visual-master.mp4");let seed=work.join("seed.mp4");let list=work.join("audio-concat.txt");
-    let mut lines=String::new();for i in 0..track_count{let p=&job.project.audio[i%job.project.audio.len()];lines.push_str(&format!("file '{}'\n",p.replace('\\',"/").replace(''',"'\\''")));}fs::write(&list,lines).map_err(|e|e.to_string())?;
-    cancelled(cancel)?;let t=Instant::now();let vf=format!("scale={}:{},fps={},setsar=1,format=yuv420p",job.settings.width,job.settings.height,job.settings.fps);let g=cycle_frames.to_string();command(app,"ffmpeg",vec!["-hide_banner","-loglevel","error","-loop","1","-framerate",&job.settings.fps.to_string(),"-i",job.project.media[0].as_str(),"-vf",&vf,"-t",&master_seconds.to_string(),"-an","-c:v","hevc_videotoolbox","-realtime","1","-q:v","100","-b:v","500k","-maxrate","12M","-bufsize","64M","-g",&g,"-tag:v","hvc1","-fps_mode","cfr","-r",&job.settings.fps.to_string(),"-video_track_timescale","60000","-y",master.to_string_lossy().as_ref()].into_iter().map(String::from).collect()).await?;let master_ms=t.elapsed().as_secs_f64()*1000.0;let _=app.emit("engine-timing",json!({"id":job.project.id,"key":"fast-master-render-ms","milliseconds":master_ms}));
+    let mut durations=Vec::with_capacity(job.project.audio.len());for p in &job.project.audio{durations.push(duration(app,p).await?.max(0.001));}let target=job.settings.duration_hours*3600.0;let (final_duration,track_count)=final_whole_track_duration(target,&durations).ok_or("fast path cannot preserve whole-track duration semantics")?;let total_frames=(final_duration*job.settings.fps as f64).round() as usize;let master_seconds=5.0f64;let cycle_frames=(master_seconds*job.settings.fps as f64).round() as usize;let master=work.join("visual-master.mp4");let seed=work.join("seed.mp4");let list=work.join("audio-concat.txt");
+    let mut lines=String::new();for i in 0..track_count{let p=&job.project.audio[i%job.project.audio.len()];lines.push_str(&format!("file '{}'\n",p.replace('\\',"/")));}fs::write(&list,lines).map_err(|e|e.to_string())?;
+    cancelled(cancel)?;let t=Instant::now();let vf=format!("scale={}:{},fps={},setsar=1,format=yuv420p",job.settings.width,job.settings.height,job.settings.fps);let g=cycle_frames.to_string();let fps=job.settings.fps.to_string();let master_len=master_seconds.to_string();command(app,"ffmpeg",vec!["-hide_banner","-loglevel","error","-loop","1","-framerate",fps.as_str(),"-i",job.project.media[0].as_str(),"-vf",vf.as_str(),"-t",master_len.as_str(),"-an","-c:v","hevc_videotoolbox","-realtime","1","-q:v","100","-b:v","500k","-maxrate","12M","-bufsize","64M","-g",g.as_str(),"-tag:v","hvc1","-fps_mode","cfr","-r",fps.as_str(),"-video_track_timescale","60000","-y",master.to_string_lossy().as_ref()].into_iter().map(String::from).collect()).await?;let master_ms=t.elapsed().as_secs_f64()*1000.0;let _=app.emit("engine-timing",json!({"id":job.project.id,"key":"fast-master-render-ms","milliseconds":master_ms}));
     cancelled(cancel)?;let t=Instant::now();command(app,"ffmpeg",vec!["-hide_banner","-loglevel","error","-i",master.to_string_lossy().as_ref(),"-f","concat","-safe","0","-i",list.to_string_lossy().as_ref(),"-map","0:v:0","-map","1:a:0","-c:v","copy","-c:a","copy","-video_track_timescale","60000","-y",seed.to_string_lossy().as_ref()].into_iter().map(String::from).collect()).await?;let mux_ms=t.elapsed().as_secs_f64()*1000.0;let _=app.emit("engine-timing",json!({"id":job.project.id,"key":"fast-audio-mux-ms","milliseconds":mux_ms}));
-    cancelled(cancel)?;let t=Instant::now();mp4_manifest::expand_video_prefix_cycle(&seed,&out,0,cycle_frames,total_frames)?;let timeline_ms=t.elapsed().as_secs_f64()*1000.0;let _=app.emit("engine-timing",json!({"id":job.project.id,"key":"fast-video-timeline-ms","milliseconds":timeline_ms}));
-    verify(app,&out,final_duration,job).await?;write_side_files(job,&out,&durations,track_count)?;let bytes=fs::metadata(&out).ok().map(|m|m.len());let bitrate=video_bitrate(app,&out).await;let _=app.emit("engine-fast-path",json!({"id":job.project.id,"mode":"static-hevc-mp3-packet-copy","duration":final_duration,"masterMs":master_ms,"muxMs":mux_ms,"timelineMs":timeline_ms,"totalMs":wall.elapsed().as_secs_f64()*1000.0}));let _=app.emit("render-done",Progress{id:job.project.id.clone(),status:"done".into(),progress:100.0,stage:"Готово".into(),started_at:Some(started_ms),elapsed_sec:wall.elapsed().as_secs_f64(),eta_sec:Some(0.0),result_path:Some(out.to_string_lossy().into_owned()),result_bytes:bytes,actual_video_bitrate:bitrate,cpu_pct:None,ram_bytes:None,ram_total_bytes:None,ram_available_bytes:None,gpu_pct:None,encoder:Some("hevc_videotoolbox + MP3 packet-copy".into()),attempt:Some(1)});Ok(())
+    cancelled(cancel)?;let t=Instant::now();mp4_manifest::expand_video_prefix_cycle(&seed,&out,0,cycle_frames,total_frames)?;let timeline_ms=t.elapsed().as_secs_f64()*1000.0;let _=app.emit("engine-timing",json!({"id":job.project.id,"key":"fast-video-timeline-ms","milliseconds":timeline_ms}));verify(app,&out,final_duration,job).await?;write_side_files(job,&out,&durations,track_count)?;let bytes=fs::metadata(&out).ok().map(|m|m.len());let bitrate=video_bitrate(app,&out).await;let _=app.emit("engine-fast-path",json!({"id":job.project.id,"mode":"static-hevc-mp3-packet-copy","duration":final_duration,"masterMs":master_ms,"muxMs":mux_ms,"timelineMs":timeline_ms,"totalMs":wall.elapsed().as_secs_f64()*1000.0}));let _=app.emit("render-done",Progress{id:job.project.id.clone(),status:"done".into(),progress:100.0,stage:"Готово".into(),started_at:Some(started_ms),elapsed_sec:wall.elapsed().as_secs_f64(),eta_sec:Some(0.0),result_path:Some(out.to_string_lossy().into_owned()),result_bytes:bytes,actual_video_bitrate:bitrate,cpu_pct:None,ram_bytes:None,ram_total_bytes:None,ram_available_bytes:None,gpu_pct:None,encoder:Some("hevc_videotoolbox + MP3 packet-copy".into()),attempt:Some(1)});Ok(())
   }.await;
   match result{Ok(())=>{let _=fs::remove_dir_all(&work);Ok(())},Err(e)=>{let _=fs::remove_dir_all(&work);let _=fs::remove_file(&out);Err(e)}}
 }
-
-pub async fn try_render_job(app:&AppHandle,job:&QueueJob,cancel:Arc<AtomicBool>)->Result<Option<()>,String>{
-  if !eligible(job){return Ok(None)}
-  let _=app.emit("engine-fast-path",json!({"id":job.project.id,"eligible":true,"mode":"static-hevc-mp3-packet-copy"}));
-  match run_fast(app,job,cancel.as_ref()).await{
-    Ok(())=>Ok(Some(())),
-    Err(e) if e==CANCELLED=>Err(e),
-    Err(e)=>{let _=app.emit("engine-fast-fallback",json!({"id":job.project.id,"error":e}));Ok(None)}
-  }
-}
+pub async fn try_render_job(app:&AppHandle,job:&QueueJob,cancel:Arc<AtomicBool>)->Result<Option<()>,String>{if !eligible(job){return Ok(None)}let _=app.emit("engine-fast-path",json!({"id":job.project.id,"eligible":true,"mode":"static-hevc-mp3-packet-copy"}));match run_fast(app,job,cancel.as_ref()).await{Ok(())=>Ok(Some(())),Err(e) if e==CANCELLED=>Err(e),Err(e)=>{let _=app.emit("engine-fast-fallback",json!({"id":job.project.id,"error":e}));Ok(None)}}}

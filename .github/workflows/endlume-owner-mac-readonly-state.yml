@@ -1,0 +1,34 @@
+name: ENDLUME owner Mac readonly state
+
+on:
+  push:
+    branches: [release]
+    paths: ['.github/workflows/endlume-owner-mac-readonly-state.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: [self-hosted, macOS, ARM64]
+    timeout-minutes: 5
+    steps:
+      - name: Read installed state only
+        shell: bash
+        run: |
+          set -u
+          APP='/Applications/ENDLUME YT Studio PEISOV.app'
+          echo APP_EXISTS=$(test -d "$APP" && echo YES || echo NO)
+          if [ ! -d "$APP" ]; then exit 1; fi
+          INFO="$APP/Contents/Info.plist"
+          EXE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$INFO" 2>/dev/null || true)
+          echo EXE="$EXE"
+          echo SHORT=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$INFO" 2>/dev/null || true)
+          echo BUILD=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$INFO" 2>/dev/null || true)
+          echo SHA=$(shasum -a 256 "$APP/Contents/MacOS/$EXE" 2>/dev/null | awk '{print $1}')
+          echo ENDPOINTS_BEGIN
+          strings -a "$APP/Contents/MacOS/$EXE" 2>/dev/null | grep -E 'https://[^ ]*(latest\.json|api/update)|endlume-(stable|test12)' || true
+          echo ENDPOINTS_END
+          echo RUNNING_BEGIN
+          pgrep -fl "$EXE" || true
+          echo RUNNING_END

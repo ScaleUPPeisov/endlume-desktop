@@ -31,13 +31,24 @@ jobs:
           cp "$(command -v ffmpeg)" src-tauri/binaries/ffmpeg-x86_64-unknown-linux-gnu
           cp "$(command -v ffprobe)" src-tauri/binaries/ffprobe-x86_64-unknown-linux-gnu
           chmod +x src-tauri/binaries/*
-      - name: Frontend and Rust compile-only gate
+      - name: Frontend compile gate
         shell: bash
         run: |
           set -euo pipefail
           npm run build
+          echo FRONTEND_COMPILE=PASS
+      - name: Rust library compile gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo check --manifest-path src-tauri/Cargo.toml --lib --features acceptance-harness
+          echo RUST_LIB_COMPILE=PASS
+      - name: Rust all-targets compile gate
+        shell: bash
+        run: |
+          set -euo pipefail
           cargo check --manifest-path src-tauri/Cargo.toml --all-targets --features acceptance-harness
-          echo PORTABLE_COMPILE_ONLY=PASS
+          echo RUST_ALL_TARGETS_COMPILE=PASS
           echo PHYSICAL_MACOS_ACCEPTANCE=NOT_CLAIMED
 
   legacy-and-regression-macos-arm64:

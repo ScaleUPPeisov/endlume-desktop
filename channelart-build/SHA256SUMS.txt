@@ -1,2 +1,2 @@
 5620a205d588e4c38e6e46b9cde155932e26ca8c2d91514d7f0ea03fdd0a914a  channelart-build/BUILD_LOG_TAIL.txt
-ae658e6d88f70277ae750530ed1a92739d1ab65d15062fd89f8f13341e39e4e3  channelart-build/BUILD_RECEIPT.json
+d518086d49fc479a2a4bc2fc248a407e3ac49ea70c54d835e24abbf7070f08e2  channelart-build/BUILD_RECEIPT.json

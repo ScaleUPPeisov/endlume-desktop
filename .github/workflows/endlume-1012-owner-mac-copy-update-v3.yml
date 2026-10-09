@@ -18,7 +18,6 @@ jobs:
         run: |
           set -euo pipefail
           SRC='/Applications/ENDLUME YT Studio PEISOV.app'
-          test -d "$SRC"
           SHORT=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$SRC/Contents/Info.plist")
           BUILD=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$SRC/Contents/Info.plist")
           test "$SHORT" = 10.0.11; test "$BUILD" = 10.0.11
@@ -63,12 +62,12 @@ jobs:
           curl -fsSL "$BASE/latest.json" -o "$ROOT/update.json"
           URL=$(python3 - "$ROOT/update.json" <<'PY'
           import json,sys
-          d=json.load(open(sys.argv[1]));assert d['version']=='10.0.12'
-          p=d['platforms']['darwin-aarch64'];assert p['signature'];assert p['sha256']=='760f1da52011cbe9745894eeb04ef3dfef3b5c0e7d85ceb3841f63d67c8ae6e9';print(p['url'])
+          d=json.load(open(sys.argv[1])); assert d['version']=='10.0.12'
+          p=d['platforms']['darwin-aarch64']; assert p['signature']; assert p['sha256']=='760f1da52011cbe9745894eeb04ef3dfef3b5c0e7d85ceb3841f63d67c8ae6e9'; print(p['url'])
           PY
           )
           curl -fsSL "$URL" -o "$ROOT/update.tar.gz"
-          test "$(shasum -a 256 "$ROOT/update.tar.gz"|awk '{print $1}')" = '760f1da52011cbe9745894eeb04ef3dfef3b5c0e7d85ceb3841f63d67c8ae6e9'
+          test "$(shasum -a 256 "$ROOT/update.tar.gz"|awk '{print $1}')" = 760f1da52011cbe9745894eeb04ef3dfef3b5c0e7d85ceb3841f63d67c8ae6e9
           echo DOWNLOAD=PASS
 
       - name: Launch copy and click update using discovered live PID
@@ -77,14 +76,12 @@ jobs:
           set -euo pipefail
           BIN="$TEST_APP/Contents/MacOS/$EXE"
           env HOME="$TEST_HOME" "$BIN" >"$ROOT/app.log" 2>&1 &
-          LAUNCH_PID=$!
-          echo "LAUNCH_PID=$LAUNCH_PID"
+          echo "LAUNCH_PID=$!"
           clicked=0
           for attempt in $(seq 1 60); do
             GUI_PID=$(ps -axo pid=,command= | awk -v p="$BIN" 'index($0,p){print $1; exit}')
             if [ -z "$GUI_PID" ]; then sleep 1; continue; fi
             echo "attempt=$attempt GUI_PID=$GUI_PID"
-            set +e
             OUT=$(osascript - "$GUI_PID" <<'APPLESCRIPT'
           on run argv
             set targetPid to (item 1 of argv) as integer
@@ -93,20 +90,15 @@ jobs:
                 set p to first application process whose unix id is targetPid
                 set frontmost of p to true
                 repeat with w in windows of p
-                  try
-                    repeat with e in entire contents of w
-                      try
-                        set nm to ""
-                        try
-                          set nm to name of e as text
-                        end try
-                        if nm contains "ОБНОВИТЬ" and nm does not contain "ПОЗЖЕ" then
-                          perform action "AXPress" of e
-                          return "CLICKED:" & nm
-                        end if
-                      end try
-                    end repeat
-                  end try
+                  repeat with e in entire contents of w
+                    try
+                      set nm to name of e as text
+                      if nm contains "ОБНОВИТЬ" and nm does not contain "ПОЗЖЕ" then
+                        perform action "AXPress" of e
+                        return "CLICKED:" & nm
+                      end if
+                    end try
+                  end repeat
                 end repeat
               on error errText
                 return "ERROR:" & errText
@@ -116,12 +108,11 @@ jobs:
           end run
           APPLESCRIPT
             )
-            set -e
             echo "$OUT"
-            if [[ "$OUT" == CLICKED:* ]]; then clicked=1; echo "GUI_PID=$GUI_PID" >> "$GITHUB_ENV"; break; fi
+            if [[ "$OUT" == CLICKED:* ]]; then clicked=1; break; fi
             sleep 1
           done
-          if [ "$clicked" -ne 1 ]; then echo '--- APP LOG ---'; cat "$ROOT/app.log" || true; ps -axo pid=,command= | grep -F "$TEST_APP" || true; exit 1; fi
+          if [ "$clicked" -ne 1 ]; then cat "$ROOT/app.log" || true; ps -axo pid=,command=|grep -F "$TEST_APP"||true; exit 1; fi
           echo UPDATE_DETECTED=PASS
           echo UPDATE_BUTTON_CLICKED=PASS
 

@@ -1,0 +1,136 @@
+name: ENDLUME 10.0.12 direct Tauri updater gate v2
+
+on:
+  push:
+    branches: [release]
+    paths: ['.github/workflows/endlume-1012-tauri-updater-harness-v2.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    runs-on: [self-hosted, macOS, ARM64]
+    timeout-minutes: 20
+    steps:
+      - name: Prepare exact 10.0.11 copy and harness
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP='/Applications/ENDLUME YT Studio PEISOV.app'
+          EXE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")
+          EXPECTED='8f60dbe1dd611db407c2d096aebd4597f6ff2af07c881e2e41d163e19b2b80c0'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")" = 10.0.11
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Contents/Info.plist")" = 10.0.11
+          test "$(shasum -a 256 "$APP/Contents/MacOS/$EXE"|awk '{print $1}')" = "$EXPECTED"
+          strings -a "$APP/Contents/MacOS/$EXE" | grep -F 'endlume-stable/latest.json'
+          ROOT="$RUNNER_TEMP/endlume-tauri-v2-${GITHUB_RUN_ID}"
+          TEST_APP="$ROOT/ENDLUME YT Studio PEISOV.app"
+          H="$ROOT/harness"
+          RECEIPT="$ROOT/receipt.txt"
+          STATE_BEFORE="$ROOT/state-before.txt"
+          DATA="$HOME/Library/Application Support/studio.endlume.desktop"
+          rm -rf "$ROOT"; mkdir -p "$H/src" "$H/dist" "$H/icons"
+          cp -R "$APP" "$TEST_APP"
+          : > "$STATE_BEFORE"
+          for f in license.json library.json; do [ ! -f "$DATA/$f" ] || shasum -a 256 "$DATA/$f" | awk -v n="$f" '{print n"="$1}' >> "$STATE_BEFORE"; done
+          sort -o "$STATE_BEFORE" "$STATE_BEFORE"
+          python3 - "$H/icons/icon.png" <<'PY'
+          import base64,sys
+          open(sys.argv[1],'wb').write(base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAGElEQVR42u3BAQ0AAADCoPdPbQ8HFAAAAPg1IAABF4V5LwAAAABJRU5ErkJggg=='))
+          PY
+          cat > "$H/Cargo.toml" <<'EOF'
+          [package]
+          name="endlume-updater-gate-v2"
+          version="10.0.11"
+          edition="2021"
+          build="build.rs"
+          [build-dependencies]
+          tauri-build={version="2",features=[]}
+          [dependencies]
+          tauri={version="2",features=[]}
+          tauri-plugin-updater="2"
+          url="2"
+          serde_json="1"
+          EOF
+          echo 'fn main(){tauri_build::build()}' > "$H/build.rs"
+          echo '<!doctype html><title>gate</title>' > "$H/dist/index.html"
+          cat > "$H/tauri.conf.json" <<'EOF'
+          {
+            "$schema":"https://schema.tauri.app/config/2",
+            "productName":"ENDLUME Updater Gate",
+            "version":"10.0.11",
+            "identifier":"studio.endlume.updatergate",
+            "build":{"frontendDist":"dist"},
+            "app":{"windows":[]},
+            "bundle":{"active":false,"icon":["icons/icon.png"]},
+            "plugins":{"updater":{"pubkey":"dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEU5NDU1MkRFODQyRUM0OTUKUldTVnhDNkUzbEpGNmZmNUdyb2lUZVM0enU3WkVzdDlsSCtxcVpobitZc3Z0ZWMxQ1hucFZXRUUK","endpoints":["https://github.com/ScaleUPPeisov/scaleup-site/releases/download/endlume-test12/latest.json"]}}
+          }
+          EOF
+          cat > "$H/src/main.rs" <<'EOF'
+          use std::{env,fs,io::Write,path::PathBuf};
+          use tauri_plugin_updater::UpdaterExt;
+          use url::Url;
+          const KEY:&str="dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEU5NDU1MkRFODQyRUM0OTUKUldTVnhDNkUzbEpGNmZmNUdyb2lUZVM0enU3WkVzdDlsSCtxcVpobitZc3Z0ZWMxQ1hucFZXRUUK";
+          const ENDPOINT:&str="https://github.com/ScaleUPPeisov/scaleup-site/releases/download/endlume-test12/latest.json";
+          fn main(){
+            tauri::Builder::default().plugin(tauri_plugin_updater::Builder::new().build()).setup(|app|{
+              let h=app.handle().clone();
+              let exe=PathBuf::from(env::var("ENDLUME_TEST_EXECUTABLE")?);
+              let receipt=PathBuf::from(env::var("ENDLUME_UPDATER_RECEIPT")?);
+              tauri::async_runtime::spawn(async move{
+                let r:Result<(),Box<dyn std::error::Error+Send+Sync>>=async{
+                  let u=h.updater_builder().endpoints(vec![Url::parse(ENDPOINT)?])?.pubkey(KEY).target("darwin-aarch64").executable_path(&exe).build()?;
+                  let up=u.check().await?.ok_or("no update")?;
+                  let cur=up.current_version.to_string();let remote=up.version.to_string();
+                  println!("CURRENT={cur} REMOTE={remote} URL={}",up.download_url);
+                  if cur!="10.0.11"||remote!="10.0.12"{return Err(format!("unexpected versions {cur}->{remote}").into())}
+                  fs::write(&receipt,format!("DETECTED=PASS\nCURRENT={cur}\nREMOTE={remote}\nURL={}\n",up.download_url))?;
+                  up.download_and_install(|n,t|println!("CHUNK={n} TOTAL={t:?}"),||println!("DOWNLOAD_FINISHED=PASS")).await?;
+                  fs::OpenOptions::new().append(true).open(&receipt)?.write_all(b"SIGNATURE_INSTALL=PASS\n")?;
+                  Ok(())
+                }.await;
+                match r{Ok(_)=>std::process::exit(0),Err(e)=>{eprintln!("GATE_ERROR={e}");let _=fs::write(&receipt,format!("FAIL={e}\n"));std::process::exit(31)}}
+              });
+              Ok(())
+            }).run(tauri::generate_context!()).expect("runtime");
+          }
+          EOF
+          printf 'ROOT=%s\nTEST_APP=%s\nH=%s\nRECEIPT=%s\nAPP=%s\nEXE=%s\nEXPECTED=%s\nDATA=%s\nSTATE_BEFORE=%s\n' "$ROOT" "$TEST_APP" "$H" "$RECEIPT" "$APP" "$EXE" "$EXPECTED" "$DATA" "$STATE_BEFORE" >> "$GITHUB_ENV"
+          echo PREP=PASS
+
+      - name: Run direct Tauri updater
+        shell: bash
+        run: |
+          set -euo pipefail
+          CACHE="$HOME/.cache/endlume-updater-gate-v2-target"
+          PREV="$RUNNER_TEMP/endlume-tauri-updater-37954462490/harness/target"
+          if [ ! -d "$CACHE" ] && [ -d "$PREV" ]; then mkdir -p "$CACHE"; cp -R "$PREV/." "$CACHE/"; fi
+          cd "$H"
+          CARGO_TARGET_DIR="$CACHE" ENDLUME_TEST_EXECUTABLE="$TEST_APP/Contents/MacOS/$EXE" ENDLUME_UPDATER_RECEIPT="$RECEIPT" cargo run --release 2>&1 | tee "$ROOT/harness.log"
+          cat "$RECEIPT"
+          grep -q '^DETECTED=PASS$' "$RECEIPT"
+          grep -q '^CURRENT=10.0.11$' "$RECEIPT"
+          grep -q '^REMOTE=10.0.12$' "$RECEIPT"
+          grep -q '^SIGNATURE_INSTALL=PASS$' "$RECEIPT"
+          echo TAURI_UPDATE_DETECTED=PASS
+          echo DOWNLOAD_SIGNATURE_INSTALL=PASS
+
+      - name: Verify installed app relaunch owner app and state
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$TEST_APP/Contents/Info.plist")" = 10.0.12
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$TEST_APP/Contents/Info.plist")" = 10.0.12
+          grep -R -a -q '10.0.12' "$TEST_APP/Contents/Resources"
+          echo INSTALLED_VERSION=10.0.12
+          HOME="$ROOT/testhome" "$TEST_APP/Contents/MacOS/$EXE" > "$ROOT/relaunch.log" 2>&1 &
+          PID=$!; sleep 3; kill -0 "$PID"; echo RELAUNCH=PASS; kill "$PID" 2>/dev/null || true
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")" = 10.0.11
+          test "$(shasum -a 256 "$APP/Contents/MacOS/$EXE"|awk '{print $1}')" = "$EXPECTED"
+          strings -a "$APP/Contents/MacOS/$EXE" | grep -F 'endlume-stable/latest.json'
+          STATE_AFTER="$ROOT/state-after.txt"; : > "$STATE_AFTER"
+          for f in license.json library.json; do [ ! -f "$DATA/$f" ] || shasum -a 256 "$DATA/$f" | awk -v n="$f" '{print n"="$1}' >> "$STATE_AFTER"; done
+          sort -o "$STATE_AFTER" "$STATE_AFTER"; diff -u "$STATE_BEFORE" "$STATE_AFTER"
+          echo OWNER_APP_UNTOUCHED=PASS
+          echo SETTINGS_PRESERVED=PASS

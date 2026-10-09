@@ -1,0 +1,99 @@
+name: ENDLUME macOS product regression acceptance
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [perf/endlume-macos-3h-10s-acceptance]
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src-tauri/**'
+      - 'src/**'
+      - '.github/workflows/endlume-regression-acceptance.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  legacy-and-regression-macos-arm64:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Assert lineage and protected product surfaces unchanged
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -s)" = Darwin; test "$(uname -m)" = arm64
+          git merge-base --is-ancestor e2896da7702891a5b760ecd4daad4fd54bc90b82 HEAD
+          git diff --exit-code e2896da7702891a5b760ecd4daad4fd54bc90b82 -- src-tauri/tauri.conf.json
+          git diff --exit-code e2896da7702891a5b760ecd4daad4fd54bc90b82 -- src-tauri/src/license.rs
+          echo UPDATER_UNTOUCHED=PASS
+          echo LICENSE_SUBSCRIPTION_BACKEND_UNTOUCHED=PASS
+      - name: Install compile and build actual app
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v ffmpeg >/dev/null || brew install ffmpeg
+          npm install --no-audit --no-fund
+          rustup target add aarch64-apple-darwin
+          mkdir -p src-tauri/binaries
+          cp "$(command -v ffmpeg)" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp "$(command -v ffprobe)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          chmod +x src-tauri/binaries/*
+          npm run build
+          cargo test --manifest-path src-tauri/Cargo.toml --target aarch64-apple-darwin --features acceptance-harness
+          npx tauri build --target aarch64-apple-darwin --bundles app --features acceptance-harness --config '{"bundle":{"createUpdaterArtifacts":false}}'
+          APP="$(find src-tauri/target/aarch64-apple-darwin/release/bundle/macos -maxdepth 1 -type d -name '*.app' -print -quit)"; BIN="$APP/Contents/MacOS/endlume"; test -x "$BIN"
+          ROOT="$RUNNER_TEMP/endlume-regression"; mkdir -p "$ROOT/project" "$ROOT/out"
+          echo "ROOT=$ROOT" >> "$GITHUB_ENV"; echo "BIN=$BIN" >> "$GITHUB_ENV"
+      - name: Generate processed-audio legacy workload
+        shell: bash
+        run: |
+          set -euo pipefail
+          ffmpeg -hide_banner -loglevel error -f lavfi -i "color=c=0x182033:s=1920x1080" -frames:v 1 -y "$ROOT/project/cover.png"
+          ffmpeg -hide_banner -loglevel error -f lavfi -i "sine=frequency=330:sample_rate=48000:duration=20" -c:a libmp3lame -b:a 256k -ar 48000 -ac 2 -y "$ROOT/project/a.mp3"
+          ffmpeg -hide_banner -loglevel error -f lavfi -i "sine=frequency=550:sample_rate=48000:duration=20" -c:a libmp3lame -b:a 192k -ar 48000 -ac 2 -y "$ROOT/project/b.mp3"
+          python3 - <<'PY'
+          import json,os
+          r=os.environ['ROOT']; p=os.path.join(r,'project')
+          job={'project':{'id':'legacy-crossfade','name':'Legacy Crossfade Regression','path':p,'media':[os.path.join(p,'cover.png')],'audio':[os.path.join(p,'a.mp3'),os.path.join(p,'b.mp3')],'valid':True,'error':None},'settings':{'width':1920,'height':1080,'fps':60,'codec':'h265','bitrateMbps':8.0,'durationHours':30.0/3600.0,'durationMode':'exact','loopMode':'image','crossfadeSec':1.0,'normalizeLufs':False,'outputDir':os.path.join(r,'out'),'preset':'fast','encoderPreference':'auto'},'effects':[],'subscribes':[],'ambient':None}
+          json.dump(job,open(os.path.join(r,'legacy-job.json'),'w'),indent=2)
+          PY
+      - name: Launch actual app through mandatory legacy fallback
+        shell: bash
+        run: |
+          set +e
+          ENDLUME_ACCEPTANCE_JOB="$ROOT/legacy-job.json" ENDLUME_ACCEPTANCE_RECEIPT="$ROOT/legacy-receipt.json" ENDLUME_SOURCE_HEAD="$GITHUB_SHA" "$BIN" > "$ROOT/legacy-app.log" 2>&1
+          echo "APP_EXIT_CODE=$?" >> "$ROOT/legacy-app.log"; test -f "$ROOT/legacy-receipt.json" && cat "$ROOT/legacy-receipt.json"; exit 0
+      - name: Gate legacy fallback correctness
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json,os,sys
+          root=os.environ['ROOT']; d=json.load(open(os.path.join(root,'legacy-receipt.json')))
+          if d.get('status')!='ok':sys.exit(str(d))
+          r=d['result']; streams=r['probe']['streams']; a=next(x for x in streams if x.get('codec_type')=='audio'); v=next(x for x in streams if x.get('codec_type')=='video'); fb=r.get('fallback') or {}; reason=str(fb.get('reason','')).lower()
+          checks={'FAST_PATH_REJECTED':not bool(r.get('fast_path_used')),'LEGACY_FALLBACK_USED':bool(r.get('legacy_fallback_used')),'FALLBACK_REASON_CROSSFADE':'crossfade' in reason,'LEGACY_AUDIO_AAC':a.get('codec_name')=='aac','VIDEO_HEVC':v.get('codec_name')=='hevc','RESOLUTION':(v.get('width'),v.get('height'))==(1920,1080),'FULL_DECODE':r.get('full_decode',{}).get('ok') is True,'SEEK':all(x.get('ok') for x in r.get('seek_checks',[])),'DURATION':abs(r.get('output_duration',0)-30.0)<=4.0}
+          print('FALLBACK_REASON='+reason)
+          for k,vv in checks.items():print(f"{k}={'PASS' if vv else 'FAIL'}")
+          json.dump({'checks':checks,'fallback':fb},open(os.path.join(root,'legacy-gate.json'),'w'),indent=2)
+          if not all(checks.values()):sys.exit(1)
+          print('LEGACY_FALLBACK=PASS')
+          PY
+      - name: Upload regression evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: endlume-legacy-regression-evidence
+          path: |
+            ${{ env.ROOT }}/legacy-job.json
+            ${{ env.ROOT }}/legacy-receipt.json
+            ${{ env.ROOT }}/legacy-app.log
+            ${{ env.ROOT }}/legacy-gate.json
+          if-no-files-found: warn
+          retention-days: 30

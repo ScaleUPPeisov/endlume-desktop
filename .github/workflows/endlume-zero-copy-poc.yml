@@ -7,6 +7,7 @@ on:
       - 'src-tauri/src/mp4_manifest.rs'
       - 'src-tauri/src/bin/manifest_poc.rs'
       - 'src-tauri/src/lib.rs'
+      - 'src-tauri/Cargo.toml'
       - '.github/workflows/endlume-zero-copy-poc.yml'
   workflow_dispatch:
 
@@ -40,7 +41,12 @@ jobs:
         run: |
           set -euo pipefail
           command -v ffmpeg >/dev/null || brew install ffmpeg
+          command -v ffprobe >/dev/null || brew install ffmpeg
           rustup target add aarch64-apple-darwin
+          mkdir -p src-tauri/binaries
+          cp "$(command -v ffmpeg)" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp "$(command -v ffprobe)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          chmod +x src-tauri/binaries/*
           cargo build --release --manifest-path src-tauri/Cargo.toml --target aarch64-apple-darwin --bin manifest_poc --features acceptance-harness
 
       - name: Generate pre-existing production inputs

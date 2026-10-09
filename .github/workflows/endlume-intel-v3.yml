@@ -1,0 +1,68 @@
+name: ENDLUME Intel fallback v3
+
+on:
+  push:
+    branches: [qa/endlume-04a-regression-v2]
+    paths: ['.github/workflows/endlume-intel-v3.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  intel-fallback:
+    runs-on: macos-15-intel
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - name: Patch expected final legacy path and build x86_64 app
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -s)" = Darwin
+          test "$(uname -m)" = x86_64
+          git merge-base --is-ancestor 04a63df522af75ece111ba4eb59dc56f48bdcb77 HEAD
+          python3 scripts/patch_legacy_dts_v3.py
+          command -v ffmpeg >/dev/null || brew install ffmpeg
+          npm install --no-audit --no-fund
+          rustup target add x86_64-apple-darwin
+          mkdir -p src-tauri/binaries
+          cp "$(command -v ffmpeg)" src-tauri/binaries/ffmpeg-x86_64-apple-darwin
+          cp "$(command -v ffprobe)" src-tauri/binaries/ffprobe-x86_64-apple-darwin
+          chmod +x src-tauri/binaries/*
+          npm run build
+          npx tauri build --target x86_64-apple-darwin --bundles app --features acceptance-harness --config '{"bundle":{"createUpdaterArtifacts":false}}'
+          APP="$(find src-tauri/target/x86_64-apple-darwin/release/bundle/macos -maxdepth 1 -type d -name '*.app' -print -quit)"; BIN="$APP/Contents/MacOS/endlume"; test -x "$BIN"
+          file "$BIN" | tee "$RUNNER_TEMP/file.txt"; grep -qi 'x86_64' "$RUNNER_TEMP/file.txt"
+          ROOT="$RUNNER_TEMP/intel-v3"; mkdir -p "$ROOT/project" "$ROOT/out"; echo "ROOT=$ROOT" >> "$GITHUB_ENV"; echo "BIN=$BIN" >> "$GITHUB_ENV"
+      - name: Generate short workload
+        shell: bash
+        run: |
+          set -euo pipefail
+          ffmpeg -hide_banner -loglevel error -f lavfi -i "color=c=0x182033:s=1920x1080" -frames:v 1 -y "$ROOT/project/cover.png"
+          ffmpeg -hide_banner -loglevel error -f lavfi -i "sine=frequency=440:sample_rate=48000:duration=6" -c:a libmp3lame -b:a 320k -ar 48000 -ac 2 -y "$ROOT/project/a.mp3"
+          python3 - <<'PY'
+          import json,os
+          r=os.environ['ROOT'];p=os.path.join(r,'project')
+          job={'project':{'id':'intel-fallback','name':'Intel Fallback','path':p,'media':[os.path.join(p,'cover.png')],'audio':[os.path.join(p,'a.mp3')],'valid':True,'error':None},'settings':{'width':1920,'height':1080,'fps':60,'codec':'h265','bitrateMbps':8.0,'durationHours':6/3600,'durationMode':'exact','loopMode':'image','crossfadeSec':0.0,'normalizeLufs':False,'outputDir':os.path.join(r,'out'),'preset':'fast','encoderPreference':'auto'},'effects':[],'subscribes':[],'ambient':None}
+          json.dump(job,open(os.path.join(r,'job.json'),'w'),indent=2)
+          PY
+      - name: Physical Intel fallback gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          ENDLUME_ACCEPTANCE_JOB="$ROOT/job.json" ENDLUME_ACCEPTANCE_RECEIPT="$ROOT/receipt.json" "$BIN" > "$ROOT/app.log" 2>&1
+          python3 - <<'PY'
+          import json,os
+          d=json.load(open(os.path.join(os.environ['ROOT'],'receipt.json')));assert d['status']=='ok',d;r=d['result'];fb=r.get('fallback') or {};reason=str(fb.get('reason','')).lower();v=next(x for x in r['probe']['streams'] if x.get('codec_type')=='video')
+          c={'arch':r.get('arch')=='x86_64','fast_rejected':not r.get('fast_path_used'),'legacy':r.get('legacy_fallback_used') is True,'reason':'apple silicon' in reason or 'architecture' in reason or 'arch' in reason,'hevc':v.get('codec_name')=='hevc','1080p':(v.get('width'),v.get('height'))==(1920,1080),'fps':v.get('r_frame_rate')=='60/1','decode':r.get('full_decode',{}).get('ok') is True,'seek':all(x.get('ok') for x in r.get('seek_checks',[]))}
+          print('FALLBACK_REASON='+reason);print(c);assert all(c.values()),c
+          print('PHYSICAL_INTEL_FALLBACK=PASS')
+          PY
+      - name: Upload Intel evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: intel-fallback-v3
+          path: ${{ env.ROOT }}
+          retention-days: 14

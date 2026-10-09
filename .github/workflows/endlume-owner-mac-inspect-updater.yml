@@ -3,8 +3,7 @@ name: ENDLUME owner Mac inspect installed updater wiring
 on:
   push:
     branches: [release]
-    paths:
-      - '.github/workflows/endlume-owner-mac-inspect-updater.yml'
+    paths: ['.github/workflows/endlume-owner-mac-inspect-updater.yml']
 
 permissions:
   contents: read
@@ -14,7 +13,7 @@ jobs:
     runs-on: [self-hosted, macOS, ARM64]
     timeout-minutes: 5
     steps:
-      - name: Inspect installed ENDLUME 10.0.11 updater strings and bundle resources
+      - name: Inspect exact installed ENDLUME binary
         shell: bash
         run: |
           set -euo pipefail
@@ -22,17 +21,8 @@ jobs:
           INFO="$APP/Contents/Info.plist"
           EXE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$INFO")
           BIN="$APP/Contents/MacOS/$EXE"
-          echo '--- VERSION ---'
-          /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$INFO"
-          /usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$INFO"
-          echo '--- BUNDLE FILES ---'
-          find "$APP/Contents" -maxdepth 4 -type f -print | sort
-          echo '--- EXECUTABLE URL/UPDATER STRINGS ---'
-          strings -a "$BIN" | grep -Ei 'vercel|api/update|https?://|updater|current_version|alpha\.8\.6|10\.0\.11' | tail -n 300 || true
-          echo '--- RESOURCE URL/UPDATER STRINGS ---'
-          while IFS= read -r f; do
-            if [ -f "$f" ]; then
-              m=$(strings -a "$f" 2>/dev/null | grep -Ei 'vercel|api/update|current_version|alpha\.8\.6|10\.0\.11' | head -n 40 || true)
-              if [ -n "$m" ]; then echo "FILE=$f"; printf '%s\n' "$m"; fi
-            fi
-          done < <(find "$APP/Contents/Resources" -type f -maxdepth 5 2>/dev/null | sort)
+          echo CFBundleShortVersionString=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$INFO")
+          echo CFBundleVersion=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$INFO")
+          echo BINARY_SHA256=$(shasum -a 256 "$BIN" | awk '{print $1}')
+          echo '--- MATCHING STRINGS ---'
+          strings -a "$BIN" | grep -Ei 'endlume-(stable|test12)|scaleup-site/releases/download|endlume-updates\.vercel\.app|api/update' || true

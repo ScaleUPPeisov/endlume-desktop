@@ -88,7 +88,7 @@ fn write_side_files(job:&QueueJob,out:&Path,durations:&[f64],track_count:usize)-
   let out_dir=out.parent().ok_or("output parent missing")?;
   let stem=out.file_stem().and_then(|x|x.to_str()).unwrap_or(&job.project.name);let safe=safe_name(stem);
   let time_dir=out_dir.join("timecodes");let log_dir=out_dir.join("logs");fs::create_dir_all(&time_dir).map_err(|e|e.to_string())?;fs::create_dir_all(&log_dir).map_err(|e|e.to_string())?;
-  let mut t=0.0;let mut tc=String::new();
+  let mut t=0.0f64;let mut tc=String::new();
   for i in 0..track_count{let p=&job.project.audio[i%job.project.audio.len()];let title=Path::new(p).file_stem().and_then(|x|x.to_str()).unwrap_or("Track");let s=t.round() as u64;tc.push_str(&format!("{:02}:{:02}:{:02} {}\n",s/3600,(s%3600)/60,s%60,title));t+=durations[i%durations.len()];}
   fs::write(time_dir.join(format!("{} — timecodes.txt",safe)),tc).map_err(|e|e.to_string())?;
   let list=job.project.audio.iter().enumerate().map(|(i,p)|format!("{}. {}",i+1,Path::new(p).file_name().and_then(|x|x.to_str()).unwrap_or(p))).collect::<Vec<_>>().join("\n");

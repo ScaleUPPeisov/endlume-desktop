@@ -1,0 +1,12 @@
+{
+  "version": "0.1.0",
+  "status": "failed",
+  "failed_step": "source_checksum",
+  "error_code": 41,
+  "platform": "macos-arm64",
+  "ui_contract_checks": 1000,
+  "bundle_id": "ai.channelart.factory",
+  "run_id": "37870949150",
+  "source_sha": "22781d2150cb3c70a223c69841324ed875bb87f6",
+  "checked_at": "2026-10-09T01:41:05.790250Z"
+}

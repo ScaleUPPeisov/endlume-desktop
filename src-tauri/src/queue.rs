@@ -1,4 +1,4 @@
-use crate::{model::{EffectPreset,ProjectScanItem,QueueJob,RenderSettings,SubscribePreset},persistence,render};
+use crate::{fast_render,model::{EffectPreset,ProjectScanItem,QueueJob,RenderSettings,SubscribePreset},persistence,render};
 use parking_lot::Mutex;
 use serde_json::{json,Value};
 use std::{collections::{HashSet,VecDeque},fs,path::PathBuf,sync::{Arc,atomic::{AtomicBool,Ordering}}};
@@ -75,7 +75,11 @@ fn start_worker_if_needed(app:AppHandle,runtime:Arc<QueueRuntime>){
       let id=job.project.id.clone();
       let cancel=Arc::new(AtomicBool::new(false));
       *runtime.active_cancel.lock()=Some(cancel.clone());
-      let outcome=render::render_job(&app,&job,cancel).await;
+      let outcome=match fast_render::try_render_job(&app,&job,cancel.clone()).await{
+        Ok(Some(()))=>Ok(()),
+        Ok(None)=>render::render_job(&app,&job,cancel).await,
+        Err(e)=>Err(e),
+      };
       *runtime.active_cancel.lock()=None;
       if runtime.cancelled.lock().remove(&id){
         let _=app.emit("render-error",json!({"id":id,"status":"error","progress":100.0,"stage":"Остановлено пользователем"}));

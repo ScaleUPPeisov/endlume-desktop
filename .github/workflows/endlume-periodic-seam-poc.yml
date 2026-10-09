@@ -1,0 +1,103 @@
+name: ENDLUME periodic sample-table seam POC
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/endlume-periodic-seam-poc.yml'
+      - 'src-tauri/src/mp4_manifest.rs'
+      - 'src-tauri/src/bin/manifest_poc.rs'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  periodic-seam:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Assert source and build helper
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = arm64
+          git merge-base --is-ancestor e2896da7702891a5b760ecd4daad4fd54bc90b82 HEAD
+          command -v ffmpeg >/dev/null || brew install ffmpeg
+          rustup target add aarch64-apple-darwin
+          mkdir -p src-tauri/binaries
+          cp "$(command -v ffmpeg)" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp "$(command -v ffprobe)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          chmod +x src-tauri/binaries/*
+          cargo build --release --manifest-path src-tauri/Cargo.toml --target aarch64-apple-darwin --bin manifest_poc --features acceptance-harness
+      - name: Build genuinely animated 5-second HEVC period and expand to 60 seconds
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$RUNNER_TEMP/periodic-seam"
+          mkdir -p "$ROOT"
+          # Background plus a separately generated 200x200 foreground. overlay's x expression
+          # is evaluated every frame, so the encoded master is demonstrably non-static.
+          ffmpeg -hide_banner -loglevel error \
+            -f lavfi -i "color=c=0x162033:s=1920x1080:r=60:d=5" \
+            -f lavfi -i "color=c=white@0.85:s=200x200:r=60:d=5,format=yuva420p" \
+            -filter_complex "[0:v][1:v]overlay=x='860+700*sin(2*PI*t/5)':y=430:eval=frame,format=yuv420p" \
+            -t 5 -an -c:v hevc_videotoolbox -realtime 1 -q:v 100 -b:v 700k \
+            -g 300 -tag:v hvc1 -fps_mode cfr -r 60 -video_track_timescale 60000 -y "$ROOT/master.mp4"
+          cp "$ROOT/master.mp4" "$ROOT/expanded.mp4"
+          src-tauri/target/aarch64-apple-darwin/release/manifest_poc "$ROOT/expanded.mp4" 0 300 3600
+          echo "ROOT=$ROOT" >> "$GITHUB_ENV"
+      - name: Prove motion period and seam around 5 seconds
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, subprocess, statistics
+          root=os.environ['ROOT']; path=os.path.join(root,'expanded.mp4')
+          probe=json.loads(subprocess.run(['ffprobe','-v','error','-show_streams','-show_format','-of','json',path],capture_output=True,text=True,check=True).stdout)
+          v=next(s for s in probe['streams'] if s['codec_type']=='video')
+          assert v['codec_name']=='hevc' and v['r_frame_rate']=='60/1', v
+          assert abs(float(probe['format']['duration'])-60.0)<0.02, probe['format']['duration']
+          # Decode 13 consecutive frames straddling the first repeated-master boundary.
+          start=5.0-6.0/60.0
+          p=subprocess.run(['ffmpeg','-hide_banner','-v','error','-ss',f'{start:.9f}','-i',path,'-frames:v','13','-an','-vf','scale=480:270,format=gray','-f','rawvideo','-pix_fmt','gray','-'],capture_output=True,check=True)
+          fs=480*270; assert len(p.stdout)>=13*fs
+          frames=[p.stdout[i*fs:(i+1)*fs] for i in range(13)]
+          diffs=[sum(abs(x-y) for x,y in zip(a,b))/fs for a,b in zip(frames,frames[1:])]
+          moving=[d for d in diffs if d>0.02]
+          assert len(moving)>=8, ('animation did not move',diffs)
+          # Difference between last physical frame and first reused frame is diff index 5.
+          seam=diffs[5]
+          neighborhood=[d for i,d in enumerate(diffs) if i!=5]
+          typical=statistics.median(neighborhood)
+          assert typical>0.02, ('static false positive',typical,diffs)
+          assert seam <= max(typical*2.5,0.20), ('visible loop reset/jump',seam,typical,diffs)
+          # Same phase one period apart should be visually equivalent modulo HEVC loss.
+          def frame_at(t):
+            q=subprocess.run(['ffmpeg','-hide_banner','-v','error','-ss',f'{t:.6f}','-i',path,'-frames:v','1','-an','-vf','scale=480:270,format=gray','-f','rawvideo','-pix_fmt','gray','-'],capture_output=True,check=True)
+            return q.stdout[:fs]
+          a,b=frame_at(1.25),frame_at(6.25)
+          phase_diff=sum(abs(x-y) for x,y in zip(a,b))/fs
+          assert phase_diff<0.10, ('phase mismatch after one period',phase_diff)
+          report={'duration':float(probe['format']['duration']),'diffs':diffs,'typical_adjacent_diff':typical,'seam_diff':seam,'same_phase_diff':phase_diff,'motion_frames':len(moving),'status':'PASS'}
+          print(json.dumps(report,indent=2))
+          json.dump(report,open(os.path.join(root,'periodic-seam.json'),'w'),indent=2)
+          PY
+      - name: Decode expanded periodic output
+        shell: bash
+        run: |
+          set -euo pipefail
+          ffmpeg -hide_banner -v error -i "$ROOT/expanded.mp4" -f null - 2> "$ROOT/decode.stderr"
+          test ! -s "$ROOT/decode.stderr"
+          echo PERIODIC_FULL_DECODE=PASS
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: periodic-seam-evidence
+          path: |
+            ${{ env.ROOT }}/periodic-seam.json
+            ${{ env.ROOT }}/decode.stderr
+          retention-days: 30

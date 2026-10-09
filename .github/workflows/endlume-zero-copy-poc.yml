@@ -21,7 +21,7 @@ concurrency:
 jobs:
   prove-on-apple-silicon:
     runs-on: macos-15
-    timeout-minutes: 45
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
         with:
@@ -66,7 +66,7 @@ jobs:
           done
           echo "ROOT=$ROOT" >> "$GITHUB_ENV"
 
-      - name: Timed architecture path — visual encode + audio stream copy + sample-table expansion
+      - name: Timed architecture path — periodic HEVC master + audio stream copy + sample-table expansion
         shell: bash
         run: |
           set -euo pipefail
@@ -86,7 +86,8 @@ jobs:
           stages={'input_audio_duration':input_total,'logical_video_frames':total_frames}
           t0=time.perf_counter()
           t=time.perf_counter()
-          run(['ffmpeg','-hide_banner','-loglevel','error','-loop','1','-framerate','60','-i',os.path.join(root,'cover.png'),'-vf',"scale=1920:1080,drawbox=x='mod(t*220,1720)':y=430:w=200:h=200:color=white@0.18:t=fill,format=yuv420p",'-t','5','-an','-c:v','hevc_videotoolbox','-realtime','1','-q:v','100','-b:v','500k','-maxrate','12M','-bufsize','64M','-g','300','-tag:v','hvc1','-fps_mode','cfr','-r','60','-video_track_timescale','60000','-y',master])
+          # Exact 5 s visual period: position and velocity match at the repeat boundary.
+          run(['ffmpeg','-hide_banner','-loglevel','error','-loop','1','-framerate','60','-i',os.path.join(root,'cover.png'),'-vf',"scale=1920:1080,drawbox=x='860+700*sin(2*PI*t/5)':y=430:w=200:h=200:color=white@0.18:t=fill,format=yuv420p",'-t','5','-an','-c:v','hevc_videotoolbox','-realtime','1','-q:v','100','-b:v','500k','-maxrate','12M','-bufsize','64M','-g','300','-tag:v','hvc1','-fps_mode','cfr','-r','60','-video_track_timescale','60000','-y',master])
           stages['visual_build_encode_ms']=(time.perf_counter()-t)*1000
           t=time.perf_counter()
           run(['ffmpeg','-hide_banner','-loglevel','error','-i',master,'-f','concat','-safe','0','-i',os.path.join(root,'audio.txt'),'-map','0:v:0','-map','1:a:0','-c:v','copy','-c:a','copy','-video_track_timescale','60000','-y',final])
@@ -99,7 +100,7 @@ jobs:
           print(json.dumps(stages,indent=2))
           PY
 
-      - name: Verify codec duration FPS size seeks and exact audio packet hashes
+      - name: Verify probe size physical bytes and exact encoded MP3 payload
         shell: bash
         run: |
           set -euo pipefail
@@ -120,30 +121,114 @@ jobs:
           assert abs(video_duration-expected) <= 0.100, (video_duration,expected)
           assert abs(container_duration-expected) <= 0.100, (container_duration,expected)
           assert 400_000_000 <= size <= 600_000_000, size
-          def hashes(path):
+
+          def packet_hashes(path):
               p=subprocess.run(['ffprobe','-v','error','-select_streams','a:0','-show_packets','-show_data_hash','sha256','-show_entries','packet=data_hash','-of','csv=p=0',path],capture_output=True,text=True,check=True)
-              return [x.strip() for x in p.stdout.splitlines() if x.strip()]
+              # ffprobe CSV appends packet side-data such as "Skip Samples" on
+              # some standalone MP3 packets. Only the first CSV field is the
+              # requested packet data_hash; comparing whole rows is a false fail.
+              return [line.split(',',1)[0].strip() for line in p.stdout.splitlines() if line.strip()]
           src=[]
-          for i in range(1,13): src += hashes(os.path.join(root,'audio',f'track-{i:02d}.mp3'))
-          out=hashes(final)
-          assert src==out, (len(src),len(out),'encoded audio payload changed')
+          track_packet_counts=[]
+          for i in range(1,13):
+              hs=packet_hashes(os.path.join(root,'audio',f'track-{i:02d}.mp3'))
+              track_packet_counts.append(len(hs)); src += hs
+          out=packet_hashes(final)
+          assert src==out, (len(src),len(out),'encoded MP3 packet payload changed')
+
+          packet_json=json.loads(subprocess.run(['ffprobe','-v','error','-show_packets','-show_entries','packet=stream_index,pos,size','-of','json',final],capture_output=True,text=True,check=True).stdout)
+          by_stream={}
+          for p in packet_json.get('packets',[]):
+              try: key=(int(p['pos']),int(p['size']))
+              except Exception: continue
+              by_stream.setdefault(int(p['stream_index']),set()).add(key)
+          video_index=int(v['index']); audio_index=int(a['index'])
+          video_bytes=sum(sz for _,sz in by_stream.get(video_index,set()))
+          audio_bytes=sum(sz for _,sz in by_stream.get(audio_index,set()))
+          overhead=size-video_bytes-audio_bytes
+          assert video_bytes>0 and audio_bytes>0 and overhead>=0, (video_bytes,audio_bytes,overhead)
+          breakdown={'video_bytes':video_bytes,'audio_bytes':audio_bytes,'container_overhead_bytes':overhead,'output_bytes':size,'audio_packets':len(out),'track_packet_counts':track_packet_counts}
+          json.dump(breakdown,open(os.path.join(root,'size-breakdown.json'),'w'),indent=2)
           open(os.path.join(root,'duration.txt'),'w').write(str(container_duration))
           print(f'INPUT_AUDIO_DURATION={expected:.6f}')
           print(f'OUTPUT_AUDIO_DURATION={audio_duration:.6f}')
           print(f'OUTPUT_VIDEO_DURATION={video_duration:.6f}')
           print(f'OUTPUT_BYTES={size}')
+          print(f'VIDEO_PHYSICAL_BYTES={video_bytes}')
+          print(f'AUDIO_PHYSICAL_BYTES={audio_bytes}')
+          print(f'CONTAINER_OVERHEAD_BYTES={overhead}')
           print(f'VIDEO_CODEC={v["codec_name"]}')
           print(f'FPS={v.get("avg_frame_rate") or v.get("r_frame_rate")}')
           print(f'AUDIO_CODEC={a["codec_name"]}')
           print(f'AUDIO_PACKETS={len(out)}')
-          print('AUDIO_PACKET_HASHES=PASS')
+          print('AUDIO_PACKET_PAYLOAD_HASHES=PASS')
           PY
-          DUR=$(cat "$ROOT/duration.txt")
-          for pct in 0.10 0.25 0.50 0.75 0.90 0.99; do
-            sec=$(python3 -c "print(float('$DUR')*$pct)")
-            ffmpeg -hide_banner -v error -ss "$sec" -i "$FINAL" -t 0.5 -map 0:v:0 -map '0:a:0?' -f null -
-          done
-          echo SEEK_TEST=PASS
+
+      - name: Full ffmpeg decode — no quick-probe substitute
+        shell: bash
+        run: |
+          set -euo pipefail
+          : > "$ROOT/full-decode.stderr"
+          ffmpeg -hide_banner -v error -i "$ROOT/final-3h.mp4" -f null - 2> "$ROOT/full-decode.stderr"
+          test ! -s "$ROOT/full-decode.stderr"
+          echo FULL_DECODE=PASS
+
+      - name: Fixed seeks track boundaries EOF tails and picture validity
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, re, subprocess
+          root=os.environ['ROOT']; final=os.path.join(root,'final-3h.mp4')
+          dur=float(open(os.path.join(root,'duration.txt')).read().strip())
+          report={'seeks':[],'track_boundaries':[],'tails':[]}
+          def run_decode(at,length):
+              p=subprocess.run(['ffmpeg','-hide_banner','-v','error','-ss',f'{at:.6f}','-i',final,'-t',f'{length:.6f}','-map','0:v:0','-map','0:a:0','-f','null','-'],capture_output=True,text=True)
+              assert p.returncode==0 and not p.stderr.strip(), (at,length,p.returncode,p.stderr[-1000:])
+          def yavg(at):
+              p=subprocess.run(['ffmpeg','-hide_banner','-v','error','-ss',f'{at:.6f}','-i',final,'-frames:v','1','-an','-vf','signalstats,metadata=print:file=-','-f','null','-'],capture_output=True,text=True,check=True)
+              text=p.stdout+'\n'+p.stderr
+              m=re.search(r'lavfi\.signalstats\.YAVG=([0-9.]+)',text)
+              assert m, ('YAVG missing',at,text[-2000:])
+              val=float(m.group(1)); assert val>1.0, ('black/corrupt picture',at,val); return val
+          points=[0,600,1800,3600,5400,7200,9000,10500,dur*0.99]
+          for at in points:
+              at=min(max(0.0,at),max(0.0,dur-0.25)); run_decode(at,0.5); report['seeks'].append({'at':at,'yavg':yavg(at),'ok':True})
+          for i in range(1,12):
+              at=900.0*i
+              run_decode(max(0,at-0.5),1.0); report['track_boundaries'].append({'at':at,'ok':True})
+          for window in [60.0,30.0,10.0,2.0]:
+              at=max(0.0,dur-window); run_decode(at,window); report['tails'].append({'last_seconds':window,'ok':True})
+          json.dump(report,open(os.path.join(root,'seek-tail-report.json'),'w'),indent=2)
+          print('FIXED_SEEKS=PASS')
+          print('TRACK_BOUNDARIES=PASS')
+          print('EOF_TAILS=PASS')
+          PY
+
+      - name: Verify the 5-second periodic visual loop boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, subprocess, statistics
+          root=os.environ['ROOT']; final=os.path.join(root,'final-3h.mp4')
+          # 11 frames centered around the first 5-second master repeat boundary.
+          start=5.0-5.0/60.0
+          p=subprocess.run(['ffmpeg','-hide_banner','-v','error','-ss',f'{start:.9f}','-i',final,'-frames:v','11','-an','-vf','scale=320:180,format=gray','-f','rawvideo','-pix_fmt','gray','-'],capture_output=True,check=True)
+          frame_size=320*180; raw=p.stdout
+          assert len(raw)>=frame_size*11, (len(raw),frame_size*11)
+          frames=[raw[i*frame_size:(i+1)*frame_size] for i in range(11)]
+          diffs=[]
+          for a,b in zip(frames,frames[1:]):
+              diffs.append(sum(abs(x-y) for x,y in zip(a,b))/frame_size)
+          median=statistics.median(diffs); peak=max(diffs); boundary_index=4
+          boundary=diffs[boundary_index]
+          # Boundary motion must be in-family with adjacent 60 FPS motion, not a reset flash/jump.
+          assert boundary <= max(1.0,median*3.0), (boundary,median,peak,diffs)
+          report={'start':start,'adjacent_mean_abs_diffs':diffs,'median':median,'peak':peak,'boundary_diff':boundary,'ok':True}
+          json.dump(report,open(os.path.join(root,'loop-boundary.json'),'w'),indent=2)
+          print('LOOP_BOUNDARY=PASS',json.dumps(report))
+          PY
 
       - name: Verify AVFoundation can open and seek the repeated HEVC timeline
         shell: bash
@@ -159,7 +244,7 @@ jobs:
           guard duration > 10799.0 else { fatalError("AVFoundation duration \(duration)") }
           let gen = AVAssetImageGenerator(asset: asset)
           gen.appliesPreferredTrackTransform = true
-          for f in [0.10,0.50,0.90,0.99] {
+          for f in [0.0,0.10,0.50,0.90,0.99] {
             let t = CMTime(seconds: duration * f, preferredTimescale: 60000)
             var actual = CMTime.zero
             _ = try gen.copyCGImage(at: t, actualTime: &actual)
@@ -178,6 +263,14 @@ jobs:
           cat "$ROOT/timing.json" 2>/dev/null || true
           echo '--- PROBE ---'
           cat "$ROOT/probe.json" 2>/dev/null || true
+          echo '--- SIZE BREAKDOWN ---'
+          cat "$ROOT/size-breakdown.json" 2>/dev/null || true
+          echo '--- SEEK / TAIL ---'
+          cat "$ROOT/seek-tail-report.json" 2>/dev/null || true
+          echo '--- LOOP BOUNDARY ---'
+          cat "$ROOT/loop-boundary.json" 2>/dev/null || true
+          echo '--- FULL DECODE STDERR ---'
+          cat "$ROOT/full-decode.stderr" 2>/dev/null || true
           du -h "$ROOT/final-3h.mp4" 2>/dev/null || true
 
       - name: Upload compact evidence
@@ -188,6 +281,10 @@ jobs:
           path: |
             ${{ env.ROOT }}/timing.json
             ${{ env.ROOT }}/probe.json
+            ${{ env.ROOT }}/size-breakdown.json
+            ${{ env.ROOT }}/seek-tail-report.json
+            ${{ env.ROOT }}/loop-boundary.json
+            ${{ env.ROOT }}/full-decode.stderr
             ${{ env.ROOT }}/avfoundation.txt
           if-no-files-found: warn
           retention-days: 30

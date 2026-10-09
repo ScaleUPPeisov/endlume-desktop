@@ -8,6 +8,8 @@ mod benchmark;
 mod queue;
 mod cache;
 mod system;
+#[cfg(feature="acceptance-harness")]
+mod acceptance;
 
 use std::sync::Arc;
 use tauri::Manager;
@@ -34,6 +36,11 @@ pub fn run(){
     ])
     .setup(|app|{
       persistence::mark_session_open(&app.handle().clone())?;
+      #[cfg(feature="acceptance-harness")]
+      if std::env::var_os("ENDLUME_ACCEPTANCE_JOB").is_some(){
+        let handle=app.handle().clone();
+        tauri::async_runtime::spawn(async move{acceptance::run(handle).await;});
+      }
       Ok(())
     })
     .on_window_event(|window,event|{

@@ -1,0 +1,206 @@
+name: ENDLUME updater old-stable E2E QA v2
+
+on:
+  push:
+    branches: [qa/endlume-a7-updater-gate]
+    paths:
+      - '.github/workflows/endlume-updater-e2e-qa-v2.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  updater-e2e-v2:
+    runs-on: macos-15
+    timeout-minutes: 25
+    env:
+      QA_ROOT: /tmp/endlume-updater-qa-v2
+      CARGO_TARGET_DIR: /tmp/endlume-updater-shared-target
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Prepare exact sources and toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          git worktree add "$RUNNER_TEMP/old" e2896da7702891a5b760ecd4daad4fd54bc90b82
+          git worktree add "$RUNNER_TEMP/new" a7a399e83de8b9248e2065c6dda1f9079ded6565
+          test "$(git -C "$RUNNER_TEMP/old" rev-parse HEAD)" = e2896da7702891a5b760ecd4daad4fd54bc90b82
+          test "$(git -C "$RUNNER_TEMP/new" rev-parse HEAD)" = a7a399e83de8b9248e2065c6dda1f9079ded6565
+          test "$(uname -m)" = arm64
+          echo OLD="$RUNNER_TEMP/old" >> "$GITHUB_ENV"
+          echo NEW="$RUNNER_TEMP/new" >> "$GITHUB_ENV"
+          command -v ffmpeg >/dev/null || brew install ffmpeg
+          rustup target add aarch64-apple-darwin
+          for D in "$RUNNER_TEMP/old" "$RUNNER_TEMP/new"; do
+            (cd "$D" && npm install --no-audit --no-fund)
+            mkdir -p "$D/src-tauri/binaries"
+            cp "$(command -v ffmpeg)" "$D/src-tauri/binaries/ffmpeg-aarch64-apple-darwin"
+            cp "$(command -v ffprobe)" "$D/src-tauri/binaries/ffprobe-aarch64-apple-darwin"
+            chmod +x "$D/src-tauri/binaries/"*
+          done
+
+      - name: Inject QA-only updater runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/updater_qa.rs" <<'RS'
+          use serde_json::json;
+          use std::{fs,path::Path,time::Duration};
+          use tauri::AppHandle;
+          use tauri_plugin_updater::UpdaterExt;
+          const ROOT:&str="/tmp/endlume-updater-qa-v2";
+          const NEXT:&str="1.0.0-alpha.8.6";
+          fn receipt(v:serde_json::Value){let _=fs::create_dir_all(ROOT);let _=fs::write(format!("{ROOT}/receipt.json"),serde_json::to_vec_pretty(&v).unwrap_or_default());}
+          pub async fn run(app:AppHandle){
+            let ep=format!("{ROOT}/endpoint.txt");
+            if !Path::new(&ep).is_file(){return}
+            let current=app.package_info().version.to_string();
+            if current==NEXT{
+              receipt(json!({"status":"pass","phase":"post-restart","version":current,"identifier":app.config().identifier}));
+              let _=fs::remove_file(ep);
+              app.exit(0); return;
+            }
+            let endpoint=match fs::read_to_string(&ep){Ok(v)=>v.trim().to_string(),Err(e)=>{receipt(json!({"status":"fail","phase":"read-endpoint","error":e.to_string()}));app.exit(20);return}};
+            let result:Result<(),String>=async{
+              let url=endpoint.parse().map_err(|e|format!("endpoint parse: {e}"))?;
+              let updater=app.updater_builder().endpoints(vec![url]).map_err(|e|e.to_string())?.timeout(Duration::from_secs(30)).build().map_err(|e|e.to_string())?;
+              let update=updater.check().await.map_err(|e|format!("check: {e}"))?.ok_or_else(||"no update offered".to_string())?;
+              update.download_and_install(|_,_|{},||{}).await.map_err(|e|format!("download/install: {e}"))?;
+              fs::write(format!("{ROOT}/installed.txt"),format!("from={current}\n")).map_err(|e|e.to_string())?;
+              Ok(())
+            }.await;
+            match result{Ok(())=>app.restart(),Err(e)=>{receipt(json!({"status":"fail","phase":"old-client","version":current,"error":e}));app.exit(21)}}
+          }
+          RS
+          python3 - <<'PY'
+          import os,pathlib,json,re
+          for root in [os.environ['OLD'],os.environ['NEW']]:
+              p=pathlib.Path(root)/'src-tauri/src/lib.rs'
+              s=p.read_text()
+              s=s.replace('mod system;','mod system;\nmod updater_qa;',1)
+              a='persistence::mark_session_open(&app.handle().clone())?;'
+              s=s.replace(a,a+'\n      if std::env::var_os("ENDLUME_UPDATER_QA").is_some(){let h=app.handle().clone();tauri::async_runtime::spawn(async move{updater_qa::run(h).await;});}',1)
+              p.write_text(s)
+              (pathlib.Path(root)/'src-tauri/src/updater_qa.rs').write_text(pathlib.Path(os.environ['RUNNER_TEMP']+'/updater_qa.rs').read_text())
+          root=pathlib.Path(os.environ['NEW'])
+          p=root/'src-tauri/tauri.conf.json'; d=json.loads(p.read_text()); d['version']='1.0.0-alpha.8.6'; p.write_text(json.dumps(d,indent=2)+'\n')
+          p=root/'package.json'; d=json.loads(p.read_text()); d['version']='1.0.0-alpha.8.6'; p.write_text(json.dumps(d,indent=2)+'\n')
+          p=root/'src-tauri/Cargo.toml'; s=p.read_text(); s=re.sub(r'(?m)^version = "1\.0\.0-alpha\.8\.5"$','version = "1.0.0-alpha.8.6"',s,count=1); p.write_text(s)
+          PY
+
+      - name: Build signed candidate from exact product SHA
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$NEW"
+          npx tauri build --target aarch64-apple-darwin --bundles app
+          BUNDLE="$CARGO_TARGET_DIR/aarch64-apple-darwin/release/bundle/macos"
+          TAR="$(find "$BUNDLE" -maxdepth 1 -type f -name '*.app.tar.gz' -print -quit)"
+          APP="$(find "$BUNDLE" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          test -s "$TAR"; test -s "$TAR.sig"; test -d "$APP"
+          test "$(plutil -extract CFBundleIdentifier raw -o - "$APP/Contents/Info.plist")" = studio.endlume.desktop
+          test "$(plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist")" = 1.0.0-alpha.8.6
+          mkdir -p "$QA_ROOT/server"
+          cp "$TAR" "$QA_ROOT/server/candidate.app.tar.gz"
+          cp "$TAR.sig" "$QA_ROOT/server/candidate.app.tar.gz.sig"
+          printf 'SIGNED_UPDATER_ARTIFACT=PASS\nPRODUCT_SHA=a7a399e83de8b9248e2065c6dda1f9079ded6565\n' > "$QA_ROOT/candidate-build.txt"
+
+      - name: Build exact old stable app
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$OLD"
+          npx tauri build --target aarch64-apple-darwin --bundles app --config '{"bundle":{"createUpdaterArtifacts":false}}'
+          BUNDLE="$CARGO_TARGET_DIR/aarch64-apple-darwin/release/bundle/macos"
+          APP="$(find "$BUNDLE" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          test -d "$APP"
+          test "$(plutil -extract CFBundleIdentifier raw -o - "$APP/Contents/Info.plist")" = studio.endlume.desktop
+          test "$(plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist")" = 1.0.0-alpha.8.5
+          rm -rf "$QA_ROOT/installed"; mkdir -p "$QA_ROOT/installed"
+          ditto "$APP" "$QA_ROOT/installed/ENDLUME Studio.app"
+          echo "OLD_APP=$QA_ROOT/installed/ENDLUME Studio.app" >> "$GITHUB_ENV"
+
+      - name: Serve signed candidate on trusted localhost HTTPS
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f "$QA_ROOT/receipt.json" "$QA_ROOT/installed.txt" "$QA_ROOT/endpoint.txt"
+          openssl req -x509 -newkey rsa:2048 -sha256 -nodes -days 1 -keyout "$QA_ROOT/server/key.pem" -out "$QA_ROOT/server/cert.pem" -subj '/CN=localhost' -addext 'subjectAltName=DNS:localhost,IP:127.0.0.1' >/dev/null 2>&1
+          sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain "$QA_ROOT/server/cert.pem"
+          SIG="$(cat "$QA_ROOT/server/candidate.app.tar.gz.sig")"
+          python3 - "$SIG" <<'PY'
+          import json,sys,os
+          d={'version':'1.0.0-alpha.8.6','notes':'QA only','pub_date':'2026-10-09T00:00:00Z','url':'https://localhost:8443/candidate.app.tar.gz','signature':sys.argv[1]}
+          open(os.environ['QA_ROOT']+'/server/update.json','w').write(json.dumps(d)+'\n')
+          PY
+          cat > "$QA_ROOT/server.py" <<'PY'
+          import http.server,ssl,os
+          os.chdir(os.environ['QA_ROOT']+'/server')
+          s=http.server.ThreadingHTTPServer(('127.0.0.1',8443),http.server.SimpleHTTPRequestHandler)
+          c=ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER); c.load_cert_chain('cert.pem','key.pem'); s.socket=c.wrap_socket(s.socket,server_side=True); s.serve_forever()
+          PY
+          nohup python3 "$QA_ROOT/server.py" > "$QA_ROOT/https.log" 2>&1 &
+          for i in {1..20}; do curl -fsS https://localhost:8443/update.json >/dev/null && break; sleep 1; done
+          curl -fsS https://localhost:8443/update.json >/dev/null
+          echo 'https://localhost:8443/update.json' > "$QA_ROOT/endpoint.txt"
+
+      - name: Old stable performs check download install restart
+        shell: bash
+        run: |
+          set -euo pipefail
+          BIN="$OLD_APP/Contents/MacOS/endlume"
+          ENDLUME_UPDATER_QA=1 "$BIN" > "$QA_ROOT/old-client.log" 2>&1 &
+          ok=0
+          for i in {1..120}; do
+            if test -s "$QA_ROOT/receipt.json" && python3 - <<'PY'
+          import json,os,sys
+          try:d=json.load(open(os.environ['QA_ROOT']+'/receipt.json'))
+          except:sys.exit(1)
+          sys.exit(0 if d.get('status')=='pass' and d.get('phase')=='post-restart' else 1)
+          PY
+            then ok=1; break; fi
+            sleep 1
+          done
+          cat "$QA_ROOT/receipt.json" || true
+          cat "$QA_ROOT/old-client.log" || true
+          test "$ok" = 1
+          test -s "$QA_ROOT/installed.txt"
+
+      - name: Final updater E2E gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(plutil -extract CFBundleIdentifier raw -o - "$OLD_APP/Contents/Info.plist")" = studio.endlume.desktop
+          test "$(plutil -extract CFBundleShortVersionString raw -o - "$OLD_APP/Contents/Info.plist")" = 1.0.0-alpha.8.6
+          python3 - <<'PY'
+          import json,os
+          d=json.load(open(os.environ['QA_ROOT']+'/receipt.json'))
+          assert d=={'status':'pass','phase':'post-restart','version':'1.0.0-alpha.8.6','identifier':'studio.endlume.desktop'}
+          PY
+          echo OLD_STABLE_CHECK=PASS
+          echo TAURI_SIGNATURE_VERIFICATION=PASS
+          echo DOWNLOAD_INSTALL=PASS
+          echo RELAUNCH=PASS
+          echo VERSION_UPGRADED=PASS
+          echo UPDATER_E2E=PASS
+
+      - name: Evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: endlume-updater-e2e-v2-evidence
+          path: |
+            /tmp/endlume-updater-qa-v2/candidate-build.txt
+            /tmp/endlume-updater-qa-v2/receipt.json
+            /tmp/endlume-updater-qa-v2/installed.txt
+            /tmp/endlume-updater-qa-v2/old-client.log
+            /tmp/endlume-updater-qa-v2/https.log
+            /tmp/endlume-updater-qa-v2/server/update.json
+          if-no-files-found: warn
+          retention-days: 14

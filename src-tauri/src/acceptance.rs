@@ -1,7 +1,7 @@
-use crate::{fast_render,model::QueueJob,preview,render};
+use crate::{fast_render,model::QueueJob,persistence,preview,queue,render,system};
 use serde_json::{json,Value};
 use std::{collections::HashSet,fs,path::{Path,PathBuf},sync::{Arc,atomic::AtomicBool},time::{Instant,SystemTime}};
-use tauri::{AppHandle,Listener};
+use tauri::{AppHandle,Listener,Manager};
 use tauri_plugin_shell::ShellExt;
 
 async fn sidecar(app:&AppHandle,name:&str,args:Vec<String>)->Result<(bool,String,String),String>{
@@ -36,14 +36,55 @@ async fn preview_evidence(app:&AppHandle,job:&QueueJob)->Result<Vec<Value>,Strin
   Ok(rows)
 }
 
+fn env_enabled(name:&str)->bool{std::env::var(name).ok().map(|v|matches!(v.as_str(),"1"|"true"|"yes")).unwrap_or(false)}
+
 async fn run_inner(app:&AppHandle)->Result<Value,String>{
-  let job_path=std::env::var("ENDLUME_ACCEPTANCE_JOB").map_err(|_|"ENDLUME_ACCEPTANCE_JOB is not set".to_string())?;let raw=fs::read_to_string(&job_path).map_err(|e|format!("read job: {e}"))?;let job:QueueJob=serde_json::from_str(&raw).map_err(|e|format!("parse job: {e}"))?;let out_dir=PathBuf::from(&job.settings.output_dir);fs::create_dir_all(&out_dir).map_err(|e|e.to_string())?;let before=mp4_files(&out_dir);
-  let events=Arc::new(parking_lot::Mutex::new(Vec::<Value>::new()));capture_event(app,"engine-fast-path",events.clone());capture_event(app,"engine-fast-fallback",events.clone());capture_event(app,"engine-timing",events.clone());
+  let job_path=std::env::var("ENDLUME_ACCEPTANCE_JOB").map_err(|_|"ENDLUME_ACCEPTANCE_JOB is not set".to_string())?;
+  let raw=fs::read_to_string(&job_path).map_err(|e|format!("read job: {e}"))?;
+  let job:QueueJob=serde_json::from_str(&raw).map_err(|e|format!("parse job: {e}"))?;
+
+  if env_enabled("ENDLUME_ACCEPTANCE_SEED_CRASH"){
+    persistence::save_queue_state(app,Some(&job),&[]).map_err(|e|e.to_string())?;
+    std::process::exit(77);
+  }
+  if env_enabled("ENDLUME_ACCEPTANCE_RECOVERY_ONLY"){
+    let recovery=persistence::load_recovery(app.clone());
+    let queue_state=persistence::read_value(app,"queue.json");
+    let session=persistence::read_value(app,"session.json");
+    return Ok(json!({"source_head":std::env::var("ENDLUME_SOURCE_HEAD").unwrap_or_default(),"platform":std::env::consts::OS,"arch":std::env::consts::ARCH,"mode":"recovery-only","recovery":recovery,"queue":queue_state,"session":session}));
+  }
+
+  let out_dir=PathBuf::from(&job.settings.output_dir);fs::create_dir_all(&out_dir).map_err(|e|e.to_string())?;let before=mp4_files(&out_dir);
+  let events=Arc::new(parking_lot::Mutex::new(Vec::<Value>::new()));
+  for name in ["engine-fast-path","engine-fast-fallback","engine-timing","queue-changed","render-error","queue-idle","queue-recovered"]{capture_event(app,name,events.clone());}
+
+  if env_enabled("ENDLUME_ACCEPTANCE_QUEUE_CANCEL"){
+    let runtime=app.state::<Arc<queue::QueueRuntime>>().inner().clone();
+    let delay=std::env::var("ENDLUME_ACCEPTANCE_CANCEL_AFTER_MS").ok().and_then(|v|v.parse::<u64>().ok()).unwrap_or(150);
+    let report=queue::acceptance_cancel_job(app.clone(),runtime,job.clone(),delay).await?;
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    return Ok(json!({"source_head":std::env::var("ENDLUME_SOURCE_HEAD").unwrap_or_default(),"platform":std::env::consts::OS,"arch":std::env::consts::ARCH,"mode":"queue-cancel","queue_cancel":report,"events":events.lock().clone(),"output_files":mp4_files(&out_dir).into_iter().map(|p|p.to_string_lossy().into_owned()).collect::<Vec<_>>() }));
+  }
+
+  let power_before=system::power_status();
   let mut input_durations=Vec::new();for p in &job.project.audio{let d=duration(app,Path::new(p)).await?;input_durations.push(json!({"path":p,"duration":d}));}let input_total=input_durations.iter().filter_map(|v|v.get("duration").and_then(|x|x.as_f64())).sum::<f64>();
   let cancel=Arc::new(AtomicBool::new(false));let export_started=Instant::now();let fast_used=match fast_render::try_render_job(app,&job,cancel.clone()).await?{Some(())=>true,None=>{render::render_job(app,&job,cancel).await?;false}};let export_seconds=export_started.elapsed().as_secs_f64();
   let after=mp4_files(&out_dir);let created=after.difference(&before).cloned().collect::<Vec<_>>();let result=newest(created.into_iter()).or_else(||newest(after.into_iter())).ok_or("render succeeded but output mp4 was not found")?;let bytes=fs::metadata(&result).map_err(|e|e.to_string())?.len();let metadata=probe(app,&result).await?;let output_duration=metadata.get("format").and_then(|v|v.get("duration")).and_then(|v|v.as_str()).and_then(|v|v.parse::<f64>().ok()).unwrap_or(0.0);let decode=full_decode(app,&result).await?;let seeks=seek_checks(app,&result,output_duration).await?;let previews=preview_evidence(app,&job).await?;let captured=events.lock().clone();
   let fallback=captured.iter().rev().find(|e|e.get("event").and_then(Value::as_str)==Some("engine-fast-fallback")).and_then(|e|e.get("payload")).cloned();
   let final_fast=captured.iter().rev().find(|e|e.get("event").and_then(Value::as_str)==Some("engine-fast-path")&&e.get("payload").and_then(|p|p.get("totalMs")).is_some()).and_then(|e|e.get("payload")).cloned();
-  Ok(json!({"source_head":std::env::var("ENDLUME_SOURCE_HEAD").unwrap_or_default(),"platform":std::env::consts::OS,"arch":std::env::consts::ARCH,"project_id":job.project.id,"track_count":job.project.audio.len(),"input_audio_duration":input_total,"input_tracks":input_durations,"fast_path_used":fast_used,"legacy_fallback_used":!fast_used,"fallback":fallback,"fast_metrics":final_fast,"events":captured,"export_seconds":export_seconds,"output_path":result,"output_bytes":bytes,"output_duration":output_duration,"probe":metadata,"full_decode":decode,"seek_checks":seeks,"preview_outputs":previews}))
+  let power_after=system::power_status();
+  let system_actions=if env_enabled("ENDLUME_ACCEPTANCE_SYSTEM_ACTIONS"){
+    let p=result.to_string_lossy().into_owned();
+    let open=system::open_result_path(p.clone()).map(|_|"ok").unwrap_or_else(|e|Box::leak(e.into_boxed_str()));
+    let reveal=system::reveal_result_path(p).map(|_|"ok").unwrap_or_else(|e|Box::leak(e.into_boxed_str()));
+    json!({"open":open,"reveal":reveal})
+  }else{Value::Null};
+  Ok(json!({"source_head":std::env::var("ENDLUME_SOURCE_HEAD").unwrap_or_default(),"platform":std::env::consts::OS,"arch":std::env::consts::ARCH,"project_id":job.project.id,"track_count":job.project.audio.len(),"input_audio_duration":input_total,"input_tracks":input_durations,"fast_path_used":fast_used,"legacy_fallback_used":!fast_used,"fallback":fallback,"fast_metrics":final_fast,"events":captured,"export_seconds":export_seconds,"output_path":result,"output_bytes":bytes,"output_duration":output_duration,"probe":metadata,"full_decode":decode,"seek_checks":seeks,"preview_outputs":previews,"power_before":power_before,"power_after":power_after,"system_actions":system_actions}))
 }
-pub async fn run(app:AppHandle){let receipt=std::env::var("ENDLUME_ACCEPTANCE_RECEIPT").unwrap_or_else(|_|"/tmp/endlume-acceptance.json".into());let (payload,code)=match run_inner(&app).await{Ok(v)=>(json!({"status":"ok","result":v}),0),Err(e)=>(json!({"status":"error","error":e}),2)};if let Ok(text)=serde_json::to_string_pretty(&payload){let _=fs::write(&receipt,format!("{text}\n"));}app.exit(code);}
+
+pub async fn run(app:AppHandle){
+  let receipt=std::env::var("ENDLUME_ACCEPTANCE_RECEIPT").unwrap_or_else(|_|"/tmp/endlume-acceptance.json".into());
+  let (payload,code)=match run_inner(&app).await{Ok(v)=>(json!({"status":"ok","result":v}),0),Err(e)=>(json!({"status":"error","error":e}),2)};
+  if let Ok(text)=serde_json::to_string_pretty(&payload){let _=fs::write(&receipt,format!("{text}\n"));}
+  app.exit(code);
+}

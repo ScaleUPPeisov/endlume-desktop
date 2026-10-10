@@ -1,0 +1,173 @@
+name: ENDLUME 10.0.13 Phase 3 Compile Gate
+
+on:
+  push:
+    branches:
+      - release-fix/endlume-10.0.13-fast-engine-transplant
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-1013-phase3-compile
+  cancel-in-progress: true
+
+env:
+  PRODUCT_BASE: 3f06c7329bd3821bc160e6d88c5b294fc0d82c2b
+  FAST_ENGINE_SOURCE: a7a399e83de8b9248e2065c6dda1f9079ded6565
+
+jobs:
+  hosted-arm64-gate:
+    name: Phase 3 — compile, frozen UI, isolated ARM64 candidate
+    runs-on: macos-14
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Prove source and no release context
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          echo "PHASE_3_HEAD=$(git rev-parse HEAD)"
+          git cat-file -e "$PRODUCT_BASE^{commit}"
+          git cat-file -e "$FAST_ENGINE_SOURCE^{commit}"
+          git merge-base --is-ancestor "$PRODUCT_BASE" HEAD
+          test "$RUNNER_NAME" != "kirill-mac-endlume"
+          echo RELEASE=BLOCKED
+          echo STABLE=UNTOUCHED
+          echo LIVE_UPDATER=UNTOUCHED
+
+      - name: Frozen UI diff gate
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git diff --name-only "$PRODUCT_BASE" HEAD > "$RUNNER_TEMP/phase3-files.txt"
+          cat "$RUNNER_TEMP/phase3-files.txt"
+          if grep -E '^(src/pages/|src/components/|src/main\.tsx$|src/.*\.css$|public/|src-tauri/icons/)' "$RUNNER_TEMP/phase3-files.txt"; then
+            echo "FROZEN_UI_DIFF=FAIL" >&2
+            exit 31
+          fi
+          if grep -Ei '(^|/)(ReleaseHistory|release-history|changelog)' "$RUNNER_TEMP/phase3-files.txt"; then
+            echo "RELEASE_HISTORY_DIFF=FAIL" >&2
+            exit 32
+          fi
+          if grep -E '^(src-tauri/src/updater_|\.github/workflows/.*stable|release/)' "$RUNNER_TEMP/phase3-files.txt"; then
+            echo "UPDATER_OR_STABLE_DIFF=FAIL" >&2
+            exit 33
+          fi
+          test "$(git diff --name-only "$PRODUCT_BASE" HEAD -- src-tauri/src/render.rs | wc -l | tr -d ' ')" = "0"
+          test "$(git diff --name-only "$PRODUCT_BASE" HEAD -- src-tauri/src/preview.rs | wc -l | tr -d ' ')" = "0"
+          echo UI_FILES_CHANGED=0
+          echo CANONICAL_RENDER_CHANGED=NO
+          echo CANONICAL_PREVIEW_CHANGED=NO
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: Stage Apple Silicon FFmpeg / FFprobe
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          TMP="$(mktemp -d)"
+          TOOLS="$RUNNER_TEMP/endlume-1013-tools"
+          mkdir -p "$TMP/fm" "$TMP/fp" "$TOOLS" src-tauri/binaries
+          curl -fL --retry 4 "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffmpeg.zip" -o "$TMP/ffmpeg.zip"
+          curl -fL --retry 4 "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffprobe.zip" -o "$TMP/ffprobe.zip"
+          ditto -x -k "$TMP/ffmpeg.zip" "$TMP/fm"
+          ditto -x -k "$TMP/ffprobe.zip" "$TMP/fp"
+          FFMPEG="$(find "$TMP/fm" -type f -name ffmpeg -print -quit)"
+          FFPROBE="$(find "$TMP/fp" -type f -name ffprobe -print -quit)"
+          test -n "$FFMPEG" -a -n "$FFPROBE"
+          cp "$FFMPEG" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp "$FFPROBE" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          cp "$FFMPEG" "$TOOLS/ffmpeg"
+          cp "$FFPROBE" "$TOOLS/ffprobe"
+          chmod 755 src-tauri/binaries/ffmpeg-aarch64-apple-darwin src-tauri/binaries/ffprobe-aarch64-apple-darwin "$TOOLS/ffmpeg" "$TOOLS/ffprobe"
+          file src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+
+      - name: TypeScript and Rust regression gates
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          npm ci
+          npm run check
+          npm run build
+          cargo test --manifest-path src-tauri/Cargo.toml -- --nocapture
+          cargo check --manifest-path src-tauri/Cargo.toml --features e2e-render --target aarch64-apple-darwin
+          grep -q 'mod fast_render;' src-tauri/src/lib.rs
+          grep -q 'mod visual_spec;' src-tauri/src/lib.rs
+          grep -q 'render_with_phase3_fast' src-tauri/src/lib.rs
+          grep -q 'render_with_phase3_fast' src-tauri/src/queue.rs
+          grep -q 'mp3-packet-copy' src-tauri/src/fast_render.rs
+          grep -q 'hevc_videotoolbox' src-tauri/src/fast_render.rs
+          grep -q 'expand_video_prefix_cycle' src-tauri/src/fast_render.rs
+          grep -q 'remap_video_samples_fixed_delta' src-tauri/src/fast_render.rs
+          echo TYPESCRIPT=PASS
+          echo RUST=PASS
+
+      - name: Build isolated ARM64 Phase 3 candidate
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('src-tauri/tauri.conf.json')
+          d=json.loads(p.read_text())
+          d['bundle']['createUpdaterArtifacts']=False
+          p.write_text(json.dumps(d,ensure_ascii=False,indent=2)+'\n')
+          PY
+          export CARGO_TARGET_DIR="$RUNNER_TEMP/endlume-1013-cargo-target"
+          ENDLUME_TAURI_TARGET=aarch64-apple-darwin node scripts/prepare-macos-ffmpeg-runtime.mjs
+          npx tauri build --target aarch64-apple-darwin --bundles app --features e2e-render
+          APP="$(find "$CARGO_TARGET_DIR/aarch64-apple-darwin/release/bundle/macos" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          test -n "$APP" -a -d "$APP"
+          EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
+          /usr/bin/lipo -archs "$APP/Contents/MacOS/$EXE" | grep -qw arm64
+          /usr/bin/codesign --force --deep --sign - --timestamp=none "$APP"
+          /usr/bin/codesign --verify --deep --strict "$APP"
+          ZIP="$RUNNER_TEMP/ENDLUME-10.0.13-PHASE3-FAST-ENGINE-CANDIDATE.zip"
+          /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$APP" "$ZIP"
+          test -s "$ZIP"
+          python3 - <<PY
+          import json,os,subprocess
+          out={
+            'phase3Head': subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),
+            'productBase': os.environ['PRODUCT_BASE'],
+            'fastEngineSource': os.environ['FAST_ENGINE_SOURCE'],
+            'artifact': 'ENDLUME-10.0.13-PHASE3-FAST-ENGINE-CANDIDATE.zip',
+            'release': 'BLOCKED',
+            'ownerApplicationReplaced': 'NO',
+            'stable': 'UNTOUCHED',
+            'liveUpdater': 'UNTOUCHED'
+          }
+          open(os.path.join(os.environ['RUNNER_TEMP'],'PHASE3_HOSTED_BUILD.json'),'w').write(json.dumps(out,indent=2)+'\n')
+          PY
+          echo ARM64_BUILD=PASS
+          echo OWNER_APPLICATION_REPLACED=NO
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ENDLUME-10.0.13-PHASE3-FAST-ENGINE-CANDIDATE
+          path: |
+            ${{ runner.temp }}/ENDLUME-10.0.13-PHASE3-FAST-ENGINE-CANDIDATE.zip
+            ${{ runner.temp }}/PHASE3_HOSTED_BUILD.json
+            ${{ runner.temp }}/phase3-files.txt
+          if-no-files-found: error
+          retention-days: 7

@@ -112,7 +112,7 @@ export function App(){
     off.push(listen<any>('queue-recovered',e=>{const p=(e.payload?.projects||[]).map((x:any)=>({...x,status:'queued',progress:0,stage:'Восстановлено после сбоя',elapsedSec:0}));appendProjects(p)}));
     off.push(listen<any>('engine-timing',e=>{const {id,key,seconds}=e.payload||{};if(id&&key)patchProject(id,{engineTimings:{...(useApp.getState().projects.find(p=>p.id===id)?.engineTimings||{}),[key]:seconds}})}));
     off.push(listen<any>('engine-profile',e=>{const {id,...rest}=e.payload||{};if(id)patchProject(id,compactPayload(rest))}));
-    off.push(listen<any>('cache-updated',e=>{const {id,cacheKey,cacheReady}=e.payload||{};if(!id)return;const st=useApp.getState();const effects=st.effects.map(x=>x.id===id?{...x,cacheKey,cacheReady}:x);const subscribes=st.subscribes.map(x=>x.id===id?{...x,cacheKey,cacheReady}:x);st.setEffects(effects);st.setSubscribes(subscribes);api.saveLibrary({effects,subscribes,ambient:st.ambient}).catch(()=>{});}));
+    off.push(listen<any>('cache-updated',e=>{const {id,cacheKey,cacheReady}=e.payload||{};if(!id)return;const st=useApp.getState();const effects=st.effects.map(x=>x.id===id?{...x,cacheKey,cacheReady}:x);const subscribes=st.subscribes.map(x=>x.id===id?{...x,cacheKey,cacheReady}:x);st.setEffects(effects);st.setSubscribes(subscribes);api.saveLibrary({effects,subscribes,ambient:st.ambient,ambientSettings:st.ambientSettings}).catch(()=>{});}));
     return()=>{
       disposed=true;if(updateTimer)window.clearTimeout(updateTimer);if(updateInterval)window.clearInterval(updateInterval);if(progressRaf!==undefined)cancelAnimationFrame(progressRaf);progressPending.clear();
       window.removeEventListener('focus',onFocus);document.removeEventListener('visibilitychange',onVisibility);window.removeEventListener('endlume-update-found',onManualUpdate as EventListener);off.forEach(p=>p.then(f=>f()));
@@ -191,4 +191,3 @@ function FrontendPreviewHarness({fixture}:{fixture:any}){
       onFrameState={payload=>{if(reported.current)return;reported.current=true;void api.previewFrontendReport({...payload,PREVIEW_APPLIED:payload.status==='GREEN',IMAGE_LOAD:payload.status,IMAGE_NATURAL_WIDTH:payload.width,IMAGE_NATURAL_HEIGHT:payload.height,FRONTEND_PAYLOAD_BYTES:payload.payloadBytes,BROWSER_VISIBLE:payload.browserVisible,PIXEL_READBACK:payload.pixelReadback})}}/>
   </div>;
 }
-

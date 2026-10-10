@@ -1,4 +1,4 @@
-use crate::{model::{EffectPreset,Progress,QueueJob,SubscribePreset},mp4_manifest,render,visual_spec};
+use crate::{cache,model::{EffectPreset,Progress,ProjectScanItem,QueueJob,SubscribePreset},mp4_manifest,render,visual_spec};
 use serde_json::json;
 use std::{fs,path::{Path,PathBuf},sync::{Arc,atomic::{AtomicBool,Ordering}},time::Instant};
 use tauri::{AppHandle,Emitter};
@@ -38,6 +38,38 @@ async fn duration(app:&AppHandle,path:&str)->Result<f64,String>{
   String::from_utf8_lossy(&out).trim().parse::<f64>().map_err(|_|format!("Не удалось определить длительность: {path}"))
 }
 
+fn effect_usage_mode(e:&EffectPreset)->&str{
+  if !e.enabled{"off"}else{e.usage_mode.as_deref().unwrap_or("legacy")}
+}
+fn subscribe_usage_mode(s:&SubscribePreset)->&str{
+  if !s.effect.enabled{"off"}else{s.effect.usage_mode.as_deref().unwrap_or("legacy")}
+}
+fn subscribe_interval_sec(s:&SubscribePreset)->f64{s.effect.interval_sec.unwrap_or(s.repeat_every_sec).clamp(60.0,1800.0)}
+fn subscribe_first_sec(s:&SubscribePreset)->f64{
+  let interval=subscribe_interval_sec(s);
+  match s.first_appearance.as_deref().unwrap_or("after-interval"){
+    "immediate"=>0.0,
+    "custom"=>s.custom_first_at_sec.unwrap_or(interval).max(0.0),
+    _=>interval,
+  }
+}
+fn resolve_effect_for_project(project:&ProjectScanItem,e:&EffectPreset)->EffectPreset{
+  let mut resolved=e.clone();
+  let Some(target)=e.target.as_deref().map(str::trim).filter(|v|!v.is_empty()) else{return resolved};
+  let Some(anchors)=project.anchors.as_ref() else{return resolved};
+  let Some(anchor)=anchors.get(target) else{return resolved};
+  resolved.x=(anchor.x+e.offset_x.unwrap_or(0.0)).clamp(0.0,1.0);
+  resolved.y=(anchor.y+e.offset_y.unwrap_or(0.0)).clamp(0.0,1.0);
+  resolved
+}
+fn normalize_subscribe_for_product(project:&ProjectScanItem,mut s:SubscribePreset)->SubscribePreset{
+  s.effect=resolve_effect_for_project(project,&s.effect);
+  let(similarity,blend)=cache::subscribe_chromakey_params_1011(&s.effect);
+  s.effect.similarity=similarity;
+  s.effect.blend=blend;
+  s
+}
+
 fn base_rejection(job:&QueueJob)->Option<String>{
   if !cfg!(all(target_os="macos",target_arch="aarch64")){return Some("fast path requires Apple Silicon macOS; Intel uses legacy renderer".into())}
   if job.project.media.len()!=1||!is_image(&job.project.media[0]){return Some("fast path requires exactly one still image".into())}
@@ -48,13 +80,13 @@ fn base_rejection(job:&QueueJob)->Option<String>{
   if job.settings.fps==0{return Some("invalid FPS".into())}
   if job.settings.crossfade_sec.abs()>=0.0001{return Some("crossfade requires processed audio".into())}
   if job.settings.normalize_lufs{return Some("normalization requires processed audio".into())}
-  if job.ambient.as_ref().map(|x|!x.trim().is_empty()).unwrap_or(false){return Some("ambient mix requires processed audio".into())}
+  if job.ambient.as_ref().map(|x|!x.trim().is_empty()).unwrap_or(false){return Some("Background Music/EQ requires processed audio".into())}
   if job.settings.duration_mode!="whole-track"{return Some("fast path currently preserves whole-track mode only".into())}
   None
 }
 
 fn supported_subscribe_effect(e:&EffectPreset)->bool{
-  e.enabled&&!e.source.trim().is_empty()&&matches!(e.mode.as_str(),"screen"|"screen-cache"|"chromakey"|"luma"|"prealpha")
+  e.enabled&&!e.source.trim().is_empty()&&matches!(e.mode.as_str(),"screen"|"chromakey"|"luma")
 }
 fn frame_aligned(sec:f64,fps:u32)->Option<usize>{
   if !sec.is_finite()||sec<0.0||fps==0{return None}
@@ -63,22 +95,43 @@ fn frame_aligned(sec:f64,fps:u32)->Option<usize>{
 fn subscribe_starts(sub:&SubscribePreset,final_duration:f64,fps:u32,sub_frames:usize)->Result<Vec<usize>,String>{
   let total_frames=(final_duration*fps as f64).round() as usize;
   let mut starts=Vec::new();
-  for sec in [sub.first_at_sec,sub.second_at_sec]{
-    if sec>=0.0&&sec<final_duration{
-      let f=frame_aligned(sec,fps).ok_or_else(||format!("Subscribe time {sec:.6}s is not frame-aligned at {fps} FPS"))?;
-      if f<total_frames&&!starts.contains(&f){starts.push(f)}
-    }
+  match subscribe_usage_mode(sub){
+    "interval"=>{
+      let first=subscribe_first_sec(sub);
+      let repeat=subscribe_interval_sec(sub);
+      let mut f=frame_aligned(first,fps).ok_or_else(||format!("Subscribe first appearance {first:.6}s is not frame-aligned at {fps} FPS"))?;
+      let repeat_frames=frame_aligned(repeat,fps).ok_or_else(||format!("Subscribe interval {repeat:.6}s is not frame-aligned at {fps} FPS"))?;
+      if repeat_frames==0{return Err("Subscribe interval is zero frames".into())}
+      let mut guard=0usize;
+      while f<total_frames{
+        starts.push(f);
+        f=f.saturating_add(repeat_frames);
+        guard+=1;
+        if guard>10000{return Err("Subscribe event count exceeds fast-path bound".into())}
+      }
+    },
+    "legacy"=>{
+      for sec in [sub.first_at_sec,sub.second_at_sec]{
+        if sec>=0.0&&sec<final_duration{
+          let f=frame_aligned(sec,fps).ok_or_else(||format!("Subscribe time {sec:.6}s is not frame-aligned at {fps} FPS"))?;
+          if f<total_frames&&!starts.contains(&f){starts.push(f)}
+        }
+      }
+      if sub.repeat_every_sec>0.1{
+        let repeat_frames=frame_aligned(sub.repeat_every_sec,fps).ok_or_else(||format!("Subscribe repeat {:.6}s is not frame-aligned at {fps} FPS",sub.repeat_every_sec))?;
+        if repeat_frames==0{return Err("Subscribe repeat interval is zero frames".into())}
+        let anchor_sec=sub.second_at_sec.max(sub.first_at_sec);
+        let anchor=frame_aligned(anchor_sec.max(0.0),fps).ok_or_else(||format!("Subscribe anchor {anchor_sec:.6}s is not frame-aligned at {fps} FPS"))?;
+        let mut f=anchor.saturating_add(repeat_frames);let mut guard=0usize;
+        while f<total_frames{if !starts.contains(&f){starts.push(f)}f=f.saturating_add(repeat_frames);guard+=1;if guard>10000{return Err("Subscribe event count exceeds fast-path bound".into())}}
+      }
+      starts.sort_unstable();
+    },
+    "always"=>return Err("Subscribe always-mode stays on canonical renderer".into()),
+    "off"=>return Err("Subscribe is disabled".into()),
+    other=>return Err(format!("Subscribe usage mode '{other}' is not supported by the proven fast path")),
   }
-  if sub.repeat_every_sec>0.1{
-    let repeat_frames=frame_aligned(sub.repeat_every_sec,fps).ok_or_else(||format!("Subscribe repeat {:.6}s is not frame-aligned at {fps} FPS",sub.repeat_every_sec))?;
-    if repeat_frames==0{return Err("Subscribe repeat interval is zero frames".into())}
-    let anchor_sec=sub.second_at_sec.max(sub.first_at_sec);
-    let anchor=frame_aligned(anchor_sec.max(0.0),fps).ok_or_else(||format!("Subscribe anchor {anchor_sec:.6}s is not frame-aligned at {fps} FPS"))?;
-    let mut f=anchor.saturating_add(repeat_frames);let mut guard=0usize;
-    while f<total_frames{if !starts.contains(&f){starts.push(f)}f=f.saturating_add(repeat_frames);guard+=1;if guard>10000{return Err("Subscribe event count exceeds fast-path bound".into())}}
-  }
-  starts.sort_unstable();
-  for pair in starts.windows(2){if pair[1]<pair[0].saturating_add(sub_frames){return Err("overlapping Subscribe events stay on legacy renderer".into())}}
+  for pair in starts.windows(2){if pair[1]<pair[0].saturating_add(sub_frames){return Err("overlapping Subscribe events stay on canonical renderer".into())}}
   Ok(starts)
 }
 fn subscribe_sample_map(sub:&SubscribePreset,final_duration:f64,fps:u32,sub_frames:usize)->Result<Vec<usize>,String>{
@@ -90,15 +143,26 @@ fn subscribe_sample_map(sub:&SubscribePreset,final_duration:f64,fps:u32,sub_fram
 
 async fn visual_plan(app:&AppHandle,job:&QueueJob)->Result<FastVisualPlan,String>{
   if let Some(reason)=base_rejection(job){return Err(reason)}
-  let effects=job.effects.iter().filter(|e|e.enabled).cloned().collect::<Vec<_>>();
-  let subs=job.subscribes.iter().filter(|s|s.effect.enabled).cloned().collect::<Vec<_>>();
+  let effects=job.effects.iter().filter(|e|effect_usage_mode(e)!="off").map(|e|resolve_effect_for_project(&job.project,e)).collect::<Vec<_>>();
+  let subs=job.subscribes.iter().filter(|s|subscribe_usage_mode(s)!="off").cloned().map(|s|normalize_subscribe_for_product(&job.project,s)).collect::<Vec<_>>();
   if !subs.is_empty(){
     if subs.len()!=1{return Err("Subscribe fast path currently supports exactly one enabled Subscribe preset".into())}
-    if !effects.is_empty(){return Err("combined periodic effects + Subscribe stay on legacy renderer".into())}
+    if !effects.is_empty(){return Err("combined Effects + Subscribe stay on canonical renderer".into())}
     let sub=subs[0].clone();if !supported_subscribe_effect(&sub.effect){return Err(format!("Subscribe effect mode '{}' is not supported by the proven fast path",sub.effect.mode))}
     if !Path::new(&sub.effect.source).is_file(){return Err(format!("Subscribe source not found: {}",sub.effect.source))}
-    let d=duration(app,&sub.effect.source).await?;
-    let frames=visual_spec::period_frames(d,job.settings.fps).ok_or_else(||format!("Subscribe duration {d:.6}s is not frame-aligned at {} FPS",job.settings.fps))? as usize;
+    let source_duration=duration(app,&sub.effect.source).await?;
+    let source_frames=visual_spec::period_frames(source_duration,job.settings.fps).ok_or_else(||format!("Subscribe source duration {source_duration:.6}s is not frame-aligned at {} FPS",job.settings.fps))? as usize;
+    let frames=match subscribe_usage_mode(&sub){
+      "interval"=>{
+        let show=sub.show_duration_sec.unwrap_or(8.0).clamp(2.0,20.0).min(subscribe_interval_sec(&sub));
+        let frames=frame_aligned(show,job.settings.fps).ok_or_else(||format!("Subscribe show duration {show:.6}s is not frame-aligned at {} FPS",job.settings.fps))?;
+        if frames>source_frames{return Err(format!("Subscribe source is shorter than configured show duration: sourceFrames={source_frames}, showFrames={frames}"))}
+        frames
+      },
+      "legacy"=>source_frames,
+      "always"=>return Err("Subscribe always-mode stays on canonical renderer".into()),
+      other=>return Err(format!("Subscribe usage mode '{other}' stays on canonical renderer")),
+    };
     subscribe_starts(&sub,job.settings.duration_hours*3600.0,job.settings.fps,frames)?;
     return Ok(FastVisualPlan{master_seconds:(frames+1) as f64/job.settings.fps as f64,cycle_frames:0,effects:Vec::new(),subscribe:Some(sub),subscribe_frames:frames,mode:"static-subscribe-hevc-mp3-packet-copy"})
   }

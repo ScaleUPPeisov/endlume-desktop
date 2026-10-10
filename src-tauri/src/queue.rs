@@ -190,7 +190,7 @@ fn start_worker_if_needed(app:AppHandle,runtime:Arc<QueueRuntime>){
       let Some(job)=next else{break};
       runtime.persist(&app);let _=app.emit("queue-changed",queue_snapshot_value(runtime.as_ref()));
       let id=job.project.id.clone();let cancel=Arc::new(AtomicBool::new(false));*runtime.active_cancel.lock()=Some(cancel.clone());license::telemetry_render_started(&job);let job_timer=Instant::now();
-      let outcome=render::render_job(&app,&job,cancel).await;*runtime.active_cancel.lock()=None;
+      let outcome=crate::render_with_phase3_fast(&app,&job,cancel).await;*runtime.active_cancel.lock()=None;
       let cancelled=runtime.cancelled.lock().remove(&id);
       if cancelled{
         license::telemetry_render_terminal(&job,"render_cancelled",None,None,None,Some(job_timer.elapsed().as_secs_f64()));

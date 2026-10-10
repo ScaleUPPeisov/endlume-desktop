@@ -1,0 +1,196 @@
+name: ENDLUME 10.0.13 Phase 2 Keychain Sheet Diagnostic
+
+on:
+  push:
+    branches:
+      - release-fix/endlume-10.0.13-canonical-product-reconstruction
+    paths:
+      - .github/workflows/endlume-1013-phase2-keychain-sheet-diagnostic.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: endlume-1013-phase2-keychain-sheet-diagnostic
+  cancel-in-progress: true
+
+env:
+  EXPECTED_ZIP_SHA: 0b374fffa3dbf057620d2f3a5b7919306df474767494ef2daead3bb319afb250
+  EXPECTED_BIN_SHA: 4d208994181c5ca21b20c2e01dd06bda25e82a16bb1405379e79cc4da3026436
+  OWNER_BIN_SHA: 2df386c00da09e76f90218061e7f57ccfba2249a654ec1262b06000b322eb9d7
+
+jobs:
+  sheet-diagnostic:
+    name: Owner Mac native Keychain sheet diagnostic
+    runs-on: [self-hosted, macOS, ARM64]
+    timeout-minutes: 12
+    steps:
+      - name: Safety gate
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$RUNNER_NAME" = kirill-mac-endlume
+          test "$(/usr/bin/osascript -e 'tell application "System Events" to return UI elements enabled' 2>/dev/null || echo false)" = true
+          REPORT="$RUNNER_TEMP/endlume-sheet-diag"; rm -rf "$REPORT"; mkdir -p "$REPORT"
+          OWNER_APP="/Applications/ENDLUME YT Studio PEISOV.app"
+          OWNER_EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$OWNER_APP/Contents/Info.plist")"
+          OWNER_PATH="$OWNER_APP/Contents/MacOS/$OWNER_EXE"
+          OWNER_SHA="$(shasum -a 256 "$OWNER_PATH" | awk '{print $1}')"
+          test "$OWNER_SHA" = "$OWNER_BIN_SHA"
+          ! pgrep -f "$OWNER_PATH" >/dev/null 2>&1
+          printf 'OWNER_SHA=%s\n' "$OWNER_SHA" > "$REPORT/owner-before.txt"
+
+      - name: Download canonical artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ENDLUME-CANONICAL-GOOD-PRODUCT-QA
+          path: ${{ runner.temp }}/sheet-diag-source
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ScaleUPPeisov/endlume-desktop
+          run-id: 38030777284
+
+      - name: Launch and inspect native sheet without clicking
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          REPORT="$RUNNER_TEMP/endlume-sheet-diag"
+          SRC="$RUNNER_TEMP/sheet-diag-source"
+          UNPACK="$RUNNER_TEMP/sheet-diag-unpack"; rm -rf "$UNPACK"; mkdir -p "$UNPACK"
+          ZIP="$SRC/ENDLUME-CANONICAL-GOOD-PRODUCT-QA.app.zip"
+          test "$(shasum -a 256 "$ZIP" | awk '{print $1}')" = "$EXPECTED_ZIP_SHA"
+          ditto -x -k "$ZIP" "$UNPACK"
+          BAPP="$(find "$UNPACK" -maxdepth 2 -type d -name '*.app' -print -quit)"
+          EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$BAPP/Contents/Info.plist")"
+          test "$(shasum -a 256 "$BAPP/Contents/MacOS/$EXE" | awk '{print $1}')" = "$EXPECTED_BIN_SHA"
+          DMG="$RUNNER_TEMP/sheet-diag.dmg"; rm -f "$DMG"
+          hdiutil create -quiet -size 350m -fs APFS -volname ENDLUME_CANONICAL_QA "$DMG"
+          hdiutil attach -nobrowse -plist "$DMG" > "$RUNNER_TEMP/sheet-diag.plist"
+          VOL="$(python3 - "$RUNNER_TEMP/sheet-diag.plist" <<'PY'
+          import plistlib,sys
+          p=plistlib.load(open(sys.argv[1],'rb'))
+          xs=[x.get('mount-point') for x in p.get('system-entities',[]) if isinstance(x.get('mount-point'),str)]
+          print(xs[-1] if xs else '')
+          PY
+          )"
+          case "$VOL" in /Volumes/ENDLUME_CANONICAL_QA*) ;; *) exit 74;; esac
+          APP="$VOL/ENDLUME-CANONICAL-GOOD-PRODUCT-QA.app"; ditto "$BAPP" "$APP"
+          BIN="$APP/Contents/MacOS/$EXE"
+          test "$(shasum -a 256 "$BIN" | awk '{print $1}')" = "$EXPECTED_BIN_SHA"
+          printf '%s' "$BIN" > "$RUNNER_TEMP/sheet-bin"; printf '%s' "$VOL" > "$RUNNER_TEMP/sheet-vol"
+          /usr/bin/open -n "$APP"
+          PID=""
+          for n in $(seq 0 20); do
+            P="$(pgrep -f "$BIN" || true)"; C="$(printf '%s\n' "$P"|awk 'NF{n++}END{print n+0}')"
+            if [ "$C" -eq 1 ]; then PID="$(printf '%s\n' "$P"|awk 'NF{print;exit}')"; break; fi
+            [ "$C" -le 1 ] || exit 75; sleep 1
+          done
+          test -n "$PID"; /usr/sbin/lsof -a -p "$PID" -d txt -Fn 2>/dev/null | grep -Fxq "n$BIN"
+          printf 'PID=%s\nPATH_PROVEN=YES\n' "$PID" > "$REPORT/candidate.txt"
+
+          # Native Accessibility diagnostics only: roles/counts/button names/enabled states.
+          # Never read static text, text fields, values, descriptions or Keychain contents.
+          set +e
+          /usr/bin/osascript - "$PID" > "$REPORT/sheet-diag.txt" 2> "$REPORT/sheet-diag.raw.err" <<'OSA'
+          on safeName(x)
+            try
+              set n to name of x
+              if n is missing value then return ""
+              return n as text
+            on error
+              return ""
+            end try
+          end safeName
+          on safeEnabled(x)
+            try
+              return enabled of x as text
+            on error
+              return "unknown"
+            end try
+          end safeEnabled
+          on run argv
+            set targetPid to (item 1 of argv) as integer
+            set out to "TARGET_PID_BOUND=true" & linefeed
+            tell application "System Events"
+              set ps to every application process whose unix id is targetPid
+              if (count of ps) is not 1 then error "candidate PID unavailable"
+              tell item 1 of ps
+                set frontmost to true
+                delay 1
+                set out to out & "WINDOW_COUNT=" & (count of windows) & linefeed
+                if (count of windows) > 0 then
+                  set w to window 1
+                  set out to out & "WINDOW_SHEET_COUNT=" & (count of sheets of w) & linefeed
+                  try
+                    set db to buttons of w
+                    set out to out & "WINDOW_DIRECT_BUTTON_COUNT=" & (count of db) & linefeed
+                    repeat with b in db
+                      set out to out & "WINDOW_BUTTON=" & my safeName(b) & "|enabled=" & my safeEnabled(b) & linefeed
+                    end repeat
+                  end try
+                  repeat with sh in sheets of w
+                    set out to out & "SHEET_ROLE=AXSheet" & linefeed
+                    try
+                      set bs to buttons of sh
+                      set out to out & "SHEET_DIRECT_BUTTON_COUNT=" & (count of bs) & linefeed
+                      repeat with b in bs
+                        set out to out & "SHEET_BUTTON=" & my safeName(b) & "|enabled=" & my safeEnabled(b) & linefeed
+                      end repeat
+                    end try
+                    try
+                      set gs to groups of sh
+                      set out to out & "SHEET_GROUP_COUNT=" & (count of gs) & linefeed
+                      repeat with g in gs
+                        try
+                          repeat with b in buttons of g
+                            set out to out & "SHEET_GROUP_BUTTON=" & my safeName(b) & "|enabled=" & my safeEnabled(b) & linefeed
+                          end repeat
+                        end try
+                      end repeat
+                    end try
+                  end repeat
+                end if
+              end tell
+            end tell
+            return out
+          end run
+          OSA
+          RC=$?
+          set -e
+          printf 'OSASCRIPT_RC=%s\n' "$RC" > "$REPORT/status.txt"
+          sed -E 's#/(Users|Volumes)/[^[:space:]]+#<PATH>#g; s/ENDLUME-[A-Z2-9-]+/<LICENSE_REDACTED>/g; s/(Bearer )[A-Za-z0-9._-]+/\1<REDACTED>/g' "$REPORT/sheet-diag.raw.err" | head -40 > "$REPORT/sheet-diag.err" || true
+          rm -f "$REPORT/sheet-diag.raw.err"
+          sleep 1
+
+      - name: Cleanup and owner immutability
+        if: always()
+        shell: bash
+        run: |
+          set -u
+          REPORT="$RUNNER_TEMP/endlume-sheet-diag"
+          BIN="$(cat "$RUNNER_TEMP/sheet-bin" 2>/dev/null || true)"; VOL="$(cat "$RUNNER_TEMP/sheet-vol" 2>/dev/null || true)"
+          [ -z "$BIN" ] || pkill -f "$BIN" >/dev/null 2>&1 || true
+          sleep 2
+          [ -z "$VOL" ] || hdiutil detach -quiet "$VOL" >/dev/null 2>&1 || true
+          OWNER_APP="/Applications/ENDLUME YT Studio PEISOV.app"
+          OWNER_EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$OWNER_APP/Contents/Info.plist" 2>/dev/null || true)"
+          OWNER_SHA="$(shasum -a 256 "$OWNER_APP/Contents/MacOS/$OWNER_EXE" 2>/dev/null | awk '{print $1}')"
+          printf 'OWNER_SHA=%s\n' "$OWNER_SHA" > "$REPORT/owner-after.txt"
+          cmp -s "$REPORT/owner-before.txt" "$REPORT/owner-after.txt"
+          echo OWNER_APPLICATION_REPLACED=NO
+
+      - name: Upload safe diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ENDLUME-10.0.13-PHASE2-KEYCHAIN-SHEET-DIAG
+          path: |
+            ${{ runner.temp }}/endlume-sheet-diag/candidate.txt
+            ${{ runner.temp }}/endlume-sheet-diag/status.txt
+            ${{ runner.temp }}/endlume-sheet-diag/sheet-diag.txt
+            ${{ runner.temp }}/endlume-sheet-diag/sheet-diag.err
+            ${{ runner.temp }}/endlume-sheet-diag/owner-before.txt
+            ${{ runner.temp }}/endlume-sheet-diag/owner-after.txt
+          if-no-files-found: warn
+          retention-days: 14

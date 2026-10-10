@@ -1,4 +1,4 @@
-name: ENDLUME Phase2 Physical UI V15 Auto Picker
+name: ENDLUME Phase2 Physical UI V16 Fast Nav
 on:
   push:
     branches: [release-fix/endlume-10.0.13-canonical-product-reconstruction]
@@ -8,7 +8,7 @@ on:
       - qa/phase2-ui-v8.sh
       - qa/phase2-ui-v9.sh
       - qa/phase2-ui-v11-full.sh
-      - qa/phase2-ui-v15-auto-picker.sh
+      - qa/phase2-ui-v16-fast-nav.sh
   workflow_dispatch:
 permissions:
   contents: read
@@ -29,17 +29,17 @@ jobs:
           github-token: ${{ github.token }}
           repository: ScaleUPPeisov/endlume-desktop
           run-id: 38030777284
-      - name: Physical UI V15 Auto Picker
+      - name: Physical UI V16 Fast Nav
         shell: bash
         env:
           EXPECTED_APP_ZIP_SHA256: 0b374fffa3dbf057620d2f3a5b7919306df474767494ef2daead3bb319afb250
           EXPECTED_APP_BIN_SHA256: 4d208994181c5ca21b20c2e01dd06bda25e82a16bb1405379e79cc4da3026436
           OWNER_APP_BIN_SHA256: 2df386c00da09e76f90218061e7f57ccfba2249a654ec1262b06000b322eb9d7
-        run: bash qa/phase2-ui-v15-auto-picker.sh
+        run: bash qa/phase2-ui-v16-fast-nav.sh
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: ENDLUME-PHASE2-PHYSICAL-UI-V15-AUTO
+          name: ENDLUME-PHASE2-PHYSICAL-UI-V16-FAST-NAV
           path: ${{ runner.temp }}/endlume-phase2-v5
           if-no-files-found: warn
           retention-days: 14

@@ -7,7 +7,7 @@ fn color_ffmpeg(hex:&str)->String{
 }
 
 pub fn base_filter(label:&str,width:u32,height:u32,fps:u32)->String{
-  // Must match canonical render.rs / Preview composition semantics: cover + center crop.
+  // Canonical render.rs semantics: cover the canvas and crop from center.
   format!("[{label}]scale={width}:{height}:force_original_aspect_ratio=increase:flags=lanczos+accurate_rnd,crop={width}:{height}:(iw-ow)/2:(ih-oh)/2,fps={},setsar=1",fps.max(1))
 }
 
@@ -84,25 +84,34 @@ pub fn apply_effects_filter(
     let x=if e.fullscreen{"0".into()}else{format!("max(0,min(W-w,W*{}-w/2))",e.x.clamp(0.0,1.0))};
     let y=if e.fullscreen{"0".into()}else{format!("max(0,min(H-h,H*{}-h/2))",e.y.clamp(0.0,1.0))};
 
-    if e.mode=="screen"||e.mode=="screen-cache"||e.mode=="strict-screen-cache"{
-      let prep=if e.mode=="screen"{
-        format!("[{idx}:v]fps={},format=rgb24,eq=saturation={},{}",fps.max(1),e.saturation,scale)
-      }else{
-        format!("[{idx}:v]fps={},format=rgb24,{}",fps.max(1),scale)
-      };
-      graph.push_str(&format!(";{prep}[{fx}];[{base}][{fx}]blend=all_mode=screen:all_opacity={opacity}[{next}]"));
+    if e.mode=="strict-prealpha"{
+      graph.push_str(&format!(";[{idx}:v]fps={},setpts=PTS-STARTPTS,format=rgba,colorchannelmixer=aa={opacity}[{fx}];[{base}]format=rgba[base{n}];[base{n}][{fx}]overlay=x='{x}':y='{y}':shortest=0:repeatlast=1:eof_action=repeat:format=auto[{next}]",fps.max(1)));
+      base=next;
+      continue
+    }
+    if e.mode=="strict-screen-cache"{
+      let px=if e.fullscreen{"0".into()}else{format!("max(0,min(ow-iw,ow*{}-iw/2))",e.x.clamp(0.0,1.0))};
+      let py=if e.fullscreen{"0".into()}else{format!("max(0,min(oh-ih,oh*{}-ih/2))",e.y.clamp(0.0,1.0))};
+      graph.push_str(&format!(";[{base}]format=gbrp[base{n}];[{idx}:v]fps={},format=gbrp,pad={width}:{height}:'{px}':'{py}':color=black[{fx}];[base{n}][{fx}]blend=all_mode=screen:all_opacity={opacity}[{next}]",fps.max(1)));
+      base=next;
+      continue
+    }
+    if e.mode=="screen"||e.mode=="screen-cache"{
+      let px=if e.fullscreen{"0".into()}else{format!("max(0,min(ow-iw,ow*{}-iw/2))",e.x.clamp(0.0,1.0))};
+      let py=if e.fullscreen{"0".into()}else{format!("max(0,min(oh-ih,oh*{}-ih/2))",e.y.clamp(0.0,1.0))};
+      graph.push_str(&format!(";[{base}]format=gbrp[base{n}];[{idx}:v]fps={},format=gbrp,{scale},pad={width}:{height}:'{px}':'{py}':color=black,setsar=1[{fx}];[base{n}][{fx}]blend=all_mode=screen:all_opacity={opacity}[{next}]",fps.max(1)));
     }else{
-      let prep=if e.mode=="prealpha"||e.mode=="strict-prealpha"{
-        format!("[{idx}:v]fps={},format=rgba,{}",fps.max(1),scale)
+      let prepared=if e.mode=="prealpha"{
+        format!("[{idx}:v]fps={},format=rgba,{scale}",fps.max(1))
       }else if e.mode=="luma"{
-        format!("[{idx}:v]fps={},format=rgba,eq=saturation={},lumakey=threshold={}:tolerance={}:softness=0.08,{}",fps.max(1),e.saturation,e.luma_threshold,e.luma_tolerance,scale)
+        format!("[{idx}:v]fps={},format=rgba,lumakey=threshold={}:tolerance={}:softness=0.08,{scale}",fps.max(1),e.luma_threshold,e.luma_tolerance)
       }else{
         let (similarity,blend)=cache::chromakey_params_859(e);
         let kind=cache::despill_type(&e.key_color);
         let mix=e.despill.clamp(0.0,1.0);
-        format!("[{idx}:v]fps={},format=rgba,colorkey={}:{}:{},despill=type={kind}:mix={mix}:expand=0.20,{}",fps.max(1),color_ffmpeg(&e.key_color),similarity,blend,scale)
+        format!("[{idx}:v]fps={},{scale},format=rgba,colorkey={}:{}:{},despill=type={kind}:mix={mix}:expand=0.20",fps.max(1),color_ffmpeg(&e.key_color),similarity,blend)
       };
-      graph.push_str(&format!(";{prep}[{fx}];[{base}][{fx}]overlay=x='{x}':y='{y}':shortest=0:repeatlast=1:eof_action=repeat:format=auto[{next}]"));
+      graph.push_str(&format!(";{prepared},colorchannelmixer=aa={opacity}[{fx}];[{base}]format=rgba[base{n}];[base{n}][{fx}]overlay=x='{x}':y='{y}':shortest=1:eof_action=repeat:format=auto[{next}]"));
     }
     base=next;
   }

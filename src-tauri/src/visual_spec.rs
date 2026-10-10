@@ -109,7 +109,12 @@ pub fn apply_effects_filter(
         let (similarity,blend)=cache::chromakey_params_859(e);
         let kind=cache::despill_type(&e.key_color);
         let mix=e.despill.clamp(0.0,1.0);
-        format!("[{idx}:v]fps={},{scale},format=rgba,colorkey={}:{}:{},despill=type={kind}:mix={mix}:expand=0.20",fps.max(1),color_ffmpeg(&e.key_color),similarity,blend)
+        if cache::is_round_equalizer_859(e){
+          let pre_target=target.saturating_mul(2).max(target);
+          format!("[{idx}:v]fps={},scale={pre_target}:-2:flags=neighbor,format=rgba,colorkey={}:{}:{},{scale},despill=type={kind}:mix={mix}:expand=0.20",fps.max(1),color_ffmpeg(&e.key_color),similarity,blend)
+        }else{
+          format!("[{idx}:v]fps={},{scale},format=rgba,colorkey={}:{}:{},despill=type={kind}:mix={mix}:expand=0.20",fps.max(1),color_ffmpeg(&e.key_color),similarity,blend)
+        }
       };
       graph.push_str(&format!(";{prepared},colorchannelmixer=aa={opacity}[{fx}];[{base}]format=rgba[base{n}];[base{n}][{fx}]overlay=x='{x}':y='{y}':shortest=1:eof_action=repeat:format=auto[{next}]"));
     }

@@ -62,7 +62,6 @@ jobs:
             fi
           done
 
-          # Refuse to disturb a real pending/active owner render queue.
           python3 - "$APP_DATA/queue.json" <<'PY'
           import json,sys,os
           p=sys.argv[1]
@@ -166,7 +165,6 @@ jobs:
           json.dump({'effects':[effect],'subscribes':[sub],'ambient':None,'ambientSettings':{'volumePct':18,'bassDb':0,'midDb':0,'trebleDb':0}},open(out,'w'),ensure_ascii=False,indent=2)
           PY
 
-          # Convert the actual candidate application icon for screen 14 evidence.
           ICON="$(find "$QA_APP/Contents/Resources" -maxdepth 1 -type f -name '*.icns' -print -quit)"
           test -n "$ICON"
           /usr/bin/sips -s format png "$ICON" --out "$REPORT/screens/14-application-icon.png" >/dev/null
@@ -261,7 +259,7 @@ jobs:
             function nodes(){let out=[],stack=[w],seen=0;while(stack.length&&seen<6000){const e=stack.pop();seen++;const role=str(()=>e.role()),name=str(()=>e.name()),desc=str(()=>e.description());let pos=[],size=[];try{pos=e.position()}catch(_){}try{size=e.size()}catch(_){}out.push({e,role,name,desc,pos,size});let kids=[];try{kids=e.uiElements()}catch(_){}for(let i=0;i<kids.length;i++)stack.push(kids[i]);}return out;}
             function exact(name,role){return nodes().filter(x=>(x.name===name||x.desc===name)&&(!role||x.role===role));}
             function pressOne(name){const xs=exact(name,'AXButton');if(xs.length!==1)throw new Error(`button ${name} count=${xs.length}`);xs[0].e.click();delay(.35);return `PRESSED=${name}`;}
-            function nearest(label,names){const ns=nodes(),ls=ns.filter(x=>x.name===label||x.desc===label);if(!ls.length)throw new Error(`label missing ${label}`);const l=ls[0];const ly=(l.pos?.[1]||0)+(l.size?.[1]||0)/2;const lx=(l.pos?.[0]||0)+(l.size?.[0]||0)/2;const bs=ns.filter(x=>x.role==='AXButton'&&names.includes(x.name));if(!bs.length)throw new Error(`candidate buttons missing ${names}`);bs.sort((a,b)=>{const acy=(a.pos?.[1]||0)+(a.size?.[1]||0)/2,acy=(b.pos?.[1]||0)+(b.size?.[1]||0)/2;const acx=(a.pos?.[0]||0)+(a.size?.[0]||0)/2,bcx=(b.pos?.[0]||0)+(b.size?.[0]||0)/2;return (Math.abs(acy-ly)*10+Math.abs(acx-lx))-(Math.abs(acy-ly)*10+Math.abs(bcx-lx));});return {l,b:bs[0],dy:Math.abs(((bs[0].pos?.[1]||0)+(bs[0].size?.[1]||0)/2)-ly)};}
+            function nearest(label,names){const ns=nodes(),ls=ns.filter(x=>x.name===label||x.desc===label);if(!ls.length)throw new Error(`label missing ${label}`);const l=ls[0];const ly=(l.pos?.[1]||0)+(l.size?.[1]||0)/2;const lx=(l.pos?.[0]||0)+(l.size?.[0]||0)/2;const bs=ns.filter(x=>x.role==='AXButton'&&names.includes(x.name));if(!bs.length)throw new Error(`candidate buttons missing ${names}`);bs.sort((a,b)=>{const acy=(a.pos?.[1]||0)+(a.size?.[1]||0)/2,bcy=(b.pos?.[1]||0)+(b.size?.[1]||0)/2;const acx=(a.pos?.[0]||0)+(a.size?.[0]||0)/2,bcx=(b.pos?.[0]||0)+(b.size?.[0]||0)/2;return (Math.abs(acy-ly)*10+Math.abs(acx-lx))-(Math.abs(bcy-ly)*10+Math.abs(bcx-lx));});return {l,b:bs[0],dy:Math.abs(((bs[0].pos?.[1]||0)+(bs[0].size?.[1]||0)/2)-ly)};}
             function scrollTo(label){for(let i=0;i<14;i++){const ls=exact(label);if(!ls.length)throw new Error(`label missing ${label}`);const y=(ls[0].pos?.[1]||0),wy=(w.position()?.[1]||0),wh=(w.size()?.[1]||0);if(y>wy+80&&y<wy+wh-100)return `VISIBLE=${label}`;se.keyCode(y>=wy+wh-100?121:116);delay(.25);}throw new Error(`not visible ${label}`);}
             if(cmd==='press')return pressOne(arg1);
             if(cmd==='scroll')return scrollTo(arg1);
@@ -317,13 +315,11 @@ jobs:
           }
           wait_text(){ local text="$1" max="${2:-30}"; for n in $(seq 0 "$max"); do C="$(ui has "$text"|awk -F= '{print $2}')"; [ "${C:-0}" -gt 0 ] && return 0; sleep 1; done; return 1; }
 
-          # Configure only synthetic paths, with owner WebKit state restored in cleanup.
           ui press 'Перетащите папки с файлами или нажмите для выбора'
           choose_path "$FIX/project"
           wait_text 'PHASE 2 QA Effect' 1 >/dev/null 2>&1 || true
           sleep 2
 
-          # Choose temporary output path by the exact project output picker.
           ui press 'Нажмите для выбора папки результата'
           choose_path "$FIX/output"
           sleep 1
@@ -342,7 +338,6 @@ jobs:
           ui setFeature 'Subscribe Button' ON
           capture '05-subscribe-on.png'
 
-          # Effects editor + physical Live Preview from synthetic project/effect.
           ui nearpress 'Эффект для каждого проекта' 'НАСТРОИТЬ →'
           wait_text 'LIVE PREVIEW' 20
           sleep 3
@@ -350,7 +345,6 @@ jobs:
           ui press '← ВЕРНУТЬСЯ К ПРОЕКТУ'
           sleep 1
 
-          # Subscribe editor proves the second active overlay path too.
           ui nearpress 'Subscribe Button' 'НАСТРОИТЬ →'
           wait_text 'LIVE PREVIEW' 20
           sleep 3
@@ -377,7 +371,6 @@ jobs:
           ui press 'О ПРОГРАММЕ'
           capture '13-settings-about.png'
 
-          # Save a safe textual screen inventory for proof; no text fields/values.
           ui dumpSafe > "$REPORT/ui-safe-inventory.txt"
           echo STATIC_SCREEN_SUITE=PASS
 
@@ -413,15 +406,12 @@ jobs:
 
           ui press 'Проект'
           sleep 1
-          # Keep the render isolated from Effects/Subscribe and owner library.
           ui setFeature 'Эффект для каждого проекта' OFF
           ui setFeature 'Subscribe Button' OFF
           ui scroll 'ИСХОДНЫЕ ФАЙЛЫ' >/dev/null
           sleep .5
           ui press '+ ДОБАВИТЬ В ОЧЕРЕДЬ'
 
-          # Harmless informational native dialogs may appear (battery/audio-processing).
-          # Press only an exact OK/ОК if the render has not started yet.
           ACTIVE=0
           for second in $(seq 0 20); do
             set +e

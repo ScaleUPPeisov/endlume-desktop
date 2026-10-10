@@ -1,0 +1,41 @@
+name: ENDLUME Phase2 Physical UI V5
+on:
+  push:
+    branches: [release-fix/endlume-10.0.13-canonical-product-reconstruction]
+    paths:
+      - .github/workflows/endlume-1013-phase2-ui-v5.yml
+      - qa/phase2-ui-v5.sh
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: endlume-1013-phase2-physical-ui
+  cancel-in-progress: true
+jobs:
+  ui:
+    runs-on: [self-hosted, macOS, ARM64]
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ENDLUME-CANONICAL-GOOD-PRODUCT-QA
+          path: ${{ runner.temp }}/phase2-v5-source
+          github-token: ${{ github.token }}
+          repository: ScaleUPPeisov/endlume-desktop
+          run-id: 38030777284
+      - name: Physical UI V5
+        shell: bash
+        env:
+          EXPECTED_APP_ZIP_SHA256: 0b374fffa3dbf057620d2f3a5b7919306df474767494ef2daead3bb319afb250
+          EXPECTED_APP_BIN_SHA256: 4d208994181c5ca21b20c2e01dd06bda25e82a16bb1405379e79cc4da3026436
+          OWNER_APP_BIN_SHA256: 2df386c00da09e76f90218061e7f57ccfba2249a654ec1262b06000b322eb9d7
+        run: bash qa/phase2-ui-v5.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ENDLUME-PHASE2-PHYSICAL-UI-V5
+          path: ${{ runner.temp }}/endlume-phase2-v5
+          if-no-files-found: warn
+          retention-days: 14

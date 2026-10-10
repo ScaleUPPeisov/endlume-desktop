@@ -1,12 +1,11 @@
-name: ENDLUME Phase2 Owner Guided UI V22
+name: ENDLUME Phase2 Navigation UI V23
 on:
   push:
     branches: [release-fix/endlume-10.0.13-canonical-product-reconstruction]
     paths:
       - .github/workflows/endlume-1013-phase2-ui-v5.yml
       - qa/phase2-ui-v5.sh
-      - qa/phase2-ui-v21-owner-guided.sh
-      - qa/phase2-ui-v22-dismiss-update-guided.sh
+      - qa/phase2-ui-v23-nav-only.sh
   workflow_dispatch:
 permissions:
   contents: read
@@ -17,7 +16,7 @@ concurrency:
 jobs:
   ui:
     runs-on: [self-hosted, macOS, ARM64]
-    timeout-minutes: 5
+    timeout-minutes: 3
     steps:
       - uses: actions/checkout@v4
       - name: Restore local accepted artifact
@@ -33,17 +32,17 @@ jobs:
           test "$(shasum -a 256 "$CACHE" | awk '{print $1}')" = "$EXPECTED_APP_ZIP_SHA256"
           cp -f "$CACHE" "$SRC/ENDLUME-CANONICAL-GOOD-PRODUCT-QA.app.zip"
           echo LOCAL_ARTIFACT_CACHE=HIT
-      - name: Owner Guided UI V22
+      - name: Navigation UI V23
         shell: bash
         env:
           EXPECTED_APP_ZIP_SHA256: 0b374fffa3dbf057620d2f3a5b7919306df474767494ef2daead3bb319afb250
           EXPECTED_APP_BIN_SHA256: 4d208994181c5ca21b20c2e01dd06bda25e82a16bb1405379e79cc4da3026436
           OWNER_APP_BIN_SHA256: 2df386c00da09e76f90218061e7f57ccfba2249a654ec1262b06000b322eb9d7
-        run: bash qa/phase2-ui-v22-dismiss-update-guided.sh
+        run: bash qa/phase2-ui-v23-nav-only.sh
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: ENDLUME-PHASE2-OWNER-GUIDED-V22
+          name: ENDLUME-PHASE2-NAV-V23
           path: ${{ runner.temp }}/endlume-phase2-v5
           if-no-files-found: warn
           retention-days: 14

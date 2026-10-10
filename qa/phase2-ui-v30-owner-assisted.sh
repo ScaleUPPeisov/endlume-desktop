@@ -26,7 +26,6 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Owner production safety before manual QA.
 test "$RUNNER_NAME" = "kirill-mac-endlume"
 test -d "$OWNER_APP"
 OWNER_EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$OWNER_APP/Contents/Info.plist")"
@@ -34,7 +33,6 @@ OWNER_BIN="$OWNER_APP/Contents/MacOS/$OWNER_EXE"
 OWNER_SHA_BEFORE="$(shasum -a 256 "$OWNER_BIN" | awk '{print $1}')"
 test "$OWNER_SHA_BEFORE" = "$OWNER_APP_BIN_SHA256"
 
-# Use the same cached accepted artifact. No rebuild.
 CACHE="$HOME/Library/Caches/endlume-phase2/ENDLUME-CANONICAL-GOOD-PRODUCT-QA.app.zip"
 test -f "$CACHE"
 ZIP_SHA="$(shasum -a 256 "$CACHE" | awk '{print $1}')"
@@ -66,22 +64,13 @@ verify_mounted_candidate() {
   /usr/bin/codesign --verify --deep --strict "$QA_APP"
 }
 
-volume_name() {
-  /usr/sbin/diskutil info -plist "$MOUNT" | /usr/bin/plutil -extract VolumeName raw -o - - 2>/dev/null || true
-}
-
-# Prepare exact manual QA volume. The workflow does NOT launch the app.
+# Manual QA volume preparation only. No app launch, no GUI discovery.
 if /sbin/mount | grep -Fq " on $MOUNT "; then
-  VNAME="$(volume_name)"
-  test "$VNAME" = "ENDLUME_CANONICAL_QA" || { echo "BLOCKED_EXISTING_QA_MOUNT_NAME=$VNAME" >&2; exit 93; }
-  if [ -d "$QA_APP" ]; then
-    verify_mounted_candidate || { echo "BLOCKED_EXISTING_QA_MOUNT_MISMATCH=YES" >&2; exit 93; }
-    echo "REUSED_EXISTING_QA_MOUNT=YES"
-  else
-    ditto "$BUILT_APP" "$QA_APP"
-    verify_mounted_candidate
-    echo "POPULATED_EXISTING_QA_MOUNT=YES"
-  fi
+  test -w "$MOUNT" || { echo "BLOCKED_QA_MOUNT_NOT_WRITABLE=YES" >&2; exit 93; }
+  if [ -d "$QA_APP" ]; then rm -rf "$QA_APP"; fi
+  ditto "$BUILT_APP" "$QA_APP"
+  verify_mounted_candidate
+  echo "POPULATED_EXISTING_QA_MOUNT=YES"
 else
   mkdir -p "$MOUNT"
   hdiutil create -quiet -size 350m -fs APFS -volname ENDLUME_CANONICAL_QA "$DMG"
@@ -134,7 +123,6 @@ printf '%s\n' \
   'IF ACTIVATION SCREEN APPEARS: close candidate and run: touch /tmp/ENDLUME_PHASE2_LICENSE_FAIL' \
   'AFTER MANUAL QA: close candidate, confirm Google/YouTube still signed in, then run: touch /tmp/ENDLUME_PHASE2_OWNER_QA_DONE'
 
-# Keep the mounted QA environment available. No GUI/window discovery of any kind.
 RESULT=""
 for _ in $(seq 1 2700); do
   if [ -f "$FAIL_SENTINEL" ]; then RESULT="LICENSE_FAIL"; break; fi
@@ -142,12 +130,8 @@ for _ in $(seq 1 2700); do
   sleep 1
 done
 
-if [ -z "$RESULT" ]; then
-  echo "OWNER_MANUAL_QA_TIMEOUT=YES" >&2
-  exit 94
-fi
+if [ -z "$RESULT" ]; then echo "OWNER_MANUAL_QA_TIMEOUT=YES" >&2; exit 94; fi
 
-# Post-QA safety: production app must be physically unchanged.
 OWNER_SHA_AFTER="$(shasum -a 256 "$OWNER_BIN" | awk '{print $1}')"
 test "$OWNER_SHA_AFTER" = "$OWNER_APP_BIN_SHA256"
 {

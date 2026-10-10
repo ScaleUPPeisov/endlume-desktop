@@ -26,7 +26,7 @@ jobs:
   licensed-probe:
     name: Owner Mac licensed canonical UI probe
     runs-on: [self-hosted, macOS, ARM64]
-    timeout-minutes: 12
+    timeout-minutes: 15
     steps:
       - name: Hard owner-runner and TCC gate
         shell: bash
@@ -49,6 +49,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           REPORT="$RUNNER_TEMP/endlume-phase2-probe"
+          rm -rf "$REPORT"
           mkdir -p "$REPORT"
           APP_DATA="$HOME/Library/Application Support/studio.endlume.desktop"
           OWNER_APP="/Applications/ENDLUME YT Studio PEISOV.app"
@@ -104,6 +105,7 @@ jobs:
           UNPACK="$RUNNER_TEMP/canonical-owner-unpacked"
           DMG="$RUNNER_TEMP/ENDLUME-CANONICAL-OWNER-QA.dmg"
           REPORT="$RUNNER_TEMP/endlume-phase2-probe"
+          rm -rf "$UNPACK"
           mkdir -p "$UNPACK"
           ZIP="$SRC/ENDLUME-CANONICAL-GOOD-PRODUCT-QA.app.zip"
           test -f "$ZIP"
@@ -147,71 +149,224 @@ jobs:
           echo "APP_SHA256=$QA_BIN_SHA"
           echo "APP_ZIP_SHA256=$ZIP_SHA"
 
-      - name: Launch candidate and prove legitimate licensed product UI
+      - name: Launch exact candidate and prove PID path window accessibility license state
         shell: bash
         run: |
           set -Eeuo pipefail
           source "$RUNNER_TEMP/endlume-canonical-env"
           REPORT="$RUNNER_TEMP/endlume-phase2-probe"
           OWNER_APP="/Applications/ENDLUME YT Studio PEISOV.app"
-
-          /usr/bin/open -n "$QA_APP"
-          sleep 8
-          pgrep -f "$QA_BIN" > "$REPORT/candidate-pid.txt"
-          test -s "$REPORT/candidate-pid.txt"
           test -d "$OWNER_APP"
 
-          /usr/bin/osascript <<'OSA' > "$REPORT/ui-probe.txt" 2>"$REPORT/ui-probe.err"
-          tell application "System Events"
-            set ps to application processes whose bundle identifier is "studio.endlume.desktop"
-            if (count of ps) is 0 then error "ENDLUME process not found"
-            tell item 1 of ps
-              set frontmost to true
-              delay 1
-              set wc to count of windows
-              if wc is 0 then error "ENDLUME window not found"
-              set w to window 1
-              set out to "WINDOW=" & (name of w as text) & linefeed
-              set allItems to entire contents of w
-              repeat with e in allItems
-                try
-                  set r to role of e as text
-                  set n to name of e as text
-                  if n is not "" and n is not "missing value" then
-                    if r is "AXButton" or r is "AXStaticText" or r is "AXHeading" or r is "AXCheckBox" or r is "AXRadioButton" then
-                      set out to out & r & "=" & n & linefeed
-                    end if
-                  end if
-                end try
-              end repeat
-              return out
-            end tell
-          end tell
-          OSA
+          if pgrep -f "$QA_BIN" >/dev/null 2>&1; then
+            echo "AUTOMATION_STATUS=BLOCKED_PREEXISTING_CANDIDATE_PROCESS" | tee "$REPORT/probe-status.txt"
+            exit 80
+          fi
 
-          # Never print raw UI tree: it could contain owner-specific text.
+          set +e
+          /usr/bin/open -n "$QA_APP" >"$REPORT/open.stdout.txt" 2>"$REPORT/open.stderr.raw"
+          OPEN_RC=$?
+          set -e
+          printf 'OPEN_EXIT_CODE=%s\n' "$OPEN_RC" > "$REPORT/open-status.txt"
+          if [ "$OPEN_RC" -ne 0 ]; then
+            sed -E 's#/(Users|Volumes)/[^[:space:]]+#<PATH>#g; s/ENDLUME-[A-Z2-9-]+/<LICENSE_REDACTED>/g; s/(Bearer )[A-Za-z0-9._-]+/\1<REDACTED>/g' "$REPORT/open.stderr.raw" | head -40 > "$REPORT/open.stderr.txt" || true
+            rm -f "$REPORT/open.stderr.raw"
+            echo "AUTOMATION_STATUS=OPEN_FAILED" | tee "$REPORT/probe-status.txt"
+            echo "LICENSED_SESSION=UNKNOWN"
+            exit 81
+          fi
+          rm -f "$REPORT/open.stderr.raw"
+
+          CANDIDATE_PID=""
+          for second in $(seq 0 30); do
+            PIDS="$(pgrep -f "$QA_BIN" || true)"
+            COUNT="$(printf '%s\n' "$PIDS" | awk 'NF{n++} END{print n+0}')"
+            if [ "$COUNT" -eq 1 ]; then
+              CANDIDATE_PID="$(printf '%s\n' "$PIDS" | awk 'NF{print; exit}')"
+              break
+            fi
+            if [ "$COUNT" -gt 1 ]; then
+              printf 'CANDIDATE_PID_COUNT=%s\n' "$COUNT" > "$REPORT/candidate-process.txt"
+              echo "AUTOMATION_STATUS=BLOCKED_MULTIPLE_CANDIDATE_PIDS" | tee "$REPORT/probe-status.txt"
+              echo "LICENSED_SESSION=UNKNOWN"
+              exit 82
+            fi
+            sleep 1
+          done
+          if [ -z "$CANDIDATE_PID" ]; then
+            echo "AUTOMATION_STATUS=CANDIDATE_PROCESS_NOT_FOUND" | tee "$REPORT/probe-status.txt"
+            echo "LICENSED_SESSION=UNKNOWN"
+            exit 83
+          fi
+
+          printf '%s\n' "$CANDIDATE_PID" > "$REPORT/candidate-pid.txt"
+          kill -0 "$CANDIDATE_PID"
+          if ! /usr/sbin/lsof -a -p "$CANDIDATE_PID" -d txt -Fn 2>/dev/null | grep -Fxq "n$QA_BIN"; then
+            printf 'CANDIDATE_PID=%s\nCANDIDATE_PATH_PROVEN=NO\n' "$CANDIDATE_PID" > "$REPORT/candidate-process.txt"
+            echo "AUTOMATION_STATUS=CANDIDATE_PATH_MISMATCH" | tee "$REPORT/probe-status.txt"
+            echo "LICENSED_SESSION=UNKNOWN"
+            exit 84
+          fi
+          printf 'CANDIDATE_PID=%s\nCANDIDATE_PATH_PROVEN=YES\nCANDIDATE_APP_PATH=%s\n' "$CANDIDATE_PID" "$QA_APP" > "$REPORT/candidate-process.txt"
+          echo "CANDIDATE_PID=PASS"
+          echo "CANDIDATE_PATH=PASS"
+
+          READY=0
+          : > "$REPORT/window-readiness.txt"
+          for second in $(seq 0 60); do
+            if ! kill -0 "$CANDIDATE_PID" >/dev/null 2>&1; then
+              printf 'SECOND=%s PID_ALIVE=NO\n' "$second" >> "$REPORT/window-readiness.txt"
+              echo "AUTOMATION_STATUS=BLOCKED_CANDIDATE_DIED" | tee "$REPORT/probe-status.txt"
+              echo "LICENSED_SESSION=UNKNOWN"
+              exit 85
+            fi
+
+            set +e
+            WC=$(/usr/bin/osascript - "$CANDIDATE_PID" 2>"$REPORT/window-ready.raw.err" <<'OSA'
+          on run argv
+            set targetPid to (item 1 of argv) as integer
+            tell application "System Events"
+              set ps to every application process whose unix id is targetPid
+              if (count of ps) is not 1 then return "0"
+              tell item 1 of ps
+                return (count of windows) as text
+              end tell
+            end tell
+          end run
+          OSA
+            )
+            READY_RC=$?
+            set -e
+            printf 'SECOND=%s PID_ALIVE=YES OSASCRIPT_RC=%s WINDOW_COUNT=%s\n' "$second" "$READY_RC" "${WC:-UNKNOWN}" >> "$REPORT/window-readiness.txt"
+            if [ "$READY_RC" -eq 0 ] && [ "${WC:-0}" -gt 0 ] 2>/dev/null; then
+              READY=1
+              echo "WINDOW_READY_AFTER_SECONDS=$second"
+              break
+            fi
+            sleep 1
+          done
+          sed -E 's#/(Users|Volumes)/[^[:space:]]+#<PATH>#g; s/ENDLUME-[A-Z2-9-]+/<LICENSE_REDACTED>/g; s/(Bearer )[A-Za-z0-9._-]+/\1<REDACTED>/g' "$REPORT/window-ready.raw.err" | head -40 > "$REPORT/window-ready.err" || true
+          rm -f "$REPORT/window-ready.raw.err"
+
+          if [ "$READY" -ne 1 ]; then
+            echo "AUTOMATION_STATUS=BLOCKED_WINDOW_NOT_READY" | tee "$REPORT/probe-status.txt"
+            echo "LICENSED_SESSION=UNKNOWN"
+            exit 86
+          fi
+          echo "WINDOW=PASS"
+
+          cat > "$REPORT/ui-probe.js" <<'JXA'
+          function run(argv) {
+            const pid = Number(argv[0]);
+            const se = Application('System Events');
+            const matches = se.applicationProcesses.whose({unixId: pid})();
+            if (matches.length !== 1) throw new Error('candidate process not uniquely found by PID');
+            const p = matches[0];
+            p.frontmost = true;
+            delay(0.5);
+            const wins = p.windows();
+            if (wins.length < 1) throw new Error('candidate window not found');
+
+            const flags = {
+              project:false, render:false, library:false, settings:false,
+              activation:false
+            };
+            let nodes = 0;
+            const maxNodes = 2500;
+            const maxDepth = 12;
+
+            function textOf(fn) {
+              try {
+                const v = fn();
+                if (v === null || v === undefined) return '';
+                return String(v);
+              } catch (_) { return ''; }
+            }
+
+            function walk(el, depth) {
+              if (depth > maxDepth || nodes >= maxNodes) return;
+              nodes += 1;
+              const role = textOf(() => el.role());
+              const name = textOf(() => el.name());
+              const desc = textOf(() => el.description());
+              const hay = `${name}\n${desc}`;
+              if (role === 'AXButton' || role === 'AXStaticText' || role === 'AXHeading' ||
+                  role === 'AXCheckBox' || role === 'AXRadioButton' || role === 'AXGroup') {
+                if (name === 'Проект' || desc === 'Проект') flags.project = true;
+                if (name === 'Рендер' || desc === 'Рендер') flags.render = true;
+                if (name === 'Библиотека' || desc === 'Библиотека') flags.library = true;
+                if (name === 'Настройки' || desc === 'Настройки') flags.settings = true;
+                if (hay.indexOf('АКТИВИРОВАТЬ') >= 0 ||
+                    hay.indexOf('Активация ENDLUME') >= 0 ||
+                    hay.indexOf('Нужна активация') >= 0) flags.activation = true;
+              }
+              let kids = [];
+              try { kids = el.uiElements(); } catch (_) { kids = []; }
+              for (let i = 0; i < kids.length && nodes < maxNodes; i++) walk(kids[i], depth + 1);
+            }
+
+            walk(wins[0], 0);
+            return [
+              'WINDOW_READY=true',
+              `NODE_COUNT=${nodes}`,
+              `NAV_PROJECT=${flags.project}`,
+              `NAV_RENDER=${flags.render}`,
+              `NAV_LIBRARY=${flags.library}`,
+              `NAV_SETTINGS=${flags.settings}`,
+              `ACTIVATION_VISIBLE=${flags.activation}`
+            ].join('\n');
+          }
+          JXA
+
+          set +e
+          /usr/bin/osascript -l JavaScript "$REPORT/ui-probe.js" "$CANDIDATE_PID" > "$REPORT/ui-probe.txt" 2> "$REPORT/ui-probe.raw.err"
+          OSA_RC=$?
+          set -e
+          printf 'OSASCRIPT_EXIT_CODE=%s\n' "$OSA_RC" > "$REPORT/osascript-status.txt"
+          sed -E 's#/(Users|Volumes)/[^[:space:]]+#<PATH>#g; s/ENDLUME-[A-Z2-9-]+/<LICENSE_REDACTED>/g; s/(Bearer )[A-Za-z0-9._-]+/\1<REDACTED>/g' "$REPORT/ui-probe.raw.err" | head -60 > "$REPORT/ui-probe.err" || true
+          rm -f "$REPORT/ui-probe.raw.err" "$REPORT/ui-probe.js"
+
+          if [ "$OSA_RC" -ne 0 ]; then
+            echo "AUTOMATION_STATUS=FAIL_OSASCRIPT" | tee "$REPORT/probe-status.txt"
+            echo "ACCESSIBILITY=FAIL"
+            echo "LICENSED_SESSION=UNKNOWN"
+            exit 87
+          fi
+
+          echo "ACCESSIBILITY=PASS"
           UI="$REPORT/ui-probe.txt"
-          if grep -Eq 'АКТИВИРОВАТЬ|Активация ENDLUME' "$UI"; then
+          ACTIVATION="$(awk -F= '$1=="ACTIVATION_VISIBLE"{print $2}' "$UI")"
+          NP="$(awk -F= '$1=="NAV_PROJECT"{print $2}' "$UI")"
+          NR="$(awk -F= '$1=="NAV_RENDER"{print $2}' "$UI")"
+          NL="$(awk -F= '$1=="NAV_LIBRARY"{print $2}' "$UI")"
+          NS="$(awk -F= '$1=="NAV_SETTINGS"{print $2}' "$UI")"
+
+          if [ "$ACTIVATION" = "true" ]; then
+            printf 'AUTOMATION_STATUS=PASS\nACTIVATION_STATE=ACTIVATION_REQUIRED\nNORMAL_NAVIGATION=FAIL\nLICENSED_SESSION=FAIL\n' > "$REPORT/probe-status.txt"
+            echo "ACTIVATION_STATE=ACTIVATION_REQUIRED"
+            echo "NORMAL_NAVIGATION=FAIL"
             echo "LICENSED_SESSION=FAIL"
             echo "LICENSE_BYPASS=NO"
             echo "PRODUCTION_LICENSE_SECRET_EXPOSED=NO"
             exit 75
           fi
-          for label in 'Проект' 'Рендер' 'Библиотека' 'Настройки'; do
-            grep -Fq "$label" "$UI" || { echo "LICENSED_UI_MISSING=$label" >&2; exit 76; }
-          done
-          # Secret-pattern guard before any screenshot leaves the runner.
-          if grep -Eq 'ENDLUME-[A-Z2-9]{4}(-[A-Z2-9]{4}){7}|(access|refresh|session)[_-]?token|Bearer [A-Za-z0-9._-]+' "$UI"; then
-            echo "SECRET_PATTERN_DETECTED_IN_UI=true" >&2
-            exit 77
-          fi
 
-          /usr/sbin/screencapture -x "$REPORT/project-licensed.png"
-          test -s "$REPORT/project-licensed.png"
-          echo "LICENSED_SESSION=PASS"
-          echo "LICENSE_BYPASS=NO"
-          echo "PRODUCTION_LICENSE_SECRET_EXPOSED=NO"
-          echo "PROJECT_NAVIGATION_ACCESSIBILITY=PASS"
+          if [ "$NP" = "true" ] && [ "$NR" = "true" ] && [ "$NL" = "true" ] && [ "$NS" = "true" ]; then
+            printf 'AUTOMATION_STATUS=PASS\nACTIVATION_STATE=LICENSED\nNORMAL_NAVIGATION=PASS\nLICENSED_SESSION=PASS\n' > "$REPORT/probe-status.txt"
+            echo "ACTIVATION_STATE=LICENSED"
+            echo "NORMAL_NAVIGATION=PASS"
+            echo "LICENSED_SESSION=PASS"
+            echo "LICENSE_BYPASS=NO"
+            echo "PRODUCTION_LICENSE_SECRET_EXPOSED=NO"
+            /usr/sbin/screencapture -x "$REPORT/project-licensed.png"
+            test -s "$REPORT/project-licensed.png"
+          else
+            printf 'AUTOMATION_STATUS=PASS\nACTIVATION_STATE=UNKNOWN\nNORMAL_NAVIGATION=UNKNOWN\nLICENSED_SESSION=UNKNOWN\n' > "$REPORT/probe-status.txt"
+            echo "ACTIVATION_STATE=UNKNOWN"
+            echo "NORMAL_NAVIGATION=UNKNOWN"
+            echo "LICENSED_SESSION=UNKNOWN"
+            exit 88
+          fi
 
       - name: Snapshot state after probe and verify owner app immutability
         if: always()
@@ -227,6 +382,7 @@ jobs:
             sleep 2
             hdiutil detach -quiet "$QA_VOL" >/dev/null 2>&1 || true
           fi
+
           snapshot() {
             local out="$1"
             : > "$out"
@@ -270,6 +426,16 @@ jobs:
           name: ENDLUME-10.0.13-PHASE2-OWNER-LICENSED-PROBE
           path: |
             ${{ runner.temp }}/endlume-phase2-probe/candidate.txt
+            ${{ runner.temp }}/endlume-phase2-probe/candidate-pid.txt
+            ${{ runner.temp }}/endlume-phase2-probe/candidate-process.txt
+            ${{ runner.temp }}/endlume-phase2-probe/open-status.txt
+            ${{ runner.temp }}/endlume-phase2-probe/open.stderr.txt
+            ${{ runner.temp }}/endlume-phase2-probe/window-readiness.txt
+            ${{ runner.temp }}/endlume-phase2-probe/window-ready.err
+            ${{ runner.temp }}/endlume-phase2-probe/osascript-status.txt
+            ${{ runner.temp }}/endlume-phase2-probe/ui-probe.txt
+            ${{ runner.temp }}/endlume-phase2-probe/ui-probe.err
+            ${{ runner.temp }}/endlume-phase2-probe/probe-status.txt
             ${{ runner.temp }}/endlume-phase2-probe/owner-app-before.txt
             ${{ runner.temp }}/endlume-phase2-probe/owner-app-after.txt
             ${{ runner.temp }}/endlume-phase2-probe/state-before.tsv

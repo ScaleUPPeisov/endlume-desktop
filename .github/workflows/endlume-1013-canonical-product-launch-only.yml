@@ -1,0 +1,148 @@
+name: ENDLUME 10.0.13 Canonical Product Launch Only
+
+on:
+  push:
+    branches:
+      - release-fix/endlume-10.0.13-canonical-product-reconstruction
+    paths:
+      - .github/workflows/endlume-1013-canonical-product-launch-only.yml
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: endlume-1013-canonical-product-launch-only
+  cancel-in-progress: true
+
+jobs:
+  isolated-launch:
+    name: Isolated canonical app launch from prior green artifact
+    runs-on: macos-15
+    timeout-minutes: 10
+    steps:
+      - name: Download exact previously built canonical QA artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ENDLUME-CANONICAL-GOOD-PRODUCT-QA
+          path: ${{ runner.temp }}/canonical-source-artifact
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ScaleUPPeisov/endlume-desktop
+          run-id: 38030777284
+
+      - name: Verify exact QA app and launch from auto-mounted /Volumes path
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          SRC="$RUNNER_TEMP/canonical-source-artifact"
+          REPORT="$RUNNER_TEMP/canonical-launch-evidence"
+          UNPACK="$RUNNER_TEMP/canonical-unpacked"
+          DMG="$RUNNER_TEMP/ENDLUME-CANONICAL-QA.dmg"
+          mkdir -p "$REPORT" "$UNPACK"
+
+          test -f "$SRC/ENDLUME-CANONICAL-GOOD-PRODUCT-QA.app.zip"
+          test -f "$SRC/ENDLUME-CANONICAL-GOOD-PRODUCT-QA.app.zip.sha256"
+          (cd "$SRC" && shasum -a 256 -c ENDLUME-CANONICAL-GOOD-PRODUCT-QA.app.zip.sha256)
+          ditto -x -k "$SRC/ENDLUME-CANONICAL-GOOD-PRODUCT-QA.app.zip" "$UNPACK"
+          BUILT_APP="$(find "$UNPACK" -maxdepth 2 -type d -name '*.app' -print -quit)"
+          test -n "$BUILT_APP" -a -d "$BUILT_APP"
+
+          EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$BUILT_APP/Contents/Info.plist")"
+          BID="$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$BUILT_APP/Contents/Info.plist")"
+          VER="$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$BUILT_APP/Contents/Info.plist")"
+          test "$BID" = studio.endlume.desktop
+          test "$VER" = 10.0.11
+          /usr/bin/lipo -archs "$BUILT_APP/Contents/MacOS/$EXE" | grep -qw arm64
+          /usr/bin/codesign --verify --deep --strict "$BUILT_APP"
+
+          if test -e '/Applications/ENDLUME YT Studio PEISOV.app'; then
+            echo 'Unexpected pre-existing canonical app on hosted runner; refusing to touch it.' >&2
+            exit 71
+          fi
+
+          hdiutil create -quiet -size 300m -fs APFS -volname ENDLUME_CANONICAL_QA "$DMG"
+          hdiutil attach -nobrowse -plist "$DMG" > "$RUNNER_TEMP/attach.plist"
+          VOL="$(python3 - "$RUNNER_TEMP/attach.plist" <<'PY'
+          import plistlib,sys
+          with open(sys.argv[1],'rb') as f:
+              p=plistlib.load(f)
+          mounts=[x.get('mount-point') for x in p.get('system-entities',[]) if isinstance(x.get('mount-point'),str)]
+          if not mounts:
+              raise SystemExit('no mount point returned by hdiutil')
+          print(mounts[-1])
+          PY
+          )"
+          case "$VOL" in
+            /Volumes/ENDLUME_CANONICAL_QA*) ;;
+            *) echo "Unexpected mount point: $VOL" >&2; exit 72;;
+          esac
+          echo "AUTO_MOUNT_POINT=$VOL"
+
+          QA_APP="$VOL/ENDLUME-CANONICAL-GOOD-PRODUCT-QA.app"
+          ditto "$BUILT_APP" "$QA_APP"
+          codesign --force --deep --sign - --timestamp=none "$QA_APP"
+          codesign --verify --deep --strict "$QA_APP"
+
+          ICON="$QA_APP/Contents/Resources/icon.icns"
+          test -f "$ICON"
+          sips -s format png "$ICON" --out "$REPORT/application-icon.png" >/dev/null
+
+          open -n "$QA_APP"
+          sleep 8
+          pgrep -f "$QA_APP/Contents/MacOS" > "$REPORT/pid.txt"
+          test -s "$REPORT/pid.txt"
+          test ! -e '/Applications/ENDLUME YT Studio PEISOV.app'
+
+          /usr/sbin/screencapture -x "$REPORT/isolated-launch.png" || true
+          /usr/bin/osascript <<'APPLESCRIPT' > "$REPORT/accessibility.txt" 2>&1 || true
+          tell application "System Events"
+            set ps to application processes whose bundle identifier is "studio.endlume.desktop"
+            if (count of ps) is 0 then
+              log "PROCESS_NOT_FOUND"
+            else
+              tell item 1 of ps
+                set frontmost to true
+                log "PROCESS_FOUND"
+                try
+                  log "WINDOW_COUNT=" & (count of windows)
+                  repeat with w in windows
+                    try
+                      log "WINDOW=" & (name of w as text)
+                    end try
+                  end repeat
+                end try
+              end tell
+            end if
+          end tell
+          APPLESCRIPT
+          cat "$REPORT/accessibility.txt" || true
+
+          cat > "$REPORT/physical-ui-status.txt" <<EOF
+          SOURCE_BUILD_RUN=38030777284
+          SOURCE_ARTIFACT_ID=11661604955
+          SOURCE_PRODUCT_E2E=PASS
+          ISOLATED_LAUNCH=PASS
+          ISOLATED_PATH_PREFIX=$VOL
+          OWNER_APPLICATIONS_APP_MODIFIED=NO
+          APPLICATION_ICON_CAPTURE=PASS
+          FULL_MULTI_SCREEN_QA=BLOCKED
+          BLOCKER=Clean hosted macOS has no valid ENDLUME GUI QA license/session and product source has no authorized frontend license-bypass path. No bypass was added.
+          EOF
+
+          pkill -f "$QA_APP/Contents/MacOS" || true
+          sleep 1
+          hdiutil detach -quiet "$VOL" || true
+          test ! -e '/Applications/ENDLUME YT Studio PEISOV.app'
+
+          echo ISOLATED_QA_LAUNCH=PASS
+          echo OWNER_APPLICATIONS_APP_MODIFIED=NO
+          echo FULL_MULTI_SCREEN_QA=BLOCKED_NO_AUTHORIZED_QA_LICENSE
+
+      - name: Upload isolated launch evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ENDLUME-CANONICAL-GOOD-PRODUCT-LAUNCH-EVIDENCE
+          path: ${{ runner.temp }}/canonical-launch-evidence/
+          if-no-files-found: warn
+          retention-days: 14

@@ -1,0 +1,353 @@
+/* ENDLUME Studio — cinematic premium UI / motion pass.
+   VISUAL ONLY. No render, preview, audio, subscription, updater or project logic.
+   Deliberately avoids backdrop-filter and animated CSS filters for WKWebView frame stability. */
+
+:root{
+  --bg:#080d16;
+  --panel:#0d1421;
+  --panel2:#10192a;
+  --line:rgba(111,128,165,.24);
+  --muted:#93a0b8;
+  --text:#f5f7ff;
+  --blue:#4fc8ff;
+  --violet:#6c63ff;
+  --pink:#9b6cff;
+  --grad:linear-gradient(105deg,#49c7ff 0%,#6766ff 52%,#9b6cff 100%);
+  --motion-ease:cubic-bezier(.2,.75,.25,1);
+  --motion-fast:160ms;
+  --motion-page:240ms;
+  --cinematic-panel:linear-gradient(180deg,rgba(17,26,43,.96),rgba(11,17,30,.985));
+  --cinematic-panel-soft:linear-gradient(180deg,rgba(19,29,48,.88),rgba(12,19,33,.94));
+  --cinematic-border:rgba(115,132,174,.26);
+  --cinematic-border-hover:rgba(116,128,255,.46);
+  --cinematic-shadow:0 18px 44px rgba(0,0,0,.22),inset 0 1px 0 rgba(255,255,255,.026);
+}
+
+html,body,#root{
+  background:#080d16;
+}
+
+body{
+  color:var(--text);
+  -webkit-font-smoothing:antialiased;
+  text-rendering:optimizeLegibility;
+}
+
+.appShell{
+  color:var(--text);
+  background:
+    radial-gradient(980px 520px at 48% -16%,rgba(91,98,255,.14),transparent 67%),
+    radial-gradient(720px 440px at -8% 42%,rgba(53,175,255,.055),transparent 72%),
+    radial-gradient(700px 420px at 108% 76%,rgba(135,86,255,.05),transparent 72%),
+    linear-gradient(180deg,#090f1a 0%,#080d16 46%,#070c14 100%);
+}
+
+.topbar{
+  border-bottom-color:rgba(103,119,155,.18);
+  background:linear-gradient(180deg,rgba(10,16,28,.985),rgba(8,13,23,.965));
+  box-shadow:0 10px 30px rgba(0,0,0,.12),inset 0 -1px 0 rgba(255,255,255,.012);
+}
+
+.brandText b{
+  color:#f7f8ff;
+  font-weight:720;
+  letter-spacing:.72px;
+}
+.brandText small{color:#72819d}
+
+.content{
+  background:transparent;
+}
+
+.projectColumn{
+  padding-top:34px;
+}
+
+.sectionBlock{
+  margin-top:28px;
+}
+.sectionTitle{
+  color:#929eb6;
+  font-size:9px;
+  font-weight:760;
+  letter-spacing:.105em;
+  text-transform:uppercase;
+  margin-bottom:11px;
+}
+
+/* Calm premium surfaces — glass-like depth without expensive blur. */
+.renderCard,
+.featureRow,
+.selectedFolders,
+.settingsCard,
+.stageCard,
+.systemCard,
+.resultCard,
+.queueCard,
+.usageModeBlock{
+  border-color:var(--cinematic-border);
+  background:var(--cinematic-panel);
+  box-shadow:var(--cinematic-shadow);
+}
+
+.renderCard{
+  border-radius:18px;
+  padding:21px;
+}
+
+.featureRow,
+.selectedFolders,
+.settingsCard,
+.stageCard,
+.systemCard,
+.resultCard{
+  border-radius:15px;
+}
+
+.dropZone,
+.outputPicker{
+  border-color:rgba(107,125,165,.42);
+  background:
+    radial-gradient(360px 120px at 50% 115%,rgba(99,91,255,.07),transparent 72%),
+    linear-gradient(180deg,rgba(15,23,39,.82),rgba(10,16,28,.94));
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.018),0 14px 34px rgba(0,0,0,.12);
+  transition:transform 180ms var(--motion-ease),border-color 180ms var(--motion-ease),background-color 180ms var(--motion-ease)!important;
+}
+.dropZone{border-radius:18px}
+.outputPicker{border-radius:15px}
+.dropZone:hover,
+.outputPicker:hover{
+  transform:translate3d(0,-1px,0);
+  border-color:rgba(112,103,255,.68);
+}
+
+.folderRound,
+.featureIcon{
+  border-color:rgba(104,120,160,.30);
+  background:linear-gradient(180deg,rgba(23,33,54,.94),rgba(15,23,40,.98));
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.028),0 8px 22px rgba(0,0,0,.12);
+}
+
+/* Mode cards keep their exact layout; only surface + interaction language changes. */
+.modeCard{
+  border-radius:16px;
+  border-color:rgba(103,119,158,.29);
+  background:var(--cinematic-panel);
+  box-shadow:0 15px 34px rgba(0,0,0,.15),inset 0 1px 0 rgba(255,255,255,.022);
+  transition:transform 200ms var(--motion-ease),border-color 200ms var(--motion-ease),background-color 200ms var(--motion-ease)!important;
+}
+.modeCard::before{
+  background:
+    radial-gradient(270px 105px at 13% 120%,rgba(62,186,255,.10),transparent 72%),
+    radial-gradient(300px 110px at 90% 118%,rgba(112,91,255,.12),transparent 74%);
+  transition:opacity 200ms var(--motion-ease)!important;
+}
+.modeCard::after{
+  background:linear-gradient(90deg,transparent,#56c9ff 30%,#7770ff 64%,transparent);
+  filter:none!important;
+}
+.modeCard:hover{
+  transform:translate3d(0,-2px,0)!important;
+  border-color:rgba(116,128,255,.42);
+  box-shadow:0 18px 40px rgba(0,0,0,.18),inset 0 1px 0 rgba(255,255,255,.028);
+}
+.modeCard.selected{
+  border-color:rgba(118,105,255,.62);
+  background:
+    radial-gradient(300px 120px at 12% 115%,rgba(68,187,255,.08),transparent 72%),
+    radial-gradient(320px 120px at 88% 115%,rgba(111,89,255,.13),transparent 73%),
+    linear-gradient(180deg,rgba(24,29,49,.98),rgba(16,20,37,.99));
+  box-shadow:0 18px 44px rgba(0,0,0,.20),0 0 0 1px rgba(106,94,255,.12),inset 0 1px 0 rgba(255,255,255,.032);
+}
+.modeVisual{
+  border-radius:12px;
+  border-color:rgba(102,119,159,.27);
+  background:linear-gradient(180deg,rgba(12,19,32,.98),rgba(8,14,25,.98));
+}
+
+/* Navigation: calmer, softer, no looping shine animation. */
+.topnav{gap:6px}
+.topnav button{
+  height:33px;
+  padding:0 10px;
+  border-radius:10px;
+  border-color:rgba(92,109,149,.22);
+  background:linear-gradient(180deg,rgba(18,27,44,.70),rgba(11,18,31,.76));
+  color:#8f9db8;
+  transition:transform 170ms var(--motion-ease),color 170ms var(--motion-ease),border-color 170ms var(--motion-ease),background-color 170ms var(--motion-ease)!important;
+}
+.topnav button:hover{
+  transform:translate3d(0,-1px,0)!important;
+  color:#eef1fb;
+  border-color:rgba(112,126,166,.40);
+  background:linear-gradient(180deg,rgba(23,33,53,.92),rgba(14,21,36,.92));
+}
+.topnav button.active{
+  color:#fff;
+  border-color:rgba(116,105,255,.52);
+  background:
+    radial-gradient(130px 46px at 50% 120%,rgba(91,97,255,.16),transparent 70%),
+    linear-gradient(180deg,rgba(27,34,57,.98),rgba(16,22,40,.98));
+  box-shadow:0 8px 22px rgba(0,0,0,.18),0 0 0 1px rgba(99,90,255,.08),inset 0 1px 0 rgba(255,255,255,.036);
+}
+.topnav button::after{animation:none!important;filter:none!important;opacity:.74!important}
+.topnav button .icon,.topnav button:hover .icon,.topnav button.active .icon{filter:none!important}
+
+/* Primary and secondary actions. */
+.primaryQueue,
+.endlumeAction,
+.settingsAction{
+  border-radius:11px;
+  transition:transform 160ms var(--motion-ease),opacity 160ms var(--motion-ease),border-color 160ms var(--motion-ease),background-color 160ms var(--motion-ease)!important;
+}
+.primaryQueue{
+  background:linear-gradient(105deg,#4cc6ff 0%,#6867ff 56%,#8d67ff 100%);
+  box-shadow:0 10px 28px rgba(92,91,255,.20),inset 0 1px 0 rgba(255,255,255,.18);
+}
+.primaryQueue:not(:disabled):hover,
+.endlumeAction:not(:disabled):hover,
+.settingsAction:not(:disabled):hover{
+  transform:translate3d(0,-1px,0)!important;
+}
+
+.appShell button:not(:disabled):active,
+.activationScreen button:not(:disabled):active{
+  transform:translate3d(0,1px,0) scale(.985)!important;
+  transition-duration:110ms!important;
+}
+
+/* Inputs / controls: consistent focus treatment with no geometry change. */
+.appShell input,
+.appShell select,
+.editorControls input,
+.editorControls select{
+  border-color:rgba(100,117,156,.30);
+  background:linear-gradient(180deg,rgba(17,26,43,.96),rgba(11,18,31,.98));
+  color:#edf1fb;
+}
+.appShell input:focus,
+.appShell select:focus,
+.appShell input:focus-visible,
+.appShell select:focus-visible{
+  outline:none;
+  border-color:rgba(113,103,255,.72)!important;
+  box-shadow:0 0 0 3px rgba(103,91,255,.10);
+}
+.appShell button:focus-visible{
+  outline:none;
+  box-shadow:0 0 0 3px rgba(103,91,255,.12)!important;
+}
+
+.chipRow button,
+.durationPresets button,
+.featureRow button,
+.rowButtons button,
+.backProject{
+  border-color:rgba(96,112,151,.30);
+  background:linear-gradient(180deg,rgba(20,29,47,.92),rgba(13,20,34,.97));
+}
+.chipRow button.selected,
+.durationPresets button.selected{
+  border-color:rgba(112,99,255,.58);
+  background:linear-gradient(180deg,rgba(42,41,85,.90),rgba(25,26,59,.96));
+  box-shadow:0 6px 18px rgba(80,76,190,.12),inset 0 1px 0 rgba(255,255,255,.035);
+}
+
+.bigValue,
+.progressNumber{
+  border-color:rgba(105,96,255,.42);
+  background:linear-gradient(180deg,rgba(20,30,50,.98),rgba(13,20,36,.99));
+  color:#69d2ff;
+  text-shadow:none;
+  box-shadow:0 10px 25px rgba(0,0,0,.16),inset 0 1px 0 rgba(255,255,255,.025);
+}
+
+.range{
+  background:linear-gradient(90deg,#52c8ff 0%,#7068ff var(--pct),rgba(75,88,118,.42) var(--pct),rgba(75,88,118,.42) 100%);
+  box-shadow:none;
+}
+.range::-webkit-slider-thumb{
+  background:linear-gradient(145deg,#8178ff,#5e59e8);
+  border-color:#aaa4ff;
+  box-shadow:0 0 0 3px rgba(108,99,255,.10);
+}
+
+.projectBottom{
+  border-top-color:rgba(96,112,150,.20);
+  background:linear-gradient(180deg,rgba(10,16,28,.975),rgba(8,13,23,.992));
+  box-shadow:0 -16px 34px rgba(0,0,0,.16),inset 0 1px 0 rgba(255,255,255,.015);
+}
+
+.renderHeader,
+.simpleHeader,
+.editorHeader{
+  border-color:rgba(95,112,150,.19);
+}
+.renderHeader h1,
+.simpleHeader h1,
+.editorHeader h1,
+.selectedRenderHead h2{
+  letter-spacing:-.028em;
+  color:#f7f8ff;
+}
+
+.queueCard{
+  transition:transform 190ms var(--motion-ease),border-color 190ms var(--motion-ease),background-color 190ms var(--motion-ease)!important;
+}
+.queueCard:hover{
+  transform:translate3d(0,-1px,0);
+  border-color:rgba(111,124,168,.36);
+}
+.queueCard.active{
+  border-color:rgba(111,99,255,.58);
+  background:linear-gradient(180deg,rgba(28,31,57,.96),rgba(18,21,42,.98));
+}
+.queueMini,
+.mainProgress{
+  background:rgba(61,73,100,.38);
+  border-color:rgba(91,108,145,.20);
+}
+.queueMini i,
+.mainProgress i{
+  background:var(--grad);
+}
+
+.previewStage,
+.liveComposite{
+  background:
+    radial-gradient(520px 300px at 50% 48%,rgba(65,77,121,.12),transparent 74%),
+    #060a11;
+}
+.liveGpuOverlay{
+  border-color:rgba(116,105,255,.82);
+  box-shadow:0 0 0 1px rgba(72,189,255,.10),0 0 16px rgba(92,83,255,.10);
+}
+
+/* Page changes remain opacity-only so Project's fixed footer cannot be captured by a transformed ancestor. */
+.pageScene{
+  animation:endlumeCinematicPageIn 240ms var(--motion-ease) both!important;
+  transform:none!important;
+  filter:none!important;
+  perspective:none!important;
+  contain:none!important;
+}
+@keyframes endlumeCinematicPageIn{
+  from{opacity:.52}
+  to{opacity:1}
+}
+
+.editorPage,
+.settingsCard,
+.updateNotice{
+  animation-duration:210ms!important;
+  animation-timing-function:var(--motion-ease)!important;
+}
+details[open]>div{
+  animation-duration:180ms!important;
+  animation-timing-function:var(--motion-ease)!important;
+}
+
+@media (prefers-reduced-motion:reduce){
+  .pageScene,.editorPage,.settingsCard,.updateNotice,details[open]>div{animation:none!important}
+  .modeCard,.dropZone,.outputPicker,.queueCard,.topnav button,.primaryQueue,.endlumeAction,.settingsAction{transition:none!important}
+}

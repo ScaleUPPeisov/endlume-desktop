@@ -20,6 +20,7 @@ let status=0;
 try{
   if(process.platform==='darwin'&&macTarget&&(command==='build'||command==='dev')){
     status=exec(process.execPath,[path.join(scriptDir,'prepare-macos-ffmpeg-runtime.mjs')]);
+    if(status===0)status=exec(process.execPath,[path.join(scriptDir,'sign-macos-ffmpeg-runtime.mjs')]);
   }
   if(status===0) status=exec(tauriBin,args);
   if(status===0&&process.platform==='darwin'&&macTarget&&command==='build') status=exec(process.execPath,[path.join(scriptDir,'verify-macos-ffmpeg-bundle.mjs')]);

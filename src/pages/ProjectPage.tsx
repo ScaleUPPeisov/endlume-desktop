@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { api } from '../tauri';
 import { useApp } from '../store';
-import type { LoopMode, RenderProject } from '../types';
+import type { EffectPreset, LoopMode, RenderProject, SubscribePreset } from '../types';
 import { Icon,Range,Toggle } from '../components/ui';
 
 const resolutions=[{w:1920,h:1080,label:'1080P FULL HD'},{w:2560,h:1440,label:'2K QHD'},{w:3840,h:2160,label:'4K UHD'}];
@@ -16,17 +16,42 @@ const modes:Array<{id:LoopMode;title:string;subtitle:string;icon:'image'|'crossf
 type FeatureFlags={subscribe:boolean;effects:boolean;ambient:boolean};
 const featureKey='endlume-feature-flags-v2';
 function loadFeatures():FeatureFlags{try{return {...{subscribe:true,effects:true,ambient:true},...JSON.parse(localStorage.getItem(featureKey)||'{}')}}catch{return {subscribe:true,effects:true,ambient:true}}}
+const NO_EFFECT_SELECTION='__none__';
 const imageExt=new Set(['jpg','jpeg','png','webp','bmp','tif','tiff','heic','avif']);
 function isImagePath(path:string){const clean=path.split(/[?#]/)[0]||'';const ext=clean.includes('.')?clean.split('.').pop()?.toLowerCase()||'':'';return imageExt.has(ext)}
+function effectNeedsRepair(effect:EffectPreset){return effect.assetState==='repair-required'||!effect.source?.trim()}
+function effectIsSelectable(effect:EffectPreset){return effect.enabled&&effect.usageMode!=='off'&&!effectNeedsRepair(effect)}
+function effectStatusLabel(effect:EffectPreset){
+  if(effectNeedsRepair(effect))return '⚠ REPAIR REQUIRED';
+  if(!effect.enabled||effect.usageMode==='off')return 'ВЫКЛЮЧЕН';
+  return 'ГОТОВ';
+}
 
 export function ProjectPage(){
   const {
     draftProjects,setDraftProjects,invalidProjects,setInvalidProjects,appendProjects,
-    settings,patchSettings,effects,subscribes,ambient,setAmbient,ambientSettings,patchAmbientSettings,openEditor,setPage,setLastRoot,setPreviewProjectPath
+    settings,patchSettings,effects,subscribes,ambient,setAmbient,ambientSettings,patchAmbientSettings,openEditor,setPage,setLastRoot,setPreviewProjectPath,
+    selectedEffectByPath,setSelectedEffectForProject
   }=useApp();
   const [busy,setBusy]=useState(false),[scanNote,setScanNote]=useState(''),[features,setFeatures]=useState<FeatureFlags>(loadFeatures);
   const librarySaveQueue=useRef<Promise<void>>(Promise.resolve());
   const setFeature=(key:keyof FeatureFlags,value:boolean)=>setFeatures(prev=>{const next={...prev,[key]:value};localStorage.setItem(featureKey,JSON.stringify(next));return next});
+  const selectableEffects=effects.filter(effectIsSelectable);
+  const repairRequiredEffects=effects.filter(effectNeedsRepair);
+  const repairRequiredSubscribes=subscribes.filter(effectNeedsRepair);
+  const activeSubscribesReady=subscribes.filter(item=>item.enabled&&item.usageMode!=='off'&&!effectNeedsRepair(item));
+  const effectIdCounts=effects.reduce<Record<string,number>>((acc,e)=>{const id=e.id.trim();if(id)acc[id]=(acc[id]||0)+1;return acc},{});
+  const duplicateEffectIds=Object.entries(effectIdCounts).filter(([,count])=>count>1).map(([id])=>id);
+  const selectedEffectIdForPath=(path:string)=>selectedEffectByPath[path]||'';
+  const selectionIssueForPath=(path:string)=>{
+    const selectedId=selectedEffectIdForPath(path);
+    if(!selectedId||selectedId===NO_EFFECT_SELECTION)return '';
+    const effect=effects.find(item=>item.id===selectedId);
+    if(!effect)return `Сохранённый effect ID ${selectedId} больше не существует после migration. ENDLUME не будет угадывать замену — выберите эффект заново.`;
+    if(effectNeedsRepair(effect))return `${effect.name}: ${effect.assetError||'файл эффекта недоступен; требуется восстановить источник.'}`;
+    if(!effect.enabled||effect.usageMode==='off')return `${effect.name}: эффект выключен. Включите его или выберите другой.`;
+    return '';
+  };
   const persistCurrentLibrary=()=>{
     librarySaveQueue.current=librarySaveQueue.current.catch(()=>undefined).then(()=>{
       const state=useApp.getState();
@@ -34,20 +59,41 @@ export function ProjectPage(){
     });
     return librarySaveQueue.current;
   };
-  const saveAmbient=async(next?:string)=>{
-    setAmbient(next);
-    await persistCurrentLibrary();
+  const saveAmbient=async(next?:string)=>{setAmbient(next);await persistCurrentLibrary();};
+  const saveAmbientSettings=async(patch:Partial<typeof ambientSettings>)=>{patchAmbientSettings(patch);await persistCurrentLibrary();};
+  const repairEffectSource=async(effect:EffectPreset)=>{
+    const source=await api.chooseVideo('effects');
+    if(!source)return;
+    const previous=effects;
+    const next=effects.map(item=>item.id===effect.id?{...item,source,assetState:'ready' as const,assetError:undefined,cacheReady:false,cacheKey:undefined}:item);
+    useApp.getState().setEffects(next);
+    const state=useApp.getState();
+    try{
+      await api.saveLibrary({effects:next,subscribes:state.subscribes,ambient:state.ambient,ambientSettings:state.ambientSettings});
+    }catch(error){
+      useApp.getState().setEffects(previous);
+      await api.showError(`Не удалось сохранить восстановленный файл эффекта.\n${String(error)}`);
+    }
   };
-  const saveAmbientSettings=async(patch:Partial<typeof ambientSettings>)=>{
-    patchAmbientSettings(patch);
-    await persistCurrentLibrary();
+  const repairSubscribeSource=async(subscribe:SubscribePreset)=>{
+    const source=await api.chooseVideo('subscribe');
+    if(!source)return;
+    const previous=subscribes;
+    const next=subscribes.map(item=>item.id===subscribe.id?{...item,source,assetState:'ready' as const,assetError:undefined,cacheReady:false,cacheKey:undefined}:item);
+    useApp.getState().setSubscribes(next);
+    const state=useApp.getState();
+    try{
+      await api.saveLibrary({effects:state.effects,subscribes:next,ambient:state.ambient,ambientSettings:state.ambientSettings});
+    }catch(error){
+      useApp.getState().setSubscribes(previous);
+      await api.showError(`Не удалось сохранить восстановленный файл Subscribe.\n${String(error)}`);
+    }
   };
 
   const scanRoots=useCallback(async(roots:string[])=>{
     if(busy||!roots.length)return;setBusy(true);setScanNote('');setInvalidProjects([]);setDraftProjects([]);setPreviewProjectPath(undefined);
     try{
-      const all:any[]=[];const bad:any[]=[];
-      const savedAnchors=useApp.getState().sceneAnchorsByPath;
+      const all:any[]=[];const bad:any[]=[];const savedAnchors=useApp.getState().sceneAnchorsByPath;
       for(const root of roots){
         setLastRoot(root);
         try{
@@ -68,9 +114,7 @@ export function ProjectPage(){
 
   useEffect(()=>{
     let unlisten:(()=>void)|undefined;
-    getCurrentWebviewWindow().onDragDropEvent(event=>{
-      if(event.payload.type==='drop'&&event.payload.paths?.length){void scanRoots(event.payload.paths)}
-    }).then(fn=>{unlisten=fn}).catch(()=>{});
+    getCurrentWebviewWindow().onDragDropEvent(event=>{if(event.payload.type==='drop'&&event.payload.paths?.length){void scanRoots(event.payload.paths)}}).then(fn=>{unlisten=fn}).catch(()=>{});
     return()=>unlisten?.();
   },[scanRoots]);
 
@@ -78,24 +122,34 @@ export function ProjectPage(){
     if(!draftProjects.length)return;
     if(!settings.outputDir){await api.showError('Сначала выберите папку результата.');return}
     try{
-      try{
-        const power=await api.powerStatus();
-        if(power.supported&&power.onBattery){
-          await api.showInfo(`MacBook работает от аккумулятора${power.percent!=null?` (${power.percent}%)`:''}. ENDLUME продолжит рендер на полной мощности — подключите питание, если очередь большая.`);
-        }
-      }catch{}
-      const activeEffects=features.effects?effects.filter(e=>e.enabled):[];
-      const activeSubscribes=features.subscribe?subscribes.filter(e=>e.enabled):[];
+      try{const power=await api.powerStatus();if(power.supported&&power.onBattery){await api.showInfo(`MacBook работает от аккумулятора${power.percent!=null?` (${power.percent}%)`:''}. ENDLUME продолжит рендер на полной мощности — подключите питание, если очередь большая.`);}}catch{}
+      const effectRegistry=features.effects?selectableEffects:[];
+      if(features.effects&&duplicateEffectIds.length){throw new Error(`Effects registry повреждён: повторяются ID ${duplicateEffectIds.join(', ')}. ENDLUME не будет угадывать или рендерить не тот эффект.`);}
+      const brokenActiveSubscribes=features.subscribe?subscribes.filter(item=>item.enabled&&item.usageMode!=='off'&&effectNeedsRepair(item)):[];
+      if(brokenActiveSubscribes.length){throw new Error(`Subscribe требует восстановления файла: ${brokenActiveSubscribes.map(item=>item.name).join(', ')}. ENDLUME не будет запускать рендер с отсутствующим Subscribe asset.`);}
+      const activeSubscribes=features.subscribe?activeSubscribesReady:[];
       const activeAmbient=features.ambient?ambient:undefined;
-      const fastStaticProjects=draftProjects.filter(p=>p.media.length>0&&p.media.every(isImagePath)&&(p.media.length===1||(activeEffects.length===0&&activeSubscribes.length===0)));
-      if(fastStaticProjects.length&&(settings.crossfadeSec>0||settings.normalizeLufs)){
-        await api.showInfo(`Processed Audio включён для ${fastStaticProjects.length} статичных проектов. Быстрый visual/manifest pipeline сохраняется, но музыка будет реально декодирована и обработана (crossfade / LUFS), поэтому MP3 packet-copy отключается и рендер может быть медленнее или больше. Чтобы получить Original MP3 bitstream-copy, выключите audio processing.`);
+      const resolved=draftProjects.map(project=>{
+        if(!features.effects)return {project,selectedEffect:undefined};
+        const selectedId=selectedEffectIdForPath(project.path);
+        if(!selectedId){throw new Error(`Выберите эффект для проекта «${project.name}» или явно укажите «Без эффекта».`);}
+        if(selectedId===NO_EFFECT_SELECTION)return {project,selectedEffect:undefined};
+        const persistedEffect=effects.find(effect=>effect.id===selectedId);
+        if(!persistedEffect){throw new Error(`Сохранённый effect ID ${selectedId} для проекта «${project.name}» больше не существует. Возможна migration старого duplicate ID. ENDLUME не будет угадывать замену — выберите эффект заново.`);}
+        if(effectNeedsRepair(persistedEffect)){throw new Error(`Эффект «${persistedEffect.name}» (${persistedEffect.id}) требует восстановления файла. ${persistedEffect.assetError||'Выберите исходный файл заново в настройках Effects.'}`);}
+        if(!persistedEffect.enabled||persistedEffect.usageMode==='off'){throw new Error(`Эффект «${persistedEffect.name}» (${persistedEffect.id}) выключен. Включите его или выберите другой эффект.`);}
+        const selectedEffect=effectRegistry.find(effect=>effect.id===selectedId);
+        if(!selectedEffect){throw new Error(`Эффект ${selectedId} для проекта «${project.name}» недоступен. ENDLUME не будет подставлять другой эффект.`);}
+        return {project,selectedEffect};
+      });
+      const fastStaticProjects=resolved.filter(({project,selectedEffect})=>project.media.length>0&&project.media.every(isImagePath)&&(project.media.length===1||(!selectedEffect&&activeSubscribes.length===0)));
+      if(fastStaticProjects.length&&(settings.crossfadeSec>0||settings.normalizeLufs||!!activeAmbient)){
+        await api.showInfo(`Processed Audio включён для ${fastStaticProjects.length} статичных проектов. Быстрый visual/manifest pipeline сохраняется, но музыка будет реально декодирована и обработана (crossfade / LUFS / ambient), поэтому MP3 packet-copy отключается и рендер может быть медленнее или больше. Чтобы получить Original MP3 bitstream-copy, выключите audio processing.`);
       }
       const stamp=Date.now().toString(36);
-      const queuedProjects=draftProjects.map((p,i)=>({...p,id:`${p.id}-${stamp}-${i}-${Math.random().toString(36).slice(2,8)}`,status:'queued' as const,progress:0,stage:'Ожидает в очереди',elapsedSec:0}));
-      await api.enqueue(queuedProjects,settings,activeEffects,activeSubscribes,activeAmbient,ambientSettings);
-      appendProjects(queuedProjects);
-      setDraftProjects([]);setPreviewProjectPath(undefined);setInvalidProjects([]);setScanNote('');setPage('render');
+      const queuedProjects=resolved.map(({project,selectedEffect},i)=>({...project,selectedEffectId:selectedEffect?.id||NO_EFFECT_SELECTION,id:`${project.id}-${stamp}-${i}-${Math.random().toString(36).slice(2,8)}`,status:'queued' as const,progress:0,stage:'Ожидает в очереди',elapsedSec:0}));
+      await api.enqueue(queuedProjects,settings,effectRegistry,activeSubscribes,activeAmbient,ambientSettings);
+      appendProjects(queuedProjects);setDraftProjects([]);setPreviewProjectPath(undefined);setInvalidProjects([]);setScanNote('');setPage('render');
     }catch(e){await api.showError(String(e))}
   };
 
@@ -113,9 +167,7 @@ export function ProjectPage(){
 
     <section className="sectionBlock">
       <div className="sectionTitle">РЕЖИМ ЗАЦИКЛИВАНИЯ</div>
-      <div className="modeGrid">{modes.map(m=><button key={m.id} className={`modeCard ${settings.loopMode===m.id?'selected':''}`} onClick={()=>patchSettings({loopMode:m.id})}>
-        <span className="modeVisual"><Icon name={m.icon}/></span><span><b>{m.title}</b><small>{m.subtitle}</small></span>
-      </button>)}</div>
+      <div className="modeGrid">{modes.map(m=><button key={m.id} className={`modeCard ${settings.loopMode===m.id?'selected':''}`} onClick={()=>patchSettings({loopMode:m.id})}><span className="modeVisual"><Icon name={m.icon}/></span><span><b>{m.title}</b><small>{m.subtitle}</small></span></button>)}</div>
     </section>
 
     <section className="sectionBlock">
@@ -125,29 +177,31 @@ export function ProjectPage(){
         <div className="optionGroup"><span>FPS</span><div className="chipRow">{[24,30,60].map(v=><button key={v} className={settings.fps===v?'selected':''} onClick={()=>patchSettings({fps:v as 24|30|60})}>{v}</button>)}</div></div>
         <div className="optionGroup"><span>Кодек</span><div className="chipRow"><button className={settings.codec==='h264'?'selected':''} onClick={()=>patchSettings({codec:'h264'})}>H.264</button><button className={settings.codec==='h265'?'selected':''} onClick={()=>patchSettings({codec:'h265'})}>H.265</button></div></div>
         <div className="optionGroup"><span>Пресет</span><div className="chipRow">{(['ultrafast','superfast','fast','medium'] as const).map(v=><button key={v} className={settings.preset===v?'selected':''} onClick={()=>patchSettings({preset:v})}>{v.toUpperCase()}</button>)}</div></div>
-
         <div className="bigControl"><div><b>Длительность</b><small>Целевое время финального видео</small></div><div className="bigValue">{settings.durationHours} ч</div><Range value={settings.durationHours} min={.5} max={12} step={.5} onChange={v=>patchSettings({durationHours:v})} minLabel="0.5 ч" maxLabel="12 ч"/></div>
         <div className="durationPresets">{[1,1.5,2,3,4,8,10,12].map(v=><button className={settings.durationHours===v?'selected':''} key={v} onClick={()=>patchSettings({durationHours:v})}>{v}ч</button>)}</div>
         <div className="bigControl"><div><b>Битрейт</b><small>Для обычных видео-проектов. Для статичного проекта ENDLUME автоматически выбирает компактный режим без жёсткого ухудшения качества.</small></div><div className="bigValue">{settings.bitrateMbps} Мбит/с</div><Range value={settings.bitrateMbps} min={1} max={100} onChange={v=>patchSettings({bitrateMbps:v})} minLabel="1 Мбит/с" maxLabel="100 Мбит/с"/></div>
         <div className="bigControl compactControl"><div><b>Кроссфейд между треками</b><small>{settings.crossfadeSec>0?'Processed Audio: переход реально сводится; MP3 packet-copy отключён. Быстрый static visual/manifest path остаётся, но обработка музыки может занять больше времени.':'Original Audio: совместимые MP3 идут bitstream-copy без повторного кодирования. Fast static path сохраняет музыку в исходном виде.'}</small></div><div className="bigValue small">{settings.crossfadeSec>0?`${settings.crossfadeSec} сек`:'Выкл'}</div><Range value={settings.crossfadeSec} min={0} max={10} step={0.5} onChange={v=>patchSettings({crossfadeSec:v})} minLabel="Выкл" maxLabel="10 сек"/></div><div className="durationPresets"><button className={settings.crossfadeSec===0?'selected':''} onClick={()=>patchSettings({crossfadeSec:0})}>ВЫКЛ</button>{[1,2,3,5,7,10].map(v=><button className={settings.crossfadeSec===v?'selected':''} key={`cf-${v}`} onClick={()=>patchSettings({crossfadeSec:v})}>{v}с</button>)}</div>
-
-        <div className="toggles">
-          <Toggle checked={settings.normalizeLufs} onChange={v=>patchSettings({normalizeLufs:v})} label="Нормализация звука до -14 LUFS"/>
-          <Toggle checked={settings.durationMode==='whole-track'} onChange={v=>patchSettings({durationMode:v?'whole-track':'exact'})} label="Не обрезать последнюю песню" help="ENDLUME может увеличить итог на несколько минут, чтобы композиция закончилась естественно"/>
-          <Toggle checked={settings.encoderPreference==='auto'} onChange={v=>patchSettings({encoderPreference:v?'auto':'quality'})} label="Автовыбор самого быстрого движка" help="NVENC / QSV / AMF / Apple VideoToolbox / CPU"/>
-        </div>
+        <div className="toggles"><Toggle checked={settings.normalizeLufs} onChange={v=>patchSettings({normalizeLufs:v})} label="Нормализация звука до -14 LUFS"/><Toggle checked={settings.durationMode==='whole-track'} onChange={v=>patchSettings({durationMode:v?'whole-track':'exact'})} label="Не обрезать последнюю песню" help="ENDLUME может увеличить итог на несколько минут, чтобы композиция закончилась естественно"/><Toggle checked={settings.encoderPreference==='auto'} onChange={v=>patchSettings({encoderPreference:v?'auto':'quality'})} label="Автовыбор самого быстрого движка" help="NVENC / QSV / AMF / Apple VideoToolbox / CPU"/></div>
       </div>
     </section>
 
     <section className="sectionBlock">
       <div className="sectionTitle">КНОПКА SUBSCRIBE</div>
-      <div className="featureRow"><span className="featureIcon pink"><Icon name="subscribe"/></span><div><b>Subscribe Button</b><small>{!features.subscribe?'Отключено для текущих рендеров':subscribes.filter(s=>s.enabled).length?`Активно пресетов: ${subscribes.filter(s=>s.enabled).length}`:'Не настроено'}</small></div><div className="rowButtons"><button onClick={()=>setFeature('subscribe',!features.subscribe)}>{features.subscribe?'ВЫКЛЮЧИТЬ':'ВКЛЮЧИТЬ'}</button><button onClick={()=>openEditor({kind:'subscribe'})}>НАСТРОИТЬ →</button></div></div>
+      <div className="featureRow"><span className="featureIcon pink"><Icon name="subscribe"/></span><div><b>Subscribe Button</b><small>{!features.subscribe?'Отключено для текущих рендеров':subscribes.length?`В библиотеке: ${subscribes.length} • активно и готово: ${activeSubscribesReady.length}${repairRequiredSubscribes.length?` • восстановить: ${repairRequiredSubscribes.length}`:''}`:'Не настроено'}</small></div><div className="rowButtons"><button onClick={()=>setFeature('subscribe',!features.subscribe)}>{features.subscribe?'ВЫКЛЮЧИТЬ':'ВКЛЮЧИТЬ'}</button><button onClick={()=>openEditor({kind:'subscribe'})}>НАСТРОИТЬ →</button></div></div>
+      {features.subscribe&&repairRequiredSubscribes.length>0&&<div className="validationBox"><b>Subscribe требует восстановления:</b>{repairRequiredSubscribes.map((item,index)=><div key={`repair-subscribe-${item.id}-${index}`}><strong>{item.name}</strong> — ⚠ REPAIR REQUIRED{item.assetError?` • ${item.assetError}`:''} <button onClick={()=>void repairSubscribeSource(item)}>ВОССТАНОВИТЬ ФАЙЛ</button></div>)}</div>}
     </section>
 
     <section className="sectionBlock">
       <div className="sectionTitle">ЭФФЕКТЫ</div>
-      <div className="featureRow"><span className="featureIcon blue"><Icon name="effects"/></span><div><b>Набор эффектов поверх видео</b><small>{!features.effects?'Отключено для текущих рендеров':effects.filter(e=>e.enabled).length?`Активно: ${effects.filter(e=>e.enabled).length} • сохранено: ${effects.length}`:'Эффекты не выбраны'}</small></div><div className="rowButtons"><button onClick={()=>setFeature('effects',!features.effects)}>{features.effects?'ВЫКЛЮЧИТЬ':'ВКЛЮЧИТЬ'}</button><button onClick={()=>openEditor({kind:'effects'})}>НАСТРОИТЬ →</button></div></div>
+      <div className="featureRow"><span className="featureIcon blue"><Icon name="effects"/></span><div><b>Эффект для каждого проекта</b><small>{!features.effects?'Отключено для текущих рендеров':effects.length?`В библиотеке: ${effects.length} • доступно: ${selectableEffects.length}${repairRequiredEffects.length?` • восстановить: ${repairRequiredEffects.length}`:''}`:'Эффекты в библиотеке не настроены'}</small></div><div className="rowButtons"><button onClick={()=>setFeature('effects',!features.effects)}>{features.effects?'ВЫКЛЮЧИТЬ':'ВКЛЮЧИТЬ'}</button><button onClick={()=>openEditor({kind:'effects'})}>НАСТРОИТЬ →</button></div></div>
+      {features.effects&&repairRequiredEffects.length>0&&<div className="validationBox"><b>Effects требуют восстановления:</b>{repairRequiredEffects.map((effect,index)=><div key={`repair-${effect.id}-${index}`}><strong>{effect.name}</strong> — ⚠ REPAIR REQUIRED{effect.assetError?` • ${effect.assetError}`:''} <button onClick={()=>void repairEffectSource(effect)}>ВОССТАНОВИТЬ ФАЙЛ</button></div>)}</div>}
+      {features.effects&&duplicateEffectIds.length>0&&<div className="validationBox"><b>Effects registry заблокирован:</b><div>Одинаковый ID назначен нескольким эффектам: {duplicateEffectIds.join(', ')}. Рендер с эффектами запрещён, чтобы ENDLUME не подставил другой эффект.</div></div>}
+      {features.effects&&draftProjects.length>0&&<div className="renderCard">
+        <div className="optionGroup"><span>Применить ко всем найденным проектам</span><div className="chipRow"><button onClick={()=>draftProjects.forEach(p=>setSelectedEffectForProject(p.path,NO_EFFECT_SELECTION))}>БЕЗ ЭФФЕКТА</button>{effects.map((effect,index)=>{const selectable=effectIsSelectable(effect)&&!duplicateEffectIds.includes(effect.id);return <button key={`all-${effect.id}-${index}`} disabled={!selectable} title={effect.assetError||effectStatusLabel(effect)} onClick={()=>selectable&&draftProjects.forEach(p=>setSelectedEffectForProject(p.path,effect.id))}>{effect.name} • {effectStatusLabel(effect)}</button>})}</div></div>
+        {draftProjects.map(project=>{const selectionIssue=selectionIssueForPath(project.path);return <div className="optionGroup" key={`effect-${project.path}`}><span>{project.name}</span><div className="chipRow"><button className={selectedEffectIdForPath(project.path)===NO_EFFECT_SELECTION?'selected':''} onClick={()=>setSelectedEffectForProject(project.path,NO_EFFECT_SELECTION)}>БЕЗ ЭФФЕКТА</button>{effects.map((effect,index)=>{const duplicate=duplicateEffectIds.includes(effect.id);const selectable=effectIsSelectable(effect)&&!duplicate;return <button key={`${project.path}-${effect.id}-${index}`} disabled={!selectable} title={effect.assetError||effectStatusLabel(effect)} className={selectedEffectIdForPath(project.path)===effect.id&&!duplicate?'selected':''} onClick={()=>selectable&&setSelectedEffectForProject(project.path,effect.id)}>{effect.name} • {effectStatusLabel(effect)}</button>})}</div>{selectionIssue&&<small>⚠ {selectionIssue}</small>}</div>})}
+      </div>}
     </section>
+
     <section className="sectionBlock">
       <div className="sectionTitle">BACKGROUND MUSIC</div>
       <div className="featureRow"><span className="featureIcon"><Icon name="ambient"/></span><div><b>Фоновая музыка</b><small>{!features.ambient?'Отключено для текущих рендеров':ambient||'Не выбрана'}</small></div><div className="rowButtons"><button onClick={()=>setFeature('ambient',!features.ambient)}>{features.ambient?'ВЫКЛЮЧИТЬ':'ВКЛЮЧИТЬ'}</button><button onClick={async()=>{const p=await api.chooseAmbient();if(p)await saveAmbient(p)}}>ВЫБРАТЬ</button>{ambient&&<button className="dangerText" onClick={()=>void saveAmbient(undefined)}>УДАЛИТЬ</button>}</div></div>

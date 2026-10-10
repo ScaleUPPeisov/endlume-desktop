@@ -12,6 +12,7 @@ DONE_SENTINEL="/tmp/ENDLUME_PHASE2_OWNER_QA_DONE"
 FAIL_SENTINEL="/tmp/ENDLUME_PHASE2_LICENSE_FAIL"
 EXPECTED_VERSION="10.0.11"
 EXPECTED_BUNDLE_ID="studio.endlume.desktop"
+MOUNT_OWNED=NO
 
 rm -rf "$REPORT" "$SRC" "$UNPACK" "$DMG"
 mkdir -p "$REPORT" "$SRC" "$UNPACK"
@@ -19,7 +20,7 @@ rm -f "$DONE_SENTINEL" "$FAIL_SENTINEL"
 
 cleanup() {
   set +e
-  if /sbin/mount | grep -Fq " on $MOUNT "; then
+  if [ "$MOUNT_OWNED" = YES ] && /sbin/mount | grep -Fq " on $MOUNT "; then
     hdiutil detach -quiet "$MOUNT" >/dev/null 2>&1 || true
   fi
 }
@@ -52,21 +53,36 @@ test "$BUNDLE_ID" = "$EXPECTED_BUNDLE_ID"
 test "$VERSION" = "$EXPECTED_VERSION"
 /usr/bin/codesign --verify --deep --strict "$BUILT_APP"
 
+verify_mounted_candidate() {
+  test -d "$QA_APP"
+  local qe qb qv qsha
+  qe="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$QA_APP/Contents/Info.plist")"
+  qb="$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$QA_APP/Contents/Info.plist")"
+  qv="$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$QA_APP/Contents/Info.plist")"
+  qsha="$(shasum -a 256 "$QA_APP/Contents/MacOS/$qe" | awk '{print $1}')"
+  test "$qb" = "$EXPECTED_BUNDLE_ID"
+  test "$qv" = "$EXPECTED_VERSION"
+  test "$qsha" = "$EXPECTED_APP_BIN_SHA256"
+  /usr/bin/codesign --verify --deep --strict "$QA_APP"
+}
+
 # Prepare exact manual QA volume. The workflow does NOT launch the app.
 if /sbin/mount | grep -Fq " on $MOUNT "; then
-  echo "BLOCKED_EXISTING_QA_MOUNT=YES" >&2
-  exit 93
+  if verify_mounted_candidate; then
+    echo "REUSED_EXISTING_QA_MOUNT=YES"
+  else
+    echo "BLOCKED_EXISTING_QA_MOUNT_MISMATCH=YES" >&2
+    exit 93
+  fi
+else
+  mkdir -p "$MOUNT"
+  hdiutil create -quiet -size 350m -fs APFS -volname ENDLUME_CANONICAL_QA "$DMG"
+  hdiutil attach -quiet -nobrowse -mountpoint "$MOUNT" "$DMG"
+  MOUNT_OWNED=YES
+  ditto "$BUILT_APP" "$QA_APP"
+  verify_mounted_candidate
+  echo "PREPARED_NEW_QA_MOUNT=YES"
 fi
-mkdir -p "$MOUNT"
-hdiutil create -quiet -size 350m -fs APFS -volname ENDLUME_CANONICAL_QA "$DMG"
-hdiutil attach -quiet -nobrowse -mountpoint "$MOUNT" "$DMG"
-ditto "$BUILT_APP" "$QA_APP"
-QA_EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$QA_APP/Contents/Info.plist")"
-QA_BIN="$QA_APP/Contents/MacOS/$QA_EXE"
-test "$(shasum -a 256 "$QA_BIN" | awk '{print $1}')" = "$EXPECTED_APP_BIN_SHA256"
-test "$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$QA_APP/Contents/Info.plist")" = "$EXPECTED_BUNDLE_ID"
-test "$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$QA_APP/Contents/Info.plist")" = "$EXPECTED_VERSION"
-/usr/bin/codesign --verify --deep --strict "$QA_APP"
 
 cat > "$REPORT/manual-acceptance-report.txt" <<EOF
 ENDLUME PHASE 2 — MANUAL OWNER FOREGROUND UI ACCEPTANCE
@@ -111,7 +127,6 @@ printf '%s\n' \
   'AFTER MANUAL QA: close candidate, confirm Google/YouTube still signed in, then run: touch /tmp/ENDLUME_PHASE2_OWNER_QA_DONE'
 
 # Keep the mounted QA environment available. No GUI/window discovery of any kind.
-# Wait up to 45 minutes for explicit owner completion/failure sentinel.
 RESULT=""
 for _ in $(seq 1 2700); do
   if [ -f "$FAIL_SENTINEL" ]; then RESULT="LICENSE_FAIL"; break; fi
@@ -142,8 +157,6 @@ if [ "$RESULT" = "LICENSE_FAIL" ]; then
   exit 75
 fi
 
-# OWNER_DONE is an explicit owner confirmation that manual navigation is complete,
-# candidate was closed, and Google/YouTube remained preserved. Screenshots remain owner evidence.
 {
   echo "OWNER_MANUAL_QA_COMPLETED=YES"
   echo "OWNER_STATE=PRESERVED_BY_OWNER_CONFIRMATION"

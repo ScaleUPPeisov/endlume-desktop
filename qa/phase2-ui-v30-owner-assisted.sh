@@ -82,13 +82,12 @@ if /sbin/mount | grep -Fq " on $MOUNT "; then
     verify_mounted_candidate
     echo "POPULATED_EXISTING_QA_MOUNT=YES"
   else
-    # Stale read-only QA mount from an earlier failed preparation. No owner QA is active yet.
     test ! -d "$QA_APP"
     if pgrep -af "$MOUNT" >/dev/null 2>&1; then
       echo "BLOCKED_STALE_QA_MOUNT_IN_USE=YES" >&2
       exit 93
     fi
-    hdiutil detach -quiet "$MOUNT"
+    /usr/sbin/diskutil unmount force "$MOUNT" >/dev/null 2>&1 || hdiutil detach -quiet "$MOUNT"
     prepare_new_mount
   fi
 else

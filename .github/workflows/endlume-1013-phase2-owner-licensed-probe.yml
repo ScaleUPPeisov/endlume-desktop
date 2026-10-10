@@ -1,0 +1,280 @@
+name: ENDLUME 10.0.13 Phase 2 Owner Licensed Probe
+
+on:
+  push:
+    branches:
+      - release-fix/endlume-10.0.13-canonical-product-reconstruction
+    paths:
+      - .github/workflows/endlume-1013-phase2-owner-licensed-probe.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: endlume-1013-phase2-owner-licensed-probe
+  cancel-in-progress: true
+
+env:
+  CANONICAL_PRODUCT_SHA: 3f06c7329bd3821bc160e6d88c5b294fc0d82c2b
+  SOURCE_BUILD_RUN: '38030777284'
+  SOURCE_ARTIFACT_ID: '11661604955'
+  EXPECTED_APP_ZIP_SHA256: 0b374fffa3dbf057620d2f3a5b7919306df474767494ef2daead3bb319afb250
+
+jobs:
+  licensed-probe:
+    name: Owner Mac licensed canonical UI probe
+    runs-on: [self-hosted, macOS, ARM64]
+    timeout-minutes: 12
+    steps:
+      - name: Hard owner-runner and TCC gate
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$RUNNER_NAME" = "kirill-mac-endlume"
+          echo "RUNNER_NAME_OK=true"
+          echo "CONSOLE_USER=$(stat -f '%Su' /dev/console)"
+          UI=$(/usr/bin/osascript -e 'tell application "System Events" to return UI elements enabled' 2>/dev/null || echo false)
+          echo "UI_ELEMENTS_ENABLED=$UI"
+          test "$UI" = "true"
+          rm -f "$RUNNER_TEMP/endlume-tcc-probe.png"
+          /usr/sbin/screencapture -x "$RUNNER_TEMP/endlume-tcc-probe.png"
+          test -s "$RUNNER_TEMP/endlume-tcc-probe.png"
+          rm -f "$RUNNER_TEMP/endlume-tcc-probe.png"
+          echo "SCREEN_CAPTURE_ALLOWED=true"
+
+      - name: Snapshot owner state metadata before candidate
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          REPORT="$RUNNER_TEMP/endlume-phase2-probe"
+          mkdir -p "$REPORT"
+          APP_DATA="$HOME/Library/Application Support/studio.endlume.desktop"
+          OWNER_APP="/Applications/ENDLUME YT Studio PEISOV.app"
+          test -d "$OWNER_APP"
+          OWNER_EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$OWNER_APP/Contents/Info.plist")"
+          OWNER_BIN="$OWNER_APP/Contents/MacOS/$OWNER_EXE"
+          test -f "$OWNER_BIN"
+          OWNER_VER="$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$OWNER_APP/Contents/Info.plist")"
+          OWNER_BIN_SHA="$(shasum -a 256 "$OWNER_BIN" | awk '{print $1}')"
+          OWNER_INFO_SHA="$(shasum -a 256 "$OWNER_APP/Contents/Info.plist" | awk '{print $1}')"
+          printf 'OWNER_APP_EXISTS=YES\nOWNER_APP_VERSION=%s\nOWNER_APP_BINARY_SHA256=%s\nOWNER_APP_INFO_SHA256=%s\n' "$OWNER_VER" "$OWNER_BIN_SHA" "$OWNER_INFO_SHA" > "$REPORT/owner-app-before.txt"
+
+          snapshot() {
+            local out="$1"
+            : > "$out"
+            for n in license.json device.json library.json queue.json recovery.json session.json settings.json; do
+              p="$APP_DATA/$n"
+              if [ -f "$p" ]; then
+                sz="$(stat -f '%z' "$p")"
+                sha="$(shasum -a 256 "$p" | awk '{print $1}')"
+                printf '%s\tEXISTS\t%s\t%s\n' "$n" "$sz" "$sha" >> "$out"
+              else
+                printf '%s\tABSENT\t0\t-\n' "$n" >> "$out"
+              fi
+            done
+          }
+          snapshot "$REPORT/state-before.tsv"
+          echo "APP_DATA_PATH=$APP_DATA" > "$REPORT/state-path.txt"
+          echo "KEYCHAIN_SESSION_CONTENT=NOT_READ" >> "$REPORT/state-path.txt"
+          echo "OWNER_STATE_BEFORE=PASS"
+          echo "OWNER_APP_VERSION=$OWNER_VER"
+          echo "OWNER_APP_BINARY_SHA256=$OWNER_BIN_SHA"
+
+          if pgrep -f "$OWNER_BIN" >/dev/null 2>&1; then
+            echo "BLOCKED_OWNER_PRODUCTION_APP_ALREADY_RUNNING=true" >&2
+            exit 73
+          fi
+
+      - name: Download exact accepted canonical QA artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ENDLUME-CANONICAL-GOOD-PRODUCT-QA
+          path: ${{ runner.temp }}/canonical-source-artifact
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ScaleUPPeisov/endlume-desktop
+          run-id: 38030777284
+
+      - name: Verify exact candidate and mount isolated volume
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          SRC="$RUNNER_TEMP/canonical-source-artifact"
+          UNPACK="$RUNNER_TEMP/canonical-owner-unpacked"
+          DMG="$RUNNER_TEMP/ENDLUME-CANONICAL-OWNER-QA.dmg"
+          REPORT="$RUNNER_TEMP/endlume-phase2-probe"
+          mkdir -p "$UNPACK"
+          ZIP="$SRC/ENDLUME-CANONICAL-GOOD-PRODUCT-QA.app.zip"
+          test -f "$ZIP"
+          ZIP_SHA="$(shasum -a 256 "$ZIP" | awk '{print $1}')"
+          test "$ZIP_SHA" = "$EXPECTED_APP_ZIP_SHA256"
+          ditto -x -k "$ZIP" "$UNPACK"
+          BUILT_APP="$(find "$UNPACK" -maxdepth 2 -type d -name '*.app' -print -quit)"
+          test -n "$BUILT_APP" -a -d "$BUILT_APP"
+          BID="$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$BUILT_APP/Contents/Info.plist")"
+          VER="$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$BUILT_APP/Contents/Info.plist")"
+          EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$BUILT_APP/Contents/Info.plist")"
+          test "$BID" = studio.endlume.desktop
+          test "$VER" = 10.0.11
+          /usr/bin/lipo -archs "$BUILT_APP/Contents/MacOS/$EXE" | grep -qw arm64
+          /usr/bin/codesign --verify --deep --strict "$BUILT_APP"
+          APP_BIN_SHA="$(shasum -a 256 "$BUILT_APP/Contents/MacOS/$EXE" | awk '{print $1}')"
+
+          rm -f "$DMG"
+          hdiutil create -quiet -size 350m -fs APFS -volname ENDLUME_CANONICAL_QA "$DMG"
+          hdiutil attach -nobrowse -plist "$DMG" > "$RUNNER_TEMP/endlume-canonical-attach.plist"
+          VOL="$(python3 - "$RUNNER_TEMP/endlume-canonical-attach.plist" <<'PY'
+          import plistlib,sys
+          with open(sys.argv[1],'rb') as f: p=plistlib.load(f)
+          xs=[x.get('mount-point') for x in p.get('system-entities',[]) if isinstance(x.get('mount-point'),str)]
+          if not xs: raise SystemExit('no mount point')
+          print(xs[-1])
+          PY
+          )"
+          case "$VOL" in /Volumes/ENDLUME_CANONICAL_QA*) ;; *) echo "bad mount: $VOL" >&2; exit 74;; esac
+          QA_APP="$VOL/ENDLUME-CANONICAL-GOOD-PRODUCT-QA.app"
+          ditto "$BUILT_APP" "$QA_APP"
+          /usr/bin/codesign --verify --deep --strict "$QA_APP"
+          QA_EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$QA_APP/Contents/Info.plist")"
+          QA_BIN="$QA_APP/Contents/MacOS/$QA_EXE"
+          QA_BIN_SHA="$(shasum -a 256 "$QA_BIN" | awk '{print $1}')"
+          test "$QA_BIN_SHA" = "$APP_BIN_SHA"
+          printf 'CANDIDATE_PRODUCT_SHA=%s\nAPP_PATH=%s\nAPP_SHA256=%s\nAPP_ZIP_SHA256=%s\nVERSION=%s\nBUNDLE_ID=%s\n' "$CANONICAL_PRODUCT_SHA" "$QA_APP" "$QA_BIN_SHA" "$ZIP_SHA" "$VER" "$BID" > "$REPORT/candidate.txt"
+          printf 'QA_APP=%s\nQA_BIN=%s\nQA_VOL=%s\n' "$QA_APP" "$QA_BIN" "$VOL" > "$RUNNER_TEMP/endlume-canonical-env"
+          echo "CANDIDATE_PRODUCT_SHA=$CANONICAL_PRODUCT_SHA"
+          echo "APP_PATH=$QA_APP"
+          echo "APP_SHA256=$QA_BIN_SHA"
+          echo "APP_ZIP_SHA256=$ZIP_SHA"
+
+      - name: Launch candidate and prove legitimate licensed product UI
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          source "$RUNNER_TEMP/endlume-canonical-env"
+          REPORT="$RUNNER_TEMP/endlume-phase2-probe"
+          OWNER_APP="/Applications/ENDLUME YT Studio PEISOV.app"
+
+          /usr/bin/open -n "$QA_APP"
+          sleep 8
+          pgrep -f "$QA_BIN" > "$REPORT/candidate-pid.txt"
+          test -s "$REPORT/candidate-pid.txt"
+          test -d "$OWNER_APP"
+
+          /usr/bin/osascript <<'OSA' > "$REPORT/ui-probe.txt" 2>"$REPORT/ui-probe.err"
+          tell application "System Events"
+            set ps to application processes whose bundle identifier is "studio.endlume.desktop"
+            if (count of ps) is 0 then error "ENDLUME process not found"
+            tell item 1 of ps
+              set frontmost to true
+              delay 1
+              set wc to count of windows
+              if wc is 0 then error "ENDLUME window not found"
+              set w to window 1
+              set out to "WINDOW=" & (name of w as text) & linefeed
+              set allItems to entire contents of w
+              repeat with e in allItems
+                try
+                  set r to role of e as text
+                  set n to name of e as text
+                  if n is not "" and n is not "missing value" then
+                    if r is "AXButton" or r is "AXStaticText" or r is "AXHeading" or r is "AXCheckBox" or r is "AXRadioButton" then
+                      set out to out & r & "=" & n & linefeed
+                    end if
+                  end if
+                end try
+              end repeat
+              return out
+            end tell
+          end tell
+          OSA
+
+          # Never print raw UI tree: it could contain owner-specific text.
+          UI="$REPORT/ui-probe.txt"
+          if grep -Eq 'АКТИВИРОВАТЬ|Активация ENDLUME' "$UI"; then
+            echo "LICENSED_SESSION=FAIL"
+            echo "LICENSE_BYPASS=NO"
+            echo "PRODUCTION_LICENSE_SECRET_EXPOSED=NO"
+            exit 75
+          fi
+          for label in 'Проект' 'Рендер' 'Библиотека' 'Настройки'; do
+            grep -Fq "$label" "$UI" || { echo "LICENSED_UI_MISSING=$label" >&2; exit 76; }
+          done
+          # Secret-pattern guard before any screenshot leaves the runner.
+          if grep -Eq 'ENDLUME-[A-Z2-9]{4}(-[A-Z2-9]{4}){7}|(access|refresh|session)[_-]?token|Bearer [A-Za-z0-9._-]+' "$UI"; then
+            echo "SECRET_PATTERN_DETECTED_IN_UI=true" >&2
+            exit 77
+          fi
+
+          /usr/sbin/screencapture -x "$REPORT/project-licensed.png"
+          test -s "$REPORT/project-licensed.png"
+          echo "LICENSED_SESSION=PASS"
+          echo "LICENSE_BYPASS=NO"
+          echo "PRODUCTION_LICENSE_SECRET_EXPOSED=NO"
+          echo "PROJECT_NAVIGATION_ACCESSIBILITY=PASS"
+
+      - name: Snapshot state after probe and verify owner app immutability
+        if: always()
+        shell: bash
+        run: |
+          set -u
+          REPORT="$RUNNER_TEMP/endlume-phase2-probe"
+          APP_DATA="$HOME/Library/Application Support/studio.endlume.desktop"
+          OWNER_APP="/Applications/ENDLUME YT Studio PEISOV.app"
+          if [ -f "$RUNNER_TEMP/endlume-canonical-env" ]; then
+            source "$RUNNER_TEMP/endlume-canonical-env"
+            pkill -f "$QA_BIN" >/dev/null 2>&1 || true
+            sleep 2
+            hdiutil detach -quiet "$QA_VOL" >/dev/null 2>&1 || true
+          fi
+          snapshot() {
+            local out="$1"
+            : > "$out"
+            for n in license.json device.json library.json queue.json recovery.json session.json settings.json; do
+              p="$APP_DATA/$n"
+              if [ -f "$p" ]; then
+                sz="$(stat -f '%z' "$p")"
+                sha="$(shasum -a 256 "$p" | awk '{print $1}')"
+                printf '%s\tEXISTS\t%s\t%s\n' "$n" "$sz" "$sha" >> "$out"
+              else
+                printf '%s\tABSENT\t0\t-\n' "$n" >> "$out"
+              fi
+            done
+          }
+          snapshot "$REPORT/state-after.tsv"
+
+          if [ -d "$OWNER_APP" ]; then
+            OWNER_EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$OWNER_APP/Contents/Info.plist" 2>/dev/null || true)"
+            OWNER_BIN="$OWNER_APP/Contents/MacOS/$OWNER_EXE"
+            OWNER_VER="$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$OWNER_APP/Contents/Info.plist" 2>/dev/null || true)"
+            OWNER_BIN_SHA="$(shasum -a 256 "$OWNER_BIN" 2>/dev/null | awk '{print $1}')"
+            OWNER_INFO_SHA="$(shasum -a 256 "$OWNER_APP/Contents/Info.plist" 2>/dev/null | awk '{print $1}')"
+            printf 'OWNER_APP_EXISTS=YES\nOWNER_APP_VERSION=%s\nOWNER_APP_BINARY_SHA256=%s\nOWNER_APP_INFO_SHA256=%s\n' "$OWNER_VER" "$OWNER_BIN_SHA" "$OWNER_INFO_SHA" > "$REPORT/owner-app-after.txt"
+          else
+            printf 'OWNER_APP_EXISTS=NO\n' > "$REPORT/owner-app-after.txt"
+          fi
+
+          if [ -f "$REPORT/owner-app-before.txt" ] && cmp -s "$REPORT/owner-app-before.txt" "$REPORT/owner-app-after.txt"; then
+            echo "OWNER_APPLICATION_REPLACED=NO"
+          else
+            echo "OWNER_APPLICATION_REPLACED=FAIL" >&2
+            exit 78
+          fi
+          echo "STATE_METADATA_AFTER=PASS"
+          echo "KEYCHAIN_SESSION_CONTENT=NOT_READ"
+
+      - name: Upload non-secret probe evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ENDLUME-10.0.13-PHASE2-OWNER-LICENSED-PROBE
+          path: |
+            ${{ runner.temp }}/endlume-phase2-probe/candidate.txt
+            ${{ runner.temp }}/endlume-phase2-probe/owner-app-before.txt
+            ${{ runner.temp }}/endlume-phase2-probe/owner-app-after.txt
+            ${{ runner.temp }}/endlume-phase2-probe/state-before.tsv
+            ${{ runner.temp }}/endlume-phase2-probe/state-after.tsv
+            ${{ runner.temp }}/endlume-phase2-probe/state-path.txt
+            ${{ runner.temp }}/endlume-phase2-probe/project-licensed.png
+          if-no-files-found: warn
+          retention-days: 14

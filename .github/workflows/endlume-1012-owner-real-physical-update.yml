@@ -42,7 +42,8 @@ jobs:
           test "$SHORT" = '10.0.11'
           test "$BUILD" = '10.0.11'
           test "$SHA" = '8f60dbe1dd611db407c2d096aebd4597f6ff2af07c881e2e41d163e19b2b80c0'
-          strings -a "$APP/Contents/MacOS/$EXE" | grep -Fq 'https://github.com/ScaleUPPeisov/scaleup-site/releases/download/endlume-stable/latest.json'
+          strings -a "$APP/Contents/MacOS/$EXE" > "$ROOT/physical-10.0.11.strings.txt"
+          grep -Fq 'https://github.com/ScaleUPPeisov/scaleup-site/releases/download/endlume-stable/latest.json' "$ROOT/physical-10.0.11.strings.txt"
           echo 'PHYSICAL_SOURCE_EXACT_10_0_11=PASS'
 
           python3 - "$APP/Contents/MacOS/$EXE" "$ROOT/physical.pub" <<'PY'
@@ -259,7 +260,8 @@ jobs:
           SHA=$(shasum -a 256 "$APP/Contents/MacOS/$NEW_EXE" | awk '{print $1}')
           echo "POST_BINARY_SHA256=$SHA"
           test "$SHA" = '2df386c00da09e76f90218061e7f57ccfba2249a654ec1262b06000b322eb9d7'
-          strings -a "$APP/Contents/MacOS/$NEW_EXE" | grep -Fq 'https://endlume-updates.vercel.app/api/update?target='
+          strings -a "$APP/Contents/MacOS/$NEW_EXE" > "$ROOT/installed-10.0.12.strings.txt"
+          grep -Fq 'https://endlume-updates.vercel.app/api/update?target=' "$ROOT/installed-10.0.12.strings.txt"
           python3 - "$APP/Contents/MacOS/$NEW_EXE" <<'PY'
           import sys,base64
           data=open(sys.argv[1],'rb').read(); prefix=b'dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6I'; found=[]; start=0

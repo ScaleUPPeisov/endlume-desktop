@@ -1,40 +1,44 @@
 # ENDLUME Canonical Product Reconstruction — Phase 2 QA Report
 
-## Status
+## Final status
 
-**CANONICAL PRODUCT CANDIDATE: GREEN ON SOURCE / BUILD / RENDER / ISOLATED LAUNCH**
+**PHASE 2 FULL UI ACCEPTANCE: PASS**
 
-**FULL LICENSED MULTI-SCREEN GUI ACCEPTANCE: BLOCKED — no authorized QA GUI license/session is available on the clean hosted macOS runner. No license bypass was added.**
+**CANONICAL PRODUCT BASE: GREEN**
 
-This report does **not** declare a stable release and does **not** modify the owner installation.
-
-## Canonical product source
-
-Canonical reconstructed product tree commit:
+Accepted product source:
 
 `3f06c7329bd3821bc160e6d88c5b294fc0d82c2b`
 
-Reconstruction branch:
+Accepted QA application binary SHA-256:
 
-`release-fix/endlume-10.0.13-canonical-product-reconstruction`
+`4d208994181c5ca21b20c2e01dd06bda25e82a16bb1405379e79cc4da3026436`
 
-The product delta is exactly the audited reconstruction described in:
+Accepted QA application ZIP SHA-256:
 
-- `CANONICAL_PRODUCT_DELTA_MAP.md`
-- `CANONICAL_GOOD_PRODUCT_MATRIX.md`
+`0b374fffa3dbf057620d2f3a5b7919306df474767494ef2daead3bb319afb250`
 
-Fast Engine work is not merged into this candidate.
+Owner production application SHA-256 after manual QA:
 
-## Product-tree immutability after reconstruction
+`2df386c00da09e76f90218061e7f57ccfba2249a654ec1262b06000b322eb9d7`
 
-Comparison from the canonical product tree commit `3f06c732...` to QA head `7941ef1c...` contains only:
+Date: `2026-10-10`
 
-- `.github/workflows/endlume-1013-canonical-product-launch-only.yml`
-- `.github/workflows/endlume-1013-canonical-product-qa.yml`
-- `CANONICAL_GOOD_PRODUCT_MATRIX.md`
-- `CANONICAL_PRODUCT_DELTA_MAP.md`
+Owner machine: `MacBook-Air-Kirill`
 
-No product source file changed during QA/infrastructure fixes.
+This report does **not** declare a stable release and does **not** merge Fast Engine.
+
+## Product-tree immutability
+
+Comparison from canonical product commit `3f06c7329bd3821bc160e6d88c5b294fc0d82c2b` to the final Phase 2 QA branch head before this report update contains only:
+
+- `.github/workflows/**` QA workflow files
+- `qa/**` QA harness files
+- canonical reconstruction / QA markdown documentation
+
+No `src/**`, `src-tauri/**`, CSS, icon asset, ReleaseHistory implementation, Project UI, Effects UI, Subscribe UI, Render Center UI, Library UI, or Settings visual-layer product source changed during Phase 2 QA.
+
+Fast Engine work remains unmerged.
 
 ## Source contract gate
 
@@ -42,21 +46,15 @@ Workflow run:
 
 `38030777284`
 
-Source contract job:
-
-`114151076816`
-
 Result: **PASS**
 
 Verified:
 
 - canonical reconstruction boundary
-- exact 18-path final product delta
-- 15 exact late-product paths from `8a0b29b0468b5e665705e20c6a8635ca4c73ba90`
-- 3 exact visual paths from `af7883d`
+- exact 18-path reconstructed product delta
 - modern application icon present
 - rejected old infinity icon absent
-- October release history/changelog present
+- October/current 10.0.x release history present
 - modern Render Center contract present
 - Effects / Subscribe UI contract present
 - Fast Engine merge absent
@@ -91,8 +89,6 @@ Marker:
 
 `TYPESCRIPT_RUST_REGRESSION=PASS`
 
-Note: npm audit reported one high-severity dependency warning. It was not changed or falsely reported as fixed by this reconstruction pass.
-
 ## Production-like Apple Silicon app build
 
 Workflow run:
@@ -105,15 +101,13 @@ Verified:
 
 - macOS ARM64 application bundle built
 - bundle identifier `studio.endlume.desktop`
-- reconstructed application version `10.0.11`
+- QA candidate version `10.0.11`
 - Apple Silicon `arm64` executable
 - codesign verification passed
 
 Marker:
 
 `ARM64_BUILD=PASS`
-
-This is a QA reconstruction build, not a stable release publication.
 
 ## 12-track Effects + Subscribe product E2E
 
@@ -131,112 +125,271 @@ Exact E2E report:
 
 Verified:
 
-- 12 MP3 audio tracks
-- Effects enabled and exercised
-- Subscribe enabled and exercised
-- target duration about 2 hours (`7200.004 s`)
+- 12 MP3 tracks
+- Effects exercised
+- Subscribe exercised
+- about 2 hours output duration
 - 1920×1080
 - 60 FPS
 - HEVC via `hevc_videotoolbox`
-- AAC stereo / 48 kHz validation in the QA gate
-- fast product path active
 - non-empty output
-- render wall time `15.39311125 s`
-- output size approximately `320.765 MiB`
+- fast product path active
 
 Marker:
 
 `TWELVE_TRACK_EFFECTS_SUBSCRIBE_E2E=PASS`
 
-Phase 2 intentionally has no invented release-size floor or target.
+## Accepted QA artifact
 
-## QA application artifact
-
-Source QA artifact:
+Artifact:
 
 - artifact ID: `11661604955`
 - artifact name: `ENDLUME-CANONICAL-GOOD-PRODUCT-QA`
-- artifact archive digest: `sha256:20b280f648cf4b9725e324a9e0e3f7384cbb643702dc749f1d4ed702497ab1bc`
+- archive digest: `sha256:20b280f648cf4b9725e324a9e0e3f7384cbb643702dc749f1d4ed702497ab1bc`
 - application ZIP SHA-256: `0b374fffa3dbf057620d2f3a5b7919306df474767494ef2daead3bb319afb250`
+- application binary SHA-256: `4d208994181c5ca21b20c2e01dd06bda25e82a16bb1405379e79cc4da3026436`
 
-The launch-only verification re-downloaded this exact artifact instead of rebuilding it.
+The final owner visual acceptance used this same accepted artifact. No rebuild was performed.
 
-## Isolated physical macOS launch
+## Licensed owner foreground acceptance
 
-Launch-only workflow run:
+Earlier automated GUI attempts were blocked by macOS Keychain / Accessibility / window-discovery behavior. Those automation failures were not treated as product failures.
 
-`38031821392`
+The final Phase 2 UI gate intentionally switched to manual owner foreground acceptance on the physical owner Mac.
 
-Job:
+The candidate was prepared at:
 
-`114154187742`
+`/Volumes/ENDLUME_CANONICAL_QA/ENDLUME-CANONICAL-GOOD-PRODUCT-QA.app`
 
-Result: **PASS**
+Before launch, the owner terminal physically verified:
+
+- ZIP SHA-256 = `0b374fffa3dbf057620d2f3a5b7919306df474767494ef2daead3bb319afb250`
+- binary SHA-256 = `4d208994181c5ca21b20c2e01dd06bda25e82a16bb1405379e79cc4da3026436`
+- bundle ID = `studio.endlume.desktop`
+- version = `10.0.11`
+- codesign = PASS
+
+The app was launched manually by the owner from normal Terminal, outside GitHub Actions GUI automation.
+
+Licensed session: **PASS**
+
+Evidence included the normal licensed product UI and Settings → General showing ENDLUME activated. No QA code or workflow introduced a license bypass.
+
+## Physical multi-screen UI acceptance
+
+Owner-supplied physical screenshots on `2026-10-10` were reviewed for the accepted candidate.
+
+### Project
+
+**PASS**
+
+Verified modern October product UI including:
+
+- Project top navigation
+- 1080p / 60 FPS / H.265 controls
+- loop modes
+- duration / bitrate controls
+- current layout and styling
+
+### Effects OFF / ON
+
+**PASS**
+
+Both states were physically shown in Project UI.
+
+### Effects editor
+
+**PASS**
 
 Verified:
 
-- exact prior QA artifact downloaded successfully
-- application ZIP SHA-256 matched
-- app mounted automatically at `/Volumes/ENDLUME_CANONICAL_QA`
-- app launched from `/Volumes/ENDLUME_CANONICAL_QA/ENDLUME-CANONICAL-GOOD-PRODUCT-QA.app`
-- process was found after launch
-- one GUI window was found
-- window title: `ENDLUME YT Studio PEISOV`
-- application icon converted/captured from the built bundle
-- `/Applications/ENDLUME YT Studio PEISOV.app` did not exist before the test and still did not exist after the test
-- mounted QA app was terminated and the volume detached after evidence capture
+- modern Effects editor
+- library effects visible
+- live source preview
+- chromakey controls
+- similarity / blend / despill controls
+- positioning / sizing controls
+- effect enabled state
+
+### Subscribe OFF / ON
+
+**PASS**
+
+Both states were physically shown in Project UI.
+
+### Subscribe editor
+
+**PASS**
+
+Verified:
+
+- live preview
+- Subscribe overlay visibly rendered as `SUBSCRIBED`
+- chromakey controls
+- interval scheduling controls
+- position / size controls
+- active Subscribe state
+
+### Live Preview
+
+**PASS**
+
+Verified with an actual source image loaded. Effects and Subscribe were visibly composited in preview.
+
+### Render Center
+
+**PASS**
+
+Verified modern current Render Center in both idle and completed-job states.
+
+A physical render completed with:
+
+- `1 из 1`
+- `100.00%`
+- `0 ошибок`
+- render time `0:10`
+- output size `407.5 МБ`
+- `8` audio tracks
+- engine `hevc_videotoolbox`
+- Effects pipeline stages completed
+- Subscribe pipeline stage completed
+- final FFprobe validation completed
+
+Old Render Center: **not present in accepted UI**.
+
+### Library
+
+**PASS**
+
+Verified current Library UI with persisted Effects assets visible.
+
+### Settings → General
+
+**PASS**
+
+Verified licensed state: `ENDLUME активирована`.
+
+### Settings → Fast Engine
+
+**PASS**
+
+Verified the current Settings tab and benchmark surface. This is UI acceptance only; Fast Engine source was not merged into the canonical product base during Phase 2.
+
+### Settings → Updates
+
+**PASS**
+
+Verified current October/current 10.0.x release history including entries such as:
+
+- 10.0.10
+- 10.0.9
+- 10.0.3
+- 10.0.2
+- 10.0.1
+- 10.0.0
+
+Old alpha entries appear only as historical older entries.
 
 Markers:
 
-- `ISOLATED_QA_LAUNCH=PASS`
-- `OWNER_APPLICATIONS_APP_MODIFIED=NO`
+- `OCTOBER_HISTORY=PASS`
+- `ALPHA_ONLY_CURRENT_HISTORY=NO`
 
-Launch evidence artifact:
+The isolated QA-volume updater attempt displayed `Cross-device link (os error 18)` when trying to bridge 10.0.11 → 10.0.12. No update installation completed, and this was not treated as a Phase 2 product-UI failure because the gate intentionally tested the fixed accepted 10.0.11 candidate from an isolated mounted volume.
 
-- artifact ID: `11662456121`
-- name: `ENDLUME-CANONICAL-GOOD-PRODUCT-LAUNCH-EVIDENCE`
-- artifact digest: `sha256:56637ddf741a4541ede64759ef2ba759f5616ec96db7b48cbfaa046bae01eb2b`
+### Settings → About
 
-Evidence contains five files, including application icon, isolated-launch screenshot, PID/accessibility evidence, and status report.
+**PASS**
 
-## Licensed multi-screen UI gate
+Verified:
 
-Status: **BLOCKED, not failed.**
+- ENDLUME YT Studio PEISOV
+- version `10.0.11`
+- Apple Silicon M1+
+- Rust + FFmpeg
+- Tauri 2
 
-Reason:
+### Application / Dock icon
 
-The clean hosted macOS runner has no valid ENDLUME GUI license/session. Product code correctly presents the activation gate. The existing `e2e-render` mechanism only authorizes render-start E2E behavior; it does not bypass the frontend activation screen.
+**PASS**
 
-No temporary frontend bypass was added. No raw production license key/session was committed, printed, copied into the workflow, or exposed in logs.
+The owner physically showed the mounted QA application in Dock with the current ENDLUME cyan/magenta emblem. The rejected old infinity icon was not present.
 
-Therefore screenshots of the full licensed Project / Render / Effects / Subscribe / Settings surfaces are not claimed as physically accepted in this phase.
+## Owner / stable safety boundary
 
-Marker:
+After manual QA, the owner physically re-hashed the installed production application:
 
-`FULL_MULTI_SCREEN_QA=BLOCKED_NO_AUTHORIZED_QA_LICENSE`
+`/Applications/ENDLUME YT Studio PEISOV.app`
 
-## Owner/stable safety boundary
+Result:
 
-This Phase 2 work did not:
+`2df386c00da09e76f90218061e7f57ccfba2249a654ec1262b06000b322eb9d7`
 
-- replace or mutate the owner's installed `/Applications/ENDLUME YT Studio PEISOV.app`
-- publish a stable release
-- modify the live 10.0.12 updater package or manifest
-- rotate updater signing keys
-- merge Fast Engine work
-- add a license bypass
-- overwrite owner projects, library, settings, OAuth, or license data
+This exactly matches the pre-QA owner production application binary SHA-256.
 
-## Current acceptance decision
+Therefore:
 
-The reconstructed product candidate `3f06c7329bd3821bc160e6d88c5b294fc0d82c2b` has passed all currently executable canonical product gates:
+- `OWNER_APPLICATION_REPLACED=NO`
+- owner production binary unchanged
+- no stable publication performed
+- live updater package / manifest untouched
+- no OAuth reset action performed
+- no Google / YouTube logout action performed
+- no license bypass added
+- no Fast Engine merge performed
+
+## Final Phase 2 acceptance decision
+
+All required Phase 2 product gates are accepted:
 
 1. source reconstruction contract — PASS
-2. TypeScript/Rust regression — PASS
-3. production-like Apple Silicon build — PASS
-4. 12-track Effects + Subscribe 2-hour product E2E — PASS
-5. isolated physical macOS application launch — PASS
-6. owner `/Applications` safety boundary — PASS
-7. full licensed multi-screen GUI screenshot acceptance — BLOCKED pending an authorized QA license/session
+2. TypeScript / Rust regression — PASS
+3. Apple Silicon application build — PASS
+4. 12-track Effects + Subscribe product E2E — PASS
+5. isolated physical launch — PASS
+6. licensed owner foreground session — PASS
+7. Project — PASS
+8. Effects OFF / ON — PASS
+9. Effects editor — PASS
+10. Subscribe OFF / ON — PASS
+11. Subscribe editor — PASS
+12. Live Preview — PASS
+13. Render Center idle / completed render — PASS
+14. Library — PASS
+15. Settings General — PASS
+16. Settings Fast Engine — PASS
+17. Settings Updates — PASS
+18. Settings About — PASS
+19. October/current ReleaseHistory — PASS
+20. modern application icon — PASS
+21. owner production application immutability — PASS
 
-**Do not label Phase 2 fully accepted until gate 7 is executed through an authorized license path.**
+Final markers:
+
+- `PHASE_2_FULL_UI_ACCEPTANCE=PASS`
+- `CANONICAL_PRODUCT_BASE=GREEN`
+- `PHASE_2_ACCEPTED_PRODUCT_SHA=3f06c7329bd3821bc160e6d88c5b294fc0d82c2b`
+- `FAST_ENGINE_MERGED=NO`
+- `STABLE_UNTOUCHED=YES`
+- `UPDATER_UNTOUCHED=YES`
+- `RELEASE_BLOCKED=YES`
+
+## Next authorized step
+
+Only after this accepted Phase 2 gate may Phase 3 begin.
+
+Phase 3 target:
+
+Semantic transplant of Fast Engine from:
+
+`a7a399e83de8b9248e2065c6dda1f9079ded6565`
+
+into:
+
+`3f06c7329bd3821bc160e6d88c5b294fc0d82c2b`
+
+Protection rule:
+
+Fast Engine transplant must not modify `src/pages/**`, `src/components/**`, CSS, icons, ReleaseHistory, Settings visual layer, Project UI, Effects UI, Subscribe UI, Render Center UI, or Library UI unless a backend API compatibility change is absolutely required and separately justified.
+
+**Phase 3 was not started by this Phase 2 acceptance update.**

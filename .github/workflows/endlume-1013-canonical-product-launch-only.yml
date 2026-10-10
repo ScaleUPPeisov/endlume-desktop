@@ -42,7 +42,10 @@ jobs:
 
           test -f "$SRC/ENDLUME-CANONICAL-GOOD-PRODUCT-QA.app.zip"
           test -f "$SRC/ENDLUME-CANONICAL-GOOD-PRODUCT-QA.app.zip.sha256"
-          (cd "$SRC" && shasum -a 256 -c ENDLUME-CANONICAL-GOOD-PRODUCT-QA.app.zip.sha256)
+          EXPECTED_SHA="$(awk 'NR==1{print $1}' "$SRC/ENDLUME-CANONICAL-GOOD-PRODUCT-QA.app.zip.sha256")"
+          ACTUAL_SHA="$(shasum -a 256 "$SRC/ENDLUME-CANONICAL-GOOD-PRODUCT-QA.app.zip" | awk '{print $1}')"
+          test -n "$EXPECTED_SHA" -a "$EXPECTED_SHA" = "$ACTUAL_SHA"
+          echo "QA_APP_ZIP_SHA256=$ACTUAL_SHA"
           ditto -x -k "$SRC/ENDLUME-CANONICAL-GOOD-PRODUCT-QA.app.zip" "$UNPACK"
           BUILT_APP="$(find "$UNPACK" -maxdepth 2 -type d -name '*.app' -print -quit)"
           test -n "$BUILT_APP" -a -d "$BUILT_APP"
@@ -121,6 +124,7 @@ jobs:
           SOURCE_BUILD_RUN=38030777284
           SOURCE_ARTIFACT_ID=11661604955
           SOURCE_PRODUCT_E2E=PASS
+          QA_APP_ZIP_SHA256=$ACTUAL_SHA
           ISOLATED_LAUNCH=PASS
           ISOLATED_PATH_PREFIX=$VOL
           OWNER_APPLICATIONS_APP_MODIFIED=NO

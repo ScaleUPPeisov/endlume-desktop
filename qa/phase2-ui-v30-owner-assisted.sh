@@ -8,6 +8,10 @@ import sys
 s=Path(sys.argv[1]).read_text()
 start=s.index("READY=0; for n in $(seq 0 120);")
 block=r'''printf 'OWNER_ASSISTED=YES\nLICENSE_BYPASS=NO\n' > "$REPORT/v30-mode.txt"
+prompt30(){ /usr/bin/say "$1" >/dev/null 2>&1 || true; echo "OWNER_ACTION=$1"; }
+# Give the legitimate owner time to approve the one-time Keychain prompt before locating the app window.
+prompt30 'Кирилл. Если появилось окно связки ключей, нажми Разрешить. Потом открой Проект.'
+sleep 12
 cat > "$RUNNER_TEMP/window-id-v30.swift" <<'SWIFT'
 import CoreGraphics
 import Foundation
@@ -24,10 +28,6 @@ SWIFT
 WID="$(/usr/bin/swift "$RUNNER_TEMP/window-id-v30.swift" "$PID" | head -1)"
 test -n "$WID"
 cap30(){ local f="$1"; /usr/sbin/screencapture -x -l"$WID" "$REPORT/screens/$f"; test -s "$REPORT/screens/$f"; }
-prompt30(){ /usr/bin/say "$1" >/dev/null 2>&1 || true; echo "OWNER_ACTION=$1"; }
-# Existing legitimate license already proven; allow one-time Keychain permission if macOS asks again.
-prompt30 'Кирилл. Если появилось окно связки ключей, нажми Разрешить. Потом открой Проект.'
-sleep 8
 cap30 '01-project-owner.png'
 prompt30 'Выключи Эффект для каждого проекта.'; sleep 6; cap30 '02-effects-off.png'
 prompt30 'Включи Эффект для каждого проекта.'; sleep 6; cap30 '03-effects-on.png'

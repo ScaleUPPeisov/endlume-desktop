@@ -1,4 +1,4 @@
-name: ENDLUME Phase2 Physical UI V17 Double Enter Picker
+name: ENDLUME Phase2 Physical UI V18 Native Field Picker
 on:
   push:
     branches: [release-fix/endlume-10.0.13-canonical-product-reconstruction]
@@ -7,7 +7,7 @@ on:
       - qa/phase2-ui-v5.sh
       - qa/phase2-ui-v8.sh
       - qa/phase2-ui-v9.sh
-      - qa/phase2-ui-v17-double-enter-picker.sh
+      - qa/phase2-ui-v18-native-field-picker.sh
   workflow_dispatch:
 permissions:
   contents: read
@@ -61,32 +61,24 @@ jobs:
           ROOT="${{ runner.temp }}/phase2-v5-source"
           SRC="$ROOT/ENDLUME-CANONICAL-GOOD-PRODUCT-QA.app.zip"
           CACHE="$HOME/Library/Caches/endlume-phase2/ENDLUME-CANONICAL-GOOD-PRODUCT-QA.app.zip"
-          echo "CACHE_DIAGNOSTIC_BEGIN"
-          find "$ROOT" -maxdepth 2 -type f -print | sort
-          if [ ! -f "$SRC" ]; then
-            echo "LOCAL_ARTIFACT_CACHE=SKIP_FILE_MISSING"
-            exit 0
-          fi
+          if [ ! -f "$SRC" ]; then echo "LOCAL_ARTIFACT_CACHE=SKIP_FILE_MISSING"; exit 0; fi
           ACTUAL="$(shasum -a 256 "$SRC" | awk '{print $1}')"
           echo "DOWNLOADED_APP_ZIP_SHA256=$ACTUAL"
-          if [ "$ACTUAL" != "$EXPECTED_APP_ZIP_SHA256" ]; then
-            echo "LOCAL_ARTIFACT_CACHE=SKIP_SHA_MISMATCH"
-            exit 0
-          fi
+          if [ "$ACTUAL" != "$EXPECTED_APP_ZIP_SHA256" ]; then echo "LOCAL_ARTIFACT_CACHE=SKIP_SHA_MISMATCH"; exit 0; fi
           mkdir -p "$(dirname "$CACHE")"
           cp -f "$SRC" "$CACHE"
           echo "LOCAL_ARTIFACT_CACHE=SEEDED"
-      - name: Physical UI V17 Double Enter Picker
+      - name: Physical UI V18 Native Field Picker
         shell: bash
         env:
           EXPECTED_APP_ZIP_SHA256: 0b374fffa3dbf057620d2f3a5b7919306df474767494ef2daead3bb319afb250
           EXPECTED_APP_BIN_SHA256: 4d208994181c5ca21b20c2e01dd06bda25e82a16bb1405379e79cc4da3026436
           OWNER_APP_BIN_SHA256: 2df386c00da09e76f90218061e7f57ccfba2249a654ec1262b06000b322eb9d7
-        run: bash qa/phase2-ui-v17-double-enter-picker.sh
+        run: bash qa/phase2-ui-v18-native-field-picker.sh
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: ENDLUME-PHASE2-PHYSICAL-UI-V17-DOUBLE-ENTER
+          name: ENDLUME-PHASE2-PHYSICAL-UI-V18-NATIVE-FIELD
           path: ${{ runner.temp }}/endlume-phase2-v5
           if-no-files-found: warn
           retention-days: 14

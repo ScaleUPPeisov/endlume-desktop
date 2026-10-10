@@ -1,4 +1,4 @@
-name: ENDLUME 10.0.13 Phase 3 Compile Gate
+name: ENDLUME 10.0.13 Phase 3 Compile + Physical Acceptance
 
 on:
   push:
@@ -10,12 +10,13 @@ permissions:
   contents: read
 
 concurrency:
-  group: endlume-1013-phase3-compile
+  group: endlume-1013-phase3-final
   cancel-in-progress: true
 
 env:
   PRODUCT_BASE: 3f06c7329bd3821bc160e6d88c5b294fc0d82c2b
   FAST_ENGINE_SOURCE: a7a399e83de8b9248e2065c6dda1f9079ded6565
+  OWNER_BINARY_SHA256: 2df386c00da09e76f90218061e7f57ccfba2249a654ec1262b06000b322eb9d7
 
 jobs:
   hosted-arm64-gate:
@@ -145,6 +146,7 @@ jobs:
           ZIP="$RUNNER_TEMP/ENDLUME-10.0.13-PHASE3-FAST-ENGINE-CANDIDATE.zip"
           /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$APP" "$ZIP"
           test -s "$ZIP"
+          cp scripts/phase3_physical_acceptance.py "$RUNNER_TEMP/phase3_physical_acceptance.py"
           python3 - <<PY
           import json,os,subprocess
           out={
@@ -169,5 +171,183 @@ jobs:
             ${{ runner.temp }}/ENDLUME-10.0.13-PHASE3-FAST-ENGINE-CANDIDATE.zip
             ${{ runner.temp }}/PHASE3_HOSTED_BUILD.json
             ${{ runner.temp }}/phase3-files.txt
+            ${{ runner.temp }}/phase3_physical_acceptance.py
           if-no-files-found: error
           retention-days: 7
+
+  physical-owner-acceptance:
+    name: Phase 3 — physical M-series acceptance, owner app untouched
+    needs: hosted-arm64-gate
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 120
+    steps:
+      - name: Create isolated physical workspace and prove owner app pre-state
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$RUNNER_NAME" = "kirill-mac-endlume"
+          test "$(uname -s)" = "Darwin"
+          test "$(uname -m)" = "arm64"
+          ROOT="$RUNNER_TEMP/endlume-1013-phase3-physical"
+          rm -rf "$ROOT"
+          mkdir -p "$ROOT/download" "$ROOT/unpacked"
+          echo "PHYSICAL_ROOT=$ROOT" >> "$GITHUB_ENV"
+
+          OWNER="/Applications/ENDLUME YT Studio PEISOV.app"
+          test -d "$OWNER"
+          OWNER_EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$OWNER/Contents/Info.plist")"
+          OWNER_BIN="$OWNER/Contents/MacOS/$OWNER_EXE"
+          test -x "$OWNER_BIN"
+          if pgrep -f "$OWNER_BIN" >/dev/null 2>&1; then
+            echo "Owner ENDLUME is running. Refusing to test against live owner state." >&2
+            exit 41
+          fi
+          PRE_SHA="$(/usr/bin/shasum -a 256 "$OWNER_BIN" | awk '{print $1}')"
+          echo "OWNER_BINARY_PRE_SHA256=$PRE_SHA"
+          test "$PRE_SHA" = "$OWNER_BINARY_SHA256"
+          printf '%s\n' "$PRE_SHA" > "$ROOT/owner-binary-before.sha256"
+
+          python3 - "$HOME/Library/Application Support/studio.endlume.desktop" "$ROOT/owner-data-before.sha256" <<'PY'
+          import hashlib,sys
+          from pathlib import Path
+          root=Path(sys.argv[1]); out=Path(sys.argv[2]); h=hashlib.sha256()
+          if root.is_dir():
+              for p in sorted(x for x in root.rglob('*') if x.is_file()):
+                  h.update(str(p.relative_to(root)).encode()); h.update(b'\0')
+                  h.update(hashlib.sha256(p.read_bytes()).digest())
+              value=h.hexdigest()
+          else:
+              value='MISSING'
+          out.write_text(value+'\n')
+          print('OWNER_DATA_PRE_SHA256='+value)
+          PY
+
+          TOKEN="$(/usr/bin/security find-generic-password -s studio.endlume.desktop -a managed-session -w 2>/dev/null || true)"
+          if [ -n "$TOKEN" ]; then
+            printf '%s' "$TOKEN" | /usr/bin/shasum -a 256 | awk '{print $1}' > "$ROOT/keychain-before.sha256"
+          else
+            printf 'MISSING\n' > "$ROOT/keychain-before.sha256"
+          fi
+          unset TOKEN
+          AVAIL_KB="$(df -k "$RUNNER_TEMP" | tail -1 | awk '{print $4}')"
+          test "$AVAIL_KB" -ge 8000000
+          echo "OWNER_APPLICATION_REPLACED=NO"
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: ENDLUME-10.0.13-PHASE3-FAST-ENGINE-CANDIDATE
+          path: ${{ runner.temp }}/endlume-1013-phase3-physical/download
+
+      - name: Verify exact candidate SHA and unpack without installation
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ROOT="$PHYSICAL_ROOT"
+          python3 - "$ROOT/download/PHASE3_HOSTED_BUILD.json" "$GITHUB_SHA" <<'PY'
+          import json,sys
+          d=json.load(open(sys.argv[1]))
+          assert d['phase3Head']==sys.argv[2], (d['phase3Head'],sys.argv[2])
+          assert d['release']=='BLOCKED'
+          assert d['ownerApplicationReplaced']=='NO'
+          assert d['stable']=='UNTOUCHED'
+          assert d['liveUpdater']=='UNTOUCHED'
+          print(json.dumps(d,indent=2))
+          PY
+          ZIP="$ROOT/download/ENDLUME-10.0.13-PHASE3-FAST-ENGINE-CANDIDATE.zip"
+          test -s "$ZIP"
+          /usr/bin/ditto -x -k "$ZIP" "$ROOT/unpacked"
+          APP="$(find "$ROOT/unpacked" -maxdepth 2 -type d -name '*.app' -print -quit)"
+          test -n "$APP" -a -d "$APP"
+          EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
+          /usr/bin/lipo -archs "$APP/Contents/MacOS/$EXE" | grep -qw arm64
+          /usr/bin/codesign --verify --deep --strict "$APP"
+          test "$APP" != "/Applications/ENDLUME YT Studio PEISOV.app"
+          echo "PHASE3_APP=$APP" >> "$GITHUB_ENV"
+          cp "$ROOT/download/phase3_physical_acceptance.py" "$ROOT/phase3_physical_acceptance.py"
+          chmod 755 "$ROOT/phase3_physical_acceptance.py"
+          echo "CANDIDATE_INSTALL=NO"
+          echo "RELEASE=BLOCKED"
+
+      - name: Run exact 3h static periodic Subscribe combined and fallback acceptance
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 "$PHYSICAL_ROOT/phase3_physical_acceptance.py" \
+            --app "$PHASE3_APP" \
+            --root "$PHYSICAL_ROOT/acceptance" \
+            --head "$GITHUB_SHA"
+
+      - name: Prove owner app, data and keychain unchanged after acceptance
+        if: always()
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ROOT="$PHYSICAL_ROOT"
+          OWNER="/Applications/ENDLUME YT Studio PEISOV.app"
+          OWNER_EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$OWNER/Contents/Info.plist")"
+          OWNER_BIN="$OWNER/Contents/MacOS/$OWNER_EXE"
+          POST_SHA="$(/usr/bin/shasum -a 256 "$OWNER_BIN" | awk '{print $1}')"
+          echo "OWNER_BINARY_POST_SHA256=$POST_SHA"
+          test "$POST_SHA" = "$OWNER_BINARY_SHA256"
+          test "$POST_SHA" = "$(cat "$ROOT/owner-binary-before.sha256")"
+          printf '%s\n' "$POST_SHA" > "$ROOT/owner-binary-after.sha256"
+
+          python3 - "$HOME/Library/Application Support/studio.endlume.desktop" "$ROOT/owner-data-after.sha256" <<'PY'
+          import hashlib,sys
+          from pathlib import Path
+          root=Path(sys.argv[1]); out=Path(sys.argv[2]); h=hashlib.sha256()
+          if root.is_dir():
+              for p in sorted(x for x in root.rglob('*') if x.is_file()):
+                  h.update(str(p.relative_to(root)).encode()); h.update(b'\0')
+                  h.update(hashlib.sha256(p.read_bytes()).digest())
+              value=h.hexdigest()
+          else:
+              value='MISSING'
+          out.write_text(value+'\n')
+          print('OWNER_DATA_POST_SHA256='+value)
+          PY
+          diff -u "$ROOT/owner-data-before.sha256" "$ROOT/owner-data-after.sha256"
+
+          TOKEN="$(/usr/bin/security find-generic-password -s studio.endlume.desktop -a managed-session -w 2>/dev/null || true)"
+          if [ -n "$TOKEN" ]; then
+            printf '%s' "$TOKEN" | /usr/bin/shasum -a 256 | awk '{print $1}' > "$ROOT/keychain-after.sha256"
+          else
+            printf 'MISSING\n' > "$ROOT/keychain-after.sha256"
+          fi
+          unset TOKEN
+          diff -u "$ROOT/keychain-before.sha256" "$ROOT/keychain-after.sha256"
+          echo OWNER_APPLICATION_REPLACED=NO
+          echo OWNER_STATE_PRESERVED=YES
+          echo GOOGLE_YOUTUBE_STATE_TOUCHED=NO
+          echo STABLE=UNTOUCHED
+          echo LIVE_UPDATER=UNTOUCHED
+          echo RELEASE=BLOCKED
+
+      - name: Upload Phase 3 physical evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ENDLUME-10.0.13-PHASE3-PHYSICAL-EVIDENCE
+          path: |
+            ${{ runner.temp }}/endlume-1013-phase3-physical/acceptance/PHASE3_PHYSICAL_REPORT.json
+            ${{ runner.temp }}/endlume-1013-phase3-physical/acceptance/results/*.json
+            ${{ runner.temp }}/endlume-1013-phase3-physical/acceptance/logs/*.log
+            ${{ runner.temp }}/endlume-1013-phase3-physical/owner-binary-before.sha256
+            ${{ runner.temp }}/endlume-1013-phase3-physical/owner-binary-after.sha256
+            ${{ runner.temp }}/endlume-1013-phase3-physical/owner-data-before.sha256
+            ${{ runner.temp }}/endlume-1013-phase3-physical/owner-data-after.sha256
+            ${{ runner.temp }}/endlume-1013-phase3-physical/keychain-before.sha256
+            ${{ runner.temp }}/endlume-1013-phase3-physical/keychain-after.sha256
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Cleanup isolated Phase 3 workspace
+        if: always()
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "${PHYSICAL_ROOT:-}"
+          test "$PHYSICAL_ROOT" != "/"
+          rm -rf "$PHYSICAL_ROOT"
+          echo OWNER_APPLICATION_REPLACED=NO
+          echo RELEASE=BLOCKED

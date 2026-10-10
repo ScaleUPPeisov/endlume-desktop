@@ -15,22 +15,99 @@ jobs:
     runs-on: [self-hosted, macOS, ARM64]
     timeout-minutes: 5
     steps:
-      - name: Read physical bundle state only
+      - name: Verify physical installed 10.0.12 bundle
         shell: bash
         run: |
           set -euo pipefail
           APP='/Applications/ENDLUME YT Studio PEISOV.app'
           INFO="$APP/Contents/Info.plist"
+          DATA="$HOME/Library/Application Support/studio.endlume.desktop"
+          ROOT="$RUNNER_TEMP/endlume-1012-post-install-${GITHUB_RUN_ID}"
+          mkdir -p "$ROOT"
+          echo "APP=$APP" >> "$GITHUB_ENV"
+          echo "INFO=$INFO" >> "$GITHUB_ENV"
+          echo "DATA=$DATA" >> "$GITHUB_ENV"
+          echo "ROOT=$ROOT" >> "$GITHUB_ENV"
           test -d "$APP"
           test -f "$INFO"
           EXE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$INFO")
+          echo "EXE=$EXE" >> "$GITHUB_ENV"
           SHORT=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$INFO")
           BUILD=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$INFO")
           SHA=$(shasum -a 256 "$APP/Contents/MacOS/$EXE" | awk '{print $1}')
           echo "PHYSICAL_SHORT=$SHORT"
           echo "PHYSICAL_BUILD=$BUILD"
-          echo "PHYSICAL_EXE=$EXE"
           echo "PHYSICAL_BINARY_SHA256=$SHA"
-          echo 'RUNNING_PROCESSES_BEGIN'
-          pgrep -fl "$EXE" || true
-          echo 'RUNNING_PROCESSES_END'
+          test "$SHORT" = '10.0.12'
+          test "$BUILD" = '10.0.12'
+          test "$SHA" = '2df386c00da09e76f90218061e7f57ccfba2249a654ec1262b06000b322eb9d7'
+          strings -a "$APP/Contents/MacOS/$EXE" > "$ROOT/installed.strings.txt"
+          grep -Fq 'https://endlume-updates.vercel.app/api/update?target=' "$ROOT/installed.strings.txt"
+          echo 'INSTALLED_VERSION=10.0.12'
+          echo 'EXACT_CORRECTED_BINARY=PASS'
+
+      - name: Verify persistent owner data preserved
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f "$DATA/license.json"
+          test -f "$DATA/library.json"
+          test ! -f "$DATA/settings.json"
+          LICENSE_SHA=$(shasum -a 256 "$DATA/license.json" | awk '{print $1}')
+          LIBRARY_SHA=$(shasum -a 256 "$DATA/library.json" | awk '{print $1}')
+          echo "POST_LICENSE_SHA256=$LICENSE_SHA"
+          echo "POST_LIBRARY_SHA256=$LIBRARY_SHA"
+          test "$LICENSE_SHA" = '84ce9a39b45a7895d904306523ee6770ed27c3f97d81ffc85103e197ab46ebd6'
+          test "$LIBRARY_SHA" = 'faaed3402850a962e4d8828b45378c11bc19ce4eea969b80cf6f60921fe50358'
+          echo 'OWNER_DATA_PRESERVED=PASS'
+
+      - name: Verify live stable manifest after physical install
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE='https://github.com/ScaleUPPeisov/scaleup-site/releases/download/endlume-stable'
+          curl -fsSL "$BASE/latest.json?physical-post=${GITHUB_RUN_ID}" -o "$ROOT/latest.json"
+          python3 - "$ROOT/latest.json" <<'PY'
+          import json,sys
+          d=json.load(open(sys.argv[1]))
+          assert d['version']=='10.0.12'
+          p=d['platforms']['darwin-aarch64']
+          assert p['url']=='https://github.com/ScaleUPPeisov/scaleup-site/releases/download/endlume-stable/ENDLUME-macos-aarch64.app.tar.gz'
+          assert p['sha256']=='62da0292f2bb3f2cd5e10860d1a196ec50c90b4332dd3529ed9cef169928b209'
+          assert p['signature']
+          print('LIVE_MANIFEST_SHA256=PASS')
+          PY
+
+      - name: Relaunch installed physical 10.0.12
+        shell: bash
+        run: |
+          set -euo pipefail
+          pkill -x "$EXE" 2>/dev/null || true
+          sleep 2
+          open -n "$APP"
+          PID=''
+          for i in $(seq 1 30); do
+            for p in $(pgrep -x "$EXE" 2>/dev/null || true); do
+              cmd=$(ps -p "$p" -o command= 2>/dev/null || true)
+              case "$cmd" in
+                "$APP/Contents/MacOS/$EXE"*) PID="$p"; break 2;;
+              esac
+            done
+            sleep 1
+          done
+          test -n "$PID"
+          sleep 5
+          kill -0 "$PID"
+          echo "RELAUNCH_PID=$PID"
+          echo 'RELAUNCH=PASS'
+
+      - name: Verify installed 10.0.12 reports no update
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL='https://endlume-updates.vercel.app/api/update?target=darwin&arch=aarch64&current_version=10.0.12'
+          CODE=$(curl -sS -o "$ROOT/1012-check.body" -w '%{http_code}' "$URL")
+          echo "10.0.12_UPDATE_HTTP=$CODE"
+          test "$CODE" = '204'
+          test ! -s "$ROOT/1012-check.body"
+          echo '10.0.12_UPDATE_CHECK=204'

@@ -1,11 +1,11 @@
-name: ENDLUME Phase2 WebArea Scroll Probe V26
+name: ENDLUME Phase2 Features Direct V27
 on:
   push:
     branches: [release-fix/endlume-10.0.13-canonical-product-reconstruction]
     paths:
       - .github/workflows/endlume-1013-phase2-ui-v5.yml
       - qa/phase2-ui-v5.sh
-      - qa/phase2-ui-v26-webarea-scroll.sh
+      - qa/phase2-ui-v27-features-direct.sh
   workflow_dispatch:
 permissions:
   contents: read
@@ -31,17 +31,17 @@ jobs:
           test -f "$CACHE"
           test "$(shasum -a 256 "$CACHE" | awk '{print $1}')" = "$EXPECTED_APP_ZIP_SHA256"
           cp -f "$CACHE" "$SRC/ENDLUME-CANONICAL-GOOD-PRODUCT-QA.app.zip"
-      - name: WebArea Scroll Probe V26
+      - name: Features Direct V27
         shell: bash
         env:
           EXPECTED_APP_ZIP_SHA256: 0b374fffa3dbf057620d2f3a5b7919306df474767494ef2daead3bb319afb250
           EXPECTED_APP_BIN_SHA256: 4d208994181c5ca21b20c2e01dd06bda25e82a16bb1405379e79cc4da3026436
           OWNER_APP_BIN_SHA256: 2df386c00da09e76f90218061e7f57ccfba2249a654ec1262b06000b322eb9d7
-        run: bash qa/phase2-ui-v26-webarea-scroll.sh
+        run: bash qa/phase2-ui-v27-features-direct.sh
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: ENDLUME-PHASE2-WEBAREA-SCROLL-V26
+          name: ENDLUME-PHASE2-FEATURES-V27
           path: ${{ runner.temp }}/endlume-phase2-v5
           if-no-files-found: warn
           retention-days: 14

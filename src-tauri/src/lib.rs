@@ -2,6 +2,8 @@ mod model;
 mod scan;
 mod persistence;
 mod render;
+mod fast_render;
+mod visual_spec;
 mod preview;
 mod live_preview;
 mod assets;
@@ -28,6 +30,13 @@ use std::sync::atomic::{AtomicBool,Ordering};
 #[cfg(feature="e2e-render")]
 static E2E_RENDER_ACTIVE:AtomicBool=AtomicBool::new(false);
 use tauri::Manager;
+
+pub(crate) async fn render_with_phase3_fast(app:&tauri::AppHandle,job:&model::QueueJob,cancel:Arc<std::sync::atomic::AtomicBool>)->Result<render::RenderOutcome,String>{
+  match fast_render::try_render_job(app,job,cancel.clone()).await?{
+    Some(summary)=>Ok(summary),
+    None=>render::render_job(app,job,cancel).await,
+  }
+}
 
 #[cfg(feature="e2e-render")]
 fn e2e_qa_mode()->bool{
@@ -110,7 +119,7 @@ fn maybe_start_render_e2e(app:tauri::AppHandle){
           if !ok{break}
           let id=job.project.id.clone();
           let started=std::time::Instant::now();
-          match render::render_job(&app,&job,Arc::new(std::sync::atomic::AtomicBool::new(false))).await{
+          match render_with_phase3_fast(&app,&job,Arc::new(std::sync::atomic::AtomicBool::new(false))).await{
             Ok(summary)=>{
               let terminal=queue::done_payload_from_summary(&job,&id,&summary);
               results.push(serde_json::json!({

@@ -52,14 +52,27 @@ jobs:
           run-id: 38030777284
       - name: Persist local accepted artifact
         if: steps.local_artifact.outputs.hit != 'true'
+        continue-on-error: true
         shell: bash
         env:
           EXPECTED_APP_ZIP_SHA256: 0b374fffa3dbf057620d2f3a5b7919306df474767494ef2daead3bb319afb250
         run: |
-          set -euo pipefail
-          SRC="${{ runner.temp }}/phase2-v5-source/ENDLUME-CANONICAL-GOOD-PRODUCT-QA.app.zip"
+          set +e
+          ROOT="${{ runner.temp }}/phase2-v5-source"
+          SRC="$ROOT/ENDLUME-CANONICAL-GOOD-PRODUCT-QA.app.zip"
           CACHE="$HOME/Library/Caches/endlume-phase2/ENDLUME-CANONICAL-GOOD-PRODUCT-QA.app.zip"
-          test "$(shasum -a 256 "$SRC" | awk '{print $1}')" = "$EXPECTED_APP_ZIP_SHA256"
+          echo "CACHE_DIAGNOSTIC_BEGIN"
+          find "$ROOT" -maxdepth 2 -type f -print | sort
+          if [ ! -f "$SRC" ]; then
+            echo "LOCAL_ARTIFACT_CACHE=SKIP_FILE_MISSING"
+            exit 0
+          fi
+          ACTUAL="$(shasum -a 256 "$SRC" | awk '{print $1}')"
+          echo "DOWNLOADED_APP_ZIP_SHA256=$ACTUAL"
+          if [ "$ACTUAL" != "$EXPECTED_APP_ZIP_SHA256" ]; then
+            echo "LOCAL_ARTIFACT_CACHE=SKIP_SHA_MISMATCH"
+            exit 0
+          fi
           mkdir -p "$(dirname "$CACHE")"
           cp -f "$SRC" "$CACHE"
           echo "LOCAL_ARTIFACT_CACHE=SEEDED"

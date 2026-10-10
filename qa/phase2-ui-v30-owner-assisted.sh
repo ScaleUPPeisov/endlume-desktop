@@ -1,89 +1,158 @@
 #!/bin/bash
 set -Eeuo pipefail
-BASE="$GITHUB_WORKSPACE/qa/phase2-ui-v5.sh"
-OUT="$RUNNER_TEMP/phase2-ui-v30-runtime.sh"
-python3 - "$BASE" "$OUT" <<'PY'
-from pathlib import Path
-import sys
-s=Path(sys.argv[1]).read_text()
-start=s.index("READY=0; for n in $(seq 0 120);")
-block=r'''printf 'OWNER_ASSISTED=YES\nLICENSE_BYPASS=NO\n' > "$REPORT/v30-mode.txt"
-prompt30(){ /usr/bin/say "$1" >/dev/null 2>&1 || true; echo "OWNER_NAV_REQUIRED=$1"; }
-printf '%s\n' 'OWNER_ACTION_REQUIRED: "Кирилл: сейчас смотри на экран Mac. Если macOS спросит доступ к Связке ключей — нажми Разрешить. Когда откроется ENDLUME — открой раздел Проект. Ничего больше делать не нужно."'
-/usr/bin/say 'Кирилл. Сейчас смотри на экран Mac. Если macOS спросит доступ к Связке ключей — нажми Разрешить. Когда откроется ENDLUME — открой раздел Проект.' >/dev/null 2>&1 || true
-cat > "$RUNNER_TEMP/window-id-v30.swift" <<'SWIFT'
-import CoreGraphics
-import Foundation
-let pid = Int32(CommandLine.arguments[1]) ?? -1
-let info = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String:Any]] ?? []
-for w in info {
-  let wp = (w[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value ?? -2
-  let layer = (w[kCGWindowLayer as String] as? NSNumber)?.intValue ?? -1
-  let alpha = (w[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 0
-  if wp == pid && layer == 0 && alpha > 0, let n = w[kCGWindowNumber as String] as? NSNumber {
-    print(n.intValue)
-    exit(0)
-  }
-}
-exit(2)
-SWIFT
-/usr/bin/swiftc "$RUNNER_TEMP/window-id-v30.swift" -o "$RUNNER_TEMP/window-id-v30"
-WID=''
-for second in $(seq 1 300); do
-  WID="$("$RUNNER_TEMP/window-id-v30" "$PID" 2>/dev/null || true)"
-  if [ -n "$WID" ]; then
-    echo "OWNER_WINDOW_READY=$WID"
-    echo "OWNER_READY_AFTER_SECONDS=$second"
-    break
+
+REPORT="$RUNNER_TEMP/endlume-phase2-manual-owner"
+SRC="$RUNNER_TEMP/phase2-manual-source"
+UNPACK="$RUNNER_TEMP/phase2-manual-unpack"
+DMG="$RUNNER_TEMP/ENDLUME-CANONICAL-QA.dmg"
+MOUNT="/Volumes/ENDLUME_CANONICAL_QA"
+QA_APP="$MOUNT/ENDLUME-CANONICAL-GOOD-PRODUCT-QA.app"
+OWNER_APP="/Applications/ENDLUME YT Studio PEISOV.app"
+DONE_SENTINEL="/tmp/ENDLUME_PHASE2_OWNER_QA_DONE"
+FAIL_SENTINEL="/tmp/ENDLUME_PHASE2_LICENSE_FAIL"
+EXPECTED_VERSION="10.0.11"
+EXPECTED_BUNDLE_ID="studio.endlume.desktop"
+
+rm -rf "$REPORT" "$SRC" "$UNPACK" "$DMG"
+mkdir -p "$REPORT" "$SRC" "$UNPACK"
+rm -f "$DONE_SENTINEL" "$FAIL_SENTINEL"
+
+cleanup() {
+  set +e
+  if /sbin/mount | grep -Fq " on $MOUNT "; then
+    hdiutil detach -quiet "$MOUNT" >/dev/null 2>&1 || true
   fi
+}
+trap cleanup EXIT
+
+# Owner production safety before manual QA.
+test "$RUNNER_NAME" = "kirill-mac-endlume"
+test -d "$OWNER_APP"
+OWNER_EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$OWNER_APP/Contents/Info.plist")"
+OWNER_BIN="$OWNER_APP/Contents/MacOS/$OWNER_EXE"
+OWNER_SHA_BEFORE="$(shasum -a 256 "$OWNER_BIN" | awk '{print $1}')"
+test "$OWNER_SHA_BEFORE" = "$OWNER_APP_BIN_SHA256"
+
+# Use the same cached accepted artifact. No rebuild.
+CACHE="$HOME/Library/Caches/endlume-phase2/ENDLUME-CANONICAL-GOOD-PRODUCT-QA.app.zip"
+test -f "$CACHE"
+ZIP_SHA="$(shasum -a 256 "$CACHE" | awk '{print $1}')"
+test "$ZIP_SHA" = "$EXPECTED_APP_ZIP_SHA256"
+cp -f "$CACHE" "$SRC/ENDLUME-CANONICAL-GOOD-PRODUCT-QA.app.zip"
+ditto -x -k "$SRC/ENDLUME-CANONICAL-GOOD-PRODUCT-QA.app.zip" "$UNPACK"
+BUILT_APP="$(find "$UNPACK" -maxdepth 2 -type d -name '*.app' -print -quit)"
+test -n "$BUILT_APP"
+EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$BUILT_APP/Contents/Info.plist")"
+BUILT_BIN="$BUILT_APP/Contents/MacOS/$EXE"
+BIN_SHA="$(shasum -a 256 "$BUILT_BIN" | awk '{print $1}')"
+test "$BIN_SHA" = "$EXPECTED_APP_BIN_SHA256"
+BUNDLE_ID="$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$BUILT_APP/Contents/Info.plist")"
+VERSION="$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$BUILT_APP/Contents/Info.plist")"
+test "$BUNDLE_ID" = "$EXPECTED_BUNDLE_ID"
+test "$VERSION" = "$EXPECTED_VERSION"
+/usr/bin/codesign --verify --deep --strict "$BUILT_APP"
+
+# Prepare exact manual QA volume. The workflow does NOT launch the app.
+if /sbin/mount | grep -Fq " on $MOUNT "; then
+  echo "BLOCKED_EXISTING_QA_MOUNT=YES" >&2
+  exit 93
+fi
+mkdir -p "$MOUNT"
+hdiutil create -quiet -size 350m -fs APFS -volname ENDLUME_CANONICAL_QA "$DMG"
+hdiutil attach -quiet -nobrowse -mountpoint "$MOUNT" "$DMG"
+ditto "$BUILT_APP" "$QA_APP"
+QA_EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$QA_APP/Contents/Info.plist")"
+QA_BIN="$QA_APP/Contents/MacOS/$QA_EXE"
+test "$(shasum -a 256 "$QA_BIN" | awk '{print $1}')" = "$EXPECTED_APP_BIN_SHA256"
+test "$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$QA_APP/Contents/Info.plist")" = "$EXPECTED_BUNDLE_ID"
+test "$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$QA_APP/Contents/Info.plist")" = "$EXPECTED_VERSION"
+/usr/bin/codesign --verify --deep --strict "$QA_APP"
+
+cat > "$REPORT/manual-acceptance-report.txt" <<EOF
+ENDLUME PHASE 2 — MANUAL OWNER FOREGROUND UI ACCEPTANCE
+DATE=2026-10-10
+OWNER_MACHINE=MacBook-Air-Kirill
+CANONICAL_PRODUCT_SHA=3f06c7329bd3821bc160e6d88c5b294fc0d82c2b
+APP_ZIP_SHA256=$ZIP_SHA
+APP_BIN_SHA256=$BIN_SHA
+BUNDLE_ID=$BUNDLE_ID
+VERSION=$VERSION
+CODESIGN=PASS
+OWNER_PRODUCTION_APP_SHA256_BEFORE=$OWNER_SHA_BEFORE
+OWNER_APPLICATION_REPLACED=PENDING_POSTCHECK
+OWNER_STATE=PENDING_OWNER_CONFIRMATION
+LICENSE=PENDING_OWNER_CONFIRMATION
+GOOGLE_YOUTUBE=PENDING_OWNER_CONFIRMATION
+PROJECT=PENDING
+EFFECTS_TOGGLE=PENDING
+EFFECTS_EDITOR=PENDING
+SUBSCRIBE_TOGGLE=PENDING
+SUBSCRIBE_EDITOR=PENDING
+PREVIEW=PENDING
+RENDER_CENTER=PENDING
+LIBRARY=PENDING
+SETTINGS_GENERAL=PENDING
+SETTINGS_FAST_ENGINE=PENDING
+SETTINGS_UPDATES=PENDING
+SETTINGS_ABOUT=PENDING
+MODERN_ICON=PENDING
+PHASE_2_FULL_UI_ACCEPTANCE=PENDING_OWNER_CONFIRMATION
+FAST_ENGINE_MERGED=NO
+STABLE_UNTOUCHED=YES
+UPDATER_UNTOUCHED=YES
+RELEASE_BLOCKED=YES
+EOF
+
+printf '%s\n' \
+  'OWNER_MANUAL_ACTION_REQUIRED=YES' \
+  'OWNER_COMMAND:' \
+  'open -n "/Volumes/ENDLUME_CANONICAL_QA/ENDLUME-CANONICAL-GOOD-PRODUCT-QA.app"' \
+  'IF ACTIVATION SCREEN APPEARS: close candidate and run: touch /tmp/ENDLUME_PHASE2_LICENSE_FAIL' \
+  'AFTER MANUAL QA: close candidate, confirm Google/YouTube still signed in, then run: touch /tmp/ENDLUME_PHASE2_OWNER_QA_DONE'
+
+# Keep the mounted QA environment available. No GUI/window discovery of any kind.
+# Wait up to 45 minutes for explicit owner completion/failure sentinel.
+RESULT=""
+for _ in $(seq 1 2700); do
+  if [ -f "$FAIL_SENTINEL" ]; then RESULT="LICENSE_FAIL"; break; fi
+  if [ -f "$DONE_SENTINEL" ]; then RESULT="OWNER_DONE"; break; fi
   sleep 1
 done
-if [ -z "$WID" ]; then
-  echo OWNER_WINDOW_TIMEOUT=YES >&2
-  echo OWNER_WINDOW_TIMEOUT_SECONDS=300 >&2
-  exit 82
+
+if [ -z "$RESULT" ]; then
+  echo "OWNER_MANUAL_QA_TIMEOUT=YES" >&2
+  exit 94
 fi
-cap30(){ local f="$1"; /usr/sbin/screencapture -x -l"$WID" "$REPORT/screens/$f"; test -s "$REPORT/screens/$f"; }
-# The owner has opened Project as requested. Capture immediately when the ENDLUME window is available.
-cap30 '01-project.png'
-prompt30 'Выключи Эффект для каждого проекта.'; sleep 7; cap30 '02-effects-off.png'
-prompt30 'Включи Эффект для каждого проекта.'; sleep 7; cap30 '03-effects-on.png'
-prompt30 'Выключи Subscribe Button.'; sleep 7; cap30 '04-subscribe-off.png'
-prompt30 'Включи Subscribe Button.'; sleep 7; cap30 '05-subscribe-on.png'
-prompt30 'Открой Preview проекта так, чтобы было видно превью.'; sleep 8; cap30 '06-preview.png'
-prompt30 'Открой Рендер.'; sleep 7; cap30 '07-render.png'
-prompt30 'Открой Библиотеку.'; sleep 7; cap30 '08-library.png'
-prompt30 'Открой Настройки, вкладку Общие.'; sleep 7; cap30 '09-settings-general.png'
-prompt30 'Открой вкладку Fast Engine.'; sleep 6; cap30 '10-settings-fast-engine.png'
-prompt30 'Открой вкладку Обновления.'; sleep 6; cap30 '11-settings-updates.png'
-prompt30 'Открой вкладку О программе.'; sleep 6; cap30 '12-settings-about.png'
-# Base harness already extracted the icon from this exact accepted candidate. Normalize its final evidence name.
-test -s "$REPORT/screens/14-application-icon.png"
-cp "$REPORT/screens/14-application-icon.png" "$REPORT/screens/13-current-icon.png"
-rm -f "$REPORT/screens/14-application-icon.png"
-for f in \
-  01-project.png \
-  02-effects-off.png \
-  03-effects-on.png \
-  04-subscribe-off.png \
-  05-subscribe-on.png \
-  06-preview.png \
-  07-render.png \
-  08-library.png \
-  09-settings-general.png \
-  10-settings-fast-engine.png \
-  11-settings-updates.png \
-  12-settings-about.png \
-  13-current-icon.png; do
-  test -s "$REPORT/screens/$f"
-done
-COUNT="$(find "$REPORT/screens" -maxdepth 1 -type f -name '*.png' | wc -l | tr -d ' ')"
-test "$COUNT" = 13
-printf 'OWNER_ASSISTED_CAPTURE=PASS\nSCREENS_CAPTURED=13\nPRODUCT_FILES_CHANGED=0\nFAST_ENGINE_MERGED=NO\nSTABLE_UNTOUCHED=YES\nUPDATER_UNTOUCHED=YES\nRELEASE_BLOCKED=YES\n' > "$REPORT/v30-result.txt"
-echo OWNER_ASSISTED_V30=PASS
-'''
-s=s[:start]+block+'\n'
-Path(sys.argv[2]).write_text(s)
-PY
-chmod +x "$OUT"
-exec bash "$OUT"
+
+# Post-QA safety: production app must be physically unchanged.
+OWNER_SHA_AFTER="$(shasum -a 256 "$OWNER_BIN" | awk '{print $1}')"
+test "$OWNER_SHA_AFTER" = "$OWNER_APP_BIN_SHA256"
+{
+  echo "OWNER_PRODUCTION_APP_SHA256_AFTER=$OWNER_SHA_AFTER"
+  echo "OWNER_APPLICATION_REPLACED=NO"
+  echo "FAST_ENGINE_MERGED=NO"
+  echo "STABLE_UNTOUCHED=YES"
+  echo "UPDATER_UNTOUCHED=YES"
+  echo "RELEASE_BLOCKED=YES"
+} >> "$REPORT/manual-acceptance-report.txt"
+
+if [ "$RESULT" = "LICENSE_FAIL" ]; then
+  echo "LICENSED_SESSION=FAIL" >> "$REPORT/manual-acceptance-report.txt"
+  echo "LICENSED_SESSION=FAIL"
+  exit 75
+fi
+
+# OWNER_DONE is an explicit owner confirmation that manual navigation is complete,
+# candidate was closed, and Google/YouTube remained preserved. Screenshots remain owner evidence.
+{
+  echo "OWNER_MANUAL_QA_COMPLETED=YES"
+  echo "OWNER_STATE=PRESERVED_BY_OWNER_CONFIRMATION"
+  echo "LICENSE=PRESERVED_BY_OWNER_CONFIRMATION"
+  echo "GOOGLE_YOUTUBE=PRESERVED_BY_OWNER_CONFIRMATION"
+  echo "LICENSED_SESSION=PASS_BY_OWNER_CONFIRMATION"
+  echo "PHASE_2_DECISION=PENDING_SCREENSHOT_REVIEW_OR_OWNER_SCREEN_CONFIRMATION"
+} >> "$REPORT/manual-acceptance-report.txt"
+
+echo "OWNER_MANUAL_QA_COMPLETED=YES"
+echo "OWNER_APPLICATION_REPLACED=NO"
+echo "PHASE_2_DECISION=PENDING_SCREENSHOT_REVIEW_OR_OWNER_SCREEN_CONFIRMATION"

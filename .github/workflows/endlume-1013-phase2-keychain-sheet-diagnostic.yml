@@ -51,7 +51,7 @@ jobs:
           repository: ScaleUPPeisov/endlume-desktop
           run-id: 38030777284
 
-      - name: Launch and inspect native sheet without clicking
+      - name: Launch wait for window and inspect native sheet without clicking
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -89,6 +89,40 @@ jobs:
           test -n "$PID"; /usr/sbin/lsof -a -p "$PID" -d txt -Fn 2>/dev/null | grep -Fxq "n$BIN"
           printf 'PID=%s\nPATH_PROVEN=YES\n' "$PID" > "$REPORT/candidate.txt"
 
+          READY=0
+          : > "$REPORT/readiness.txt"
+          for second in $(seq 0 12); do
+            if ! kill -0 "$PID" >/dev/null 2>&1; then
+              printf 'SECOND=%s PID_ALIVE=NO\n' "$second" >> "$REPORT/readiness.txt"
+              break
+            fi
+            set +e
+            WC=$(/usr/bin/osascript - "$PID" 2>/dev/null <<'OSA'
+          on run argv
+            set targetPid to (item 1 of argv) as integer
+            tell application "System Events"
+              set ps to every application process whose unix id is targetPid
+              if (count of ps) is not 1 then return "0"
+              tell item 1 of ps to return (count of windows) as text
+            end tell
+          end run
+          OSA
+            )
+            RC=$?
+            set -e
+            printf 'SECOND=%s RC=%s WINDOW_COUNT=%s\n' "$second" "$RC" "${WC:-UNKNOWN}" >> "$REPORT/readiness.txt"
+            if [ "$RC" -eq 0 ] && [ "${WC:-0}" -gt 0 ] 2>/dev/null; then
+              READY=1
+              printf 'WINDOW_READY_AFTER_SECONDS=%s\n' "$second" >> "$REPORT/candidate.txt"
+              break
+            fi
+            sleep 1
+          done
+          if [ "$READY" -ne 1 ]; then
+            printf 'DIAGNOSTIC_STATUS=BLOCKED_WINDOW_NOT_READY\n' > "$REPORT/status.txt"
+            exit 86
+          fi
+
           # Native Accessibility diagnostics only: roles/counts/button names/enabled states.
           # Never read static text, text fields, values, descriptions or Keychain contents.
           set +e
@@ -117,7 +151,6 @@ jobs:
               if (count of ps) is not 1 then error "candidate PID unavailable"
               tell item 1 of ps
                 set frontmost to true
-                delay 1
                 set out to out & "WINDOW_COUNT=" & (count of windows) & linefeed
                 if (count of windows) > 0 then
                   set w to window 1
@@ -161,7 +194,6 @@ jobs:
           printf 'OSASCRIPT_RC=%s\n' "$RC" > "$REPORT/status.txt"
           sed -E 's#/(Users|Volumes)/[^[:space:]]+#<PATH>#g; s/ENDLUME-[A-Z2-9-]+/<LICENSE_REDACTED>/g; s/(Bearer )[A-Za-z0-9._-]+/\1<REDACTED>/g' "$REPORT/sheet-diag.raw.err" | head -40 > "$REPORT/sheet-diag.err" || true
           rm -f "$REPORT/sheet-diag.raw.err"
-          sleep 1
 
       - name: Cleanup and owner immutability
         if: always()
@@ -187,6 +219,7 @@ jobs:
           name: ENDLUME-10.0.13-PHASE2-KEYCHAIN-SHEET-DIAG
           path: |
             ${{ runner.temp }}/endlume-sheet-diag/candidate.txt
+            ${{ runner.temp }}/endlume-sheet-diag/readiness.txt
             ${{ runner.temp }}/endlume-sheet-diag/status.txt
             ${{ runner.temp }}/endlume-sheet-diag/sheet-diag.txt
             ${{ runner.temp }}/endlume-sheet-diag/sheet-diag.err

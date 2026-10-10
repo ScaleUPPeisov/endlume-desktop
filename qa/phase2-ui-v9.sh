@@ -24,12 +24,13 @@ function run(argv){
   function box(e){try{const q=e.position(),z=e.size();return{x:Number(q[0]),y:Number(q[1]),w:Number(z[0]),h:Number(z[1])}}catch(_){return{x:0,y:0,w:0,h:0}}}
   function exact(t,role){return coll().find(o=>(o.name===t||o.desc===t)&&(!role||o.role===role));}
   function contains(t,role){return coll().find(o=>((o.name||'').includes(t)||(o.desc||'').includes(t))&&(!role||o.role===role));}
-  function visibleLabel(t){for(let n=0;n<14;n++){const x=exact(t)||contains(t);if(!x)throw new Error('label missing '+t);const b=box(x.e),wb=box(w);if(b.y>wb.y+65&&b.y<wb.y+wb.h-85)return x;se.keyCode(b.y>=wb.y+wb.h-85?121:116);delay(.12)}throw new Error('label not visible '+t)}
-  function near(label,names){const l=visibleLabel(label),lb=box(l.e),ly=lb.y+lb.h/2,lx=lb.x+lb.w/2;let best=null;for(const o of coll()){if(o.role!=='AXButton'||!names.includes(o.name))continue;const b=box(o.e),score=Math.abs((b.y+b.h/2)-ly)*10+Math.abs((b.x+b.w/2)-lx);if(!best||score<best.score)best={o,score};}if(!best)throw new Error('near button missing '+label);return best.o;}
+  function bfsFind(t,role,partial){let q=[w],i=0,seen=0;while(i<q.length&&seen<500){const e=q[i++];seen++;const r=str(()=>e.role()),n=str(()=>e.name()),d=str(()=>e.description());const hit=partial?(n.includes(t)||d.includes(t)):(n===t||d===t);if(hit&&(!role||r===role))return {e,role:r,name:n,desc:d};if(['AXImage','AXSlider','AXTextField'].includes(r))continue;let kids=safe(()=>e.uiElements());for(let j=0;j<kids.length;j++)q.push(kids[j]);}return null;}
+  function visibleLabel(t){for(let n=0;n<14;n++){const x=exact(t)||contains(t)||bfsFind(t,null,true);if(!x)throw new Error('label missing '+t);const b=box(x.e),wb=box(w);if(b.y>wb.y+65&&b.y<wb.y+wb.h-85)return x;se.keyCode(b.y>=wb.y+wb.h-85?121:116);delay(.12)}throw new Error('label not visible '+t)}
+  function near(label,names){const l=visibleLabel(label),lb=box(l.e),ly=lb.y+lb.h/2,lx=lb.x+lb.w/2;let best=null;for(const o of coll()){if(o.role!=='AXButton'||!names.includes(o.name))continue;const b=box(o.e),score=Math.abs((b.y+b.h/2)-ly)*10+Math.abs((b.x+b.w/2)-lx);if(!best||score<best.score)best={o,score};}if(!best){for(const name of names){const o=bfsFind(name,'AXButton',false);if(o){best={o,score:0};break;}}}if(!best)throw new Error('near button missing '+label);return best.o;}
   if(cmd==='geom'){const b=box(w);return `${b.x},${b.y},${b.w},${b.h}`;}
-  if(cmd==='press'){const x=exact(a1,'AXButton')||contains(a1,'AXButton');if(!x)throw new Error('button missing '+a1);x.e.click();delay(.22);return 'OK';}
-  if(cmd==='contains'){const x=contains(a1,'AXButton');if(!x)throw new Error('button contains missing '+a1);x.e.click();delay(.22);return 'OK';}
-  if(cmd==='has'){return String((exact(a1)||contains(a1))?1:0);}
+  if(cmd==='press'){const x=exact(a1,'AXButton')||contains(a1,'AXButton')||bfsFind(a1,'AXButton',false)||bfsFind(a1,'AXButton',true);if(!x)throw new Error('button missing '+a1);x.e.click();delay(.22);return 'OK';}
+  if(cmd==='contains'){const x=contains(a1,'AXButton')||bfsFind(a1,'AXButton',true);if(!x)throw new Error('button contains missing '+a1);x.e.click();delay(.22);return 'OK';}
+  if(cmd==='has'){return String((exact(a1)||contains(a1)||bfsFind(a1,null,true))?1:0);}
   if(cmd==='scroll'){visibleLabel(a1);return 'OK';}
   if(cmd==='nearpress'){const x=near(a1,[a2]);x.e.click();delay(.25);return 'OK';}
   if(cmd==='feature'){const want=a2==='ON';let x=near(a1,['ВКЛЮЧИТЬ','ВЫКЛЮЧИТЬ']),on=x.name==='ВЫКЛЮЧИТЬ';if(on!==want){x.e.click();delay(.3);x=near(a1,['ВКЛЮЧИТЬ','ВЫКЛЮЧИТЬ']);}if((x.name==='ВЫКЛЮЧИТЬ')!==want)throw new Error('feature failed '+a1);return 'OK';}

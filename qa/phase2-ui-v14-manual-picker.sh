@@ -12,26 +12,23 @@ import sys
 v5=Path(sys.argv[1]).read_text()
 v8=Path(sys.argv[2]).read_text()
 v11=Path(sys.argv[3]).read_text()
-# Put the synthetic fixture on Desktop so the owner can select it physically.
 old='$RUNNER_TEMP/endlume-phase2-v5-fixture'
 new='$HOME/Desktop/ENDLUME_PHASE2_QA_${GITHUB_RUN_ID}'
 if old not in v5: raise SystemExit('V14 FIX path missing')
 v5=v5.replace(old,new,1)
 Path(sys.argv[4]).write_text(v5)
-# Point V8 at the patched V5.
 old8='BASE="$GITHUB_WORKSPACE/qa/phase2-ui-v5.sh"'
 new8='BASE="$RUNNER_TEMP/phase2-ui-v14-v5.sh"'
 if old8 not in v8: raise SystemExit('V14 V8 base missing')
 v8=v8.replace(old8,new8,1)
 Path(sys.argv[5]).write_text(v8)
-# Point V11 at patched V8, then replace its generated picker helper with a manual wait.
 old11='V8="$GITHUB_WORKSPACE/qa/phase2-ui-v8.sh"'
 new11='V8="$RUNNER_TEMP/phase2-ui-v14-v8.sh"'
 if old11 not in v11: raise SystemExit('V14 V11 base missing')
 v11=v11.replace(old11,new11,1)
 start=v11.index("new=r'''choose_safe(){")
 end=v11.index("\n'''\nif old not in v8", start)
-manual=r'''new=r'''choose_safe(){ local target="$1"; local label; label="$(basename "$target")"; echo "MANUAL_PICKER_WAIT=$label"; sleep 2; local seen=0; for second in $(seq 0 180); do
+picker=r'''choose_safe(){ local target="$1"; local label; label="$(basename "$target")"; echo "MANUAL_PICKER_WAIT=$label"; sleep 2; local seen=0; for second in $(seq 0 180); do
   local state wc sc
   state=$(/usr/bin/osascript - "$PID" <<'OSA'
 on run argv
@@ -57,9 +54,8 @@ OSA
   if [ "$seen" -eq 1 ] && [ "${wc:-0}" -eq 1 ] && [ "${sc:-0}" -eq 0 ]; then echo "MANUAL_PICKER_DONE=$label"; sleep 1; return 0; fi
   sleep 1
 done
-echo "MANUAL_PICKER_TIMEOUT=$label" >&2; return 88; }
-'''
-'''
+echo "MANUAL_PICKER_TIMEOUT=$label" >&2; return 88; }'''
+manual="new=r'''"+picker+"'''"
 v11=v11[:start]+manual+v11[end+4:]
 Path(sys.argv[6]).write_text(v11)
 PY

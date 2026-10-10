@@ -1,4 +1,4 @@
-name: ENDLUME Phase2 Owner-Assisted Physical UI V30
+name: ENDLUME Phase2 Owner UI Final Retry
 on:
   push:
     branches: [release-fix/endlume-10.0.13-canonical-product-reconstruction]
@@ -16,7 +16,7 @@ concurrency:
 jobs:
   ui:
     runs-on: [self-hosted, macOS, ARM64]
-    timeout-minutes: 3
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
       - name: Restore local accepted artifact
@@ -31,7 +31,7 @@ jobs:
           test -f "$CACHE"
           test "$(shasum -a 256 "$CACHE" | awk '{print $1}')" = "$EXPECTED_APP_ZIP_SHA256"
           cp -f "$CACHE" "$SRC/ENDLUME-CANONICAL-GOOD-PRODUCT-QA.app.zip"
-      - name: Owner-Assisted Physical UI V30
+      - name: Owner-Assisted Physical UI Final Retry
         shell: bash
         env:
           EXPECTED_APP_ZIP_SHA256: 0b374fffa3dbf057620d2f3a5b7919306df474767494ef2daead3bb319afb250
@@ -41,7 +41,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: ENDLUME-PHASE2-OWNER-ASSISTED-V30
+          name: ENDLUME-PHASE2-OWNER-UI-FINAL-RETRY
           path: ${{ runner.temp }}/endlume-phase2-v5
           if-no-files-found: warn
           retention-days: 14

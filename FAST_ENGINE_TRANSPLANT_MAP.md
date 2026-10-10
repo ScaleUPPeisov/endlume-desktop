@@ -17,7 +17,7 @@
 | `src-tauri/src/queue.rs` | dispatch `try_render_job` before legacy fallback | canonical `queue.rs` | **MERGE** | Preserve canonical persistence, terminal snapshots, license hold, selected-effect identity, recovery, errors and Render Center contract. Add only semantic fast-dispatch integration. |
 | `src-tauri/src/render.rs` | historical Subscribe CFR boundary fixes / static Subscribe encoder safety | canonical `render.rs` | **ALREADY_PRESENT / REVIEW ONLY** | Canonical renderer is substantially newer and already contains explicit fixed-frame Subscribe composition, CFR/timescale handling and zero-copy manifest paths. Never replace whole file; port only a demonstrably missing invariant. |
 | `src-tauri/src/preview.rs` | old Fast branch preview alignment | canonical `preview.rs` | **REJECT** | Phase 2 canonical Preview wins. Fast Engine must not redefine Preview. Parity is a test gate, not a reason to import old preview code. |
-| `src-tauri/src/lib.rs` | module registration for Fast Engine | canonical `lib.rs` | **MERGE** | Add only backend module declarations required by compile. Preserve live preview, assets, updater, VYRON bridge, E2E harness and all current commands/setup. |
+| `src-tauri/src/lib.rs` | module registration for Fast Engine | canonical `lib.rs` | **MERGE** | Add only backend module declarations and one dispatcher that returns the canonical `RenderOutcome`. Preserve live preview, assets, updater, VYRON bridge, E2E harness and all current commands/setup. |
 | `src-tauri/Cargo.toml` | historical acceptance feature/default-run additions | canonical Cargo manifest | **NOT NEEDED unless compile proves otherwise** | Canonical already has its own `e2e-render` feature and modern dependency surface. Do not replace package metadata/version/features. |
 | `src-tauri/src/acceptance.rs` | historical Fast branch acceptance harness | canonical QA | **REJECT / NOT NEEDED** | Canonical product already has a newer E2E render harness. Phase 3 tests should exercise the current product contract, not reintroduce the old harness. |
 | Fast-branch frontend / CSS / icon / ReleaseHistory / workflows unrelated to isolated Phase 3 evidence | historical product/release surface | none | **REJECT** | Frozen product surface. No old frontend, icon, changelog, alpha state or release plumbing. |
@@ -53,3 +53,16 @@
 5. Keep canonical `render.rs` and `preview.rs` frozen unless a concrete acceptance failure proves a missing invariant.
 6. Run UI frozen-diff gate before candidate acceptance.
 7. No release, updater mutation, stable mutation or owner-app replacement in Phase 3.
+
+## Implemented semantic bridge
+
+- `visual_spec.rs`: exact accepted backend blob transplanted.
+- `fast_render.rs`: accepted architecture retained; success boundary adapted to canonical `render::RenderOutcome`.
+- `fast_render.rs`: product license hold is checked between fast stages; license cancellation is propagated, not converted to legacy fallback.
+- `lib.rs`: only `fast_render` / `visual_spec` module declarations plus `render_with_phase3_fast` dispatcher added.
+- `queue.rs`: existing worker contract retained; its single render dispatch now calls `render_with_phase3_fast`.
+- E2E render harness uses the same dispatcher, so acceptance measures the actual Phase 3 path rather than bypassing it.
+- canonical `render.rs`: unchanged.
+- canonical `preview.rs`: unchanged.
+- `mp4_manifest.rs`: unchanged and identical to accepted Fast Engine blob.
+- Phase 3 compile/ARM64 candidate workflow added; it explicitly blocks updater/release actions and applies a frozen-UI diff gate.

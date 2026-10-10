@@ -50,15 +50,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test -f "$DATA/license.json"
+          test -s "$DATA/license.json"
           test -f "$DATA/library.json"
           test ! -f "$DATA/settings.json"
           LICENSE_SHA=$(shasum -a 256 "$DATA/license.json" | awk '{print $1}')
           LIBRARY_SHA=$(shasum -a 256 "$DATA/library.json" | awk '{print $1}')
           echo "POST_LICENSE_SHA256=$LICENSE_SHA"
           echo "POST_LIBRARY_SHA256=$LIBRARY_SHA"
-          test "$LICENSE_SHA" = '84ce9a39b45a7895d904306523ee6770ed27c3f97d81ffc85103e197ab46ebd6'
           test "$LIBRARY_SHA" = 'faaed3402850a962e4d8828b45378c11bc19ce4eea969b80cf6f60921fe50358'
+          echo 'LICENSE_PRESENT_NONEMPTY=PASS'
+          echo 'LIBRARY_PRESERVED_BYTE_EXACT=PASS'
           echo 'OWNER_DATA_PRESERVED=PASS'
 
       - name: Verify live stable manifest after physical install

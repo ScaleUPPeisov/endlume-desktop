@@ -66,13 +66,21 @@ verify_mounted_candidate() {
   /usr/bin/codesign --verify --deep --strict "$QA_APP"
 }
 
+volume_name() {
+  /usr/sbin/diskutil info -plist "$MOUNT" | /usr/bin/plutil -extract VolumeName raw -o - - 2>/dev/null || true
+}
+
 # Prepare exact manual QA volume. The workflow does NOT launch the app.
 if /sbin/mount | grep -Fq " on $MOUNT "; then
-  if verify_mounted_candidate; then
+  VNAME="$(volume_name)"
+  test "$VNAME" = "ENDLUME_CANONICAL_QA" || { echo "BLOCKED_EXISTING_QA_MOUNT_NAME=$VNAME" >&2; exit 93; }
+  if [ -d "$QA_APP" ]; then
+    verify_mounted_candidate || { echo "BLOCKED_EXISTING_QA_MOUNT_MISMATCH=YES" >&2; exit 93; }
     echo "REUSED_EXISTING_QA_MOUNT=YES"
   else
-    echo "BLOCKED_EXISTING_QA_MOUNT_MISMATCH=YES" >&2
-    exit 93
+    ditto "$BUILT_APP" "$QA_APP"
+    verify_mounted_candidate
+    echo "POPULATED_EXISTING_QA_MOUNT=YES"
   fi
 else
   mkdir -p "$MOUNT"

@@ -1,4 +1,4 @@
-name: ENDLUME Phase2 Physical UI V16 Fast Nav
+name: ENDLUME Phase2 Physical UI V17 Double Enter Picker
 on:
   push:
     branches: [release-fix/endlume-10.0.13-canonical-product-reconstruction]
@@ -7,8 +7,7 @@ on:
       - qa/phase2-ui-v5.sh
       - qa/phase2-ui-v8.sh
       - qa/phase2-ui-v9.sh
-      - qa/phase2-ui-v11-full.sh
-      - qa/phase2-ui-v16-fast-nav.sh
+      - qa/phase2-ui-v17-double-enter-picker.sh
   workflow_dispatch:
 permissions:
   contents: read
@@ -22,24 +21,59 @@ jobs:
     timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
+      - name: Restore local accepted artifact
+        id: local_artifact
+        shell: bash
+        env:
+          EXPECTED_APP_ZIP_SHA256: 0b374fffa3dbf057620d2f3a5b7919306df474767494ef2daead3bb319afb250
+        run: |
+          set -euo pipefail
+          SRC="${{ runner.temp }}/phase2-v5-source"
+          NAME="ENDLUME-CANONICAL-GOOD-PRODUCT-QA.app.zip"
+          CACHE="$HOME/Library/Caches/endlume-phase2/$NAME"
+          mkdir -p "$SRC" "$(dirname "$CACHE")"
+          for candidate in "$CACHE" "$SRC/$NAME"; do
+            if [ -f "$candidate" ] && [ "$(shasum -a 256 "$candidate" | awk '{print $1}')" = "$EXPECTED_APP_ZIP_SHA256" ]; then
+              if [ "$candidate" != "$SRC/$NAME" ]; then cp -f "$candidate" "$SRC/$NAME"; fi
+              echo "hit=true" >> "$GITHUB_OUTPUT"
+              echo "LOCAL_ARTIFACT_CACHE=HIT"
+              exit 0
+            fi
+          done
+          echo "hit=false" >> "$GITHUB_OUTPUT"
+          echo "LOCAL_ARTIFACT_CACHE=MISS"
       - uses: actions/download-artifact@v4
+        if: steps.local_artifact.outputs.hit != 'true'
         with:
           name: ENDLUME-CANONICAL-GOOD-PRODUCT-QA
           path: ${{ runner.temp }}/phase2-v5-source
           github-token: ${{ github.token }}
           repository: ScaleUPPeisov/endlume-desktop
           run-id: 38030777284
-      - name: Physical UI V16 Fast Nav
+      - name: Persist local accepted artifact
+        if: steps.local_artifact.outputs.hit != 'true'
+        shell: bash
+        env:
+          EXPECTED_APP_ZIP_SHA256: 0b374fffa3dbf057620d2f3a5b7919306df474767494ef2daead3bb319afb250
+        run: |
+          set -euo pipefail
+          SRC="${{ runner.temp }}/phase2-v5-source/ENDLUME-CANONICAL-GOOD-PRODUCT-QA.app.zip"
+          CACHE="$HOME/Library/Caches/endlume-phase2/ENDLUME-CANONICAL-GOOD-PRODUCT-QA.app.zip"
+          test "$(shasum -a 256 "$SRC" | awk '{print $1}')" = "$EXPECTED_APP_ZIP_SHA256"
+          mkdir -p "$(dirname "$CACHE")"
+          cp -f "$SRC" "$CACHE"
+          echo "LOCAL_ARTIFACT_CACHE=SEEDED"
+      - name: Physical UI V17 Double Enter Picker
         shell: bash
         env:
           EXPECTED_APP_ZIP_SHA256: 0b374fffa3dbf057620d2f3a5b7919306df474767494ef2daead3bb319afb250
           EXPECTED_APP_BIN_SHA256: 4d208994181c5ca21b20c2e01dd06bda25e82a16bb1405379e79cc4da3026436
           OWNER_APP_BIN_SHA256: 2df386c00da09e76f90218061e7f57ccfba2249a654ec1262b06000b322eb9d7
-        run: bash qa/phase2-ui-v16-fast-nav.sh
+        run: bash qa/phase2-ui-v17-double-enter-picker.sh
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: ENDLUME-PHASE2-PHYSICAL-UI-V16-FAST-NAV
+          name: ENDLUME-PHASE2-PHYSICAL-UI-V17-DOUBLE-ENTER
           path: ${{ runner.temp }}/endlume-phase2-v5
           if-no-files-found: warn
           retention-days: 14

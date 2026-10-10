@@ -1,4 +1,4 @@
-use crate::model::EffectPreset;
+use crate::{cache,model::EffectPreset};
 
 pub const MAX_FAST_COMMON_PERIOD_SEC:f64=30.0;
 
@@ -7,12 +7,14 @@ fn color_ffmpeg(hex:&str)->String{
 }
 
 pub fn base_filter(label:&str,width:u32,height:u32,fps:u32)->String{
-  format!("[{label}]scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,fps={},setsar=1",fps.max(1))
+  // Must match canonical render.rs / Preview composition semantics: cover + center crop.
+  format!("[{label}]scale={width}:{height}:force_original_aspect_ratio=increase:flags=lanczos+accurate_rnd,crop={width}:{height}:(iw-ow)/2:(ih-oh)/2,fps={},setsar=1",fps.max(1))
 }
 
 pub fn active_effects_at(effects:&[EffectPreset],t:f64,final_duration:f64)->Vec<EffectPreset>{
   effects.iter().filter(|e|{
     e.enabled
+      && e.usage_mode.as_deref().unwrap_or("legacy")!="off"
       && !e.source.trim().is_empty()
       && e.start_sec<=t+0.000_001
       && e.end_sec.unwrap_or(final_duration)>t
@@ -20,7 +22,9 @@ pub fn active_effects_at(effects:&[EffectPreset],t:f64,final_duration:f64)->Vec<
 }
 
 pub fn fast_periodic_effect_supported(e:&EffectPreset)->bool{
+  let usage=e.usage_mode.as_deref().unwrap_or("legacy");
   e.enabled
+    && matches!(usage,"always"|"legacy")
     && !e.source.trim().is_empty()
     && e.start_sec.abs()<=0.000_1
     && e.end_sec.is_none()
@@ -69,25 +73,36 @@ pub fn apply_effects_filter(
     let idx=input_start+n;
     let fx=format!("fx{n}");
     let next=format!("b{}",n+1);
-    if e.mode=="screen"||e.mode=="screen-cache"{
-      let prep=if e.mode=="screen-cache"{
-        format!("[{idx}:v]fps={},scale={width}:{height},setsar=1",fps.max(1))
-      }else{
-        format!("[{idx}:v]fps={},scale={width}:{height},setsar=1,eq=saturation={}",fps.max(1),e.saturation)
-      };
-      graph.push_str(&format!(";{prep}[{fx}];[{base}][{fx}]blend=all_mode=screen:all_opacity=1[{next}]"));
+    let opacity=e.opacity.unwrap_or(1.0).clamp(0.0,1.0);
+    let target=((width as f64)*e.scale.clamp(0.05,1.5)).round().max(2.0) as u32;
+    let target=if target%2==0{target}else{target+1};
+    let scale=if e.fullscreen{
+      format!("scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black@0")
     }else{
-      let prep=if e.mode=="prealpha"{
-        format!("[{idx}:v]fps={},format=argb",fps.max(1))
-      }else if e.mode=="luma"{
-        format!("[{idx}:v]fps={},format=rgba,eq=saturation={},lumakey=threshold={}:tolerance={}:softness=0.08",fps.max(1),e.saturation,e.luma_threshold,e.luma_tolerance)
+      format!("scale={target}:-2:flags=lanczos")
+    };
+    let x=if e.fullscreen{"0".into()}else{format!("max(0,min(W-w,W*{}-w/2))",e.x.clamp(0.0,1.0))};
+    let y=if e.fullscreen{"0".into()}else{format!("max(0,min(H-h,H*{}-h/2))",e.y.clamp(0.0,1.0))};
+
+    if e.mode=="screen"||e.mode=="screen-cache"||e.mode=="strict-screen-cache"{
+      let prep=if e.mode=="screen"{
+        format!("[{idx}:v]fps={},format=rgb24,eq=saturation={},{}",fps.max(1),e.saturation,scale)
       }else{
-        format!("[{idx}:v]fps={},format=rgba,chromakey={}:{}:{}",fps.max(1),color_ffmpeg(&e.key_color),e.similarity.max(0.00001),e.blend)
+        format!("[{idx}:v]fps={},format=rgb24,{}",fps.max(1),scale)
       };
-      let scale=if e.fullscreen{format!("scale={width}:{height}")}else{format!("scale=iw*{}:ih*{}",e.scale.max(0.01),e.scale.max(0.01))};
-      let x=if e.fullscreen{"0".into()}else{format!("(W-w)*{}",e.x.clamp(0.0,1.0))};
-      let y=if e.fullscreen{"0".into()}else{format!("(H-h)*{}",e.y.clamp(0.0,1.0))};
-      graph.push_str(&format!(";{prep},{scale}[{fx}];[{base}][{fx}]overlay=x='{x}':y='{y}':shortest=1:eof_action=repeat[{next}]"));
+      graph.push_str(&format!(";{prep}[{fx}];[{base}][{fx}]blend=all_mode=screen:all_opacity={opacity}[{next}]"));
+    }else{
+      let prep=if e.mode=="prealpha"||e.mode=="strict-prealpha"{
+        format!("[{idx}:v]fps={},format=rgba,{}",fps.max(1),scale)
+      }else if e.mode=="luma"{
+        format!("[{idx}:v]fps={},format=rgba,eq=saturation={},lumakey=threshold={}:tolerance={}:softness=0.08,{}",fps.max(1),e.saturation,e.luma_threshold,e.luma_tolerance,scale)
+      }else{
+        let (similarity,blend)=cache::chromakey_params_859(e);
+        let kind=cache::despill_type(&e.key_color);
+        let mix=e.despill.clamp(0.0,1.0);
+        format!("[{idx}:v]fps={},format=rgba,colorkey={}:{}:{},despill=type={kind}:mix={mix}:expand=0.20,{}",fps.max(1),color_ffmpeg(&e.key_color),similarity,blend,scale)
+      };
+      graph.push_str(&format!(";{prep}[{fx}];[{base}][{fx}]overlay=x='{x}':y='{y}':shortest=0:repeatlast=1:eof_action=repeat:format=auto[{next}]"));
     }
     base=next;
   }
@@ -97,7 +112,12 @@ pub fn apply_effects_filter(
 #[cfg(test)]
 mod tests{
   use super::*;
-  fn effect(mode:&str)->EffectPreset{EffectPreset{id:"x".into(),name:"x".into(),source:"/tmp/x.mp4".into(),enabled:true,mode:mode.into(),key_color:"#00ff00".into(),similarity:0.18,blend:0.08,despill:0.0,luma_threshold:0.12,luma_tolerance:0.12,saturation:1.0,x:0.5,y:0.5,scale:1.0,fullscreen:true,preview_frame_time:0.0,start_sec:0.0,end_sec:None,cache_key:None,cache_ready:None}}
+  fn effect(mode:&str)->EffectPreset{EffectPreset{
+    id:"x".into(),name:"x".into(),source:"/tmp/x.mp4".into(),enabled:true,mode:mode.into(),key_color:"#00ff00".into(),
+    similarity:0.18,blend:0.08,despill:0.35,luma_threshold:0.12,luma_tolerance:0.12,saturation:1.0,x:0.5,y:0.5,scale:1.0,fullscreen:true,
+    preview_frame_time:0.0,start_sec:0.0,end_sec:None,cache_key:None,cache_ready:None,asset_state:None,asset_error:None,
+    usage_mode:Some("always".into()),interval_sec:None,usage_duration_sec:None,target:Some("CUSTOM".into()),offset_x:Some(0.0),offset_y:Some(0.0),opacity:Some(1.0)
+  }}
   #[test]
   fn common_period_is_exact_and_bounded(){
     assert_eq!(common_period_frames(&[300],60),Some(300));
@@ -118,5 +138,12 @@ mod tests{
     assert!(!fast_periodic_effect_supported(&effect("screen-cache")));
     assert!(!fast_periodic_effect_supported(&effect("prealpha")));
     assert!(!fast_periodic_effect_supported(&effect("unknown")));
+    let mut timed=effect("chromakey");timed.usage_mode=Some("interval".into());assert!(!fast_periodic_effect_supported(&timed));
+  }
+  #[test]
+  fn base_filter_matches_canonical_cover_crop(){
+    let f=base_filter("0:v",1920,1080,60);
+    assert!(f.contains("force_original_aspect_ratio=increase"));
+    assert!(f.contains("crop=1920:1080"));
   }
 }

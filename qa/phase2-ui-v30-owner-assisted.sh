@@ -65,10 +65,12 @@ verify_mounted_candidate() {
 }
 
 prepare_new_mount() {
-  mkdir -p "$MOUNT"
-  hdiutil create -quiet -size 350m -fs APFS -volname ENDLUME_CANONICAL_QA "$DMG"
-  hdiutil attach -quiet -nobrowse -mountpoint "$MOUNT" "$DMG"
+  rm -f "$DMG"
+  # Let Disk Arbitration create the /Volumes mountpoint itself. Do not mkdir under /Volumes.
+  hdiutil create -quiet -size 1g -fs APFS -volname ENDLUME_CANONICAL_QA "$DMG"
+  hdiutil attach -quiet -nobrowse -mountroot /Volumes "$DMG"
   MOUNT_OWNED=YES
+  test -d "$MOUNT"
   ditto "$BUILT_APP" "$QA_APP"
   verify_mounted_candidate
   echo "PREPARED_NEW_QA_MOUNT=YES"
@@ -91,6 +93,8 @@ if /sbin/mount | grep -Fq " on $MOUNT "; then
     prepare_new_mount
   fi
 else
+  # Remove only an empty stale directory left by a previous mount, if present.
+  if [ -d "$MOUNT" ]; then rmdir "$MOUNT" 2>/dev/null || true; fi
   prepare_new_mount
 fi
 

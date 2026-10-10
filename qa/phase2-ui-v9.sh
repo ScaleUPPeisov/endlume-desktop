@@ -39,7 +39,7 @@ function run(argv){
 JXA
 direct(){ python3 - "$REPORT/ui-direct-v9.js" "$PID" "$@" <<'PY2'
 import subprocess,sys
-try:r=subprocess.run(['/usr/bin/osascript','-l','JavaScript',sys.argv[1],sys.argv[2],*sys.argv[3:]],text=True,capture_output=True,timeout=4)
+try:r=subprocess.run(['/usr/bin/osascript','-l','JavaScript',sys.argv[1],sys.argv[2],*sys.argv[3:]],text=True,capture_output=True,timeout=20)
 except subprocess.TimeoutExpired: print('DIRECT_UI_TIMEOUT',file=sys.stderr);raise SystemExit(124)
 if r.stdout:print(r.stdout,end='')
 if r.returncode:

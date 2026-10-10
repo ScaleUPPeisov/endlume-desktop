@@ -45,6 +45,8 @@ on run argv
     delay 0.45
     set the clipboard to targetPath
     tell application "System Events"
+      keystroke "a" using {command down}
+      delay 0.1
       keystroke "v" using {command down}
       delay 0.25
       key code 36
@@ -98,12 +100,12 @@ end run
 OSA
 }
 '''
-if old not in v8: raise SystemExit('V12 choose_safe block not found')
+if old not in v8: raise SystemExit('V13 choose_safe block not found')
 v8=v8.replace(old,new,1)
 Path(sys.argv[3]).write_text(v8)
 needle='BASE="$GITHUB_WORKSPACE/qa/phase2-ui-v8.sh"'
 replacement='BASE="$RUNNER_TEMP/phase2-ui-v8-picker-fixed.sh"'
-if needle not in v9: raise SystemExit('V12 V9 base line missing')
+if needle not in v9: raise SystemExit('V13 V9 base line missing')
 v9=v9.replace(needle,replacement,1)
 Path(sys.argv[4]).write_text(v9)
 PY

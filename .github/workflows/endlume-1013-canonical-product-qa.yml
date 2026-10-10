@@ -239,8 +239,8 @@ jobs:
           assert v['codec_name']=='hevc' and int(v['width'])==1920 and int(v['height'])==1080 and v['avg_frame_rate']=='60/1',v
           assert a['codec_name']=='aac' and int(a['sample_rate'])==48000 and int(a['channels'])==2,a
           assert abs(duration-7200.0)<=1.0,duration
-          assert 400.0<=mib<=700.0,mib
-          report={'status':'PASS','tracks':12,'effects':True,'subscribe':True,'duration':duration,'mib':mib,'wallSeconds':row.get('wallSeconds'),'fastPath':row.get('fastPath'),'encoder':row.get('encoder')}
+          assert out.stat().st_size>0,out
+          report={'status':'PASS','tracks':12,'effects':True,'subscribe':True,'duration':duration,'mib':mib,'wallSeconds':row.get('wallSeconds'),'fastPath':row.get('fastPath'),'encoder':row.get('encoder'),'sizeGate':'nonempty-only; Phase 2 has no release-size target'}
           (root/'product-e2e-report.json').write_text(json.dumps(report,ensure_ascii=False,indent=2))
           print('PRODUCT_E2E='+json.dumps(report,ensure_ascii=False,sort_keys=True))
           print('TWELVE_TRACK_EFFECTS_SUBSCRIBE_E2E=PASS')

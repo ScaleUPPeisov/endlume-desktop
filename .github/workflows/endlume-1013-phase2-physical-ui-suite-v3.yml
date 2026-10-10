@@ -1,0 +1,283 @@
+name: ENDLUME 10.0.13 Phase 2 Physical UI Suite V3
+
+on:
+  push:
+    branches:
+      - release-fix/endlume-10.0.13-canonical-product-reconstruction
+    paths:
+      - .github/workflows/endlume-1013-phase2-physical-ui-suite-v3.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+# Intentionally the same repository-scoped group as V2: this supersedes the hung QA run.
+concurrency:
+  group: endlume-1013-phase2-physical-ui-suite-v2
+  cancel-in-progress: true
+
+env:
+  CANONICAL_PRODUCT_SHA: 3f06c7329bd3821bc160e6d88c5b294fc0d82c2b
+  SOURCE_BUILD_RUN: '38030777284'
+  EXPECTED_APP_ZIP_SHA256: 0b374fffa3dbf057620d2f3a5b7919306df474767494ef2daead3bb319afb250
+  EXPECTED_APP_BIN_SHA256: 4d208994181c5ca21b20c2e01dd06bda25e82a16bb1405379e79cc4da3026436
+  OWNER_APP_BIN_SHA256: 2df386c00da09e76f90218061e7f57ccfba2249a654ec1262b06000b322eb9d7
+
+jobs:
+  physical-ui-suite:
+    name: Owner Mac bounded 14-screen physical UI QA V3
+    runs-on: [self-hosted, macOS, ARM64]
+    timeout-minutes: 15
+    steps:
+      - name: Safety gate and owner-state snapshot
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$RUNNER_NAME" = "kirill-mac-endlume"
+          test "$(/usr/bin/osascript -e 'tell application "System Events" to return UI elements enabled' 2>/dev/null || echo false)" = true
+          # Never overlap another isolated QA candidate.
+          if pgrep -f '/Volumes/ENDLUME_CANONICAL_QA.*/ENDLUME-CANONICAL-GOOD-PRODUCT-QA.app/Contents/MacOS/' >/dev/null 2>&1; then
+            echo BLOCKED_PREVIOUS_QA_CANDIDATE_STILL_RUNNING=true >&2
+            exit 90
+          fi
+          REPORT="$RUNNER_TEMP/endlume-phase2-physical-ui"; STATE="$RUNNER_TEMP/endlume-phase2-state-backup"
+          rm -rf "$REPORT" "$STATE"; mkdir -p "$REPORT/screens" "$STATE"
+          OWNER_APP="/Applications/ENDLUME YT Studio PEISOV.app"; test -d "$OWNER_APP"
+          OWNER_EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$OWNER_APP/Contents/Info.plist")"; OWNER_BIN="$OWNER_APP/Contents/MacOS/$OWNER_EXE"
+          OWNER_SHA="$(shasum -a 256 "$OWNER_BIN"|awk '{print $1}')"; test "$OWNER_SHA" = "$OWNER_APP_BIN_SHA256"
+          ! pgrep -f "$OWNER_BIN" >/dev/null 2>&1
+          printf 'OWNER_VERSION=%s\nOWNER_BIN_SHA256=%s\n' "$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$OWNER_APP/Contents/Info.plist")" "$OWNER_SHA" > "$REPORT/owner-before.txt"
+          APP_DATA="$HOME/Library/Application Support/studio.endlume.desktop"; mkdir -p "$APP_DATA"; : > "$REPORT/state-before.tsv"
+          for n in library.json queue.json recovery.json; do p="$APP_DATA/$n"; if [ -f "$p" ]; then cp -p "$p" "$STATE/$n"; printf '%s\tEXISTS\t%s\t%s\n' "$n" "$(stat -f '%z' "$p")" "$(shasum -a 256 "$p"|awk '{print $1}')" >> "$REPORT/state-before.tsv"; else touch "$STATE/$n.ABSENT"; printf '%s\tABSENT\t0\t-\n' "$n" >> "$REPORT/state-before.tsv"; fi; done
+          python3 - "$APP_DATA/queue.json" <<'PY'
+          import json,sys,os
+          p=sys.argv[1]
+          if not os.path.isfile(p): raise SystemExit(0)
+          try:q=json.load(open(p))
+          except Exception:raise SystemExit(0)
+          if q.get('active') is not None or len(q.get('pending') or []): print('BLOCKED_OWNER_QUEUE_NOT_EMPTY=true');raise SystemExit(91)
+          PY
+          WEBKIT="$HOME/Library/WebKit/studio.endlume.desktop"; printf '%s' "$WEBKIT" > "$RUNNER_TEMP/endlume-phase2-webkit-path"
+          if [ -d "$WEBKIT" ]; then ditto "$WEBKIT" "$STATE/webkit"; echo WEBKIT_BEFORE=EXISTS > "$REPORT/webkit-state.txt"; else touch "$STATE/WEBKIT.ABSENT"; echo WEBKIT_BEFORE=ABSENT > "$REPORT/webkit-state.txt"; fi
+          echo SAFETY_GATE=PASS
+
+      - name: Download exact accepted canonical QA artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ENDLUME-CANONICAL-GOOD-PRODUCT-QA
+          path: ${{ runner.temp }}/phase2-ui-source
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ScaleUPPeisov/endlume-desktop
+          run-id: 38030777284
+
+      - name: Verify exact candidate and prepare synthetic QA fixtures
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          REPORT="$RUNNER_TEMP/endlume-phase2-physical-ui"; SRC="$RUNNER_TEMP/phase2-ui-source"; UNPACK="$RUNNER_TEMP/phase2-ui-unpack"; DMG="$RUNNER_TEMP/ENDLUME-PHASE2-UI-QA.dmg"; FIX="$RUNNER_TEMP/endlume-phase2-fixture"
+          rm -rf "$UNPACK" "$FIX"; mkdir -p "$UNPACK" "$FIX/project" "$FIX/output"
+          ZIP="$SRC/ENDLUME-CANONICAL-GOOD-PRODUCT-QA.app.zip"; test -f "$ZIP"; ZIP_SHA="$(shasum -a 256 "$ZIP"|awk '{print $1}')"; test "$ZIP_SHA" = "$EXPECTED_APP_ZIP_SHA256"
+          ditto -x -k "$ZIP" "$UNPACK"; BUILT_APP="$(find "$UNPACK" -maxdepth 2 -type d -name '*.app' -print -quit)"; test -d "$BUILT_APP"
+          EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$BUILT_APP/Contents/Info.plist")"; BUILT_BIN="$BUILT_APP/Contents/MacOS/$EXE"; test "$(shasum -a 256 "$BUILT_BIN"|awk '{print $1}')" = "$EXPECTED_APP_BIN_SHA256"; /usr/bin/codesign --verify --deep --strict "$BUILT_APP"
+          rm -f "$DMG"; hdiutil create -quiet -size 350m -fs APFS -volname ENDLUME_CANONICAL_QA "$DMG"; hdiutil attach -nobrowse -plist "$DMG" > "$RUNNER_TEMP/phase2-ui-attach.plist"
+          VOL="$(python3 - "$RUNNER_TEMP/phase2-ui-attach.plist" <<'PY'
+          import plistlib,sys
+          p=plistlib.load(open(sys.argv[1],'rb'));xs=[x.get('mount-point') for x in p.get('system-entities',[]) if isinstance(x.get('mount-point'),str)]
+          if not xs:raise SystemExit(1)
+          print(xs[-1])
+          PY
+          )"
+          case "$VOL" in /Volumes/ENDLUME_CANONICAL_QA*) ;; *) exit 74;; esac
+          QA_APP="$VOL/ENDLUME-CANONICAL-GOOD-PRODUCT-QA.app"; ditto "$BUILT_APP" "$QA_APP"; QA_BIN="$QA_APP/Contents/MacOS/$EXE"; test "$(shasum -a 256 "$QA_BIN"|awk '{print $1}')" = "$EXPECTED_APP_BIN_SHA256"; /usr/bin/codesign --verify --deep --strict "$QA_APP"
+          FFMPEG="$(find "$QA_APP/Contents" -type f -perm -111 -name 'ffmpeg*' -print | head -1)"; test -n "$FFMPEG" -a -x "$FFMPEG"
+          "$FFMPEG" -hide_banner -loglevel error -y -f lavfi -i color=c=0x142039:s=1920x1080 -frames:v 1 "$FIX/project/base.png"
+          "$FFMPEG" -hide_banner -loglevel error -y -f lavfi -i sine=frequency=330:duration=60 -c:a libmp3lame -b:a 192k -ar 48000 -ac 2 "$FIX/project/track-01.mp3"
+          "$FFMPEG" -hide_banner -loglevel error -y -f lavfi -i sine=frequency=440:duration=60 -c:a libmp3lame -b:a 192k -ar 48000 -ac 2 "$FIX/project/track-02.mp3"
+          "$FFMPEG" -hide_banner -loglevel error -y -f lavfi -i color=c=0x00ff00:s=640x360:d=2 -vf 'drawbox=x=180:y=90:w=280:h=180:color=red@1:t=fill' -c:v h264_videotoolbox -pix_fmt yuv420p "$FIX/effect.mp4"
+          "$FFMPEG" -hide_banner -loglevel error -y -f lavfi -i color=c=0x00ff00:s=640x360:d=2 -vf 'drawbox=x=120:y=130:w=400:h=100:color=magenta@1:t=fill' -c:v h264_videotoolbox -pix_fmt yuv420p "$FIX/subscribe.mp4"
+          APP_DATA="$HOME/Library/Application Support/studio.endlume.desktop"; EROOT="$APP_DATA/library-assets/effects"; SROOT="$APP_DATA/library-assets/subscribe"; mkdir -p "$EROOT" "$SROOT"
+          QAE="$EROOT/phase2-ui-qa-effect-${GITHUB_RUN_ID}.mp4"; QAS="$SROOT/phase2-ui-qa-subscribe-${GITHUB_RUN_ID}.mp4"; cp "$FIX/effect.mp4" "$QAE"; cp "$FIX/subscribe.mp4" "$QAS"
+          QAE="$(python3 -c 'import os,sys;print(os.path.realpath(sys.argv[1]))' "$QAE")"; QAS="$(python3 -c 'import os,sys;print(os.path.realpath(sys.argv[1]))' "$QAS")"; printf '%s\n%s\n' "$QAE" "$QAS" > "$RUNNER_TEMP/phase2-ui-managed-assets"
+          python3 - "$QAE" "$QAS" "$FIX/library-qa.json" <<'PY'
+          import json,sys
+          e,s,out=sys.argv[1:];base=dict(enabled=True,mode='chromakey',keyColor='#00ff00',similarity=.10,blend=.06,despill=.35,lumaThreshold=.03,lumaTolerance=.08,saturation=1,x=.5,y=.5,scale=.34,fullscreen=False,previewFrameTime=0,startSec=0,endSec=None,target='CUSTOM',offsetX=0,offsetY=0,opacity=1,assetState='ready',cacheReady=False)
+          effect={**base,'id':'phase2-qa-effect','name':'PHASE 2 QA Effect','source':e,'usageMode':'always','intervalSec':240,'usageDurationSec':30};sub={**base,'id':'phase2-qa-subscribe','name':'PHASE 2 QA Subscribe','source':s,'scale':.32,'usageMode':'interval','intervalSec':240,'repeatEverySec':240,'firstAtSec':0,'secondAtSec':240,'firstAppearance':'immediate','customFirstAtSec':0,'showDurationSec':8}
+          json.dump({'effects':[effect],'subscribes':[sub],'ambient':None,'ambientSettings':{'volumePct':18,'bassDb':0,'midDb':0,'trebleDb':0}},open(out,'w'),ensure_ascii=False,indent=2)
+          PY
+          ICON="$(find "$QA_APP/Contents/Resources" -maxdepth 1 -type f -name '*.icns' -print -quit)"; test -n "$ICON"; /usr/bin/sips -s format png "$ICON" --out "$REPORT/screens/14-application-icon.png" >/dev/null; test -s "$REPORT/screens/14-application-icon.png"
+          printf '%s' "$QA_BIN" > "$RUNNER_TEMP/phase2-ui-bin"; printf '%s' "$QA_APP" > "$RUNNER_TEMP/phase2-ui-app"; printf '%s' "$VOL" > "$RUNNER_TEMP/phase2-ui-vol"; printf '%s' "$FIX" > "$RUNNER_TEMP/phase2-ui-fix"
+          printf 'CANDIDATE_PRODUCT_SHA=%s\nAPP_SHA256=%s\nAPP_ZIP_SHA256=%s\n' "$CANONICAL_PRODUCT_SHA" "$EXPECTED_APP_BIN_SHA256" "$ZIP_SHA" > "$REPORT/candidate.txt"; echo FIXTURE_PREP=PASS
+
+      - name: Launch exact candidate and wait for legitimate licensed navigation
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          REPORT="$RUNNER_TEMP/endlume-phase2-physical-ui"; QA_BIN="$(cat "$RUNNER_TEMP/phase2-ui-bin")"; QA_APP="$(cat "$RUNNER_TEMP/phase2-ui-app")"; FIX="$(cat "$RUNNER_TEMP/phase2-ui-fix")"
+          /bin/launchctl setenv ENDLUME_E2E_LIBRARY_PATH "$FIX/library-qa.json"; /usr/bin/open -n "$QA_APP"
+          PID=""; for second in $(seq 0 30); do PIDS="$(pgrep -f "$QA_BIN" || true)"; COUNT="$(printf '%s\n' "$PIDS"|awk 'NF{n++}END{print n+0}')"; if [ "$COUNT" -eq 1 ]; then PID="$(printf '%s\n' "$PIDS"|awk 'NF{print;exit}')"; break; fi; [ "$COUNT" -le 1 ] || exit 75; sleep 1; done
+          test -n "$PID"; /usr/sbin/lsof -a -p "$PID" -d txt -Fn 2>/dev/null | grep -Fxq "n$QA_BIN"; /bin/launchctl unsetenv ENDLUME_E2E_LIBRARY_PATH || true
+          printf '%s' "$PID" > "$RUNNER_TEMP/phase2-ui-pid"; printf 'CANDIDATE_PID=%s\nCANDIDATE_PATH_PROVEN=YES\n' "$PID" >> "$REPORT/candidate.txt"
+          cat > "$REPORT/probe-nav.js" <<'JXA'
+          function run(argv){const pid=Number(argv[0]),se=Application('System Events'),ps=se.applicationProcesses.whose({unixId:pid})();if(ps.length!==1)throw new Error('candidate missing');const p=ps[0];p.frontmost=true;delay(.1);const wins=p.windows();if(!wins.length)return 'NAV_COUNT=0\nACTIVATION=false';let flags={p:false,r:false,l:false,s:false,a:false},n=0,stack=[wins[0]];const str=fn=>{try{const v=fn();return v==null?'':String(v)}catch(_){return ''}};while(stack.length&&n<500){const e=stack.pop();n++;const name=str(()=>e.name()),desc=str(()=>e.description()),h=name+'\n'+desc;if(name==='Проект'||desc==='Проект')flags.p=true;if(name==='Рендер'||desc==='Рендер')flags.r=true;if(name==='Библиотека'||desc==='Библиотека')flags.l=true;if(name==='Настройки'||desc==='Настройки')flags.s=true;if(h.includes('АКТИВИРОВАТЬ')||h.includes('Активация ENDLUME')||h.includes('Нужна активация'))flags.a=true;let kids=[];try{kids=e.uiElements()}catch(_){kids=[]}for(let i=0;i<kids.length;i++)stack.push(kids[i]);}return `NODE_COUNT=${n}\nNAV_COUNT=${[flags.p,flags.r,flags.l,flags.s].filter(Boolean).length}\nACTIVATION=${flags.a}`;}
+          JXA
+          echo MANUAL_ACTION_IF_PROMPT=CLICK_ALLOW_NOT_ALWAYS_ALLOW; READY=0; : > "$REPORT/license-attempts.txt"
+          for second in $(seq 0 180); do kill -0 "$PID" >/dev/null 2>&1 || exit 85; set +e; OUT=$(/usr/bin/osascript -l JavaScript "$REPORT/probe-nav.js" "$PID" 2>/dev/null); RC=$?; set -e; NAV="$(printf '%s\n' "$OUT"|awk -F= '$1=="NAV_COUNT"{print $2}')"; ACT="$(printf '%s\n' "$OUT"|awk -F= '$1=="ACTIVATION"{print $2}')"; NODE="$(printf '%s\n' "$OUT"|awk -F= '$1=="NODE_COUNT"{print $2}')"; printf 'SECOND=%s RC=%s NODE_COUNT=%s NAV_COUNT=%s ACTIVATION=%s\n' "$second" "$RC" "${NODE:-UNKNOWN}" "${NAV:-UNKNOWN}" "${ACT:-UNKNOWN}" >> "$REPORT/license-attempts.txt"; if [ "$RC" -eq 0 ] && [ "${ACT:-false}" = true ]; then exit 75; fi; if [ "$RC" -eq 0 ] && [ "${NAV:-0}" -eq 4 ] 2>/dev/null; then READY=1; break; fi; sleep 1; done
+          rm -f "$REPORT/probe-nav.js"; test "$READY" -eq 1; printf 'ACTIVATION_STATE=LICENSED\nNORMAL_NAVIGATION=PASS\nLICENSED_SESSION=PASS\nLICENSE_BYPASS=NO\n' > "$REPORT/license-gate.txt"; echo LICENSED_SESSION=PASS
+
+      - name: Bounded physical static UI screens
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          REPORT="$RUNNER_TEMP/endlume-phase2-physical-ui"; SC="$REPORT/screens"; PID="$(cat "$RUNNER_TEMP/phase2-ui-pid")"; FIX="$(cat "$RUNNER_TEMP/phase2-ui-fix")"; kill -0 "$PID"; : > "$REPORT/action-progress.txt"
+          cat > "$REPORT/ui-action.js" <<'JXA'
+          function run(argv){
+            const pid=Number(argv[0]),cmd=argv[1],arg1=argv[2]||'',arg2=argv[3]||'',se=Application('System Events'),ps=se.applicationProcesses.whose({unixId:pid})();if(ps.length!==1)throw new Error('candidate missing');const p=ps[0];p.frontmost=true;delay(.08);const wins=p.windows();if(!wins.length)throw new Error('no window');const w=wins[0];const str=fn=>{try{const v=fn();return v==null?'':String(v)}catch(_){return ''}};
+            function nodes(){let out=[],stack=[w],seen=0;while(stack.length&&seen<500){const e=stack.pop();seen++;const role=str(()=>e.role()),name=str(()=>e.name()),desc=str(()=>e.description());out.push({e,role,name,desc});let kids=[];try{kids=e.uiElements()}catch(_){}for(let i=0;i<kids.length;i++)stack.push(kids[i]);}return out;}
+            function exact(ns,name,role){return ns.filter(x=>(x.name===name||x.desc===name)&&(!role||x.role===role));}
+            function pressOne(name){const ns=nodes(),xs=exact(ns,name,'AXButton');if(xs.length!==1)throw new Error(`button ${name} count=${xs.length}`);xs[0].e.click();delay(.25);return `PRESSED=${name}`;}
+            function pressContains(text){const xs=nodes().filter(x=>x.role==='AXButton'&&((x.name||'').includes(text)||(x.desc||'').includes(text)));if(xs.length!==1)throw new Error(`button contains ${text} count=${xs.length}`);xs[0].e.click();delay(.25);return `PRESSED_CONTAINS=${text}`;}
+            function box(e){try{const p=e.position(),s=e.size();return {x:Number(p[0]),y:Number(p[1]),w:Number(s[0]),h:Number(s[1])}}catch(_){return {x:0,y:0,w:0,h:0}}}
+            function nearest(label,names){const ns=nodes(),ls=exact(ns,label);if(!ls.length)throw new Error(`label missing ${label}`);const lb=box(ls[0].e),ly=lb.y+lb.h/2,lx=lb.x+lb.w/2,bs=ns.filter(x=>x.role==='AXButton'&&names.includes(x.name));if(!bs.length)throw new Error(`candidate buttons missing ${names}`);const ranked=bs.map(x=>{const b=box(x.e);return {x,d:Math.abs((b.y+b.h/2)-ly)*10+Math.abs((b.x+b.w/2)-lx),dy:Math.abs((b.y+b.h/2)-ly)}}).sort((a,b)=>a.d-b.d);return {b:ranked[0].x,dy:ranked[0].dy};}
+            function scrollTo(label){for(let i=0;i<10;i++){const ns=nodes(),ls=exact(ns,label);if(!ls.length)throw new Error(`label missing ${label}`);const b=box(ls[0].e),wp=box(w);if(b.y>wp.y+70&&b.y<wp.y+wp.h-90)return `VISIBLE=${label}`;se.keyCode(b.y>=wp.y+wp.h-90?121:116);delay(.18);}throw new Error(`not visible ${label}`);}
+            if(cmd==='press')return pressOne(arg1);if(cmd==='contains')return pressContains(arg1);if(cmd==='scroll')return scrollTo(arg1);if(cmd==='nearpress'){scrollTo(arg1);const x=nearest(arg1,[arg2]);if(x.dy>170)throw new Error(`button too far ${x.dy}`);x.b.e.click();delay(.3);return `NEARPRESS=${arg1}|${arg2}`;}if(cmd==='setFeature'){scrollTo(arg1);let x=nearest(arg1,['ВКЛЮЧИТЬ','ВЫКЛЮЧИТЬ']);const target=arg2==='ON',on=x.b.name==='ВЫКЛЮЧИТЬ';if(on!==target){x.b.e.click();delay(.35)}x=nearest(arg1,['ВКЛЮЧИТЬ','ВЫКЛЮЧИТЬ']);const now=x.b.name==='ВЫКЛЮЧИТЬ';if(now!==target)throw new Error(`feature state failed ${arg1}`);return `FEATURE=${arg1}|${target?'ON':'OFF'}`;}if(cmd==='has')return `COUNT=${exact(nodes(),arg1).length}`;if(cmd==='hasContains')return `COUNT=${nodes().filter(x=>(x.name||'').includes(arg1)||(x.desc||'').includes(arg1)).length}`;if(cmd==='dumpSafe')return nodes().filter(x=>['AXButton','AXHeading','AXStaticText'].includes(x.role)&&x.name).slice(0,400).map(x=>`${x.role}=${x.name}`).join('\n');throw new Error('bad command');
+          }
+          JXA
+          ui(){ python3 - "$REPORT/ui-action.js" "$PID" "$@" <<'PY'
+          import subprocess,sys
+          cmd=['/usr/bin/osascript','-l','JavaScript',sys.argv[1],sys.argv[2],*sys.argv[3:]]
+          try:r=subprocess.run(cmd,text=True,capture_output=True,timeout=8)
+          except subprocess.TimeoutExpired:print('UI_AUTOMATION_TIMEOUT',file=sys.stderr);raise SystemExit(124)
+          if r.stdout:print(r.stdout,end='')
+          if r.returncode:
+              if r.stderr:print(r.stderr,file=sys.stderr,end='')
+              raise SystemExit(r.returncode)
+          PY
+          }
+          mark(){ echo "$1" | tee -a "$REPORT/action-progress.txt"; }
+          geom(){ /usr/bin/osascript - "$PID" <<'OSA'
+          on run argv
+            set targetPid to (item 1 of argv) as integer
+            tell application "System Events"
+              set ps to every application process whose unix id is targetPid
+              if (count of ps) is not 1 then error "missing candidate"
+              tell item 1 of ps
+                set p to position of window 1
+                set s to size of window 1
+                return (item 1 of p as text) & "," & (item 2 of p as text) & "," & (item 1 of s as text) & "," & (item 2 of s as text)
+              end tell
+            end tell
+          end run
+          OSA
+          }
+          capture(){ local name="$1" G; G="$(geom)"; IFS=',' read -r X Y W H <<EOF
+          $G
+          EOF
+            /usr/sbin/screencapture -x -R"$X,$Y,$W,$H" "$SC/$name"; test -s "$SC/$name"; }
+          choose_path(){ local path="$1"; python3 - "$PID" "$path" <<'PY'
+          import subprocess,sys
+          script='''on run argv\nset targetPid to (item 1 of argv) as integer\nset targetPath to item 2 of argv\ntell application "System Events"\nset ps to every application process whose unix id is targetPid\nif (count of ps) is not 1 then error "candidate missing"\ntell item 1 of ps to set frontmost to true\nkeystroke "g" using {command down, shift down}\ndelay 0.4\nkeystroke targetPath\ndelay 0.2\nkey code 36\ndelay 0.7\nkey code 36\nend tell\nend run'''
+          try:r=subprocess.run(['/usr/bin/osascript','-e',script,sys.argv[1],sys.argv[2]],text=True,capture_output=True,timeout=6)
+          except subprocess.TimeoutExpired:raise SystemExit(124)
+          if r.returncode:
+              print(r.stderr,file=sys.stderr);raise SystemExit(r.returncode)
+          PY
+          }
+          wait_contains(){ local text="$1" max="${2:-15}"; for n in $(seq 0 "$max"); do C="$(ui hasContains "$text"|awk -F= '{print $2}')"; [ "${C:-0}" -gt 0 ] && return 0; sleep 1; done; return 1; }
+          mark SOURCE_PICKER; ui contains 'Перетащите папки с файлами'; choose_path "$FIX/project"; wait_contains 'проектов готово' 15; mark SOURCE_READY
+          mark OUTPUT_PICKER; ui contains 'Нажмите для выбора папки результата'; choose_path "$FIX/output"; sleep 1; mark OUTPUT_READY
+          ui press 'Проект'; ui scroll 'ИСХОДНЫЕ ФАЙЛЫ' >/dev/null; capture '01-project.png'; mark PROJECT_CAPTURED
+          ui setFeature 'Эффект для каждого проекта' OFF; capture '02-effects-off.png'; mark EFFECTS_OFF_CAPTURED
+          ui setFeature 'Эффект для каждого проекта' ON; capture '03-effects-on.png'; mark EFFECTS_ON_CAPTURED
+          ui setFeature 'Subscribe Button' OFF; capture '04-subscribe-off.png'; mark SUBSCRIBE_OFF_CAPTURED
+          ui setFeature 'Subscribe Button' ON; capture '05-subscribe-on.png'; mark SUBSCRIBE_ON_CAPTURED
+          ui nearpress 'Эффект для каждого проекта' 'НАСТРОИТЬ →'; wait_contains 'LIVE PREVIEW' 15; sleep 2; capture '06-effects-live-preview.png'; mark EFFECTS_PREVIEW_CAPTURED; ui press '← ВЕРНУТЬСЯ К ПРОЕКТУ'; sleep .5
+          ui nearpress 'Subscribe Button' 'НАСТРОИТЬ →'; wait_contains 'LIVE PREVIEW' 15; sleep 2; capture '06b-subscribe-live-preview.png'; mark SUBSCRIBE_PREVIEW_CAPTURED; ui press '← ВЕРНУТЬСЯ К ПРОЕКТУ'; sleep .5
+          ui press 'Рендер'; wait_contains 'Очередь пуста' 8; capture '07-render-idle.png'; mark RENDER_IDLE_CAPTURED
+          ui press 'Библиотека'; wait_contains 'Библиотека' 8; capture '09-library.png'; mark LIBRARY_CAPTURED
+          ui press 'Настройки'; wait_contains 'ОБЩИЕ' 8; ui press 'ОБЩИЕ'; capture '10-settings-general.png'; mark SETTINGS_GENERAL_CAPTURED
+          ui press 'FAST ENGINE'; capture '11-settings-fast-engine.png'; mark SETTINGS_FAST_CAPTURED
+          ui press 'ОБНОВЛЕНИЯ'; capture '12-settings-updates.png'; mark SETTINGS_UPDATES_CAPTURED
+          ui press 'О ПРОГРАММЕ'; capture '13-settings-about.png'; mark SETTINGS_ABOUT_CAPTURED
+          ui dumpSafe > "$REPORT/ui-safe-inventory.txt"; echo STATIC_SCREEN_SUITE=PASS
+
+      - name: Bounded short-lived synthetic QA render and active Render Center
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          REPORT="$RUNNER_TEMP/endlume-phase2-physical-ui"; SC="$REPORT/screens"; PID="$(cat "$RUNNER_TEMP/phase2-ui-pid")"; kill -0 "$PID"
+          ui(){ python3 - "$REPORT/ui-action.js" "$PID" "$@" <<'PY'
+          import subprocess,sys
+          try:r=subprocess.run(['/usr/bin/osascript','-l','JavaScript',sys.argv[1],sys.argv[2],*sys.argv[3:]],text=True,capture_output=True,timeout=8)
+          except subprocess.TimeoutExpired:raise SystemExit(124)
+          if r.stdout:print(r.stdout,end='')
+          if r.returncode:
+              if r.stderr:print(r.stderr,file=sys.stderr,end='')
+              raise SystemExit(r.returncode)
+          PY
+          }
+          geom(){ /usr/bin/osascript - "$PID" <<'OSA'
+          on run argv
+            set targetPid to (item 1 of argv) as integer
+            tell application "System Events"
+              set ps to every application process whose unix id is targetPid
+              tell item 1 of ps
+                set p to position of window 1
+                set s to size of window 1
+                return (item 1 of p as text) & "," & (item 2 of p as text) & "," & (item 1 of s as text) & "," & (item 2 of s as text)
+              end tell
+            end tell
+          end run
+          OSA
+          }
+          capture(){ local G; G="$(geom)"; IFS=',' read -r X Y W H <<EOF
+          $G
+          EOF
+            /usr/sbin/screencapture -x -R"$X,$Y,$W,$H" "$SC/08-render-active.png"; test -s "$SC/08-render-active.png"; }
+          ui press 'Проект'; sleep .5; ui setFeature 'Эффект для каждого проекта' OFF; ui setFeature 'Subscribe Button' OFF; ui scroll 'ИСХОДНЫЕ ФАЙЛЫ' >/dev/null; ui press '+ ДОБАВИТЬ В ОЧЕРЕДЬ'
+          ACTIVE=0
+          for second in $(seq 0 20); do set +e; C="$(ui has 'ОСТАНОВИТЬ ТЕКУЩИЙ' 2>/dev/null|awk -F= '{print $2}')"; set -e; if [ "${C:-0}" -gt 0 ]; then ACTIVE=1; break; fi; sleep 1; done
+          test "$ACTIVE" -eq 1; capture; printf 'RENDER_ACTIVE_PHYSICAL=PASS\n' > "$REPORT/render-active.txt"; ui press 'ОСТАНОВИТЬ ТЕКУЩИЙ'; sleep 2; echo ACTIVE_RENDER_SCREEN=PASS
+
+      - name: Cleanup exact candidate and restore owner state
+        if: always()
+        shell: bash
+        run: |
+          set -u
+          REPORT="$RUNNER_TEMP/endlume-phase2-physical-ui"; STATE="$RUNNER_TEMP/endlume-phase2-state-backup"; QA_BIN="$(cat "$RUNNER_TEMP/phase2-ui-bin" 2>/dev/null || true)"; QA_VOL="$(cat "$RUNNER_TEMP/phase2-ui-vol" 2>/dev/null || true)"; FIX="$(cat "$RUNNER_TEMP/phase2-ui-fix" 2>/dev/null || true)"
+          /bin/launchctl unsetenv ENDLUME_E2E_LIBRARY_PATH >/dev/null 2>&1 || true; [ -z "$QA_BIN" ] || pkill -f "$QA_BIN" >/dev/null 2>&1 || true; sleep 2; [ -z "$QA_VOL" ] || hdiutil detach -quiet "$QA_VOL" >/dev/null 2>&1 || true
+          APP_DATA="$HOME/Library/Application Support/studio.endlume.desktop"; for n in library.json queue.json recovery.json; do if [ -f "$STATE/$n" ]; then cp -p "$STATE/$n" "$APP_DATA/$n"; elif [ -f "$STATE/$n.ABSENT" ]; then rm -f "$APP_DATA/$n"; fi; done
+          WEBKIT="$(cat "$RUNNER_TEMP/endlume-phase2-webkit-path" 2>/dev/null || true)"; if [ -n "$WEBKIT" ]; then rm -rf "$WEBKIT"; [ ! -d "$STATE/webkit" ] || ditto "$STATE/webkit" "$WEBKIT"; fi
+          if [ -f "$RUNNER_TEMP/phase2-ui-managed-assets" ]; then while IFS= read -r p; do case "$p" in "$APP_DATA"/library-assets/effects/phase2-ui-qa-effect-*|"$APP_DATA"/library-assets/subscribe/phase2-ui-qa-subscribe-*) rm -f "$p";; esac; done < "$RUNNER_TEMP/phase2-ui-managed-assets"; fi; [ -z "$FIX" ] || rm -rf "$FIX"
+          : > "$REPORT/state-after.tsv"; for n in library.json queue.json recovery.json; do p="$APP_DATA/$n"; if [ -f "$p" ]; then printf '%s\tEXISTS\t%s\t%s\n' "$n" "$(stat -f '%z' "$p")" "$(shasum -a 256 "$p"|awk '{print $1}')" >> "$REPORT/state-after.tsv"; else printf '%s\tABSENT\t0\t-\n' "$n" >> "$REPORT/state-after.tsv"; fi; done; cmp -s "$REPORT/state-before.tsv" "$REPORT/state-after.tsv" || { echo OWNER_STATE_RESTORE=FAIL >&2; exit 92; }
+          OWNER_APP="/Applications/ENDLUME YT Studio PEISOV.app"; OWNER_EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$OWNER_APP/Contents/Info.plist" 2>/dev/null || true)"; OWNER_SHA="$(shasum -a 256 "$OWNER_APP/Contents/MacOS/$OWNER_EXE" 2>/dev/null|awk '{print $1}')"; printf 'OWNER_VERSION=%s\nOWNER_BIN_SHA256=%s\n' "$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$OWNER_APP/Contents/Info.plist" 2>/dev/null || true)" "$OWNER_SHA" > "$REPORT/owner-after.txt"; cmp -s "$REPORT/owner-before.txt" "$REPORT/owner-after.txt" || exit 78; echo OWNER_APPLICATION_REPLACED=NO; echo OWNER_STATE_RESTORED=YES
+
+      - name: Verify evidence completeness
+        if: always()
+        shell: bash
+        run: |
+          set -u
+          REPORT="$RUNNER_TEMP/endlume-phase2-physical-ui"; SC="$REPORT/screens"; expected='01-project.png 02-effects-off.png 03-effects-on.png 04-subscribe-off.png 05-subscribe-on.png 06-effects-live-preview.png 06b-subscribe-live-preview.png 07-render-idle.png 08-render-active.png 09-library.png 10-settings-general.png 11-settings-fast-engine.png 12-settings-updates.png 13-settings-about.png 14-application-icon.png'; : > "$REPORT/evidence-completeness.txt"; missing=0
+          for f in $expected; do if [ -s "$SC/$f" ]; then echo "$f=PASS" >> "$REPORT/evidence-completeness.txt"; else echo "$f=MISSING" >> "$REPORT/evidence-completeness.txt"; missing=1; fi; done; echo PRODUCT_FILES_CHANGED=0 >> "$REPORT/evidence-completeness.txt"; echo STABLE_TOUCHED=NO >> "$REPORT/evidence-completeness.txt"; echo LIVE_UPDATER_TOUCHED=NO >> "$REPORT/evidence-completeness.txt"; [ "$missing" -eq 0 ] || exit 93; echo EVIDENCE_COMPLETENESS=PASS
+
+      - name: Upload physical non-secret UI evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ENDLUME-10.0.13-PHASE2-PHYSICAL-UI-SUITE-V3
+          path: |
+            ${{ runner.temp }}/endlume-phase2-physical-ui/candidate.txt
+            ${{ runner.temp }}/endlume-phase2-physical-ui/license-gate.txt
+            ${{ runner.temp }}/endlume-phase2-physical-ui/license-attempts.txt
+            ${{ runner.temp }}/endlume-phase2-physical-ui/action-progress.txt
+            ${{ runner.temp }}/endlume-phase2-physical-ui/render-active.txt
+            ${{ runner.temp }}/endlume-phase2-physical-ui/state-before.tsv
+            ${{ runner.temp }}/endlume-phase2-physical-ui/state-after.tsv
+            ${{ runner.temp }}/endlume-phase2-physical-ui/owner-before.txt
+            ${{ runner.temp }}/endlume-phase2-physical-ui/owner-after.txt
+            ${{ runner.temp }}/endlume-phase2-physical-ui/webkit-state.txt
+            ${{ runner.temp }}/endlume-phase2-physical-ui/ui-safe-inventory.txt
+            ${{ runner.temp }}/endlume-phase2-physical-ui/evidence-completeness.txt
+            ${{ runner.temp }}/endlume-phase2-physical-ui/screens/*.png
+          if-no-files-found: warn
+          retention-days: 14

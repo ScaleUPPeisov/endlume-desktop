@@ -64,14 +64,7 @@ verify_mounted_candidate() {
   /usr/bin/codesign --verify --deep --strict "$QA_APP"
 }
 
-# Manual QA volume preparation only. No app launch, no GUI discovery.
-if /sbin/mount | grep -Fq " on $MOUNT "; then
-  test -w "$MOUNT" || { echo "BLOCKED_QA_MOUNT_NOT_WRITABLE=YES" >&2; exit 93; }
-  if [ -d "$QA_APP" ]; then rm -rf "$QA_APP"; fi
-  ditto "$BUILT_APP" "$QA_APP"
-  verify_mounted_candidate
-  echo "POPULATED_EXISTING_QA_MOUNT=YES"
-else
+prepare_new_mount() {
   mkdir -p "$MOUNT"
   hdiutil create -quiet -size 350m -fs APFS -volname ENDLUME_CANONICAL_QA "$DMG"
   hdiutil attach -quiet -nobrowse -mountpoint "$MOUNT" "$DMG"
@@ -79,6 +72,27 @@ else
   ditto "$BUILT_APP" "$QA_APP"
   verify_mounted_candidate
   echo "PREPARED_NEW_QA_MOUNT=YES"
+}
+
+# Manual QA volume preparation only. No app launch, no GUI discovery.
+if /sbin/mount | grep -Fq " on $MOUNT "; then
+  if [ -w "$MOUNT" ]; then
+    rm -rf "$QA_APP"
+    ditto "$BUILT_APP" "$QA_APP"
+    verify_mounted_candidate
+    echo "POPULATED_EXISTING_QA_MOUNT=YES"
+  else
+    # Stale read-only QA mount from an earlier failed preparation. No owner QA is active yet.
+    test ! -d "$QA_APP"
+    if pgrep -af "$MOUNT" >/dev/null 2>&1; then
+      echo "BLOCKED_STALE_QA_MOUNT_IN_USE=YES" >&2
+      exit 93
+    fi
+    hdiutil detach -quiet "$MOUNT"
+    prepare_new_mount
+  fi
+else
+  prepare_new_mount
 fi
 
 cat > "$REPORT/manual-acceptance-report.txt" <<EOF

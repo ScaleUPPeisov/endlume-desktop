@@ -1,0 +1,36 @@
+name: ENDLUME 10.0.12 owner physical state probe
+
+on:
+  push:
+    branches:
+      - release-fix/endlume-10.0.12-physical-signing-compat
+    paths:
+      - '.github/workflows/endlume-1012-owner-physical-state-probe.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: [self-hosted, macOS, ARM64]
+    timeout-minutes: 5
+    steps:
+      - name: Read physical bundle state only
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP='/Applications/ENDLUME YT Studio PEISOV.app'
+          INFO="$APP/Contents/Info.plist"
+          test -d "$APP"
+          test -f "$INFO"
+          EXE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$INFO")
+          SHORT=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$INFO")
+          BUILD=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$INFO")
+          SHA=$(shasum -a 256 "$APP/Contents/MacOS/$EXE" | awk '{print $1}')
+          echo "PHYSICAL_SHORT=$SHORT"
+          echo "PHYSICAL_BUILD=$BUILD"
+          echo "PHYSICAL_EXE=$EXE"
+          echo "PHYSICAL_BINARY_SHA256=$SHA"
+          echo 'RUNNING_PROCESSES_BEGIN'
+          pgrep -fl "$EXE" || true
+          echo 'RUNNING_PROCESSES_END'

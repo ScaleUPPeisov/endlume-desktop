@@ -1,0 +1,47 @@
+name: ENDLUME 10.0.13 Phase 4 Hosted Key Probe
+
+on:
+  push:
+    branches:
+      - release-endlume-10.0.13
+    paths:
+      - '.github/workflows/endlume-1013-phase4-hosted-key-probe.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Presence and trust-root proof only
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
+            echo HOSTED_SIGNING_SECRET_PRESENT=NO
+            exit 0
+          fi
+          echo HOSTED_SIGNING_SECRET_PRESENT=YES
+          printf 'ENDLUME-10.0.13-trust-probe\n' > "$RUNNER_TEMP/probe.txt"
+          npx --yes @tauri-apps/cli@2.10.1 signer sign "$RUNNER_TEMP/probe.txt" >/dev/null
+          test -s "$RUNNER_TEMP/probe.txt.sig"
+          python3 - "$RUNNER_TEMP/probe.txt.sig" "$RUNNER_TEMP/pub" "$RUNNER_TEMP/sig" <<'PY'
+          import base64,json,sys
+          from pathlib import Path
+          cfg=json.loads(Path('src-tauri/tauri.conf.json').read_text())
+          Path(sys.argv[2]).write_bytes(base64.b64decode(cfg['plugins']['updater']['pubkey'].strip()))
+          Path(sys.argv[3]).write_bytes(base64.b64decode(Path(sys.argv[1]).read_text().strip()))
+          PY
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq minisign >/dev/null
+          minisign -Vm "$RUNNER_TEMP/probe.txt" -p "$RUNNER_TEMP/pub" -x "$RUNNER_TEMP/sig" >/dev/null
+          echo HOSTED_TRUSTED_SIGNING_KEY=PASS

@@ -3,7 +3,15 @@ import React from 'react';
 type Release={version:string;date:string;current?:boolean;title:string;items:string[]};
 
 const releases:Release[]=[
-  {version:'10.0.10',date:'02.10.2026',current:true,title:'Final Stability • Preview Race • TOSHIBA Safe Finalize',items:[
+  {version:'10.0.13',date:'11.10.2026',current:true,title:'Fast Engine • Modern ENDLUME • HEVC Acceleration',items:[
+    'Восстановлен канонический современный интерфейс ENDLUME и современная фирменная иконка без отката продукта к старой оболочке.',
+    'Fast Engine интегрирован в канонический ENDLUME: static, periodic Effects и Subscribe-проекты получают сверхбыстрый HEVC 1080p60 render path.',
+    'Для совместимых MP3 сохранён чистый packet-preserving audio path без лишнего перекодирования; полные треки и порядок музыки сохраняются.',
+    'DSP-сценарии Normalize, Crossfade и неподдерживаемые visual-конфигурации безопасно используют проверенный canonical fallback.',
+    'Effects и Subscribe сохранены, включая timing, animation, position/scale и повторения; Render Center, Library и Settings сохранены без функциональных изменений.',
+    'Известное ограничение 10.0.13: canonical Preview может отличаться на последнем кадре перед границей 5-секундного periodic loop; финальный export остаётся phase-correct.'
+  ]},
+  {version:'10.0.10',date:'02.10.2026',current:false,title:'Final Stability • Preview Race • TOSHIBA Safe Finalize',items:[
     'Effects и Subscribe: atomic preview files, latest-request-wins и 60-секундный decode soak закрывают зелёные/битые кадры при быстрых изменениях.',
     'Круглый эквалайзер: защищённый chromakey определяется и после migration ID; Preview/Final parity подтверждён по яркости, edge contrast и bbox.',
     'TOSHIBA EXT: MP4 manifest завершается на внутреннем SSD, затем выполняется один финальный перенос без in-place sync; FFprobe START/MIDDLE/END проходит.',

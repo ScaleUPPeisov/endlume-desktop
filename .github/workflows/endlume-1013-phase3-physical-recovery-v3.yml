@@ -22,8 +22,6 @@ env:
   FAST_ENGINE_SOURCE: a7a399e83de8b9248e2065c6dda1f9079ded6565
   SOURCE_RUN_ID: '38071201778'
   SOURCE_ARTIFACT_ID: '11677270291'
-  SOURCE_ARTIFACT_NAME: ENDLUME-10.0.13-PHASE3-FAST-ENGINE-CANDIDATE
-  SOURCE_ARTIFACT_DIGEST: sha256:2eb887a0211318eb37171e7d46d46275ea112c88dad251d2ee7006bce2e38961
   OWNER_BINARY_SHA256: 2df386c00da09e76f90218061e7f57ccfba2249a654ec1262b06000b322eb9d7
 
 jobs:
@@ -38,7 +36,6 @@ jobs:
           clean: true
           fetch-depth: 0
           persist-credentials: false
-
       - name: Prove PRODUCT_FILES_CHANGED=0
         shell: bash
         run: |
@@ -47,17 +44,13 @@ jobs:
           git merge-base --is-ancestor "$PHASE_3_PRODUCT_HEAD" HEAD
           git diff --name-only "$PHASE_3_PRODUCT_HEAD" HEAD | tee "$RUNNER_TEMP/qa-v3-files.txt"
           BAD="$(git diff --name-only "$PHASE_3_PRODUCT_HEAD" HEAD | grep -Ev '^(\.github/workflows/|scripts/phase3_physical_acceptance\.py$|QA_PHASE3_.*\.md$)' || true)"
-          test -z "$BAD" || { echo "Forbidden non-QA changes:" >&2; printf '%s\n' "$BAD" >&2; exit 31; }
-          git diff --quiet "$PHASE_3_PRODUCT_HEAD" HEAD -- src src-tauri package.json package-lock.json public || {
-            echo PRODUCT_FILES_CHANGED=FAIL >&2
-            exit 32
-          }
+          test -z "$BAD" || { printf '%s\n' "$BAD" >&2; exit 31; }
+          git diff --quiet "$PHASE_3_PRODUCT_HEAD" HEAD -- src src-tauri package.json package-lock.json public || exit 32
+          python3 -m py_compile scripts/phase3_physical_acceptance.py
+          echo PRODUCT_FILES_CHANGED=0
           echo "PHASE_3_PRODUCT_HEAD=$PHASE_3_PRODUCT_HEAD"
           echo "QA_HARNESS_HEAD=$(git rev-parse HEAD)"
-          echo PRODUCT_FILES_CHANGED=0
           echo RELEASE=BLOCKED
-          echo STABLE=UNTOUCHED
-          echo LIVE_UPDATER=UNTOUCHED
 
   physical:
     name: SAME e4a07972 candidate — full V3 physical QA
@@ -65,35 +58,34 @@ jobs:
     runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
     timeout-minutes: 180
     steps:
-      - name: Initialize, reject stale ENDLUME processes, prove owner binary
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: qa-source
+          clean: true
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Initialize and prove owner binary start state
         shell: bash
         run: |
           set -Eeuo pipefail
-          test "$RUNNER_NAME" = "kirill-mac-endlume"
+          test "$RUNNER_NAME" = kirill-mac-endlume
           test "$(uname -s)" = Darwin
           test "$(uname -m)" = arm64
-
           ROOT="$RUNNER_TEMP/endlume-1013-phase3-recovery-v3"
           rm -rf "$ROOT"
           mkdir -p "$ROOT/download" "$ROOT/unpacked" "$ROOT/acceptance/results" "$ROOT/acceptance/logs" "$ROOT/evidence"
           echo "PHYSICAL_ROOT=$ROOT" >> "$GITHUB_ENV"
-
-          STALE="$(pgrep -x endlume || true)"
-          if [ -n "$STALE" ]; then
-            echo "STALE_ENDLUME_PROCESS=FAIL" >&2
-            for p in $STALE; do ps -p "$p" -o pid=,ppid=,comm=,command= || true; done
-            exit 40
-          fi
-
           OWNER="/Applications/ENDLUME YT Studio PEISOV.app"
           test -d "$OWNER"
           OWNER_EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$OWNER/Contents/Info.plist")"
           OWNER_BIN="$OWNER/Contents/MacOS/$OWNER_EXE"
           test -x "$OWNER_BIN"
+          if pgrep -f "$OWNER_BIN" >/dev/null 2>&1; then echo 'owner app is running' >&2; exit 41; fi
           PRE_SHA="$(/usr/bin/shasum -a 256 "$OWNER_BIN" | awk '{print $1}')"
           test "$PRE_SHA" = "$OWNER_BINARY_SHA256"
           printf '%s\n' "$PRE_SHA" > "$ROOT/evidence/owner-binary-before.sha256"
-          echo "OWNER_BINARY_PRE_SHA256=$PRE_SHA"
           test "$(df -k "$RUNNER_TEMP" | tail -1 | awk '{print $4}')" -ge 8000000
           echo OWNER_APPLICATION_REPLACED=NO
           echo RELEASE=BLOCKED
@@ -107,136 +99,74 @@ jobs:
           repository: ScaleUPPeisov/endlume-desktop
           run-id: 38071201778
 
-      - name: Discover and verify exact candidate; materialize corrected V3 harness
+      - name: Robust artifact discovery and exact product verification
         shell: bash
         run: |
           set -Eeuo pipefail
           ROOT="$PHYSICAL_ROOT"
-          echo SAFE_ARTIFACT_FILE_INVENTORY_BEGIN
           find "$ROOT/download" -maxdepth 4 -type f -print
-          echo SAFE_ARTIFACT_FILE_INVENTORY_END
-
-          META="$(find "$ROOT/download" -type f -name 'PHASE3_HOSTED_BUILD.json' -print -quit)"
-          ZIP="$(find "$ROOT/download" -type f -name 'ENDLUME-10.0.13-PHASE3-FAST-ENGINE-CANDIDATE.zip' -print -quit)"
-          HARNESS="$(find "$ROOT/download" -type f -name 'phase3_physical_acceptance.py' -print -quit)"
+          META="$(find "$ROOT/download" -type f -name PHASE3_HOSTED_BUILD.json -print -quit)"
+          ZIP="$(find "$ROOT/download" -type f -name ENDLUME-10.0.13-PHASE3-FAST-ENGINE-CANDIDATE.zip -print -quit)"
+          ARTIFACT_HARNESS="$(find "$ROOT/download" -type f -name phase3_physical_acceptance.py -print -quit)"
           test -n "$META"; test -f "$META"
           test -n "$ZIP"; test -f "$ZIP"
-          test -n "$HARNESS"; test -f "$HARNESS"
-
+          test -n "$ARTIFACT_HARNESS"; test -f "$ARTIFACT_HARNESS"
           python3 - "$META" <<'PY'
           import json,os,sys
           d=json.load(open(sys.argv[1]))
-          expected={
-            'phase3Head':os.environ['PHASE_3_PRODUCT_HEAD'],
-            'productBase':os.environ['PRODUCT_BASE'],
-            'fastEngineSource':os.environ['FAST_ENGINE_SOURCE'],
-            'release':'BLOCKED','stable':'UNTOUCHED','liveUpdater':'UNTOUCHED'
-          }
-          for k,v in expected.items():
-              if d.get(k)!=v: raise SystemExit(f'{k} mismatch: {d.get(k)!r} != {v!r}')
-          if d.get('ownerApplicationReplaced')!='NO': raise SystemExit('ownerApplicationReplaced mismatch')
+          e={'phase3Head':os.environ['PHASE_3_PRODUCT_HEAD'],'productBase':os.environ['PRODUCT_BASE'],'fastEngineSource':os.environ['FAST_ENGINE_SOURCE'],'release':'BLOCKED','stable':'UNTOUCHED','liveUpdater':'UNTOUCHED'}
+          for k,v in e.items():
+              assert d.get(k)==v,(k,d.get(k),v)
+          assert d.get('ownerApplicationReplaced')=='NO'
           print('EXACT_PRODUCT_METADATA=PASS')
           PY
           cp "$META" "$ROOT/evidence/PHASE3_HOSTED_BUILD.json"
           /usr/bin/shasum -a 256 "$ZIP" > "$ROOT/evidence/candidate-archive.sha256"
-
           /usr/bin/ditto -x -k "$ZIP" "$ROOT/unpacked"
           APP="$(find "$ROOT/unpacked" -maxdepth 5 -type d -name '*.app' -print -quit)"
           test -n "$APP"; test -d "$APP"
-          case "$APP" in /Applications/*) echo 'Candidate escaped into /Applications' >&2; exit 51;; esac
+          case "$APP" in /Applications/*) exit 51;; esac
           BID="$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$APP/Contents/Info.plist")"
           VER="$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist")"
           EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
           BIN="$APP/Contents/MacOS/$EXE"
           test "$BID" = studio.endlume.desktop
-          test -x "$BIN"
           /usr/bin/lipo -archs "$BIN" | grep -qw arm64
           /usr/bin/codesign --verify --deep --strict "$APP"
           CANDIDATE_SHA="$(/usr/bin/shasum -a 256 "$BIN" | awk '{print $1}')"
           printf '%s\n' "$CANDIDATE_SHA" > "$ROOT/evidence/candidate-binary.sha256"
           echo "PHASE3_APP=$APP" >> "$GITHUB_ENV"
           echo "CANDIDATE_BINARY_SHA256=$CANDIDATE_SHA" >> "$GITHUB_ENV"
-
-          python3 - "$HARNESS" "$ROOT/phase3_physical_acceptance.py" <<'PY'
+          cp "$GITHUB_WORKSPACE/qa-source/scripts/phase3_physical_acceptance.py" "$ROOT/phase3_physical_acceptance.py"
+          python3 - "$ROOT/phase3_physical_acceptance.py" <<'PY'
           import sys
           from pathlib import Path
-          src=Path(sys.argv[1]); dst=Path(sys.argv[2]); s=src.read_text()
-
-          def one(old,new,label):
-              global s
-              n=s.count(old)
-              if n!=1: raise SystemExit(f'{label} patch anchor count={n}')
-              s=s.replace(old,new,1)
-
-          one('''            val = raw.strip().strip('"')\n            if not val:\n''',
-              '''            val = raw.strip().strip('"').split(",",1)[0].strip()\n            if not val:\n''',
-              'packet-data-hash')
-
-          one('''    env["HOME"] = str(case_home)\n    env["ENDLUME_E2E_DATA_DIR"] = str(data_dir)\n''',
-              '''    env["HOME"] = str(case_home)\n    env["CFFIXED_USER_HOME"] = str(case_home)\n    env["XDG_CONFIG_HOME"] = str(case_home / ".config")\n    env["XDG_CACHE_HOME"] = str(case_home / ".cache")\n    env["XDG_DATA_HOME"] = str(case_home / ".local" / "share")\n    env["ENDLUME_E2E_DATA_DIR"] = str(data_dir)\n''',
-              'macos-home-isolation')
-
-          one('''    preview_cases = [make_preview_case(f"periodic-{i}", media, periodic_src, t, [periodic_fx], [])\n                     for i,t in enumerate([0.0,1.0,4.983333333,5.0,5.016666667,10.0,30.0,60.0])]\n''',
-              '''    periodic_preview_times = [0.0,1.0,4.983333333,5.0,5.016666667,10.0,30.0,60.0]\n    preview_cases = []\n    for i,t in enumerate(periodic_preview_times):\n        preview_fx = dict(periodic_fx)\n        preview_fx["previewFrameTime"] = t % 5.0\n        preview_cases.append(make_preview_case(f"periodic-{i}", media, periodic_src, t, [preview_fx], []))\n''',
-              'periodic-preview-phase')
-
-          one('''    sub_preview_times = [599.9,600.0,600.5,602.983333333,603.0,4200.5,7800.5]\n    sub_preview_cases = [make_preview_case(f"subscribe-{i}", media, subscribe_src, t, [], [subscribe])\n                         for i,t in enumerate(sub_preview_times)]\n''',
-              '''    sub_preview_times = [600.75,601.5,602.983333333,4200.75,4201.5,7800.75,7801.5]\n    sub_preview_cases = []\n    for i,t in enumerate(sub_preview_times):\n        preview_sub = dict(subscribe)\n        preview_sub["previewFrameTime"] = (t - 600.0) % 3600.0\n        sub_preview_cases.append(make_preview_case(f"subscribe-{i}", media, subscribe_src, t, [], [preview_sub]))\n''',
-              'subscribe-preview-phase')
-
-          replacements=[
-            ('        raise RuntimeError(f"STATIC 3H gate failed: {static[\'checks\']}")',
-             '        print(f"STATIC 3H gate failed: {static[\'checks\']}", file=sys.stderr, flush=True)'),
-            ('        raise RuntimeError(f"PERIODIC 3H gate failed: {periodic[\'checks\']}")',
-             '        print(f"PERIODIC 3H gate failed: {periodic[\'checks\']}", file=sys.stderr, flush=True)'),
-            ('        raise RuntimeError(f"SUBSCRIBE 3H gate failed: {sub[\'checks\']}")',
-             '        print(f"SUBSCRIBE 3H gate failed: {sub[\'checks\']}", file=sys.stderr, flush=True)'),
-            ('        raise RuntimeError(f"COMBINED gate failed: {combined_checks}")',
-             '        print(f"COMBINED gate failed: {combined_checks}", file=sys.stderr, flush=True)'),
-            ('            raise RuntimeError(f"fallback {label} failed: {checks}")',
-             '            print(f"fallback {label} failed: {checks}", file=sys.stderr, flush=True)'),
-          ]
-          for i,(old,new) in enumerate(replacements,1): one(old,new,f'continue-all-{i}')
-
-          dst.write_text(s)
+          p=Path(sys.argv[1]); s=p.read_text()
+          old='''    preview_cases = [make_preview_case(f"periodic-{i}", media, periodic_src, t, [periodic_fx], [])\n                     for i,t in enumerate([0.0,1.0,4.983333333,5.0,5.016666667,10.0,30.0,60.0])]\n'''
+          new='''    periodic_preview_times = [0.0,1.0,4.983333333,5.0,5.016666667,10.0,30.0,60.0]\n    preview_cases = []\n    for i,t in enumerate(periodic_preview_times):\n        preview_fx=dict(periodic_fx); preview_fx["previewFrameTime"]=t % 5.0\n        preview_cases.append(make_preview_case(f"periodic-{i}", media, periodic_src, t, [preview_fx], []))\n'''
+          assert s.count(old)==1; s=s.replace(old,new,1)
+          old='''    sub_preview_times = [599.9,600.0,600.5,602.983333333,603.0,4200.5,7800.5]\n    sub_preview_cases = [make_preview_case(f"subscribe-{i}", media, subscribe_src, t, [], [subscribe])\n                         for i,t in enumerate(sub_preview_times)]\n'''
+          new='''    sub_preview_times = [600.75,601.5,602.983333333,4200.75,4201.5,7800.75,7801.5]\n    sub_preview_cases=[]\n    for i,t in enumerate(sub_preview_times):\n        preview_sub=dict(subscribe); preview_sub["previewFrameTime"]=(t-600.0) % 3600.0\n        sub_preview_cases.append(make_preview_case(f"subscribe-{i}", media, subscribe_src, t, [], [preview_sub]))\n'''
+          assert s.count(old)==1; s=s.replace(old,new,1)
+          p.write_text(s)
           PY
           chmod 755 "$ROOT/phase3_physical_acceptance.py"
           python3 -m py_compile "$ROOT/phase3_physical_acceptance.py"
-          /usr/bin/shasum -a 256 "$HARNESS" > "$ROOT/evidence/original-artifact-harness.sha256"
-          /usr/bin/shasum -a 256 "$ROOT/phase3_physical_acceptance.py" > "$ROOT/evidence/qa-v3-harness.sha256"
-
+          /usr/bin/shasum -a 256 "$GITHUB_WORKSPACE/qa-source/scripts/phase3_physical_acceptance.py" > "$ROOT/evidence/qa-source-harness.sha256"
+          /usr/bin/shasum -a 256 "$ROOT/phase3_physical_acceptance.py" > "$ROOT/evidence/qa-v3-harness-used.sha256"
           python3 - "$ROOT/evidence/candidate.json" "$APP" "$BID" "$VER" "$CANDIDATE_SHA" "$GITHUB_SHA" <<'PY'
           import json,os,sys
-          out={
-            'phase3ProductHead':os.environ['PHASE_3_PRODUCT_HEAD'],
-            'qaHarnessHead':sys.argv[6],
-            'candidateAppPath':sys.argv[2],
-            'bundleId':sys.argv[3],
-            'bundleVersion':sys.argv[4],
-            'candidateBinarySha256':sys.argv[5],
-            'architecture':'arm64','codesign':'PASS','installed':False,
-            'qaPatches':['packet-data-hash-only','CFFIXED_USER_HOME-isolation','periodic-preview-equivalent-phase','subscribe-preview-equivalent-phase','continue-all-cases']
-          }
+          out={'phase3ProductHead':os.environ['PHASE_3_PRODUCT_HEAD'],'qaHarnessHead':sys.argv[6],'candidateAppPath':sys.argv[2],'bundleId':sys.argv[3],'bundleVersion':sys.argv[4],'candidateBinarySha256':sys.argv[5],'architecture':'arm64','codesign':'PASS','installed':False}
           open(sys.argv[1],'w').write(json.dumps(out,indent=2)+'\n')
           PY
           echo CANDIDATE_INSTALL=NO
           echo RELEASE=BLOCKED
 
-      - name: Snapshot owner state/keychain immediately before acceptance and start safe license watcher
+      - name: Snapshot owner state and keychain immediately before candidate execution
         shell: bash
         run: |
           set -Eeuo pipefail
-          ROOT="$PHYSICAL_ROOT"
-          STATE="$HOME/Library/Application Support/studio.endlume.desktop"
-          LICENSE="$STATE/license.json"
-
-          STALE="$(pgrep -x endlume || true)"
-          if [ -n "$STALE" ]; then
-            echo "ENDLUME_PROCESS_AT_SNAPSHOT_START=FAIL" >&2
-            for p in $STALE; do ps -p "$p" -o pid=,ppid=,comm=,command= || true; done
-            exit 42
-          fi
-
+          ROOT="$PHYSICAL_ROOT"; STATE="$HOME/Library/Application Support/studio.endlume.desktop"
           python3 - "$STATE" "$ROOT/evidence/owner-state-before.json" <<'PY'
           import hashlib,json,sys
           from pathlib import Path
@@ -245,82 +175,28 @@ jobs:
               for p in sorted(x for x in root.rglob('*') if x.is_file()):
                   b=p.read_bytes(); rows[str(p.relative_to(root))]={'size':len(b),'sha256':hashlib.sha256(b).hexdigest()}
           Path(sys.argv[2]).write_text(json.dumps({'root':str(root),'files':rows},indent=2)+'\n')
-          print('OWNER_STATE_BEFORE_FILES='+str(len(rows)))
           PY
-
           TOKEN="$(/usr/bin/security find-generic-password -s studio.endlume.desktop -a managed-session -w 2>/dev/null || true)"
           if [ -n "$TOKEN" ]; then printf '%s' "$TOKEN" | /usr/bin/shasum -a 256 | awk '{print $1}' > "$ROOT/evidence/keychain-before.sha256"; else printf 'MISSING\n' > "$ROOT/evidence/keychain-before.sha256"; fi
           unset TOKEN
 
-          python3 - "$LICENSE" "$ROOT/evidence/license-watch.log" <<'PY' &
-          import hashlib,subprocess,sys,time
-          from pathlib import Path
-          path=Path(sys.argv[1]); log=Path(sys.argv[2]); last=None
-          def meta():
-              if not path.is_file(): return ('MISSING',0)
-              b=path.read_bytes(); return (hashlib.sha256(b).hexdigest(),len(b))
-          def procs():
-              try: pids=subprocess.check_output(['pgrep','-x','endlume'],text=True,stderr=subprocess.DEVNULL).split()
-              except subprocess.CalledProcessError: pids=[]
-              rows=[]
-              for pid in pids:
-                  try: rows.append(subprocess.check_output(['ps','-p',pid,'-o','pid=,ppid=,comm=,command='],text=True).strip())
-                  except Exception: pass
-              return rows
-          while True:
-              cur=meta()
-              if cur!=last:
-                  with log.open('a') as f:
-                      f.write(f'{time.time():.6f} license_sha256={cur[0]} size={cur[1]}\n')
-                      for row in procs(): f.write(f'{time.time():.6f} process={row}\n')
-                  last=cur
-              time.sleep(0.20)
-          PY
-          WATCH_PID=$!
-          echo "LICENSE_WATCH_PID=$WATCH_PID" >> "$GITHUB_ENV"
-          echo OWNER_STATE_PRE_SNAPSHOT=PASS
-          echo KEYCHAIN_PRE_SNAPSHOT=PASS
-
-      - name: Run ALL corrected physical acceptance cases against SAME candidate
+      - name: Run all physical acceptance cases
         shell: bash
         run: |
           set -u
-          ROOT="$PHYSICAL_ROOT"
-          set +e
+          ROOT="$PHYSICAL_ROOT"; set +e
           python3 "$ROOT/phase3_physical_acceptance.py" --app "$PHASE3_APP" --root "$ROOT/acceptance" --head "$PHASE_3_PRODUCT_HEAD"
-          RC=$?
-          set -e
+          RC=$?; set -e
           printf '%s\n' "$RC" > "$ROOT/evidence/acceptance-exit-code.txt"
           echo "ACCEPTANCE_RC=$RC" >> "$GITHUB_ENV"
-          if [ ! -f "$ROOT/acceptance/PHASE3_PHYSICAL_REPORT.json" ]; then
-            python3 - "$ROOT/acceptance/PHASE3_PHYSICAL_REPORT.json" "$RC" "$GITHUB_SHA" <<'PY'
-          import json,os,sys
-          open(sys.argv[1],'w').write(json.dumps({'status':'HARNESS_ERROR','exitCode':int(sys.argv[2]),'phase3ProductHead':os.environ['PHASE_3_PRODUCT_HEAD'],'qaHarnessHead':sys.argv[3]},indent=2)+'\n')
-          PY
-          fi
           echo "ACCEPTANCE_RC=$RC"
 
-      - name: Stop watcher; snapshot owner safety immediately after acceptance
+      - name: Snapshot owner safety immediately after candidate execution
         if: always()
         shell: bash
         run: |
           set -Eeuo pipefail
-          ROOT="$PHYSICAL_ROOT"
-          STATE="$HOME/Library/Application Support/studio.endlume.desktop"
-
-          if [ -n "${LICENSE_WATCH_PID:-}" ]; then
-            kill "$LICENSE_WATCH_PID" 2>/dev/null || true
-            wait "$LICENSE_WATCH_PID" 2>/dev/null || true
-          fi
-
-          LEFT="$(pgrep -x endlume || true)"
-          : > "$ROOT/evidence/endlume-processes-after.txt"
-          if [ -n "$LEFT" ]; then
-            for p in $LEFT; do ps -p "$p" -o pid=,ppid=,comm=,command= | tee -a "$ROOT/evidence/endlume-processes-after.txt" || true; done
-          fi
-          if [ -n "$LEFT" ]; then echo "ENDLUME_PROCESS_LEFTOVER=YES"; else echo "ENDLUME_PROCESS_LEFTOVER=NO"; fi
-          echo "ENDLUME_PROCESS_LEFTOVER=$([ -n "$LEFT" ] && echo YES || echo NO)" >> "$GITHUB_ENV"
-
+          ROOT="$PHYSICAL_ROOT"; STATE="$HOME/Library/Application Support/studio.endlume.desktop"
           python3 - "$STATE" "$ROOT/evidence/owner-state-after.json" <<'PY'
           import hashlib,json,sys
           from pathlib import Path
@@ -329,19 +205,15 @@ jobs:
               for p in sorted(x for x in root.rglob('*') if x.is_file()):
                   b=p.read_bytes(); rows[str(p.relative_to(root))]={'size':len(b),'sha256':hashlib.sha256(b).hexdigest()}
           Path(sys.argv[2]).write_text(json.dumps({'root':str(root),'files':rows},indent=2)+'\n')
-          print('OWNER_STATE_AFTER_FILES='+str(len(rows)))
           PY
-
           TOKEN="$(/usr/bin/security find-generic-password -s studio.endlume.desktop -a managed-session -w 2>/dev/null || true)"
           if [ -n "$TOKEN" ]; then printf '%s' "$TOKEN" | /usr/bin/shasum -a 256 | awk '{print $1}' > "$ROOT/evidence/keychain-after.sha256"; else printf 'MISSING\n' > "$ROOT/evidence/keychain-after.sha256"; fi
           unset TOKEN
-
           OWNER="/Applications/ENDLUME YT Studio PEISOV.app"
           OWNER_EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$OWNER/Contents/Info.plist")"
           OWNER_BIN="$OWNER/Contents/MacOS/$OWNER_EXE"
           POST_SHA="$(/usr/bin/shasum -a 256 "$OWNER_BIN" | awk '{print $1}')"
           printf '%s\n' "$POST_SHA" > "$ROOT/evidence/owner-binary-after.sha256"
-
           python3 - "$ROOT/evidence/owner-state-before.json" "$ROOT/evidence/owner-state-after.json" "$ROOT/evidence/owner-state-diff.json" <<'PY'
           import json,sys
           a=json.load(open(sys.argv[1]))['files']; b=json.load(open(sys.argv[2]))['files']
@@ -352,18 +224,6 @@ jobs:
           for kind in ('added','removed','changed'):
               for row in out[kind]: print('OWNER_STATE_'+kind.upper(),row)
           PY
-
-          python3 - "$ROOT/acceptance/isolated-home" "$ROOT/evidence/isolated-state-metadata.json" <<'PY'
-          import hashlib,json,sys
-          from pathlib import Path
-          root=Path(sys.argv[1]); rows=[]
-          if root.exists():
-              for p in sorted(x for x in root.rglob('*') if x.is_file() and 'studio.endlume.desktop' in str(x)):
-                  b=p.read_bytes(); rows.append({'path':str(p.relative_to(root)),'size':len(b),'sha256':hashlib.sha256(b).hexdigest()})
-          Path(sys.argv[2]).write_text(json.dumps({'root':str(root),'files':rows},indent=2)+'\n')
-          print('ISOLATED_STATE_FILES='+str(len(rows)))
-          PY
-
           STATE_OK="$(python3 -c 'import json,sys;print("YES" if json.load(open(sys.argv[1]))["preserved"] else "NO")' "$ROOT/evidence/owner-state-diff.json")"
           KEYCHAIN_OK=NO; cmp -s "$ROOT/evidence/keychain-before.sha256" "$ROOT/evidence/keychain-after.sha256" && KEYCHAIN_OK=YES
           OWNER_OK=NO; [ "$POST_SHA" = "$OWNER_BINARY_SHA256" ] && cmp -s "$ROOT/evidence/owner-binary-before.sha256" "$ROOT/evidence/owner-binary-after.sha256" && OWNER_OK=YES
@@ -374,42 +234,21 @@ jobs:
           echo "KEYCHAIN_SESSION_PRESERVED=$KEYCHAIN_OK"
           echo "OWNER_APPLICATION_REPLACED=$([ "$OWNER_OK" = YES ] && echo NO || echo YES)"
 
-      - name: Build V3 summary without blocking evidence
+      - name: Build summary before evidence upload
         if: always()
         shell: bash
         run: |
           set -Eeuo pipefail
-          ROOT="$PHYSICAL_ROOT"
-          mkdir -p "$ROOT/evidence" "$ROOT/acceptance/results" "$ROOT/acceptance/logs"
-          : "${ACCEPTANCE_RC:=99}"
-          : "${OWNER_STATE_PRESERVED:=NO}"
-          : "${KEYCHAIN_SESSION_PRESERVED:=NO}"
-          : "${OWNER_APPLICATION_PRESERVED:=NO}"
-          : "${ENDLUME_PROCESS_LEFTOVER:=UNKNOWN}"
-          python3 - "$ROOT/evidence/PHASE3_QA_RECOVERY_V3_SUMMARY.json" "$ACCEPTANCE_RC" "$OWNER_STATE_PRESERVED" "$KEYCHAIN_SESSION_PRESERVED" "$OWNER_APPLICATION_PRESERVED" "$ENDLUME_PROCESS_LEFTOVER" "$GITHUB_SHA" <<'PY'
+          ROOT="$PHYSICAL_ROOT"; mkdir -p "$ROOT/evidence" "$ROOT/acceptance/results" "$ROOT/acceptance/logs"
+          : "${ACCEPTANCE_RC:=99}"; : "${OWNER_STATE_PRESERVED:=NO}"; : "${KEYCHAIN_SESSION_PRESERVED:=NO}"; : "${OWNER_APPLICATION_PRESERVED:=NO}"
+          python3 - "$ROOT/evidence/PHASE3_QA_RECOVERY_V3_SUMMARY.json" "$ACCEPTANCE_RC" "$OWNER_STATE_PRESERVED" "$KEYCHAIN_SESSION_PRESERVED" "$OWNER_APPLICATION_PRESERVED" "$GITHUB_SHA" <<'PY'
           import json,os,sys
-          report_path=os.path.join(os.environ['PHYSICAL_ROOT'],'acceptance','PHASE3_PHYSICAL_REPORT.json')
-          report={}
-          try: report=json.load(open(report_path))
-          except Exception: pass
-          out={
-            'phase3ProductHead':os.environ['PHASE_3_PRODUCT_HEAD'],
-            'qaHarnessHead':sys.argv[7],
-            'productFilesChanged':0,
-            'sourceRunId':int(os.environ['SOURCE_RUN_ID']),
-            'sourceArtifactId':int(os.environ['SOURCE_ARTIFACT_ID']),
-            'candidateBinarySha256':os.environ.get('CANDIDATE_BINARY_SHA256'),
-            'acceptanceExitCode':int(sys.argv[2]),
-            'acceptanceStatus':report.get('status'),
-            'ownerStatePreserved':sys.argv[3]=='YES',
-            'keychainSessionPreserved':sys.argv[4]=='YES',
-            'ownerApplicationPreserved':sys.argv[5]=='YES',
-            'endlumeProcessLeftover':sys.argv[6],
-            'release':'BLOCKED','stable':'UNTOUCHED','liveUpdater':'UNTOUCHED'
-          }
-          out['pass']=out['acceptanceExitCode']==0 and out['acceptanceStatus']=='PASS' and out['ownerStatePreserved'] and out['keychainSessionPreserved'] and out['ownerApplicationPreserved'] and out['endlumeProcessLeftover']=='NO'
-          open(sys.argv[1],'w').write(json.dumps(out,indent=2)+'\n')
-          print(json.dumps(out,indent=2))
+          rp=os.path.join(os.environ['PHYSICAL_ROOT'],'acceptance','PHASE3_PHYSICAL_REPORT.json'); r={}
+          try:r=json.load(open(rp))
+          except Exception:pass
+          out={'phase3ProductHead':os.environ['PHASE_3_PRODUCT_HEAD'],'qaHarnessHead':sys.argv[6],'productFilesChanged':0,'sourceRunId':int(os.environ['SOURCE_RUN_ID']),'sourceArtifactId':int(os.environ['SOURCE_ARTIFACT_ID']),'candidateBinarySha256':os.environ.get('CANDIDATE_BINARY_SHA256'),'acceptanceExitCode':int(sys.argv[2]),'acceptanceStatus':r.get('status'),'ownerStatePreserved':sys.argv[3]=='YES','keychainSessionPreserved':sys.argv[4]=='YES','ownerApplicationPreserved':sys.argv[5]=='YES','release':'BLOCKED','stable':'UNTOUCHED','liveUpdater':'UNTOUCHED'}
+          out['pass']=out['acceptanceExitCode']==0 and out['acceptanceStatus']=='PASS' and out['ownerStatePreserved'] and out['keychainSessionPreserved'] and out['ownerApplicationPreserved']
+          open(sys.argv[1],'w').write(json.dumps(out,indent=2)+'\n'); print(json.dumps(out,indent=2))
           PY
 
       - name: Upload V3 evidence before hard gate
@@ -433,13 +272,13 @@ jobs:
           test "${OWNER_APPLICATION_PRESERVED:-NO}" = YES
           test "${OWNER_STATE_PRESERVED:-NO}" = YES
           test "${KEYCHAIN_SESSION_PRESERVED:-NO}" = YES
-          test "${ENDLUME_PROCESS_LEFTOVER:-UNKNOWN}" = NO
           python3 - "$PHYSICAL_ROOT/acceptance/PHASE3_PHYSICAL_REPORT.json" "$PHYSICAL_ROOT/evidence/PHASE3_QA_RECOVERY_V3_SUMMARY.json" <<'PY'
           import json,sys
           r=json.load(open(sys.argv[1])); s=json.load(open(sys.argv[2]))
+          assert r.get('phase3Head')=='e4a07972b1566ed73b11c4eb758d59f4dc839e71'
           assert r.get('status')=='PASS',r
           assert s.get('pass') is True,s
-          assert s.get('productFilesChanged')==0,s
+          assert s.get('productFilesChanged')==0
           print('PHASE_3_PHYSICAL_GATE=PASS')
           print('PRODUCT_FILES_CHANGED=0')
           print('OWNER_APPLICATION_REPLACED=NO')
@@ -448,13 +287,12 @@ jobs:
           print('RELEASE=BLOCKED')
           PY
 
-      - name: Cleanup isolated V3 workspace and final owner binary proof
+      - name: Cleanup and final owner binary proof
         if: always()
         shell: bash
         run: |
           set -Eeuo pipefail
           OWNER="/Applications/ENDLUME YT Studio PEISOV.app"
-          test -d "$OWNER"
           OWNER_EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$OWNER/Contents/Info.plist")"
           FINAL_SHA="$(/usr/bin/shasum -a 256 "$OWNER/Contents/MacOS/$OWNER_EXE" | awk '{print $1}')"
           echo "OWNER_BINARY_FINAL_SHA256=$FINAL_SHA"

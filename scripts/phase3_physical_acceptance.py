@@ -126,18 +126,18 @@ def dts_check(ffprobe: Path, path: Path):
     return {"ok": bad is None and count > 0, "packets": count, "error": bad}
 
 def packet_signature(ffprobe: Path, paths, select="a:0"):
+    # Accepted Fast Engine proof compares packet payload hashes only.
+    # CSV can append side-data (e.g. Skip Samples) and creates false mismatches.
     h = hashlib.sha256()
     count = 0
     first = None
     last = None
     for path in paths:
         cmd = [ffprobe, "-v", "error", "-select_streams", select, "-show_packets",
-               "-show_entries", "packet=data_hash", "-show_data_hash", "sha256", "-of", "csv=p=0", path]
-        print("+", " ".join(map(str, cmd)), flush=True)
-        p = subprocess.Popen([str(x) for x in cmd], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        assert p.stdout is not None
-        for raw in p.stdout:
-            val = raw.strip().strip('"')
+               "-show_entries", "packet=data_hash", "-show_data_hash", "sha256", "-of", "json", path]
+        data = json.loads(text(cmd, timeout=300))
+        for packet in data.get("packets", []):
+            val = packet.get("data_hash")
             if not val:
                 continue
             if first is None:
@@ -146,10 +146,6 @@ def packet_signature(ffprobe: Path, paths, select="a:0"):
             h.update(val.encode("utf-8"))
             h.update(b"\n")
             count += 1
-        err = p.stderr.read() if p.stderr else ""
-        rc = p.wait()
-        if rc != 0:
-            raise RuntimeError(f"ffprobe packet hash failed for {path}: {err[-1000:]}")
     return {"count": count, "sha256": h.hexdigest(), "first": first, "last": last}
 
 def frame_gray(ffmpeg: Path, path: Path, at: float, w=480, h=270):
@@ -222,6 +218,10 @@ def run_app(exe: Path, root: Path, label: str, payload, *, preview=False, timeou
     data_dir.mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
     env["HOME"] = str(case_home)
+    env["CFFIXED_USER_HOME"] = str(case_home)
+    env["XDG_DATA_HOME"] = str(case_home / ".local" / "share")
+    env["XDG_CONFIG_HOME"] = str(case_home / ".config")
+    env["XDG_CACHE_HOME"] = str(case_home / ".cache")
     env["ENDLUME_E2E_DATA_DIR"] = str(data_dir)
     env["ENDLUME_E2E_RESULT"] = str(result)
     if preview:
@@ -332,40 +332,22 @@ def main():
     media = root / "media"; fxdir = root / "effects"; outdir = root / "out"
     media.mkdir(exist_ok=True); fxdir.mkdir(exist_ok=True); outdir.mkdir(exist_ok=True)
     cover = media / "cover.png"
-    sh([ffmpeg, "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=0x182033:s=1920x1080",
-        "-frames:v", "1", "-y", cover], timeout=120)
-
-    tracks = []
+    sh([ffmpeg, "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=0x182033:s=1920x1080", "-frames:v", "1", "-y", cover], timeout=120)
+    tracks=[]
     for i in range(1,13):
-        p = media / f"track-{i:02d}.mp3"
-        hz = 180 + i*23
-        sh([ffmpeg, "-hide_banner", "-loglevel", "error", "-f", "lavfi",
-            "-i", f"sine=frequency={hz}:sample_rate=48000:duration=900",
-            "-c:a", "libmp3lame", "-b:a", "320k", "-ar", "48000", "-ac", "2",
-            "-metadata", f"title=Phase3 Track {i:02d}", "-y", p], timeout=300)
+        p=media/f"track-{i:02d}.mp3"; hz=180+i*23
+        sh([ffmpeg,"-hide_banner","-loglevel","error","-f","lavfi","-i",f"sine=frequency={hz}:sample_rate=48000:duration=900","-c:a","libmp3lame","-b:a","320k","-ar","48000","-ac","2","-metadata",f"title=Phase3 Track {i:02d}","-y",p],timeout=180)
         tracks.append(p)
-
-    short_tracks = []
-    for i in range(1,3):
-        p = media / f"fallback-{i:02d}.mp3"
-        sh([ffmpeg, "-hide_banner", "-loglevel", "error", "-f", "lavfi",
-            "-i", f"sine=frequency={700+i*40}:sample_rate=48000:duration=60",
-            "-c:a", "libmp3lame", "-b:a", "320k", "-ar", "48000", "-ac", "2", "-y", p], timeout=120)
+    short_tracks=[]
+    for i,hz in enumerate((740,780),1):
+        p=media/f"fallback-{i:02d}.mp3"
+        sh([ffmpeg,"-hide_banner","-loglevel","error","-f","lavfi","-i",f"sine=frequency={hz}:sample_rate=48000:duration=60","-c:a","libmp3lame","-b:a","320k","-ar","48000","-ac","2","-y",p],timeout=120)
         short_tracks.append(p)
 
-    periodic_src = fxdir / "periodic-screen.mp4"
-    sh([ffmpeg, "-hide_banner", "-loglevel", "error",
-        "-f", "lavfi", "-i", "color=c=black:s=640x360:r=60:d=5",
-        "-f", "lavfi", "-i", "color=c=white:s=80x80:r=60:d=5",
-        "-filter_complex", "[0:v][1:v]overlay=x='280+220*sin(2*PI*t/5)':y='140+80*sin(2*PI*t/5+PI/2)':eval=frame:shortest=1",
-        "-an", "-c:v", "mpeg4", "-q:v", "2", "-pix_fmt", "yuv420p", "-r", "60", "-frames:v", "300", "-y", periodic_src], timeout=120)
-
-    subscribe_src = fxdir / "subscribe.mp4"
-    sh([ffmpeg, "-hide_banner", "-loglevel", "error",
-        "-f", "lavfi", "-i", "color=c=0x00ff00:s=640x360:r=60:d=3",
-        "-f", "lavfi", "-i", "color=c=white:s=180x100:r=60:d=3",
-        "-filter_complex", "[0:v][1:v]overlay=x='70+300*t/3':y='120+45*sin(2*PI*t/3)':eval=frame:shortest=1",
-        "-an", "-c:v", "mpeg4", "-q:v", "2", "-pix_fmt", "yuv420p", "-r", "60", "-frames:v", "180", "-y", subscribe_src], timeout=120)
+    periodic_src=fxdir/"periodic-screen.mp4"
+    sh([ffmpeg,"-hide_banner","-loglevel","error","-f","lavfi","-i","color=c=black:s=640x360:r=60:d=5","-f","lavfi","-i","color=c=white:s=80x80:r=60:d=5","-filter_complex","[0:v][1:v]overlay=x='280+220*sin(2*PI*t/5)':y='140+80*sin(2*PI*t/5+PI/2)':eval=frame:shortest=1","-an","-c:v","mpeg4","-q:v","2","-pix_fmt","yuv420p","-r","60","-frames:v","300","-y",periodic_src],timeout=120)
+    subscribe_src=fxdir/"subscribe.mp4"
+    sh([ffmpeg,"-hide_banner","-loglevel","error","-f","lavfi","-i","color=c=0x00ff00:s=640x360:r=60:d=3","-f","lavfi","-i","color=c=white:s=180x100:r=60:d=3","-filter_complex","[0:v][1:v]overlay=x='70+300*t/3':y='120+45*sin(2*PI*t/3)':eval=frame:shortest=1","-an","-c:v","mpeg4","-q:v","2","-pix_fmt","yuv420p","-r","60","-frames:v","180","-y",subscribe_src],timeout=120)
 
     periodic_fx = base_effect(periodic_src, effect_id="periodic-screen", name="Periodic Screen 5s", mode="screen",
                               usage="always", x=.5, y=.5, scale=1.0, fullscreen=True)
@@ -382,8 +364,6 @@ def main():
     static_row = render_result(exe, root, "render-static-3h", static_job, timeout=180)
     static = verify_fast_primary(ffmpeg, ffprobe, static_row, tracks)
     report["cases"]["static3h"] = static; save_report(report_path, report)
-    if not all(static["checks"].values()):
-        raise RuntimeError(f"STATIC 3H gate failed: {static['checks']}")
 
     periodic_job = job("phase3-periodic-3h", "ENDLUME Phase3 Periodic 3H", media, cover, tracks,
                        outdir/"periodic", 3.0, effects=[periodic_fx])
@@ -426,8 +406,6 @@ def main():
     periodic["visual"] = periodic_visual
     periodic["checks"].update(periodic_visual["checks"])
     report["cases"]["periodic3h"] = periodic; save_report(report_path, report)
-    if not all(periodic["checks"].values()):
-        raise RuntimeError(f"PERIODIC 3H gate failed: {periodic['checks']}")
 
     subscribe_job = job("phase3-subscribe-3h", "ENDLUME Phase3 Subscribe 3H", media, cover, tracks,
                         outdir/"subscribe", 3.0, subscribes=[subscribe])
@@ -474,8 +452,6 @@ def main():
     sub["visual"] = sub_visual
     sub["checks"].update(sub_visual["checks"])
     report["cases"]["subscribe3h"] = sub; save_report(report_path, report)
-    if not all(sub["checks"].values()):
-        raise RuntimeError(f"SUBSCRIBE 3H gate failed: {sub['checks']}")
 
     combined_job = job("phase3-combined-2h", "ENDLUME Phase3 Combined 2H", media, cover, tracks,
                        outdir/"combined", 2.0, effects=[periodic_fx], subscribes=[subscribe])
@@ -501,8 +477,6 @@ def main():
         "audioMode": combined_row.get("audioMode"), "decode": cdecode, "seeks": cseeks, "checks": combined_checks,
     }
     report["cases"]["combined2h"] = combined; save_report(report_path, report)
-    if not all(combined_checks.values()):
-        raise RuntimeError(f"COMBINED gate failed: {combined_checks}")
 
     fallback_cases = {}
     norm_job = job("phase3-fallback-normalize", "ENDLUME Phase3 Normalize Fallback", media, cover, [short_tracks[0]],
@@ -529,9 +503,6 @@ def main():
             "videoCodec": row.get("videoCodec"), "audioCodec": row.get("audioCodec"),
             "duration": dd, "checks": checks,
         }
-        if not all(checks.values()):
-            report["cases"]["fallbacks"] = fallback_cases; save_report(report_path, report)
-            raise RuntimeError(f"fallback {label} failed: {checks}")
     report["cases"]["fallbacks"] = fallback_cases
 
     all_checks = []

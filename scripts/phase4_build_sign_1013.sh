@@ -12,7 +12,7 @@ export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOM
 [ "$(uname -m)" = arm64 ]
 git cat-file -e "$BASE^{commit}"
 git merge-base --is-ancestor "$BASE" HEAD
-BAD="$(git diff --name-only "$BASE" HEAD | grep -Ev '^(package\.json|package-lock\.json|src-tauri/Cargo\.toml|src-tauri/Cargo\.lock|src-tauri/tauri\.conf\.json|src/components/ReleaseHistory\.tsx|RELEASE_NOTES\.md|release/ENDLUME_10\.0\.13_RELEASE\.md|scripts/phase4_(prepare_1013\.py|build_sign_1013\.sh)|\.github/workflows/endlume-1013-phase4-(prepare|build-sign)\.yml)$' || true)"
+BAD="$(git diff --name-only "$BASE" HEAD | grep -Ev '^(package\.json|package-lock\.json|src-tauri/Cargo\.toml|src-tauri/Cargo\.lock|src-tauri/tauri\.conf\.json|src/components/ReleaseHistory\.tsx|RELEASE_NOTES\.md|release/ENDLUME_10\.0\.13_RELEASE\.md|scripts/phase4_(prepare_1013\.py|build_sign_1013\.sh|package_smoke_1013\.sh)|\.github/workflows/endlume-1013-phase4-(prepare|build-sign)\.yml)$' || true)"
 [ -z "$BAD" ] || { printf '%s\n' "$BAD" >&2; exit 21; }
 git diff --quiet "$BASE" HEAD -- src-tauri/src
 git diff --quiet "$BASE" HEAD -- src-tauri/icons

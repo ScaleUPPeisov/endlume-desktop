@@ -1,0 +1,74 @@
+name: ENDLUME 10.0.13 Phase 4 Real Physical Update
+
+on:
+  push:
+    branches:
+      - release-endlume-10.0.13
+    paths:
+      - '.github/workflows/endlume-1013-phase4-physical-update.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  PUBLISH_RUN_ID: '38120759108'
+  ROLLBACK_ARTIFACT: 'ENDLUME-10.0.13-PHASE4-PUBLISH-ROLLBACK-EVIDENCE'
+
+jobs:
+  physical-update:
+    runs-on: [self-hosted, macOS, ARM64]
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: release-endlume-10.0.13
+          clean: true
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Download exact 10.0.12 rollback snapshot
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.ROLLBACK_ARTIFACT }}
+          path: ${{ runner.temp }}/endlume-1013-rollback
+          run-id: ${{ env.PUBLISH_RUN_ID }}
+          github-token: ${{ github.token }}
+
+      - name: Real in-app 10.0.12 to 10.0.13 updater validation
+        id: physical
+        shell: bash
+        run: bash scripts/phase4_physical_update_1013.sh
+
+      - name: Restore GitHub stable 10.0.12 on physical install failure
+        if: failure() && steps.physical.outcome == 'failure'
+        shell: bash
+        env:
+          ROLLBACK_DIR: ${{ runner.temp }}/endlume-1013-rollback
+          GH_TOKEN: ${{ secrets.ENDLUME_RELEASE_TOKEN }}
+        run: |
+          set -Eeuo pipefail
+          test -n "${GH_TOKEN:-}"
+          bash scripts/phase4_restore_1012.sh
+          echo PHYSICAL_FAILURE_GITHUB_STABLE_ROLLBACK=PASS
+
+      - name: Upload non-sensitive physical release evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ENDLUME-10.0.13-PHASE4-PHYSICAL-UPDATE-EVIDENCE
+          path: |
+            ${{ runner.temp }}/endlume-1013-physical/final-report.json
+            ${{ runner.temp }}/endlume-1013-physical/durable-before.json
+            ${{ runner.temp }}/endlume-1013-physical/durable-after.json
+            ${{ runner.temp }}/endlume-1013-physical/keychain-before.sha256
+            ${{ runner.temp }}/endlume-1013-physical/keychain-after.sha256
+            ${{ runner.temp }}/endlume-1013-physical/live-update-1013.json
+            ${{ runner.temp }}/endlume-1013-physical/accessibility.txt
+            ${{ runner.temp }}/endlume-1013-physical/installed-fast-smoke/results/render.json
+            ${{ runner.temp }}/endlume-1013-physical/installed-fast-smoke/probe.txt
+            ${{ runner.temp }}/endlume-1013-physical/installed-fast-smoke/stdout.log
+            ${{ runner.temp }}/endlume-1013-physical/installed-fast-smoke/stderr.log
+          if-no-files-found: warn
+          retention-days: 30

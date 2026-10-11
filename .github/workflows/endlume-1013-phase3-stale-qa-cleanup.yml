@@ -1,0 +1,77 @@
+name: ENDLUME Phase 3 — stale QA process cleanup only
+
+on:
+  push:
+    branches:
+      - release-fix/endlume-10.0.13-fast-engine-transplant
+    paths:
+      - '.github/workflows/endlume-1013-phase3-stale-qa-cleanup.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cleanup-stale-qa-only:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 10
+    env:
+      OWNER_BINARY_SHA256: 2df386c00da09e76f90218061e7f57ccfba2249a654ec1262b06000b322eb9d7
+      ALLOWED_STALE_EXE: /Volumes/ENDLUME_CANONICAL_QA/ENDLUME-CANONICAL-GOOD-PRODUCT-QA.app/Contents/MacOS/endlume
+    steps:
+      - name: Terminate ONLY orphaned canonical QA ENDLUME process
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$RUNNER_NAME" = "kirill-mac-endlume"
+          test "$(uname -m)" = arm64
+
+          OWNER="/Applications/ENDLUME YT Studio PEISOV.app"
+          test -d "$OWNER"
+          OWNER_EXE="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$OWNER/Contents/Info.plist")"
+          OWNER_BIN="$OWNER/Contents/MacOS/$OWNER_EXE"
+          OWNER_PRE="$(/usr/bin/shasum -a 256 "$OWNER_BIN" | awk '{print $1}')"
+          test "$OWNER_PRE" = "$OWNER_BINARY_SHA256"
+
+          PIDS="$(pgrep -x endlume || true)"
+          if [ -z "$PIDS" ]; then
+            echo STALE_QA_PROCESS=ALREADY_CLEAN
+          else
+            for pid in $PIDS; do
+              CMD="$(ps -p "$pid" -o command= | sed 's/^ *//')"
+              PPID_VALUE="$(ps -p "$pid" -o ppid= | tr -d ' ')"
+              echo "FOUND_ENDLUME pid=$pid ppid=$PPID_VALUE command=$CMD"
+              if [ "$CMD" != "$ALLOWED_STALE_EXE" ]; then
+                echo "REFUSE_UNKNOWN_ENDLUME_PROCESS pid=$pid command=$CMD" >&2
+                exit 40
+              fi
+              if [ "$PPID_VALUE" != "1" ]; then
+                echo "REFUSE_NON_ORPHAN_QA_PROCESS pid=$pid ppid=$PPID_VALUE" >&2
+                exit 41
+              fi
+            done
+
+            for pid in $PIDS; do
+              echo "TERMINATE_STALE_QA_PID=$pid"
+              kill -TERM "$pid"
+            done
+
+            for _ in $(seq 1 50); do
+              sleep 0.2
+              [ -z "$(pgrep -x endlume || true)" ] && break
+            done
+            REMAIN="$(pgrep -x endlume || true)"
+            if [ -n "$REMAIN" ]; then
+              echo "STALE_QA_PROCESS_DID_NOT_EXIT=$REMAIN" >&2
+              exit 42
+            fi
+            echo STALE_QA_PROCESS=CLEANED
+          fi
+
+          OWNER_POST="$(/usr/bin/shasum -a 256 "$OWNER_BIN" | awk '{print $1}')"
+          test "$OWNER_POST" = "$OWNER_BINARY_SHA256"
+          test "$OWNER_POST" = "$OWNER_PRE"
+          echo OWNER_APPLICATION_REPLACED=NO
+          echo RUNNER_RESTARTED=NO
+          echo RUNNER_REPAIRED=NO
+          echo RELEASE=BLOCKED

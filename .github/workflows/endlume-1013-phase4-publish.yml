@@ -1,0 +1,113 @@
+name: ENDLUME 10.0.13 Phase 4 Publish Stable
+
+on:
+  push:
+    branches:
+      - release-endlume-10.0.13
+    paths:
+      - '.github/workflows/endlume-1013-phase4-publish.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  SIGNED_RUN_ID: '38117208206'
+  SIGNED_HEAD: 'fcb274ff5a4ce9c4adf1c7ab4c63945d454033bf'
+  SIGNED_ARTIFACT: 'ENDLUME-10.0.13-PHASE4-SIGNED-MACOS-ARM64'
+  SIGNED_ARTIFACT_DIGEST: '7a51b338a1734e67bdb6dbdb15afdb0cc238cbee274e721a8aaddd48c3019005'
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: release-endlume-10.0.13
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Freeze gate and exact signed-run proof
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          BASE='e4a07972b1566ed73b11c4eb758d59f4dc839e71'
+          git cat-file -e "$BASE^{commit}"
+          git merge-base --is-ancestor "$BASE" HEAD
+          git diff --quiet "$BASE" HEAD -- src-tauri/src
+          git diff --quiet "$BASE" HEAD -- src-tauri/icons
+          BAD_SRC="$(git diff --name-only "$BASE" HEAD -- src | grep -Ev '^src/components/ReleaseHistory\.tsx$' || true)"
+          test -z "$BAD_SRC"
+          RUN_HEAD="$(gh api repos/ScaleUPPeisov/endlume-desktop/actions/runs/$SIGNED_RUN_ID --jq .head_sha)"
+          test "$RUN_HEAD" = "$SIGNED_HEAD"
+          RUN_STATUS="$(gh api repos/ScaleUPPeisov/endlume-desktop/actions/runs/$SIGNED_RUN_ID --jq '.status+":"+.conclusion')"
+          test "$RUN_STATUS" = 'completed:success'
+          echo FAST_ENGINE_FUNCTIONAL_DIFF=0
+          echo PROJECT_UI_FUNCTIONAL_DIFF=0
+          echo EFFECTS_FUNCTIONAL_DIFF=0
+          echo SUBSCRIBE_FUNCTIONAL_DIFF=0
+          echo PREVIEW_FUNCTIONAL_DIFF=0
+          echo RENDER_CENTER_FUNCTIONAL_DIFF=0
+          echo ICON_DIFF=0
+          echo SIGNED_RUN_EXACT=PASS
+
+      - name: Download exact signed artifact
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          ART="$RUNNER_TEMP/phase4-signed"
+          RB="$RUNNER_TEMP/phase4-rollback-1012"
+          mkdir -p "$ART" "$RB"
+          gh run download "$SIGNED_RUN_ID" --repo ScaleUPPeisov/endlume-desktop --name "$SIGNED_ARTIFACT" --dir "$ART"
+          test -s "$ART/ENDLUME-10.0.13-release.json"
+          python3 - "$ART/ENDLUME-10.0.13-release.json" "$SIGNED_HEAD" <<'PY'
+          import json,sys
+          d=json.load(open(sys.argv[1]))
+          assert d['releaseHead']==sys.argv[2],(d.get('releaseHead'),sys.argv[2])
+          assert d['releaseStatus']=='PREFLIGHT_PASS'
+          assert d['releaseVersion']=='10.0.13'
+          assert d['functionalProductDiff']==0
+          print('SIGNED_ARTIFACT_RELEASE_HEAD=PASS')
+          PY
+          echo "PHASE4_ARTIFACT_DIR=$ART" >> "$GITHUB_ENV"
+          echo "ROLLBACK_DIR=$RB" >> "$GITHUB_ENV"
+
+      - name: Publish GitHub stable rollback-safe
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.ENDLUME_RELEASE_TOKEN }}
+        run: |
+          set -Eeuo pipefail
+          test -n "${GH_TOKEN:-}"
+          bash scripts/phase4_publish_1013.sh
+
+      - name: Record publish evidence
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          BASE='https://github.com/ScaleUPPeisov/scaleup-site/releases/download/endlume-stable'
+          curl -fL --retry 5 "$BASE/latest.json?evidence=$GITHUB_RUN_ID" -o "$RUNNER_TEMP/live-latest.json"
+          python3 - "$RUNNER_TEMP/live-latest.json" <<'PY'
+          import json,sys
+          m=json.load(open(sys.argv[1]))
+          assert m['version']=='10.0.13'
+          p=m['platforms']['darwin-aarch64']
+          assert p['sha256']=='ea47135ecd827e9f65dea64ba5c7524d36733ad9f0749dbd773919a9b7870534'
+          assert p['signature']
+          print('GITHUB_STABLE_10_0_13=PASS')
+          PY
+          cp "$RUNNER_TEMP/live-latest.json" "$ROLLBACK_DIR/live-latest-10.0.13.json"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ENDLUME-10.0.13-PHASE4-PUBLISH-ROLLBACK-EVIDENCE
+          path: ${{ env.ROLLBACK_DIR }}
+          if-no-files-found: warn
+          retention-days: 30

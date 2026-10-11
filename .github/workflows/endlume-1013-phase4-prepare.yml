@@ -2,19 +2,16 @@ name: ENDLUME 10.0.13 Phase 4 Prepare
 
 on:
   push:
-    branches: [release-endlume-10.0.13]
+    branches:
+      - release-endlume-10.0.13
     paths:
       - '.github/workflows/endlume-1013-phase4-prepare.yml'
 
 permissions:
   contents: write
 
-env:
-  SOURCE_ENGINE_HEAD: e4a07972b1566ed73b11c4eb758d59f4dc839e71
-  RELEASE_VERSION: 10.0.13
-
 jobs:
-  metadata-only:
+  metadata:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -22,92 +19,58 @@ jobs:
         with:
           ref: release-endlume-10.0.13
           fetch-depth: 0
-      - name: Prove exact frozen source ancestry
+          token: ${{ secrets.ENDLUME_RELEASE_TOKEN }}
+
+      - name: Prove frozen product input
         shell: bash
         run: |
-          set -Eeuo pipefail
-          git cat-file -e "$SOURCE_ENGINE_HEAD^{commit}"
-          git merge-base --is-ancestor "$SOURCE_ENGINE_HEAD" HEAD
-          BAD=$(git diff --name-only "$SOURCE_ENGINE_HEAD" HEAD | grep -Ev '^\.github/workflows/endlume-1013-phase4-prepare\.yml$' || true)
-          test -z "$BAD" || { echo "$BAD"; exit 21; }
-          echo SOURCE_ENGINE_HEAD=$SOURCE_ENGINE_HEAD
-          echo PREP_INPUT_FUNCTIONAL_DIFF=0
+          set -euo pipefail
+          BASE='e4a07972b1566ed73b11c4eb758d59f4dc839e71'
+          git cat-file -e "$BASE^{commit}"
+          git merge-base --is-ancestor "$BASE" HEAD
+          BAD="$(git diff --name-only "$BASE" HEAD | grep -Ev '^(\.github/workflows/endlume-1013-phase4-prepare\.yml|scripts/phase4_prepare_1013\.py)$' || true)"
+          if [ -n "$BAD" ]; then
+            printf '%s\n' "$BAD" >&2
+            exit 21
+          fi
+          echo 'PREP_INPUT_FUNCTIONAL_DIFF=0'
 
-      - name: Apply version, changelog and release metadata only
+      - name: Apply metadata-only 10.0.13 patch
         shell: bash
         run: |
-          set -Eeuo pipefail
-          python3 <<'PY'
-          from pathlib import Path
-          import re
-
-          def replace_exact(path, old, new, count=None):
-              p=Path(path); s=p.read_text()
-              n=s.count(old)
-              if count is not None and n!=count:
-                  raise SystemExit(f'{path}: expected {count} matches for {old!r}, got {n}')
-              if n<1:
-                  raise SystemExit(f'{path}: missing {old!r}')
-              p.write_text(s.replace(old,new))
-
-          replace_exact('package.json','"version": "10.0.11"','"version": "10.0.13"',1)
-
-          p=Path('package-lock.json'); s=p.read_text(); old='"version": "10.0.11"'
-          if s.count(old)<2: raise SystemExit('package-lock.json: expected top/root 10.0.11 versions')
-          s=s.replace(old,'"version": "10.0.13"',2); p.write_text(s)
-
-          p=Path('src-tauri/Cargo.toml'); s=p.read_text()
-          s2,n=re.subn(r'(\[package\][\s\S]*?\nversion\s*=\s*")10\.0\.11(" )',r'\g<1>10.0.13\2',s,count=1)
-          if n==0:
-              s2,n=re.subn(r'(\[package\][\s\S]*?\nversion\s*=\s*")10\.0\.11(")',r'\g<1>10.0.13\2',s,count=1)
-          if n!=1: raise SystemExit('Cargo.toml package version replacement failed')
-          p.write_text(s2)
-
-          p=Path('src-tauri/Cargo.lock'); s=p.read_text()
-          s2,n=re.subn(r'(\[\[package\]\]\nname = "endlume"\nversion = ")10\.0\.11(")',r'\g<1>10.0.13\2',s,count=1)
-          if n!=1: raise SystemExit('Cargo.lock endlume version replacement failed')
-          p.write_text(s2)
-
-          replace_exact('src-tauri/tauri.conf.json','"version": "10.0.11"','"version": "10.0.13"',1)
-
-          p=Path('src/components/ReleaseHistory.tsx'); s=p.read_text()
-          anchor='const releases:Release[]=[\n'
-          if s.count(anchor)!=1: raise SystemExit('ReleaseHistory anchor mismatch')
-          if "version:'10.0.13'" in s: raise SystemExit('10.0.13 already present')
-          block="""  {version:'10.0.13',date:'11.10.2026',current:true,title:'Fast Engine • Modern ENDLUME • HEVC Acceleration',items:[
-            'Восстановлен канонический современный интерфейс ENDLUME и современная фирменная иконка без отката продукта к старой оболочке.',
-            'Fast Engine интегрирован в канонический ENDLUME: статичные, периодические Effects и Subscribe-проекты получают сверхбыстрый HEVC 1080p60 render path.',
-            'Для совместимых MP3 сохранён чистый packet-preserving audio path без лишнего перекодирования; полные треки и порядок музыки сохраняются.',
-            'DSP-сценарии Normalize, Crossfade и неподдерживаемые visual-конфигурации безопасно используют проверенный legacy/canonical fallback.',
-            'Effects и Subscribe сохранены, включая timing, animation, position/scale и повторения; Render Center, Library и Settings сохранены без функциональных изменений.',
-            'Известное ограничение 10.0.13: canonical Preview может отличаться на последнем кадре перед границей 5-секундного periodic loop; финальный export остаётся phase-correct.'
-          ]},
-"""
-          s=s.replace(anchor,anchor+block,1)
-          old="{version:'10.0.10',date:'02.10.2026',current:true"
-          new="{version:'10.0.10',date:'02.10.2026',current:false"
-          if s.count(old)!=1: raise SystemExit('10.0.10 current marker mismatch')
-          s=s.replace(old,new,1); p.write_text(s)
-
-          Path('RELEASE_NOTES.md').write_text('''# ENDLUME YT Studio PEISOV 10.0.13 — 11.10.2026 · macOS Apple Silicon\n\n- Канонический современный ENDLUME UI и современная иконка сохранены.\n- Интегрирован Fast Engine с аппаратным HEVC 1080p60 ускорением для static / periodic / Subscribe профилей.\n- Для совместимых MP3 используется packet-preserving clean audio path без лишнего lossy-перекодирования.\n- Normalize, Crossfade и неподдерживаемые visual/DSP случаи остаются на безопасном canonical fallback.\n- Effects, Subscribe, Render Center, Library, Settings и встроенный updater сохранены.\n- Accepted known issue: canonical Preview на frame 299/300 перед 5-second periodic loop boundary может отличаться от phase-correct final export. Исправление запланировано на 10.0.14 (#27).\n''')
-
-          Path('release').mkdir(exist_ok=True)
-          Path('release/ENDLUME_10.0.13_RELEASE.md').write_text('''# ENDLUME 10.0.13 Release Record\n\n- Release version: 10.0.13\n- Source engine head: `e4a07972b1566ed73b11c4eb758d59f4dc839e71`\n- Canonical base: `3f06c7329bd3821bc160e6d88c5b294fc0d82c2b`\n- Fast Engine source: `a7a399e83de8b9248e2065c6dda1f9079ded6565`\n- Phase 3 source artifact: `11677270291`\n- Phase 3 final diagnostic evidence: `11693338342`\n- Owner authorization: RELEASE 10.0.13 APPROVED\n\n## Accepted physical qualification\n\n- Static 3h: 2.5135 s, 437.255 MB, HEVC 1080p60, MP3 packet-copy, decode/seek/DTS PASS.\n- Periodic 3h: 5.8622 s, 437.279 MB, phase/seam/decode/seek/DTS PASS.\n- Subscribe 3h: 3.1270 s, 437.394 MB, timing/decode/seek/DTS PASS.\n- Combined: 22.180 s, informational performance warning only.\n- Normalize/Crossfade/Unsupported visual fallbacks: PASS.\n\n## Accepted known issue\n\n`KNOWN_PREVIEW_ONLY_PERIODIC_BOUNDARY_ISSUE`: canonical Preview frame 299/300 at 4.983333333 s has MAE 8.5345293, while Fast-render output matches expected source frame 299 at MAE ~0.03263. Export is phase-correct. Follow-up: #27 for 10.0.14.\n''')
-          PY
-
+          set -euo pipefail
+          python3 scripts/phase4_prepare_1013.py
           git diff --check
-          git diff --quiet "$SOURCE_ENGINE_HEAD" -- src-tauri/src
-          git diff --quiet "$SOURCE_ENGINE_HEAD" -- src-tauri/icons public 2>/dev/null || true
-          BAD=$(git diff --name-only "$SOURCE_ENGINE_HEAD" | grep -Ev '^(package\.json|package-lock\.json|src-tauri/Cargo\.toml|src-tauri/Cargo\.lock|src-tauri/tauri\.conf\.json|src/components/ReleaseHistory\.tsx|RELEASE_NOTES\.md|release/ENDLUME_10\.0\.13_RELEASE\.md|\.github/workflows/endlume-1013-phase4-prepare\.yml)$' || true)
-          test -z "$BAD" || { echo "$BAD"; exit 22; }
 
-      - name: Commit metadata-only release preparation
+      - name: Prove functional source freeze
         shell: bash
         run: |
-          set -Eeuo pipefail
+          set -euo pipefail
+          BASE='e4a07972b1566ed73b11c4eb758d59f4dc839e71'
+          git diff --quiet "$BASE" -- src-tauri/src
+          git diff --quiet "$BASE" -- src-tauri/icons
+          BAD_SRC="$(git diff --name-only "$BASE" -- src | grep -Ev '^src/components/ReleaseHistory\.tsx$' || true)"
+          test -z "$BAD_SRC"
+          BAD_ALL="$(git diff --name-only "$BASE" | grep -Ev '^(package\.json|package-lock\.json|src-tauri/Cargo\.toml|src-tauri/Cargo\.lock|src-tauri/tauri\.conf\.json|src/components/ReleaseHistory\.tsx|RELEASE_NOTES\.md|release/ENDLUME_10\.0\.13_RELEASE\.md|scripts/phase4_prepare_1013\.py|\.github/workflows/endlume-1013-phase4-prepare\.yml)$' || true)"
+          if [ -n "$BAD_ALL" ]; then
+            printf '%s\n' "$BAD_ALL" >&2
+            exit 22
+          fi
+          echo 'FAST_ENGINE_FUNCTIONAL_DIFF=0'
+          echo 'PROJECT_UI_FUNCTIONAL_DIFF=0'
+          echo 'EFFECTS_FUNCTIONAL_DIFF=0'
+          echo 'SUBSCRIBE_FUNCTIONAL_DIFF=0'
+          echo 'PREVIEW_FUNCTIONAL_DIFF=0'
+          echo 'RENDER_CENTER_FUNCTIONAL_DIFF=0'
+          echo 'ICON_DIFF=0'
+
+      - name: Commit release metadata
+        shell: bash
+        run: |
+          set -euo pipefail
           git config user.name 'ENDLUME Release Bot'
           git config user.email 'peisov.business@gmail.com'
           git add package.json package-lock.json src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/tauri.conf.json src/components/ReleaseHistory.tsx RELEASE_NOTES.md release/ENDLUME_10.0.13_RELEASE.md
           git commit -m 'release: set ENDLUME 10.0.13 metadata and history'
           git push origin HEAD:release-endlume-10.0.13
-          echo PHASE4_METADATA_PREP=PASS
+          echo 'PHASE4_METADATA_PREP=PASS'

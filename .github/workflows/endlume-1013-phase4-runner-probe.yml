@@ -1,0 +1,27 @@
+name: ENDLUME 10.0.13 Phase 4 Runner Probe
+
+on:
+  push:
+    branches:
+      - release-endlume-10.0.13
+    paths:
+      - '.github/workflows/endlume-1013-phase4-runner-probe.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: [self-hosted, macOS, ARM64]
+    timeout-minutes: 5
+    steps:
+      - name: Probe runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo RUNNER_NAME="$RUNNER_NAME"
+          uname -s
+          uname -m
+          test "$(uname -s)" = Darwin
+          test "$(uname -m)" = arm64
+          echo BASE_SELF_HOSTED_MAC_ARM64=ONLINE

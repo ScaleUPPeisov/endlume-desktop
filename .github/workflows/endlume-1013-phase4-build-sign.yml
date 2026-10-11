@@ -1,0 +1,55 @@
+name: ENDLUME 10.0.13 Phase 4 Build Sign Preflight
+
+on:
+  push:
+    branches:
+      - release-endlume-10.0.13
+    paths:
+      - '.github/workflows/endlume-1013-phase4-build-sign.yml'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  macos-arm64:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          clean: true
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Build, codesign and updater-sign 10.0.13
+        shell: bash
+        run: bash scripts/phase4_build_sign_1013.sh
+
+      - name: Packaged Fast Engine smoke only
+        shell: bash
+        run: bash scripts/phase4_package_smoke_1013.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ENDLUME-10.0.13-PHASE4-SIGNED-MACOS-ARM64
+          path: |
+            ${{ env.PHASE4_STAGE }}/ENDLUME-10.0.13-macos-aarch64.app.zip
+            ${{ env.PHASE4_STAGE }}/ENDLUME-10.0.13-macos-aarch64.app.tar.gz
+            ${{ env.PHASE4_STAGE }}/ENDLUME-10.0.13-macos-aarch64.app.tar.gz.sig
+            ${{ env.PHASE4_STAGE }}/ENDLUME-macos-aarch64.app.tar.gz
+            ${{ env.PHASE4_STAGE }}/ENDLUME-macos-aarch64.app.tar.gz.sig
+            ${{ env.PHASE4_STAGE }}/ENDLUME-10.0.13-release.json
+            ${{ env.PHASE4_STAGE }}/latest.json
+            ${{ env.PHASE4_STAGE }}/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Keep live channel untouched after preflight
+        shell: bash
+        run: |
+          echo PHASE4_BUILD_SIGN_PREFLIGHT=PASS
+          echo STABLE_PUBLISH=NOT_YET
+          echo VERCEL_BRIDGE=NOT_YET
+          echo PHYSICAL_UPDATE=NOT_YET

@@ -19,7 +19,7 @@ jobs:
         with:
           ref: release-endlume-10.0.13
           fetch-depth: 0
-          token: ${{ secrets.ENDLUME_RELEASE_TOKEN }}
+          persist-credentials: true
 
       - name: Prove frozen product input
         shell: bash

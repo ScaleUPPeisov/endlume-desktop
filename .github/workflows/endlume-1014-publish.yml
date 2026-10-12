@@ -115,8 +115,11 @@ jobs:
       - name: Publish live-stable sentinel for real updater gate
         if: success()
         shell: bash
+        env:
+          CHAIN_TOKEN: ${{ secrets.ENDLUME_RELEASE_TOKEN }}
         run: |
           set -Eeuo pipefail
+          test -n "${CHAIN_TOKEN:-}"
           LIVE_SHA="$(cat "$PHASE4_ARTIFACT_DIR/LIVE_ARTIFACT_SHA256.txt")"
           cat > release/ENDLUME_10.0.14_PUBLISH_PASS.json <<EOF
           {
@@ -135,6 +138,7 @@ jobs:
           git config user.email 'actions@users.noreply.github.com'
           git add release/ENDLUME_10.0.14_PUBLISH_PASS.json
           git commit -m 'release(10.0.14): stable published pending updater acceptance'
+          git remote set-url origin "https://x-access-token:${CHAIN_TOKEN}@github.com/ScaleUPPeisov/endlume-desktop.git"
           git push origin HEAD:release-endlume-10.0.14
           echo PUBLISH_RUN_ID="$GITHUB_RUN_ID"
           echo LIVE_ARTIFACT_SHA256="$LIVE_SHA"

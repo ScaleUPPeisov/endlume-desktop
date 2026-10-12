@@ -49,6 +49,22 @@ jobs:
           RELEASE_HEAD: ${{ github.event.workflow_run.head_sha }}
         run: bash scripts/phase4_build_sign_1014.sh
 
+      - name: Pin signed evidence to exact release commit
+        shell: bash
+        env:
+          RELEASE_HEAD: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -Eeuo pipefail
+          python3 - "$PHASE4_STAGE/ENDLUME-10.0.14-release.json" "$RELEASE_HEAD" <<'PY'
+          import json,sys
+          p=sys.argv[1]; head=sys.argv[2]
+          d=json.load(open(p)); d['releaseHead']=head
+          json.dump(d,open(p,'w'),ensure_ascii=False,indent=2)
+          assert d['releaseHead']==head
+          print('SIGNED_RELEASE_HEAD='+head)
+          PY
+          /usr/bin/shasum -a 256 "$PHASE4_STAGE"/ENDLUME-10.0.14-* "$PHASE4_STAGE/ENDLUME-macos-aarch64.app.tar.gz" "$PHASE4_STAGE/ENDLUME-macos-aarch64.app.tar.gz.sig" > "$PHASE4_STAGE/SHA256SUMS.txt"
+
       - uses: actions/upload-artifact@v4
         with:
           name: ENDLUME-10.0.14-PHASE4-SIGNED-MACOS-ARM64

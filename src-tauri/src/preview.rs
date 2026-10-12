@@ -144,22 +144,27 @@ pub async fn generate_preview(app:AppHandle,project_path:String,time_sec:f64,eff
   for e in &enabled_fx{overlay_effect(&mut graph,&mut base,idx,e,w,h,false);idx+=1;}
   for s in &enabled_sub{overlay_effect(&mut graph,&mut base,idx,&s.effect,w,h,true);idx+=1;}
   graph.push_str(&format!(";[{base}]fps=60,format=yuv420p[outv]"));
-  base_args.extend(vec!["-filter_complex",&graph,"-map","[outv]","-t","3.0","-an"].into_iter().map(String::from));
+  base_args.extend(vec!["-filter_complex",&graph,"-map","[outv]","-an"].into_iter().map(String::from));
 
   #[cfg(target_os="macos")]
   let primary_codec=vec!["-c:v","h264_videotoolbox","-realtime","1","-q:v","100","-b:v","35M","-maxrate","50M","-g","1","-bf","0","-pix_fmt","yuv420p"].into_iter().map(String::from).collect::<Vec<_>>();
   #[cfg(not(target_os="macos"))]
   let primary_codec=vec!["-c:v","libx264","-preset","veryfast","-crf","8","-g","1","-keyint_min","1","-sc_threshold","0","-bf","0","-pix_fmt","yuv420p"].into_iter().map(String::from).collect::<Vec<_>>();
 
-  let mut primary=base_args.clone();primary.extend(primary_codec);primary.extend(vec!["-fps_mode","cfr","-r","60","-video_track_timescale","60000","-movflags","+faststart","-y",tmp.to_string_lossy().as_ref()].into_iter().map(String::from));
+  let mut primary=base_args.clone();primary.extend(vec!["-t","3.0"].into_iter().map(String::from));primary.extend(primary_codec);primary.extend(vec!["-fps_mode","cfr","-r","60","-video_track_timescale","60000","-movflags","+faststart","-y",tmp.to_string_lossy().as_ref()].into_iter().map(String::from));
   if let Err(hw)=run_preview(&app,primary).await{
     #[cfg(target_os="macos")]
     {
       let _=std::fs::remove_file(&tmp);
       let mut fallback=base_args;
-      fallback.extend(vec!["-c:v","libx264","-preset","ultrafast","-crf","12","-g","1","-keyint_min","1","-sc_threshold","0","-bf","0","-pix_fmt","yuv420p"].into_iter().map(String::from));
+      // Exact Preview is auxiliary to the LiveComposite helper. If cold-start
+      // VideoToolbox exceeds the hard process budget, render a short loopable
+      // exact proxy instead of repeating a full 3-second 1080p60 job.
+      // Geometry/fps/compositor stay identical; Final Render is untouched.
+      fallback.extend(vec!["-t","0.75","-c:v","libx264","-preset","ultrafast","-crf","14","-g","1","-keyint_min","1","-sc_threshold","0","-bf","0","-pix_fmt","yuv420p"].into_iter().map(String::from));
       fallback.extend(vec!["-fps_mode","cfr","-r","60","-video_track_timescale","60000","-movflags","+faststart","-y",tmp.to_string_lossy().as_ref()].into_iter().map(String::from));
-      run_preview(&app,fallback).await.map_err(|sw|{let _=std::fs::remove_file(&tmp);format!("VideoToolbox preview: {hw}; libx264 fallback: {sw}")})?;
+      if hw.contains("timeout after")&&std::env::var_os("ENDLUME_PREVIEW_DIAG").is_some(){eprintln!("ENDLUME_PREVIEW_CANONICAL_TIMEOUT_SHORT_FALLBACK REQUEST_ID={request} duration=0.75");}
+      run_preview(&app,fallback).await.map_err(|sw|{let _=std::fs::remove_file(&tmp);format!("VideoToolbox preview: {hw}; short libx264 fallback: {sw}")})?;
     }
     #[cfg(not(target_os="macos"))]
     {let _=std::fs::remove_file(&tmp);return Err(hw)}

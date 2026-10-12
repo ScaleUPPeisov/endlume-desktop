@@ -63,6 +63,18 @@ jobs:
           echo RELEASE_COMMIT_SHA="$RELEASE_COMMIT"
           echo FUNCTIONAL_PRODUCT_DIFF=0
 
+      - name: Restore accepted macOS FFmpeg sidecars
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          FOUNDATION="$HOME/.endlume-local-builder/endlume-desktop-8.40-bootstrap"
+          test -d "$FOUNDATION/src-tauri/binaries"
+          mkdir -p src-tauri/binaries
+          rsync -a "$FOUNDATION/src-tauri/binaries/" src-tauri/binaries/
+          test -x src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          test -x src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          echo MACOS_FFMPEG_SIDECARS=RESTORED
+
       - name: Required compile and test gates
         shell: bash
         run: |

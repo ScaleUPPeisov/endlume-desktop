@@ -1,0 +1,76 @@
+name: ENDLUME 10.0.14 Build Sign Physical Gate
+
+on:
+  workflow_run:
+    workflows:
+      - ENDLUME 10.0.14 Compile Gate
+    types: [completed]
+    branches:
+      - release-endlume-10.0.14
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: endlume-1014-build-sign
+  cancel-in-progress: false
+
+jobs:
+  build-sign-smoke:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+          clean: true
+          persist-credentials: false
+
+      - name: Exact successful compile run and branch head
+        shell: bash
+        env:
+          COMPILE_RUN_ID: ${{ github.event.workflow_run.id }}
+          RELEASE_HEAD: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -Eeuo pipefail
+          test "${{ github.event.workflow_run.head_branch }}" = 'release-endlume-10.0.14'
+          test "$(git rev-parse HEAD)" = "$RELEASE_HEAD"
+          git fetch origin release-endlume-10.0.14
+          test "$(git rev-parse origin/release-endlume-10.0.14)" = "$RELEASE_HEAD"
+          echo COMPILE_RUN_ID="$COMPILE_RUN_ID"
+          echo RELEASE_HEAD="$RELEASE_HEAD"
+
+      - name: Fresh production build sign and packaged physical smoke
+        shell: bash
+        env:
+          RELEASE_HEAD: ${{ github.event.workflow_run.head_sha }}
+        run: bash scripts/phase4_build_sign_1014.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ENDLUME-10.0.14-PHASE4-SIGNED-MACOS-ARM64
+          path: |
+            ${{ env.PHASE4_STAGE }}/ENDLUME-10.0.14-macos-aarch64.app.zip
+            ${{ env.PHASE4_STAGE }}/ENDLUME-10.0.14-macos-aarch64.app.tar.gz
+            ${{ env.PHASE4_STAGE }}/ENDLUME-10.0.14-macos-aarch64.app.tar.gz.sig
+            ${{ env.PHASE4_STAGE }}/ENDLUME-macos-aarch64.app.tar.gz
+            ${{ env.PHASE4_STAGE }}/ENDLUME-macos-aarch64.app.tar.gz.sig
+            ${{ env.PHASE4_STAGE }}/ENDLUME-10.0.14-release.json
+            ${{ env.PHASE4_STAGE }}/SHA256SUMS.txt
+            ${{ env.PHASE4_STAGE }}/vyron-routing.json
+            ${{ env.PHASE4_STAGE }}/preview-subscribe-render.json
+            ${{ env.PHASE4_STAGE }}/durable-before.json
+            ${{ env.PHASE4_STAGE }}/durable-after.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Signed candidate summary
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          echo SIGNED_ARTIFACT=ENDLUME-10.0.14-PHASE4-SIGNED-MACOS-ARM64
+          echo PACKAGED_SMOKE=PASS
+          echo STABLE_PUBLISH=NOT_YET

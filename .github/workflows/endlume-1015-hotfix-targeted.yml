@@ -38,16 +38,21 @@ jobs:
           npm ci
           npm run build
 
-      - name: Provision existing QA ffmpeg binaries
+      - name: Provision runner ffmpeg binaries
         shell: bash
         run: |
           set -Eeuo pipefail
-          APP="/Users/Shared/endlume-qa/cache/endlume-10.0.14-physical/ENDLUME YT Studio PEISOV.app"
-          test -x "$APP/Contents/MacOS/ffmpeg"
-          test -x "$APP/Contents/MacOS/ffprobe"
+          FFMPEG="$(command -v ffmpeg || true)"
+          FFPROBE="$(command -v ffprobe || true)"
+          if [[ -z "$FFMPEG" || -z "$FFPROBE" ]]; then
+            FFMPEG="$(find /Users/Shared /opt/homebrew /usr/local -type f -name ffmpeg -perm -111 2>/dev/null | head -1 || true)"
+            FFPROBE="$(find /Users/Shared /opt/homebrew /usr/local -type f -name ffprobe -perm -111 2>/dev/null | head -1 || true)"
+          fi
+          test -n "$FFMPEG" && test -x "$FFMPEG"
+          test -n "$FFPROBE" && test -x "$FFPROBE"
           mkdir -p src-tauri/binaries
-          cp "$APP/Contents/MacOS/ffmpeg" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
-          cp "$APP/Contents/MacOS/ffprobe" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          cp "$FFMPEG" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp "$FFPROBE" src-tauri/binaries/ffprobe-aarch64-apple-darwin
           chmod +x src-tauri/binaries/ffmpeg-aarch64-apple-darwin src-tauri/binaries/ffprobe-aarch64-apple-darwin
 
       - name: Rust targeted compile

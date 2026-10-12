@@ -98,7 +98,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           test -n "${GH_TOKEN:-}"
-          bash scripts/phase4_publish_1014.sh
+          bash scripts/phase4_publish_1014_recovery.sh
 
       - uses: actions/upload-artifact@v4
         if: always()

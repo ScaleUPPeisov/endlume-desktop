@@ -5,6 +5,7 @@ use std::{collections::{HashSet,VecDeque},fs,path::PathBuf,sync::{Arc,atomic::{A
 use tauri::{AppHandle,Emitter,State};
 
 const LICENSE_BLOCKED:&str="__ENDLUME_LICENSE_BLOCKED__";
+const NO_EFFECT_SELECTION:&str="__none__";
 
 #[derive(Default)]
 pub struct QueueRuntime{
@@ -31,6 +32,16 @@ impl QueueRuntime{
 }
 
 fn queue_safe_name(name:&str)->String{name.chars().map(|c|if ['/', '\\', ':', '*', '?', '"', '<', '>', '|'].contains(&c){'_'}else{c}).collect()}
+
+fn normalized_project_effect_ids(project:&ProjectScanItem)->Vec<String>{
+  let source=if !project.selected_effect_ids.is_empty(){
+    project.selected_effect_ids.clone()
+  }else{
+    project.selected_effect_id.as_deref().map(str::trim).filter(|id|!id.is_empty()).map(|id|vec![id.to_string()]).unwrap_or_default()
+  };
+  let mut seen=HashSet::new();
+  source.into_iter().map(|id|id.trim().to_string()).filter(|id|!id.is_empty()&&seen.insert(id.clone())).collect()
+}
 
 fn latest_result_for_job(job:&QueueJob)->(Option<String>,Option<u64>){
   let dir=PathBuf::from(&job.settings.output_dir);let prefix=format!("{} — Ready Videos",queue_safe_name(&job.project.name));
@@ -87,25 +98,30 @@ pub async fn enqueue_projects(app:AppHandle,runtime:State<'_,Arc<QueueRuntime>>,
   }
 
   let mut prepared=Vec::<(ProjectScanItem,Vec<EffectPreset>)>::new();
-  for project in projects.into_iter().filter(|p|p.valid){
-    let selected_id=match project.selected_effect_id.as_deref().map(str::trim).filter(|x|!x.is_empty()){
-      Some(id)=>id.to_string(),
-      None if effects.is_empty()=>"__none__".into(),
-      None=>return Err(format!("Project '{}' has Effects available but no explicit selectedEffectId. Choose an effect or «Без эффекта» before rendering.",project.name))
-    };
-    let selected=if selected_id=="__none__"{
+  for mut project in projects.into_iter().filter(|p|p.valid){
+    let selected_ids=normalized_project_effect_ids(&project);
+    let selected=if selected_ids.is_empty(){
+      if effects.is_empty(){Vec::new()}else{return Err(format!("Project '{}' has Effects available but no explicit selectedEffectIds. Choose one or more effects or «Без эффекта» before rendering.",project.name))}
+    }else if selected_ids.iter().any(|id|id==NO_EFFECT_SELECTION){
+      if selected_ids.len()!=1{return Err(format!("Project '{}' mixes «Без эффекта» with real Effects. Choose one mode only.",project.name))}
       Vec::new()
     }else{
-      let effect=effects.iter().find(|e|e.id==selected_id).ok_or_else(||format!("Selected effect '{}' for project '{}' is not present in the effect registry",selected_id,project.name))?;
-      if !effect.enabled||effect.usage_mode.as_deref()==Some("off"){
-        return Err(format!("Selected effect '{}' ({}) for project '{}' is disabled. Re-enable it or choose another effect before rendering.",effect.name,effect.id,project.name))
+      let mut resolved=Vec::with_capacity(selected_ids.len());
+      for selected_id in &selected_ids{
+        let effect=effects.iter().find(|e|e.id==*selected_id).ok_or_else(||format!("Selected effect '{}' for project '{}' is not present in the effect registry",selected_id,project.name))?;
+        if !effect.enabled||effect.usage_mode.as_deref()==Some("off"){
+          return Err(format!("Selected effect '{}' ({}) for project '{}' is disabled. Re-enable it or choose another effect before rendering.",effect.name,effect.id,project.name))
+        }
+        let source=PathBuf::from(&effect.source);
+        if !source.is_file(){
+          return Err(format!("Selected effect '{}' ({}) for project '{}' is missing: {}",effect.name,effect.id,project.name,source.display()))
+        }
+        resolved.push(effect.clone());
       }
-      let source=PathBuf::from(&effect.source);
-      if !source.is_file(){
-        return Err(format!("Selected effect '{}' ({}) for project '{}' is missing: {}",effect.name,effect.id,project.name,source.display()))
-      }
-      vec![effect.clone()]
+      resolved
     };
+    project.selected_effect_ids=if selected.is_empty(){vec![NO_EFFECT_SELECTION.into()]}else{selected.iter().map(|effect|effect.id.clone()).collect()};
+    project.selected_effect_id=if project.selected_effect_ids.len()==1{Some(project.selected_effect_ids[0].clone())}else{None};
     prepared.push((project,selected));
   }
 
@@ -124,26 +140,31 @@ pub async fn enqueue_projects(app:AppHandle,runtime:State<'_,Arc<QueueRuntime>>,
 }
 
 fn validate_recovered_effect_contract(job:&mut QueueJob)->Result<(),String>{
-  let selected=job.project.selected_effect_id.as_deref().map(str::trim).filter(|x|!x.is_empty()).map(str::to_string);
-  match selected.as_deref(){
-    Some("__none__")=>{
-      if !job.effects.is_empty(){return Err("recovery содержит Effects при явном выборе «Без эффекта»".into())}
-      Ok(())
-    }
-    Some(id)=>{
-      if job.effects.len()!=1{return Err(format!("recovery для выбранного effect ID '{}' содержит {} preset(s), ожидался ровно 1",id,job.effects.len()))}
-      let effect=&job.effects[0];
-      if effect.id.trim()!=id{return Err(format!("recovery effect ID '{}' не совпадает с сохранённым selectedEffectId '{}'",effect.id,id))}
-      if !effect.enabled||effect.usage_mode.as_deref()==Some("off"){return Err(format!("recovery effect '{}' ({}) выключен",effect.name,effect.id))}
-      let source=PathBuf::from(&effect.source);
-      if !source.is_file(){return Err(format!("recovery effect '{}' ({}) не найден: {}",effect.name,effect.id,source.display()))}
-      Ok(())
-    }
-    None=>{
-      if job.effects.is_empty(){job.project.selected_effect_id=Some("__none__".into());Ok(())}
-      else{Err(format!("legacy recovery содержит {} effect preset(s), но не содержит selectedEffectId; ENDLUME не будет угадывать нужный эффект",job.effects.len()))}
-    }
+  let mut selected=normalized_project_effect_ids(&job.project);
+  if selected.is_empty()&&!job.effects.is_empty(){
+    selected=job.effects.iter().map(|effect|effect.id.trim().to_string()).filter(|id|!id.is_empty()).collect();
+    selected.dedup();
+    job.project.selected_effect_ids=selected.clone();
+    job.project.selected_effect_id=if selected.len()==1{Some(selected[0].clone())}else{None};
   }
+  if selected.is_empty(){
+    job.project.selected_effect_ids=vec![NO_EFFECT_SELECTION.into()];
+    job.project.selected_effect_id=Some(NO_EFFECT_SELECTION.into());
+    return if job.effects.is_empty(){Ok(())}else{Err(format!("recovery содержит {} effect preset(s), но не содержит сохранённых effect IDs",job.effects.len()))};
+  }
+  if selected.iter().any(|id|id==NO_EFFECT_SELECTION){
+    if selected.len()!=1{return Err("recovery смешивает «Без эффекта» с реальными Effects".into())}
+    if !job.effects.is_empty(){return Err("recovery содержит Effects при явном выборе «Без эффекта»".into())}
+    job.project.selected_effect_ids=vec![NO_EFFECT_SELECTION.into()];job.project.selected_effect_id=Some(NO_EFFECT_SELECTION.into());return Ok(())
+  }
+  let actual=job.effects.iter().map(|effect|effect.id.trim().to_string()).collect::<Vec<_>>();
+  if actual!=selected{return Err(format!("recovery effect IDs {:?} не совпадают с сохранёнными selectedEffectIds {:?}",actual,selected))}
+  for effect in &job.effects{
+    if !effect.enabled||effect.usage_mode.as_deref()==Some("off"){return Err(format!("recovery effect '{}' ({}) выключен",effect.name,effect.id))}
+    let source=PathBuf::from(&effect.source);
+    if !source.is_file(){return Err(format!("recovery effect '{}' ({}) не найден: {}",effect.name,effect.id,source.display()))}
+  }
+  job.project.selected_effect_ids=selected.clone();job.project.selected_effect_id=if selected.len()==1{Some(selected[0].clone())}else{None};Ok(())
 }
 
 fn useful_detail(raw:&str)->String{

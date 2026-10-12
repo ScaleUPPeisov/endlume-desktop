@@ -39,7 +39,7 @@ pub async fn scan_root(path:String)->Result<Vec<ProjectScanItem>,String>{
    out.push(ProjectScanItem{
      id:Uuid::new_v4().to_string(),name,path:dir.to_string_lossy().into_owned(),
      media:media.into_iter().map(|x|x.to_string_lossy().into_owned()).collect(),
-     audio:audio.into_iter().map(|x|x.to_string_lossy().into_owned()).collect(),valid:error.is_none(),error,anchors:None,selected_effect_id:None,output_dir:None,output_source:None,vyron_manifest_path:None,vyron_channel_name:None
+     audio:audio.into_iter().map(|x|x.to_string_lossy().into_owned()).collect(),valid:error.is_none(),error,anchors:None,selected_effect_id:None,selected_effect_ids:Vec::new(),output_dir:None,output_source:None,vyron_manifest_path:None,vyron_channel_name:None
    });
  }
  out.sort_by(|a,b|natural_path_key(&a.path).cmp(&natural_path_key(&b.path)));

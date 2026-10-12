@@ -21,12 +21,12 @@ export function VyronBatchBridge(){
         for(const path of info.projectPaths){
           try{
             const rows=await api.scanRoot(path);const item=rows.find(x=>x.path===path)||rows[0];
-            if(item?.valid)valid.push({...item,status:'queued',progress:0,stage:'Получено из VYRON',elapsedSec:0});
+            if(item?.valid)valid.push({...item,outputDir:info.outputDir,outputSource:'vyron',vyronManifestPath:info.manifestPath,vyronChannelName:info.channelName,status:'queued',progress:0,stage:'Получено из VYRON',elapsedSec:0});
             else invalid.push({name:item?.name||path.split(/[\\/]/).pop()||path,path,error:item?.error||'Проект VYRON не прошёл проверку ENDLUME'});
           }catch(e){invalid.push({name:path.split(/[\\/]/).pop()||path,path,error:String(e)})}
         }
         if(!live)return;
-        const st=useApp.getState();st.setDraftProjects(valid);st.setInvalidProjects(invalid);st.patchSettings({outputDir:info.outputDir});st.setLastRoot(info.rootPath);st.setPage('project');
+        const st=useApp.getState();st.setDraftProjects(valid);st.setInvalidProjects(invalid);st.setPreviewProjectPath(valid[0]?.path);st.patchSettings({outputDir:info.outputDir});st.setLastRoot(info.rootPath);st.setPage('project');
         const map=readMap();for(const p of valid)map[p.path]=info.manifestPath;saveMap(map);
         if(valid.length!==info.projectCount||invalid.length){await api.showError(`VYRON batch ${info.batchId}: готово ${valid.length}/${info.projectCount}, ошибок ${invalid.length}. Исправьте отмеченные проекты перед рендером.`)}
         else await api.showInfo(`${info.channelName}: ${info.projectCount} проектов автоматически загружены из VYRON. Выберите эффекты один раз и нажмите «Добавить в очередь» — настройки применятся ко всей партии.`);

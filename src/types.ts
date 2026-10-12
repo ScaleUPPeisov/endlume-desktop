@@ -28,6 +28,10 @@ export interface ProjectScanItem {
   error?: string;
   anchors?: SceneAnchors;
   selectedEffectId?: string;
+  outputDir?: string;
+  outputSource?: 'vyron'|'manual';
+  vyronManifestPath?: string;
+  vyronChannelName?: string;
 }
 
 export interface RenderProject extends ProjectScanItem {

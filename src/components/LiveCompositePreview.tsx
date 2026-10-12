@@ -40,17 +40,18 @@ export function LiveCompositePreview({assets,effect,active=true,busy,overlayRef,
     let disposed=false,baseObjectUrl:string|undefined,posterObjectUrl:string|undefined;
     (async()=>{
       try{
-        if(!assets.baseFilePath||!assets.overlayFilePath||!assets.posterFilePath)throw new Error('Preview helper/poster file path missing');
-        const [baseBytes,overlayBytes,posterBytes]=await Promise.all([readFile(assets.baseFilePath),readFile(assets.overlayFilePath),readFile(assets.posterFilePath)]);
-        if(baseBytes.byteLength<1024||overlayBytes.byteLength<1024||posterBytes.byteLength<1024)throw new Error(`Preview payload too small: base=${baseBytes.byteLength} overlay=${overlayBytes.byteLength} poster=${posterBytes.byteLength}`);
-        transportBytesRef.current=baseBytes.byteLength+overlayBytes.byteLength+posterBytes.byteLength;
+        if(!assets.baseFilePath||!assets.overlayFilePath)throw new Error('Preview base/overlay file path missing');
+        const [baseBytes,overlayBytes]=await Promise.all([readFile(assets.baseFilePath),readFile(assets.overlayFilePath)]);
+        if(baseBytes.byteLength<1024||overlayBytes.byteLength<1024)throw new Error(`Preview payload too small: base=${baseBytes.byteLength} overlay=${overlayBytes.byteLength}`);
+        let posterBytes:Uint8Array|undefined;
+        if(assets.posterFilePath){try{const bytes=await readFile(assets.posterFilePath);if(bytes.byteLength>=1024)posterBytes=bytes;else console.warn('[preview/error] optional poster too small',requestId,bytes.byteLength)}catch(error){console.warn('[preview/error] optional poster read failed',requestId,String(error))}}
+        transportBytesRef.current=baseBytes.byteLength+overlayBytes.byteLength+(posterBytes?.byteLength||0);
         const baseRaw=baseBytes.buffer.slice(baseBytes.byteOffset,baseBytes.byteOffset+baseBytes.byteLength) as ArrayBuffer;
-        const posterRaw=posterBytes.buffer.slice(posterBytes.byteOffset,posterBytes.byteOffset+posterBytes.byteLength) as ArrayBuffer;
         baseObjectUrl=URL.createObjectURL(new Blob([baseRaw],{type:assets.baseKind==='image'?'image/png':'video/mp4'}));
-        posterObjectUrl=URL.createObjectURL(new Blob([posterRaw],{type:'image/png'}));
+        if(posterBytes){const posterRaw=posterBytes.buffer.slice(posterBytes.byteOffset,posterBytes.byteOffset+posterBytes.byteLength) as ArrayBuffer;posterObjectUrl=URL.createObjectURL(new Blob([posterRaw],{type:'image/png'}));}
         const resolvedOverlay=assets.overlayPath;
-        console.info(`[ENDLUME_PREVIEW] PREVIEW_REQUEST_ID=${requestId} PREVIEW_TYPE=${previewType} FRONTEND_PAYLOAD_BYTES=${transportBytesRef.current} OBJECT_URL_CREATED=true FRONTEND_TRANSFER_MODE=POSTER_BLOB_OVERLAY_ASSET`);
-        if(disposed){URL.revokeObjectURL(baseObjectUrl);URL.revokeObjectURL(posterObjectUrl);baseObjectUrl=undefined;posterObjectUrl=undefined;return}
+        console.info(`[ENDLUME_PREVIEW] PREVIEW_REQUEST_ID=${requestId} PREVIEW_TYPE=${previewType} FRONTEND_PAYLOAD_BYTES=${transportBytesRef.current} OBJECT_URL_CREATED=true FRONTEND_TRANSFER_MODE=BASE_BLOB_OVERLAY_ASSET POSTER_OPTIONAL=${!!posterObjectUrl}`);
+        if(disposed){if(baseObjectUrl)URL.revokeObjectURL(baseObjectUrl);if(posterObjectUrl)URL.revokeObjectURL(posterObjectUrl);baseObjectUrl=undefined;posterObjectUrl=undefined;return}
         setBaseSrc(baseObjectUrl);setOverlaySrc(resolvedOverlay);setPosterSrc(posterObjectUrl);
       }catch(error){
         console.error(`[ENDLUME_PREVIEW] PREVIEW_REQUEST_ID=${requestId} PREVIEW_TYPE=${previewType} OBJECT_URL_CREATED=false IMAGE_LOAD=RED PREVIEW_APPLIED=false ERROR=${String(error)}`);
@@ -204,6 +205,6 @@ export function LiveCompositePreview({assets,effect,active=true,busy,overlayRef,
       {!effect.fullscreen&&!picker&&<><i className="corner nw"/><i className="corner ne"/><i className="corner sw"/><i className="corner se" onPointerDown={onResizeStart}/></>}
     </div>}
     {!active&&<div className="livePreviewDisabled">OFF • overlay скрыт</div>}
-    {(busy||!posterSrc)&&<div className="livePreviewPreparing">Подготавливаю Live Preview…</div>}
+    {(busy||(!liveReady&&!posterSrc))&&<div className="livePreviewPreparing">Подготавливаю Live Preview…</div>}
   </div>
 }

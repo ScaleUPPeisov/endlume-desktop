@@ -23,7 +23,11 @@ pub struct ProjectScanItem{
   pub valid:bool,
   pub error:Option<String>,
   #[serde(default)] pub anchors:Option<HashMap<String,AnchorPoint>>,
-  #[serde(default)] pub selected_effect_id:Option<String>
+  #[serde(default)] pub selected_effect_id:Option<String>,
+  #[serde(default)] pub output_dir:Option<String>,
+  #[serde(default)] pub output_source:Option<String>,
+  #[serde(default)] pub vyron_manifest_path:Option<String>,
+  #[serde(default)] pub vyron_channel_name:Option<String>
 }
 
 #[derive(Debug,Clone,Serialize,Deserialize)]

@@ -48,21 +48,37 @@ fn safe_channel_folder(name:&str)->String{
 fn vyron_workspace_root(batch_root:&Path)->Option<PathBuf>{
   batch_root.ancestors().find(|p|p.file_name().and_then(|x|x.to_str()).map(|x|x.eq_ignore_ascii_case("ProductionManager")).unwrap_or(false)).and_then(Path::parent).map(Path::to_path_buf)
 }
+fn validate_output_writable(output:&Path)->Result<(),String>{
+  let stamp=SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default().as_nanos();
+  let probe=output.join(format!(".endlume-write-test-{}-{stamp}",std::process::id()));
+  match fs::OpenOptions::new().write(true).create_new(true).open(&probe){
+    Ok(_)=>{let _=fs::remove_file(&probe);Ok(())}
+    Err(e)=>Err(format!("Папка результата VYRON недоступна для записи: {} ({e})",output.display()))
+  }
+}
 fn resolve_render_output(v:&Value,batch_root:&Path,channel_name:&str)->Result<PathBuf,String>{
+  // Canonical contract: VYRON owns outputDir in batch.json. Never reconstruct a
+  // different folder when the manifest already supplied the destination.
+  if let Some(raw)=v.get("outputDir").and_then(Value::as_str).map(str::trim).filter(|x|!x.is_empty()){
+    let output=PathBuf::from(raw);
+    fs::create_dir_all(&output).map_err(|e|format!("Output dir '{}': {e}",output.display()))?;
+    let output=output.canonicalize().map_err(|e|format!("Output dir '{}': {e}",output.display()))?;
+    validate_output_writable(&output)?;
+    return Ok(output)
+  }
+
+  // Compatibility fallback for a newer workspace handoff that genuinely omits
+  // outputDir. This is not allowed to override an explicit manifest destination.
   if let Some(workspace)=vyron_workspace_root(batch_root){
     let output=workspace.join("Render").join(safe_channel_folder(channel_name));
     fs::create_dir_all(&output).map_err(|e|format!("Render/<channel>: {e}"))?;
     let workspace=workspace.canonicalize().map_err(|e|format!("VYRON workspace: {e}"))?;
     let output=output.canonicalize().map_err(|e|format!("Render/<channel>: {e}"))?;
     if !output.starts_with(&workspace){return Err("Render VYRON находится вне workspace".into())}
+    validate_output_writable(&output)?;
     return Ok(output)
   }
-  // Backward compatibility for old/non-standard manifests that predate the
-  // ProductionManager workspace layout. Their declared outputDir remains valid.
-  let output=PathBuf::from(string(v,"outputDir")?);fs::create_dir_all(&output).map_err(|e|format!("Output dir: {e}"))?;
-  let output=output.canonicalize().map_err(|e|e.to_string())?;
-  if !output.starts_with(batch_root){return Err("Output VYRON находится вне batch root".into())}
-  Ok(output)
+  Err("VYRON batch.json не содержит outputDir и не находится в ProductionManager workspace".into())
 }
 
 #[derive(Clone,Debug,Serialize,Deserialize)]

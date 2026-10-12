@@ -29,7 +29,7 @@ fn vyron_manifest_import_and_status_roundtrip(){
   let(base,manifest,status)=fixture();
   let info=load_vyron_batch_manifest(manifest.to_string_lossy().into_owned(),None).unwrap();
   assert_eq!(info.channel_name,"NEON");assert_eq!(info.project_count,1);assert_eq!(info.tracks_assigned,1);assert_eq!(info.project_paths.len(),1);
-  let expected=base.join("ВАЙРОН").join("Render").join("NEON").canonicalize().unwrap();
+  let expected=manifest.parent().unwrap().join("output").canonicalize().unwrap();
   assert_eq!(PathBuf::from(&info.output_dir),expected);assert!(expected.is_dir());
   report_vyron_render(info.manifest_path.clone(),info.project_paths[0].clone(),"Rendering".into(),None,None,None,None).unwrap();
   let mid:serde_json::Value=serde_json::from_slice(&fs::read(&status).unwrap()).unwrap();assert_eq!(mid["status"],"Rendering");assert_eq!(mid["projects"][0]["renderStatus"],"Rendering");
@@ -42,7 +42,7 @@ fn vyron_manifest_import_and_status_roundtrip(){
 #[test]
 fn vyron_render_library_sanitizes_channel_folder(){
   let(base,manifest,_)=fixture();
-  let mut v:serde_json::Value=serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();v["channelName"]=json!("Aegean/Afterglow: Live");fs::write(&manifest,serde_json::to_vec_pretty(&v).unwrap()).unwrap();
+  let mut v:serde_json::Value=serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();v["channelName"]=json!("Aegean/Afterglow: Live");v.as_object_mut().unwrap().remove("outputDir");fs::write(&manifest,serde_json::to_vec_pretty(&v).unwrap()).unwrap();
   let info=load_vyron_batch_manifest(manifest.to_string_lossy().into_owned(),None).unwrap();
   let expected=base.join("ВАЙРОН").join("Render").join("Aegean_Afterglow_ Live").canonicalize().unwrap();
   assert_eq!(PathBuf::from(info.output_dir),expected);assert!(expected.is_dir());
@@ -86,6 +86,19 @@ fn vyron_manifest_filters_to_selected_project_ids(){
   let mut s:serde_json::Value=serde_json::from_slice(&fs::read(&status).unwrap()).unwrap();s["projects"].as_array_mut().unwrap().push(json!({"projectId":"002","renderStatus":"Waiting","outputFile":null,"duration":null,"fileSize":null,"error":null}));fs::write(&status,serde_json::to_vec_pretty(&s).unwrap()).unwrap();
   let info=load_vyron_batch_manifest(manifest.to_string_lossy().into_owned(),Some(vec!["002".into()])).unwrap();
   assert_eq!(info.project_count,1);assert_eq!(info.project_paths.len(),1);assert!(info.project_paths[0].ends_with("002"));
-  assert!(PathBuf::from(info.output_dir).ends_with(PathBuf::from("Render").join("NEON")));
+  assert_eq!(PathBuf::from(info.output_dir),manifest.parent().unwrap().join("output").canonicalize().unwrap());
+  fs::remove_dir_all(base).unwrap();
+}
+
+#[test]
+fn vyron_explicit_output_dir_may_live_outside_workspace(){
+  let(base,manifest,_)=fixture();
+  let external=base.join("EXTERNAL_OUTPUT");
+  let mut v:serde_json::Value=serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
+  v["outputDir"]=json!(external.to_string_lossy());
+  fs::write(&manifest,serde_json::to_vec_pretty(&v).unwrap()).unwrap();
+  let info=load_vyron_batch_manifest(manifest.to_string_lossy().into_owned(),None).unwrap();
+  assert_eq!(PathBuf::from(info.output_dir),external.canonicalize().unwrap());
+  assert!(external.is_dir());
   fs::remove_dir_all(base).unwrap();
 }

@@ -1,6 +1,6 @@
 use serde::Serialize;
 use sha2::{Digest,Sha256};
-use std::{fs,io::Read,path::{Path,PathBuf},sync::OnceLock,time::UNIX_EPOCH};
+use std::{fs,io::Read,path::{Path,PathBuf},process::{Command,Stdio},sync::OnceLock,thread,time::{Duration,Instant,UNIX_EPOCH}};
 use tauri::{AppHandle,Manager};
 use tauri_plugin_shell::ShellExt;
 use walkdir::WalkDir;
@@ -25,7 +25,8 @@ pub(crate) async fn frame_probe_diag(app:&AppHandle,p:&Path)->(String,String,Str
   if !p.is_file(){return ("0".into(),"0".into(),"unknown".into())}
   let args=vec!["-v","error","-select_streams","v:0","-show_entries","stream=width,height,pix_fmt","-of","json",p.to_string_lossy().as_ref()].into_iter().map(String::from).collect::<Vec<_>>();
   let Ok(cmd)=app.shell().sidecar("ffprobe") else{return ("0".into(),"0".into(),"unknown".into())};
-  let Ok(out)=cmd.args(args).output().await else{return ("0".into(),"0".into(),"unknown".into())};
+  let Ok(waited)=tokio::time::timeout(PREVIEW_PROCESS_TIMEOUT,cmd.args(args).output()).await else{if live_preview_diag_enabled(){eprintln!("[preview/error] ffprobe frame diagnostic timeout");}return ("0".into(),"0".into(),"unknown".into())};
+  let Ok(out)=waited else{return ("0".into(),"0".into(),"unknown".into())};
   let Ok(v)=serde_json::from_slice::<serde_json::Value>(&out.stdout) else{return ("0".into(),"0".into(),"unknown".into())};
   let stream=v.get("streams").and_then(|x|x.as_array()).and_then(|x|x.first());
   let w=stream.and_then(|x|x.get("width")).map(|x|x.to_string()).unwrap_or_else(||"0".into());
@@ -146,6 +147,20 @@ fn qa_log_first_encode_sidecar(){
   });
 }
 
+const PREVIEW_PROCESS_TIMEOUT:Duration=Duration::from_secs(5);
+fn staged_process_output(exe:&Path,args:&[String])->Result<(bool,Option<i32>,Vec<u8>,Vec<u8>),String>{
+  let mut child=Command::new(exe).args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().map_err(|e|format!("[preview/error] Не удалось запустить FFmpeg preview {}: {e}",exe.display()))?;
+  let started=Instant::now();
+  loop{
+    match child.try_wait(){
+      Ok(Some(_))=>{let out=child.wait_with_output().map_err(|e|format!("[preview/error] FFmpeg preview wait: {e}"))?;return Ok((out.status.success(),out.status.code(),out.stdout,out.stderr))}
+      Ok(None) if started.elapsed()>=PREVIEW_PROCESS_TIMEOUT=>{let _=child.kill();let out=child.wait_with_output().map_err(|e|format!("[preview/error] FFmpeg preview timeout wait: {e}"))?;let detail=String::from_utf8_lossy(&out.stderr);return Err(format!("[preview/error] FFmpeg preview timeout after {}s: {}",PREVIEW_PROCESS_TIMEOUT.as_secs(),detail.trim().chars().take(500).collect::<String>()))}
+      Ok(None)=>thread::sleep(Duration::from_millis(35)),
+      Err(e)=>{let _=child.kill();let _=child.wait();return Err(format!("[preview/error] FFmpeg preview status: {e}"))}
+    }
+  }
+}
+
 pub(crate) async fn ffmpeg_output(app:&AppHandle,args:Vec<String>)->Result<(bool,Option<i32>,Vec<u8>,Vec<u8>),String>{
   // One Preview execution path for poster, base frame and overlay proxy.
   // Packaged macOS may resolve externalBin metadata but fail sidecar spawn with
@@ -155,12 +170,11 @@ pub(crate) async fn ffmpeg_output(app:&AppHandle,args:Vec<String>)->Result<(bool
   qa_log_first_encode_sidecar();
   if let Some(ffmpeg)=staged_ffmpeg(app).filter(|p|executable_file(p)){
     if live_preview_diag_enabled(){eprintln!("ENDLUME_PREVIEW_FFMPEG_SOURCE=staged-cache path={}",ffmpeg.display());}
-    let out=std::process::Command::new(&ffmpeg).args(&args).output()
-      .map_err(|e|format!("Не удалось запустить staged FFmpeg preview {}: {e}",ffmpeg.display()))?;
-    return Ok((out.status.success(),out.status.code(),out.stdout,out.stderr))
+    return staged_process_output(&ffmpeg,&args)
   }
   if live_preview_diag_enabled(){eprintln!("ENDLUME_PREVIEW_FFMPEG_SOURCE=tauri-sidecar-fallback");}
-  let out=app.shell().sidecar("ffmpeg").map_err(|e|e.to_string())?.args(args).output().await.map_err(|e|e.to_string())?;
+  let future=app.shell().sidecar("ffmpeg").map_err(|e|e.to_string())?.args(args).output();
+  let out=tokio::time::timeout(PREVIEW_PROCESS_TIMEOUT,future).await.map_err(|_|format!("[preview/error] FFmpeg sidecar preview timeout after {}s",PREVIEW_PROCESS_TIMEOUT.as_secs()))?.map_err(|e|e.to_string())?;
   Ok((out.status.success(),out.status.code(),out.stdout,out.stderr))
 }
 
@@ -275,20 +289,18 @@ fn resolve_bundled_ffmpeg(app:&AppHandle)->Result<PathBuf,String>{
 
 fn direct_decode_proxy_frame(app:&AppHandle,out:&Path)->Result<(),String>{
   let ffmpeg=resolve_bundled_ffmpeg(app)?;
-  let version=std::process::Command::new(&ffmpeg).arg("-version").output().map_err(|e|format!("bundled FFmpeg -version spawn: {e}"))?;
-  if !version.status.success(){return Err(format!("bundled FFmpeg -version failed: {}",String::from_utf8_lossy(&version.stderr).trim()))}
+  let version_args=vec!["-version".to_string()];
+  let (version_ok,_,version_stdout,version_stderr)=staged_process_output(&ffmpeg,&version_args)?;
+  if !version_ok{return Err(format!("bundled FFmpeg -version failed: {}",String::from_utf8_lossy(&version_stderr).trim()))}
   if live_preview_diag_enabled(){
-    let first=String::from_utf8_lossy(&version.stdout).lines().next().unwrap_or("").to_string();
+    let binding=String::from_utf8_lossy(&version_stdout);
+    let first=binding.lines().next().unwrap_or("").to_string();
     eprintln!("ENDLUME_PREVIEW_FFMPEG_VERSION_GREEN path={} version={:?}",ffmpeg.display(),first);
   }
-  let result=std::process::Command::new(&ffmpeg)
-    .args(["-hide_banner","-loglevel","error","-ss","0","-i"])
-    .arg(out)
-    .args(["-map","0:v:0","-frames:v","1","-f","null","-"])
-    .output()
-    .map_err(|e|format!("direct bundled FFmpeg decode spawn: {e}"))?;
-  if !result.status.success(){
-    let err=String::from_utf8_lossy(&result.stderr).trim().to_string();
+  let args=vec!["-hide_banner","-loglevel","error","-ss","0","-i",out.to_string_lossy().as_ref(),"-map","0:v:0","-frames:v","1","-f","null","-"].into_iter().map(String::from).collect::<Vec<_>>();
+  let (ok,_,_,stderr)=staged_process_output(&ffmpeg,&args)?;
+  if !ok{
+    let err=String::from_utf8_lossy(&stderr).trim().to_string();
     return Err(if err.is_empty(){"direct bundled FFmpeg decode failed".into()}else{err})
   }
   if live_preview_diag_enabled(){eprintln!("ENDLUME_PREVIEW_REAL_FRAME_DECODE_GREEN mode=resolved-bundled-ffmpeg path={} ffmpeg={}",out.display(),ffmpeg.display());}
@@ -298,8 +310,8 @@ fn direct_decode_proxy_frame(app:&AppHandle,out:&Path)->Result<(),String>{
 async fn decode_proxy_frame(app:&AppHandle,out:&Path)->Result<(),String>{
   let args=vec!["-hide_banner","-loglevel","error","-ss","0","-i",out.to_string_lossy().as_ref(),"-map","0:v:0","-frames:v","1","-f","null","-"].into_iter().map(String::from).collect::<Vec<_>>();
   match app.shell().sidecar("ffmpeg"){
-    Ok(cmd)=>match cmd.args(args).output().await{
-      Ok(result)=>{
+    Ok(cmd)=>match tokio::time::timeout(PREVIEW_PROCESS_TIMEOUT,cmd.args(args).output()).await{
+      Ok(Ok(result))=>{
         if result.status.success(){
           if live_preview_diag_enabled(){eprintln!("ENDLUME_PREVIEW_REAL_FRAME_DECODE_GREEN mode=tauri-sidecar path={}",out.display());}
           Ok(())
@@ -308,10 +320,11 @@ async fn decode_proxy_frame(app:&AppHandle,out:&Path)->Result<(),String>{
           Err(if err.is_empty(){"FFmpeg frame decode failed".into()}else{err})
         }
       },
-      Err(spawn_error)=>{
+      Ok(Err(spawn_error))=>{
         if live_preview_diag_enabled(){eprintln!("ENDLUME_PREVIEW_DECODE_DIRECT_FALLBACK reason=spawn-error error={:?} path={}",spawn_error,out.display());}
         direct_decode_proxy_frame(app,out)
-      }
+      },
+      Err(_)=>Err(format!("[preview/error] FFmpeg frame decode timeout after {}s",PREVIEW_PROCESS_TIMEOUT.as_secs()))
     },
     Err(resolve_error)=>{
       if live_preview_diag_enabled(){eprintln!("ENDLUME_PREVIEW_DECODE_DIRECT_FALLBACK reason=sidecar-resolve error={:?} path={}",resolve_error,out.display());}
@@ -334,9 +347,8 @@ pub(crate) async fn validate_video_proxy(app:&AppHandle,out:&Path)->Result<(),St
   ].into_iter().map(String::from).collect::<Vec<_>>();
   let (probe_success,probe_stdout,probe_stderr)=if let Some(ffprobe)=staged_ffprobe(app).filter(|p|executable_file(p)){
     if live_preview_diag_enabled(){eprintln!("ENDLUME_PREVIEW_FFPROBE_SOURCE=staged-cache path={}",ffprobe.display());}
-    let v=std::process::Command::new(&ffprobe).args(&probe_args).output()
-      .map_err(|e|format!("staged FFprobe spawn failed {}: {e}",ffprobe.display()))?;
-    (v.status.success(),v.stdout,v.stderr)
+    let (ok,_code,stdout,stderr)=staged_process_output(&ffprobe,&probe_args).map_err(|e|format!("staged FFprobe failed {}: {e}",ffprobe.display()))?;
+    (ok,stdout,stderr)
   }else{
     let cmd=match app.shell().sidecar("ffprobe"){
       Ok(v)=>v,
@@ -346,13 +358,14 @@ pub(crate) async fn validate_video_proxy(app:&AppHandle,out:&Path)->Result<(),St
         return Ok(())
       }
     };
-    match cmd.args(probe_args).output().await{
-      Ok(v)=>(v.status.success(),v.stdout,v.stderr),
-      Err(e)=>{
+    match tokio::time::timeout(PREVIEW_PROCESS_TIMEOUT,cmd.args(probe_args).output()).await{
+      Ok(Ok(v))=>(v.status.success(),v.stdout,v.stderr),
+      Ok(Err(e))=>{
         if let Some(decode)=decode_error{return Err(format!("proxy decode failed ({decode}); FFprobe spawn failed: {e}"))}
         if live_preview_diag_enabled(){eprintln!("ENDLUME_PREVIEW_FFPROBE_FALLBACK reason=spawn-error error={:?} path={}",e,out.display());}
         return Ok(())
-      }
+      },
+      Err(_)=>return Err(format!("[preview/error] FFprobe sidecar preview timeout after {}s",PREVIEW_PROCESS_TIMEOUT.as_secs()))
     }
   };
   if !probe_success{return Err(format!("FFprobe не принял proxy: {}",String::from_utf8_lossy(&probe_stderr).trim()))}
@@ -393,11 +406,13 @@ async fn encode_proxy(app:&AppHandle,prefix:Vec<String>,safe_prefix:Option<Vec<S
   let hw=proxy_attempt(app,&prefix,hardware_codec_args(),out).await;
   if hw.is_ok(){return Ok(())}
   let hw_error=hw.err().unwrap_or_else(||"unknown hardware preview failure".into());
+  if hw_error.contains("timeout after"){let _=fs::remove_file(out);return Err(hw_error)}
   #[cfg(target_os="macos")]
   {
     let sw=proxy_attempt(app,&prefix,software_codec_args(),out).await;
     if sw.is_ok(){return Ok(())}
     let sw_error=sw.err().unwrap_or_else(||"unknown libx264 preview failure".into());
+    if sw_error.contains("timeout after"){let _=fs::remove_file(out);return Err(format!("VideoToolbox Live Preview: {hw_error}; libx264: {sw_error}"))}
     if let Some(safe)=safe_prefix{
       let safe_result=proxy_attempt(app,&safe,software_codec_args(),out).await;
       if safe_result.is_ok(){return Ok(())}
@@ -455,18 +470,22 @@ async fn make_overlay(app:&AppHandle,src:&Path,seek:f64,out:&Path)->Result<(),St
 
 #[tauri::command]
 pub async fn prepare_live_preview(app:AppHandle,project_path:String,overlay_source:String,time_sec:f64,request_id:Option<String>,preview_type:Option<String>)->Result<LivePreviewAssets,String>{
-  let project=PathBuf::from(project_path);if !project.is_dir(){return Err("Сначала выберите папку проекта".into())}
-  let overlay=PathBuf::from(overlay_source);if !overlay.is_file(){return Err("Не найден файл Effects/Subscribe".into())}if rejected_macos_input(&overlay){return Err("ENDLUME заблокировала служебный AppleDouble/resource-fork файл macOS. Выберите настоящий Effects/Subscribe файл.".into())}if rejected_macos_input(&overlay){return Err("ENDLUME заблокировала служебный AppleDouble/resource-fork файл macOS. Выберите настоящий Effects/Subscribe файл.".into())}
+  let request=request_id.as_deref().unwrap_or("<none>");let kind=preview_type.as_deref().unwrap_or("Unknown");
+  if live_preview_diag_enabled(){eprintln!("[preview/request] id={request} type={kind} project={} source={} seek={time_sec}",project_path,overlay_source);}
+  let project=PathBuf::from(&project_path);if !project.is_dir(){return Err(format!("[preview/source] Папка проекта не найдена: {project_path}"))}
+  let overlay=PathBuf::from(&overlay_source);if !overlay.is_file(){return Err(format!("[preview/source] Media не найден. expectedPath={overlay_source} exists=false"))}if rejected_macos_input(&overlay){return Err("[preview/source] ENDLUME заблокировала служебный AppleDouble/resource-fork файл macOS. Выберите настоящий Effects/Subscribe файл.".into())}
   let base=first_media(&project).ok_or("В проекте нет корректного изображения или видео")?;let dir=cache_dir(&app)?;
   // Real user Subscribe asset is still green-only at t=0. The proven first visible
   // chroma-safe frame is ~0.75s, so only Subscribe Preview gets this minimum seek.
   let overlay_seek=if preview_type.as_deref()==Some("Subscribe") && time_sec<0.75{0.75}else{time_sec};
   let base_key=fingerprint(&base,time_sec,"base");let overlay_key=fingerprint(&overlay,overlay_seek,"overlay");
   let base_out=if is_image(&base){dir.join(format!("base-{base_key}.png"))}else{dir.join(format!("base-{base_key}.mp4"))};let overlay_out=dir.join(format!("overlay-{overlay_key}.mp4"));
-  let base_kind=make_base(&app,&base,time_sec,&base_out).await?;make_overlay(&app,&overlay,overlay_seek,&overlay_out).await?;
+  if live_preview_diag_enabled(){eprintln!("[preview/source] id={request} base={} overlay={}",base.display(),overlay.display());}
+  let started=Instant::now();
+  let base_kind=make_base(&app,&base,time_sec,&base_out).await.map_err(|e|format!("[preview/frame] base failed: {e}"))?;
+  make_overlay(&app,&overlay,overlay_seek,&overlay_out).await.map_err(|e|format!("[preview/decode] overlay failed: {e}"))?;
+  if live_preview_diag_enabled(){eprintln!("[preview/frame] id={request} ready_ms={} base={} overlay={}",started.elapsed().as_millis(),base_out.display(),overlay_out.display());}
   if live_preview_diag_enabled(){
-    let request=request_id.as_deref().unwrap_or("<none>");
-    let kind=preview_type.as_deref().unwrap_or("Unknown");
     let base_bytes=fs::metadata(&base_out).map(|m|m.len()).unwrap_or(0);
     let overlay_bytes=fs::metadata(&overlay_out).map(|m|m.len()).unwrap_or(0);
     eprintln!("PREVIEW_REQUEST_ID={request}");

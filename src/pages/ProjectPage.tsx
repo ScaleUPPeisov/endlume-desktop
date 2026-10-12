@@ -120,8 +120,10 @@ export function ProjectPage(){
 
   const enqueue=async()=>{
     if(!draftProjects.length)return;
-    if(!settings.outputDir){await api.showError('Сначала выберите папку результата.');return}
     try{
+      const resolvedDestination=(project:RenderProject)=>project.outputDir?.trim()||settings.outputDir.trim();
+      const missingDestination=draftProjects.find(project=>!resolvedDestination(project));
+      if(missingDestination){throw new Error(`Для проекта «${missingDestination.name}» не выбрана папка результата. VYRON destination отсутствует — выберите папку вручную.`);}
       try{const power=await api.powerStatus();if(power.supported&&power.onBattery){await api.showInfo(`MacBook работает от аккумулятора${power.percent!=null?` (${power.percent}%)`:''}. ENDLUME продолжит рендер на полной мощности — подключите питание, если очередь большая.`);}}catch{}
       const effectRegistry=features.effects?selectableEffects:[];
       if(features.effects&&duplicateEffectIds.length){throw new Error(`Effects registry повреждён: повторяются ID ${duplicateEffectIds.join(', ')}. ENDLUME не будет угадывать или рендерить не тот эффект.`);}
@@ -148,7 +150,14 @@ export function ProjectPage(){
       }
       const stamp=Date.now().toString(36);
       const queuedProjects=resolved.map(({project,selectedEffect},i)=>({...project,selectedEffectId:selectedEffect?.id||NO_EFFECT_SELECTION,id:`${project.id}-${stamp}-${i}-${Math.random().toString(36).slice(2,8)}`,status:'queued' as const,progress:0,stage:'Ожидает в очереди',elapsedSec:0}));
-      await api.enqueue(queuedProjects,settings,effectRegistry,activeSubscribes,activeAmbient,ambientSettings);
+      const groups=new Map<string,typeof queuedProjects>();
+      for(const project of queuedProjects){
+        const outputDir=resolvedDestination(project);
+        const group=groups.get(outputDir)||[];group.push(project);groups.set(outputDir,group);
+      }
+      for(const [outputDir,projects] of groups){
+        await api.enqueue(projects,{...settings,outputDir},effectRegistry,activeSubscribes,activeAmbient,ambientSettings);
+      }
       appendProjects(queuedProjects);setDraftProjects([]);setPreviewProjectPath(undefined);setInvalidProjects([]);setScanNote('');setPage('render');
     }catch(e){await api.showError(String(e))}
   };
@@ -197,8 +206,8 @@ export function ProjectPage(){
       {features.effects&&repairRequiredEffects.length>0&&<div className="validationBox"><b>Effects требуют восстановления:</b>{repairRequiredEffects.map((effect,index)=><div key={`repair-${effect.id}-${index}`}><strong>{effect.name}</strong> — ⚠ REPAIR REQUIRED{effect.assetError?` • ${effect.assetError}`:''} <button onClick={()=>void repairEffectSource(effect)}>ВОССТАНОВИТЬ ФАЙЛ</button></div>)}</div>}
       {features.effects&&duplicateEffectIds.length>0&&<div className="validationBox"><b>Effects registry заблокирован:</b><div>Одинаковый ID назначен нескольким эффектам: {duplicateEffectIds.join(', ')}. Рендер с эффектами запрещён, чтобы ENDLUME не подставил другой эффект.</div></div>}
       {features.effects&&draftProjects.length>0&&<div className="renderCard">
-        <div className="optionGroup"><span>Применить ко всем найденным проектам</span><div className="chipRow"><button onClick={()=>draftProjects.forEach(p=>setSelectedEffectForProject(p.path,NO_EFFECT_SELECTION))}>БЕЗ ЭФФЕКТА</button>{effects.map((effect,index)=>{const selectable=effectIsSelectable(effect)&&!duplicateEffectIds.includes(effect.id);return <button key={`all-${effect.id}-${index}`} disabled={!selectable} title={effect.assetError||effectStatusLabel(effect)} onClick={()=>selectable&&draftProjects.forEach(p=>setSelectedEffectForProject(p.path,effect.id))}>{effect.name} • {effectStatusLabel(effect)}</button>})}</div></div>
-        {draftProjects.map(project=>{const selectionIssue=selectionIssueForPath(project.path);return <div className="optionGroup" key={`effect-${project.path}`}><span>{project.name}</span><div className="chipRow"><button className={selectedEffectIdForPath(project.path)===NO_EFFECT_SELECTION?'selected':''} onClick={()=>setSelectedEffectForProject(project.path,NO_EFFECT_SELECTION)}>БЕЗ ЭФФЕКТА</button>{effects.map((effect,index)=>{const duplicate=duplicateEffectIds.includes(effect.id);const selectable=effectIsSelectable(effect)&&!duplicate;return <button key={`${project.path}-${effect.id}-${index}`} disabled={!selectable} title={effect.assetError||effectStatusLabel(effect)} className={selectedEffectIdForPath(project.path)===effect.id&&!duplicate?'selected':''} onClick={()=>selectable&&setSelectedEffectForProject(project.path,effect.id)}>{effect.name} • {effectStatusLabel(effect)}</button>})}</div>{selectionIssue&&<small>⚠ {selectionIssue}</small>}</div>})}
+        <div className="optionGroup"><span>Применить ко всем найденным проектам</span><div className="chipRow"><button className={draftProjects.every(p=>selectedEffectIdForPath(p.path)===NO_EFFECT_SELECTION)?'selected':''} onClick={()=>draftProjects.forEach(p=>setSelectedEffectForProject(p.path,NO_EFFECT_SELECTION))}>БЕЗ ЭФФЕКТА</button>{effects.map((effect,index)=>{const selectable=effectIsSelectable(effect)&&!duplicateEffectIds.includes(effect.id);const selectedForAll=draftProjects.every(p=>selectedEffectIdForPath(p.path)===effect.id);return <button key={`all-${effect.id}-${index}`} className={selectedForAll?'selected':''} disabled={!selectable} title={effect.assetError||effectStatusLabel(effect)} onClick={()=>selectable&&draftProjects.forEach(p=>setSelectedEffectForProject(p.path,effect.id))}>{effect.name} • {effectStatusLabel(effect)}</button>})}</div></div>
+        {draftProjects.map(project=>{const selectionIssue=selectionIssueForPath(project.path);return <div className="optionGroup" key={`effect-${project.path}`}><span>{project.name}</span><div className="chipRow"><button className={selectedEffectIdForPath(project.path)===NO_EFFECT_SELECTION?'selected':''} onClick={()=>setSelectedEffectForProject(project.path,NO_EFFECT_SELECTION)}>БЕЗ ЭФФЕКТА</button>{effects.map((effect,index)=>{const duplicate=duplicateEffectIds.includes(effect.id);const selectable=effectIsSelectable(effect)&&!duplicate;return <button key={`${project.path}-${effect.id}-${index}`} disabled={!selectable} title={effect.assetError||effectStatusLabel(effect)} className={selectedEffectIdForPath(project.path)===effect.id&&!duplicate?'selected':''} onClick={()=>selectable&&setSelectedEffectForProject(project.path,effect.id)}>{effect.name} • {effectStatusLabel(effect)}</button>})}</div>{selectionIssue&&<small>⚠ {selectionIssue} <button type="button" onClick={()=>setSelectedEffectForProject(project.path,NO_EFFECT_SELECTION)}>СБРОСИТЬ → БЕЗ ЭФФЕКТА</button></small>}</div>})}
       </div>}
     </section>
 
@@ -218,7 +227,7 @@ export function ProjectPage(){
       <div className="sectionTitle">ВЫБРАННЫЕ ПАПКИ</div>
       <div className="selectedFolders">{draftProjects.length?draftProjects.slice(0,8).map((p,i)=><div key={p.id}><span>{i+1}</span><b>{p.name}</b><small>{p.audio.length} треков • {p.media.length} медиа</small></div>):<p>Папки ещё не выбраны</p>}{draftProjects.length>8&&<p>+ ещё {draftProjects.length-8} проектов</p>}</div>
       <div className="sectionTitle outputTitle">СОХРАНИТЬ В</div>
-      <button className="outputPicker" onClick={async()=>{const p=await api.chooseOutput();if(p)patchSettings({outputDir:p})}}><Icon name="folder"/><b>Нажмите для выбора папки результата</b><small>{settings.outputDir||'Папка не выбрана'}</small></button>
+      {(()=>{const auto=Array.from(new Set(draftProjects.filter(p=>p.outputSource==='vyron'&&p.outputDir).map(p=>p.outputDir as string)));const needsManual=!draftProjects.length||draftProjects.some(p=>!p.outputDir);return <><button className="outputPicker" disabled={!needsManual} onClick={async()=>{if(!needsManual)return;const p=await api.chooseOutput();if(p)patchSettings({outputDir:p})}}><Icon name="folder"/><b>{auto.length&&!needsManual?'AUTO • VYRON':'Нажмите для выбора папки результата'}</b><small>{auto.length===1&&!needsManual?auto[0]:auto.length>1&&!needsManual?`${auto.length} VYRON destinations • каждая очередь сохранит свой путь`:settings.outputDir||'Папка не выбрана'}</small></button>{auto.length>0&&<div className="validationBox"><b>VYRON destination:</b>{auto.map(path=><div key={path}>{path}</div>)}</div>}</>})()}
     </section>
 
     <div className="projectBottom"><span><b>{draftProjects.length}</b> проектов готово к очереди</span><button className="primaryQueue" disabled={!draftProjects.length} onClick={enqueue}>+ ДОБАВИТЬ В ОЧЕРЕДЬ</button></div>

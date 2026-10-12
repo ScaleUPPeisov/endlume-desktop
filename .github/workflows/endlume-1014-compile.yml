@@ -1,0 +1,78 @@
+name: ENDLUME 10.0.14 Compile Gate
+
+on:
+  push:
+    branches:
+      - release-endlume-10.0.14
+    paths:
+      - 'package.json'
+      - 'package-lock.json'
+      - 'src-tauri/Cargo.toml'
+      - 'src-tauri/Cargo.lock'
+      - 'src-tauri/tauri.conf.json'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-1014-compile
+  cancel-in-progress: false
+
+jobs:
+  compile-test:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          clean: true
+          persist-credentials: false
+
+      - name: Exact source freeze and release metadata
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          BASE='55372b94a35ef76ee160347783cf8c62e003fa4e'
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git merge-base --is-ancestor "$BASE" HEAD
+          git diff --quiet "$BASE" HEAD -- src src-tauri/src
+          git diff --quiet "$BASE" HEAD -- src-tauri/icons
+          python3 - <<'PY'
+          import json,re,subprocess
+          from pathlib import Path
+          v='10.0.14'
+          assert json.loads(Path('package.json').read_text())['version']==v
+          lock=json.loads(Path('package-lock.json').read_text()); assert lock['version']==v and lock['packages']['']['version']==v
+          cfg=json.loads(Path('src-tauri/tauri.conf.json').read_text()); assert cfg['version']==v
+          assert cfg['identifier']=='studio.endlume.desktop'
+          assert cfg['plugins']['updater']['endpoints']==['https://github.com/ScaleUPPeisov/scaleup-site/releases/download/endlume-stable/latest.json']
+          old=json.loads(subprocess.check_output(['git','show','55372b94a35ef76ee160347783cf8c62e003fa4e:src-tauri/tauri.conf.json'],text=True))
+          assert cfg['plugins']['updater']['pubkey']==old['plugins']['updater']['pubkey']
+          assert re.search(r'\[package\][\s\S]*?\nversion\s*=\s*"10\.0\.14"',Path('src-tauri/Cargo.toml').read_text())
+          assert re.search(r'\[\[package\]\]\nname = "endlume"\nversion = "10\.0\.14"',Path('src-tauri/Cargo.lock').read_text())
+          print('RELEASE_VERSION=10.0.14')
+          print('UPDATER_IDENTITY=FROZEN')
+          PY
+          echo FUNCTIONAL_SOURCE_HEAD="$BASE"
+          echo FUNCTIONAL_PRODUCT_DIFF=0
+
+      - name: Required compile and test gates
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+          export CARGO_TARGET_DIR="$RUNNER_TEMP/../_endlume-cache/target-1014-release-compile"
+          npm ci
+          npm run check
+          npm run build
+          cargo check --manifest-path src-tauri/Cargo.toml
+          cargo test --manifest-path src-tauri/Cargo.toml
+          git diff --quiet 55372b94a35ef76ee160347783cf8c62e003fa4e HEAD -- src src-tauri/src
+          echo NPM_CI=PASS
+          echo NPM_CHECK=PASS
+          echo NPM_BUILD=PASS
+          echo CARGO_CHECK=PASS
+          echo CARGO_TEST=PASS
+          echo ENDLUME_1014_COMPILE_GATE=PASS

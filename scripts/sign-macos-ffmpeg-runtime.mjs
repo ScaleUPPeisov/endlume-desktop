@@ -54,5 +54,7 @@ console.log(JSON.stringify({
   kind:'ENDLUME_MACOS_FFMPEG_RUNTIME_SIGNED',
   target,
   dylibs:dylibs.length,
-  sidecars:sidecars.map(path.basename)
+  // Do not pass path.basename directly to Array.map: map supplies (value,index,array)
+  // and Node 22 treats the numeric index as basename's optional suffix argument.
+  sidecars:sidecars.map(file=>path.basename(file))
 }));

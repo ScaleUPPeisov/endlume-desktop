@@ -10,6 +10,8 @@ on:
       - 'scripts/qa-endlume-1014-seed-persisted-library.py'
       - 'scripts/fix-endlume-1014-macos-preview-runtime.py'
       - 'scripts/fix-endlume-1014-preview-probe.py'
+      - 'scripts/fix-endlume-1014-fast-aac.py'
+      - 'scripts/qa-endlume-1014-hotfix.py'
   workflow_dispatch: {}
 
 permissions:
@@ -50,10 +52,12 @@ jobs:
           grep -q 'ENDLUME_PREVIEW_CANONICAL_TIMEOUT_SHORT_FALLBACK' src-tauri/src/preview.rs
           grep -q 'ENDLUME_PREVIEW_PROBE_MODE=' src-tauri/src/live_preview.rs
           grep -q 'proxy_probe_metadata_valid' src-tauri/src/live_preview.rs
+          grep -q '"-c:a","aac_at","-b:a","512k"' src-tauri/src/fast_render.rs
           git diff --check
           echo 'MACOS_PREVIEW_FRAMEWORK_SOURCE_FIX=READY_FOR_PHYSICAL'
           echo 'CANONICAL_PREVIEW_SHORT_FALLBACK=READY_FOR_PHYSICAL'
           echo 'PREVIEW_METADATA_PROBE_FAST_PATH=READY_FOR_PHYSICAL'
+          echo 'PHASE3_AAC_512K_SIZE_TARGET=READY_FOR_PHYSICAL'
 
       - name: Restore packaged FFmpeg sidecars
         shell: bash

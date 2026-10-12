@@ -49,12 +49,8 @@ jobs:
             let source=exe_dir.join(name);
             if !executable_file(&source){return None}
 
-            // macOS packaged FFmpeg is intentionally linked against
-            // @executable_path/../Frameworks/*.dylib. Copying only the executable
-            // into ~/Library/Caches breaks that relative loader contract on a cold
-            // profile. Execute the exact signed bundle sibling instead; it keeps
-            // Contents/MacOS <-> Contents/Frameworks intact and is still fully
-            // bounded by staged_process_output below.
+            // macOS packaged FFmpeg is linked against @executable_path/../Frameworks.
+            // A cold profile must execute the bundle sibling, not a cache-only copy.
             #[cfg(target_os="macos")]
             {
               if live_preview_diag_enabled(){eprintln!("ENDLUME_PREVIEW_TOOL_STAGE name={name} mode=bundle-direct source={} staged={} bytes={}",source.display(),source.display(),fs::metadata(&source).ok()?.len());}
@@ -72,15 +68,9 @@ jobs:
                 if live_preview_diag_enabled(){eprintln!("ENDLUME_PREVIEW_TOOL_STAGE name={name} mode=cache-hit source={} staged={} bytes={}",source.display(),target.display(),source_meta.len());}
                 return Some(target)
               }
-
               let tmp=root.join(format!(".{}-{}.tmp",name,uuid::Uuid::new_v4()));
               let _=fs::remove_file(&tmp);
-              let mode=if fs::hard_link(&source,&tmp).is_ok(){
-                "hard-link"
-              }else{
-                fs::copy(&source,&tmp).ok()?;
-                "copy"
-              };
+              let mode=if fs::hard_link(&source,&tmp).is_ok(){"hard-link"}else{fs::copy(&source,&tmp).ok()?;"copy"};
               #[cfg(unix)]
               {
                 use std::os::unix::fs::PermissionsExt;
@@ -143,3 +133,5 @@ jobs:
           git push origin HEAD:hotfix/endlume-10.0.14-vyron-effects-preview-subscribe
           echo "CANDIDATE_COMMIT=$(git rev-parse HEAD)"
           echo 'STABLE_RELEASE=UNTOUCHED'
+
+# trigger: cold-profile-framework-fix-v1

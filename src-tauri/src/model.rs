@@ -24,6 +24,7 @@ pub struct ProjectScanItem{
   pub error:Option<String>,
   #[serde(default)] pub anchors:Option<HashMap<String,AnchorPoint>>,
   #[serde(default)] pub selected_effect_id:Option<String>,
+  #[serde(default)] pub selected_effect_ids:Vec<String>,
   #[serde(default)] pub output_dir:Option<String>,
   #[serde(default)] pub output_source:Option<String>,
   #[serde(default)] pub vyron_manifest_path:Option<String>,

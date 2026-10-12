@@ -114,3 +114,5 @@ jobs:
           set -Eeuo pipefail
           echo "Candidate source commit: $(git rev-parse HEAD)"
           echo "Stable release/updater: NOT PUBLISHED"
+
+# 10.0.14 rerun marker: idempotent-finalize gate

@@ -51,11 +51,16 @@ if editors.count(needle)!=2:
 editors=editors.replace(needle,needle+'  useEffect(()=>()=>{previewRequest.current+=1;},[]);\n')
 write('src/pages/Editors.tsx',editors)
 
-# Subscribe recovery must state whether the path existed. prepare_live_preview
-# performs is_file() before decode, so a non-missing-source error implies exists=true.
-one('src/pages/Editors.tsx',
-    "      const message=`Subscribe media: ${latest.name}\\nОжидаемый путь: ${latest.source}\\nФайл не удалось открыть: ${String(error)}`;\n      setPreviewError(message);console.error('[preview/error]',requestId,message);",
-    "      const detail=String(error);const exists=detail.includes('exists=false')?'нет':'да';\n      const message=`Subscribe media: ${latest.name}\\nОжидаемый путь: ${latest.source}\\nФайл существует: ${exists}\\nОшибка Preview: ${detail}`;\n      setPreviewError(message);console.error('[preview/error]',requestId,message);")
+# Subscribe recovery must state whether the path existed. Primary replacement is
+# a regex replacement, so its template-literal line breaks are real newlines.
+rx('src/pages/Editors.tsx',
+   r'''      const message=`Subscribe media: \$\{latest\.name\}.*?      setPreviewError\(message\);console\.error\('\[preview/error\]',requestId,message\);''',
+   '''      const detail=String(error);const exists=detail.includes('exists=false')?'нет':'да';
+      const message=`Subscribe media: ${latest.name}
+Ожидаемый путь: ${latest.source}
+Файл существует: ${exists}
+Ошибка Preview: ${detail}`;
+      setPreviewError(message);console.error('[preview/error]',requestId,message);''')
 
 # No Preview subprocess is allowed to block indefinitely. The primary patch
 # already bounds ffmpeg_output; extend the same contract to diagnostics, real

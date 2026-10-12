@@ -46,6 +46,13 @@ fn proxy_probe_valid(raw:&[u8])->bool{
   if !json_positive(stream.get("nb_read_frames")){return false}
   json_positive(v.get("format").and_then(|x|x.get("duration")))
 }
+fn proxy_probe_metadata_valid(raw:&[u8])->bool{
+  let Ok(v)=serde_json::from_slice::<serde_json::Value>(raw) else{return false};
+  let Some(stream)=v.get("streams").and_then(|x|x.as_array()).and_then(|x|x.first()) else{return false};
+  if stream.get("codec_type").and_then(|x|x.as_str())!=Some("video"){return false}
+  if !json_positive(stream.get("width"))||!json_positive(stream.get("height")){return false}
+  json_positive(v.get("format").and_then(|x|x.get("duration")))
+}
 fn accept_proxy_attempt(process_ok:bool,proxy_valid:bool)->bool{process_ok&&proxy_valid}
 
 fn cache_dir(app:&AppHandle)->Result<PathBuf,String>{let dir=app.path().app_cache_dir().map_err(|e|e.to_string())?.join("live-preview-v6");fs::create_dir_all(&dir).map_err(|e|e.to_string())?;Ok(dir)}
@@ -351,11 +358,22 @@ pub(crate) async fn validate_video_proxy(app:&AppHandle,out:&Path)->Result<(),St
   // In that exact case FFprobe frame counting is the independent decode gate:
   // it must actually read >0 video frames plus valid geometry and duration.
   let decode_error=decode_proxy_frame(app,out).await.err();
-  let probe_args=vec![
-    "-v","error","-select_streams","v:0","-count_frames",
-    "-show_entries","stream=codec_type,width,height,nb_read_frames:format=duration",
-    "-of","json",out.to_string_lossy().as_ref()
-  ].into_iter().map(String::from).collect::<Vec<_>>();
+  let deep_probe=decode_error.is_some();
+  let out_arg=out.to_string_lossy().into_owned();
+  let probe_args=if deep_probe{
+    vec![
+      "-v".into(),"error".into(),"-select_streams".into(),"v:0".into(),"-count_frames".into(),
+      "-show_entries".into(),"stream=codec_type,width,height,nb_read_frames:format=duration".into(),
+      "-of".into(),"json".into(),out_arg.clone()
+    ]
+  }else{
+    vec![
+      "-v".into(),"error".into(),"-select_streams".into(),"v:0".into(),
+      "-show_entries".into(),"stream=codec_type,width,height:format=duration".into(),
+      "-of".into(),"json".into(),out_arg
+    ]
+  };
+  if live_preview_diag_enabled(){eprintln!("ENDLUME_PREVIEW_PROBE_MODE={} path={}",if deep_probe{"count-frames-fallback"}else{"metadata-after-real-decode"},out.display());}
   let (probe_success,probe_stdout,probe_stderr)=if let Some(ffprobe)=staged_ffprobe(app).filter(|p|executable_file(p)){
     if live_preview_diag_enabled(){eprintln!("ENDLUME_PREVIEW_FFPROBE_SOURCE=staged-cache path={}",ffprobe.display());}
     let (ok,_code,stdout,stderr)=staged_process_output(&ffprobe,&probe_args).map_err(|e|format!("staged FFprobe failed {}: {e}",ffprobe.display()))?;
@@ -380,7 +398,8 @@ pub(crate) async fn validate_video_proxy(app:&AppHandle,out:&Path)->Result<(),St
     }
   };
   if !probe_success{return Err(format!("FFprobe не принял proxy: {}",String::from_utf8_lossy(&probe_stderr).trim()))}
-  if !proxy_probe_valid(&probe_stdout){return Err("FFprobe не подтвердил video stream / geometry / decoded frames / duration".into())}
+  let probe_valid=if deep_probe{proxy_probe_valid(&probe_stdout)}else{proxy_probe_metadata_valid(&probe_stdout)};
+  if !probe_valid{return Err(if deep_probe{"FFprobe не подтвердил video stream / geometry / decoded frames / duration".into()}else{"FFprobe не подтвердил video stream / geometry / duration после реального decode".into()})}
   if let Some(decode)=decode_error{
     if live_preview_diag_enabled(){eprintln!("ENDLUME_PREVIEW_REAL_FRAME_DECODE_GREEN mode=ffprobe-count-frames fallback_reason={:?} path={}",decode,out.display());}
   }

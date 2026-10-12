@@ -7,5 +7,6 @@
   "publishHead": "ba0c55224d27c8061670da19a80448d2f2edb5ee",
   "liveArtifactSha256": "f84a321fe90f833b4a50edd20851fe9ac4f999b85d5272d2e6f3ffd3f13d5c78",
   "liveLatestVersion": "10.0.14",
-  "status": "PASS_PENDING_REAL_UPDATER"
+  "status": "PASS_PENDING_REAL_UPDATER",
+  "acceptanceTrigger": "VISION_OCR_RETRY_TRAP_FIXED_71dfd4b0"
 }

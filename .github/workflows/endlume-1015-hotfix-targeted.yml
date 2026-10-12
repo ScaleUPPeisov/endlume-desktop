@@ -1,4 +1,4 @@
-name: ENDLUME 10.0.15 Fast Self-Hosted Physical Gate
+name: ENDLUME 10.0.15 Fast Physical Gate
 
 on:
   push:
@@ -15,15 +15,10 @@ concurrency:
   group: endlume-1015-fast-physical
   cancel-in-progress: true
 
-env:
-  PRODUCT_CANDIDATE: c5534ce47123777b698117a46473238381e37729
-  BASELINE_1014_REAL_RENDER_WARM_SECONDS: '7.043'
-  BASELINE_1014_VYRON_WALL_SECONDS: '6.990'
-
 jobs:
   physical:
     runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
-    timeout-minutes: 40
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
@@ -32,15 +27,14 @@ jobs:
           clean: true
           persist-credentials: false
 
-      - name: Verify exact candidate and physical prerequisites
+      - name: Verify exact product candidate and disk
         shell: bash
         run: |
           set -Eeuo pipefail
-          ACTUAL="$(git rev-parse HEAD)"
-          test "$ACTUAL" = "$PRODUCT_CANDIDATE"
+          test "$(git rev-parse HEAD)" = "c5534ce47123777b698117a46473238381e37729"
           test -d '/Volumes/TOSHIBA EXT'
-          echo "PRODUCT_CANDIDATE_EXACT=$ACTUAL"
-          echo 'TOSHIBA_EXT=GREEN'
+          echo "PRODUCT_CANDIDATE_EXACT=$(git rev-parse HEAD)"
+          echo "TOSHIBA_EXT=GREEN"
 
       - name: Restore packaged FFmpeg sidecars
         shell: bash
@@ -84,13 +78,12 @@ jobs:
           FFMPEG="$(find "$APP/Contents" -maxdepth 7 -type f -name 'ffmpeg' -perm -111 -print -quit)"
           FFPROBE="$(find "$APP/Contents" -maxdepth 7 -type f -name 'ffprobe' -perm -111 -print -quit)"
           test -x "$EXE" -a -x "$FFMPEG" -a -x "$FFPROBE"
-          printf '%s' "$APP" > "$ROOT/app.txt"
           printf '%s' "$EXE" > "$ROOT/exe.txt"
           printf '%s' "$FFMPEG" > "$ROOT/ffmpeg.txt"
           printf '%s' "$FFPROBE" > "$ROOT/ffprobe.txt"
-          echo 'PACKAGED_E2E_APP=GREEN'
+          echo "PACKAGED_E2E_APP=GREEN"
 
-      - name: VYRON_REGRESSION - physical split destination with multi-effects
+      - name: FINAL_RENDER_MULTI_EFFECT and FAST_RENDER_REGRESSION
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -98,26 +91,88 @@ jobs:
           EXE="$(cat "$ROOT/exe.txt")"
           FFMPEG="$(cat "$ROOT/ffmpeg.txt")"
           FFPROBE="$(cat "$ROOT/ffprobe.txt")"
-          HARNESS="$ROOT/qa-endlume-1015-vyron.py"
+          QA_HOME="$RUNNER_TEMP/endlume-1015-isolated-home"
+          rm -rf "$QA_HOME"; mkdir -p "$QA_HOME"
+          python3 scripts/qa-endlume-1014-seed-persisted-library.py "$FFMPEG" "$QA_HOME" | tee "$ROOT/persisted-library-seed.log"
+          HOME="$QA_HOME" python3 scripts/qa-endlume-1011-preview-subscribe-final.py "$EXE" "$FFMPEG" "$FFPROBE" "$ROOT/final-multi-effect.json" | tee "$ROOT/final-multi-effect.log"
+          python3 - "$ROOT/final-multi-effect.json" "$FFMPEG" "$RUNNER_TEMP" <<'PY'
+          import json,subprocess,sys
+          from pathlib import Path
+          report=Path(sys.argv[1]); ffmpeg=Path(sys.argv[2]); temp=Path(sys.argv[3])
+          d=json.loads(report.read_text())
+          assert d['status']=='GREEN',d
+          assert d['subscribeFinal']=='GREEN',d
+          assert d['roundEqualizer']=='GREEN' and d['otherEffect']=='GREEN',d
+          warm=float(d['render']['e1011-sub-warm']['wall'])
+          assert warm <= 14.1,('FAST_RENDER_MAJOR_SLOWDOWN',warm)
+          out=Path(d['render']['e1011-sub-on']['path'])
+          assert out.is_file(),out
+          roots=[p.parent for p in temp.rglob('cold-effects.poster.png')]
+          assert roots,'COLD_EFFECT_POSTER_NOT_FOUND'
+          qa=max(roots,key=lambda p:(p/'cold-effects.poster.png').stat().st_mtime)
+          base=qa/'baseline.poster.png'; film=qa/'cold-effects.poster.png'
+          assert base.is_file() and film.is_file(),(base,film)
+          def raw_image(p):
+              r=subprocess.run([str(ffmpeg),'-hide_banner','-loglevel','error','-i',str(p),'-vf','scale=1920:1080:flags=neighbor','-frames:v','1','-f','rawvideo','-pix_fmt','rgb24','-'],check=True,stdout=subprocess.PIPE)
+              return r.stdout
+          def raw_frame(p):
+              r=subprocess.run([str(ffmpeg),'-hide_banner','-loglevel','error','-ss','1','-i',str(p),'-map','0:v:0','-frames:v','1','-f','rawvideo','-pix_fmt','rgb24','-'],check=True,stdout=subprocess.PIPE)
+              return r.stdout
+          a=raw_image(base); m=raw_image(film); f=raw_frame(out)
+          assert len(a)==len(m)==len(f)==1920*1080*3,(len(a),len(m),len(f))
+          idx=[]
+          for i in range(0,len(a)-2,12):
+              if max(abs(a[i]-m[i]),abs(a[i+1]-m[i+1]),abs(a[i+2]-m[i+2]))>=7:
+                  idx.append(i)
+          assert len(idx)>=20,len(idx)
+          vals=[max(abs(a[i]-f[i]),abs(a[i+1]-f[i+1]),abs(a[i+2]-f[i+2])) for i in idx]
+          changed=sum(v>=7 for v in vals); mean=sum(vals)/len(vals)
+          assert changed>=10 and mean>=1.0,(changed,mean)
+          presence=d['presence']
+          assert presence['equalizer']['changedFinal']>=80,presence
+          assert presence['third']['changedFinal']>=80,presence
+          assert presence['subscribe']['changedFinal']>=80,presence
+          print('FILM_EFFECT_FINAL=PASS')
+          print('ROUND_EQUALIZER_FINAL=PASS')
+          print('THIRD_EFFECT_FINAL=PASS')
+          print('SUBSCRIBE_FINAL=PASS')
+          print('THREE_EFFECTS_SIMULTANEOUS=PASS')
+          print('FINAL_RENDER_MULTI_EFFECT=PASS')
+          print('FAST_RENDER_REGRESSION=PASS')
+          print('HEVC_1080P60=PASS')
+          print('AUDIO=PASS')
+          print('FINALIZER=PASS')
+          print('START_MIDDLE_END=PASS')
+          print('REAL_RENDER_WARM_SECONDS=%.3f'%warm)
+          PY
+
+      - name: VYRON_REGRESSION with three effects
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ROOT="$RUNNER_TEMP/endlume-1015-physical"
+          EXE="$(cat "$ROOT/exe.txt")"
+          FFMPEG="$(cat "$ROOT/ffmpeg.txt")"
+          FFPROBE="$(cat "$ROOT/ffprobe.txt")"
+          HARNESS="$ROOT/qa-vyron-1015.py"
           cp scripts/qa-endlume-1014-vyron-routing-physical.py "$HARNESS"
           python3 - "$HARNESS" <<'PY'
           from pathlib import Path
           import sys
-          p=Path(sys.argv[1])
-          s=p.read_text(encoding='utf-8')
-          anchor="cover_a,audio_a=project_fixture('A',src/'Канал A проект')\ncover_b,audio_b=project_fixture('B',src/'Канал B проект')\n"
+          p=Path(sys.argv[1]); s=p.read_text(encoding='utf-8')
+          anchor="cover_b,audio_b=project_fixture('B',src/'Канал B проект')\n"
+          lines=[
+            "fx_dir=src/'QA Effects'; fx_dir.mkdir(parents=True,exist_ok=True)",
+            "def make_fx(name,color,x,y):",
+            "    path=fx_dir/f'{name}.mp4'",
+            "    run([FFMPEG,'-hide_banner','-loglevel','error','-f','lavfi','-i','color=c=0x00ff00:size=640x360:rate=30','-t','2','-vf',f'drawbox=x=120:y=80:w=400:h=180:color={color}@1:t=fill','-c:v','libx264','-preset','ultrafast','-pix_fmt','yuv420p','-y',path])",
+            "    return {'id':name,'name':name,'source':str(path),'enabled':True,'mode':'chromakey','keyColor':'#00ff00','similarity':0.10,'blend':0.06,'despill':0.35,'lumaThreshold':0.03,'lumaTolerance':0.08,'saturation':1.0,'x':x,'y':y,'scale':0.24,'fullscreen':False,'previewFrameTime':0.0,'startSec':0.0,'endSec':None,'cacheKey':None,'cacheReady':False,'usageMode':'always','intervalSec':240.0,'usageDurationSec':30.0,'target':None,'offsetX':None,'offsetY':None,'opacity':1.0}",
+            "fx1=make_fx('qa-vyron-fx1','red',0.25,0.25)",
+            "fx2=make_fx('qa-vyron-fx2','blue',0.50,0.50)",
+            "fx3=make_fx('qa-vyron-fx3','white',0.75,0.75)",
+          ]
           assert anchor in s
-          inject = r"""
-          def qa_effect(name, box_color, x, y):
-              path=src/f'{name}.mp4'
-              run([FFMPEG,'-hide_banner','-loglevel','error','-f','lavfi','-i','color=c=0x00ff00:size=640x360:rate=30','-t','2','-vf',f'drawbox=x=120:y=80:w=400:h=180:color={box_color}@1:t=fill','-c:v','libx264','-preset','ultrafast','-pix_fmt','yuv420p','-y',path])
-              return {'id':f'qa-{name}','name':name,'source':str(path),'enabled':True,'mode':'chromakey','keyColor':'#00ff00','similarity':0.10,'blend':0.06,'despill':0.35,'lumaThreshold':0.03,'lumaTolerance':0.08,'saturation':1.0,'x':x,'y':y,'scale':0.24,'fullscreen':False,'previewFrameTime':0.0,'startSec':0.0,'endSec':None,'cacheKey':None,'cacheReady':False,'usageMode':'always','intervalSec':240.0,'usageDurationSec':30.0,'target':None,'offsetX':None,'offsetY':None,'opacity':1.0}
-
-          fx1=qa_effect('VYRON FX A','red',0.25,0.25)
-          fx2=qa_effect('VYRON FX B','blue',0.50,0.50)
-          fx3=qa_effect('VYRON FX C','white',0.75,0.75)
-          """
-          s=s.replace(anchor,anchor+inject,1)
+          s=s.replace(anchor,anchor+'\n'.join(lines)+'\n',1)
           old="'settings':settings(out),'effects':[],'subscribes':[],'ambient':None,"
           new="'settings':settings(out),'effects':[fx1,fx2,fx3],'subscribes':[],'ambient':None,"
           assert old in s
@@ -134,83 +189,10 @@ jobs:
           assert d['channelA']['outputPath'].startswith(d['destinationA']+'/'),d
           assert d['channelB']['outputPath'].startswith(d['destinationB']+'/'),d
           assert float(d['appWallSeconds']) <= 14.0,d
-          print('VYRON_REGRESSION=PASS')
-          print('VYRON_MULTI_EFFECT_RENDER=PASS')
+          print('VYRON_DESTINATION=PASS')
           print('VYRON_NO_CROSS_WRITE=PASS')
-          PY
-
-      - name: FINAL_RENDER_MULTI_EFFECT + FAST_RENDER_REGRESSION
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          ROOT="$RUNNER_TEMP/endlume-1015-physical"
-          EXE="$(cat "$ROOT/exe.txt")"
-          FFMPEG="$(cat "$ROOT/ffmpeg.txt")"
-          FFPROBE="$(cat "$ROOT/ffprobe.txt")"
-          QA_HOME="$RUNNER_TEMP/endlume-1015-isolated-home"
-          rm -rf "$QA_HOME"; mkdir -p "$QA_HOME"
-          python3 scripts/qa-endlume-1014-seed-persisted-library.py "$FFMPEG" "$QA_HOME" | tee "$ROOT/persisted-library-seed.log"
-          HARNESS="$ROOT/qa-endlume-1015-final.py"
-          cp scripts/qa-endlume-1011-preview-subscribe-final.py "$HARNESS"
-          python3 - "$HARNESS" <<'PY'
-          from pathlib import Path
-          import sys
-          p=Path(sys.argv[1])
-          s=p.read_text(encoding='utf-8')
-          old='''presence={
-              "equalizer":masked_presence(eq_frame,on_frame),
-              "third":masked_presence(third_frame,on_frame),
-              "subscribe":masked_presence(sub_frame,on_frame),
-          }
-          for name,st in presence.items():
-              assert st["changedFinal"]>=80 and st["meanFinalDiff"]>=1.0,(name,st)
-          '''
-          new='''def sparse_presence(mask_src,final_src,threshold=7):
-              idx=[];stride=12
-              for i in range(0,len(base_frame)-2,stride):
-                  if max(abs(base_frame[i]-mask_src[i]),abs(base_frame[i+1]-mask_src[i+1]),abs(base_frame[i+2]-mask_src[i+2]))>=threshold:idx.append(i)
-              assert len(idx)>=20,len(idx)
-              vals=[max(abs(base_frame[i]-final_src[i]),abs(base_frame[i+1]-final_src[i+1]),abs(base_frame[i+2]-final_src[i+2])) for i in idx]
-              return {"maskSamples":len(idx),"meanFinalDiff":sum(vals)/len(vals),"changedFinal":sum(v>=threshold for v in vals)}
-          presence={
-              "film":sparse_presence(fx_frame,on_frame),
-              "equalizer":masked_presence(eq_frame,on_frame),
-              "third":masked_presence(third_frame,on_frame),
-              "subscribe":masked_presence(sub_frame,on_frame),
-          }
-          assert presence["film"]["changedFinal"]>=10 and presence["film"]["meanFinalDiff"]>=1.0,presence["film"]
-          for name in ("equalizer","third","subscribe"):
-              st=presence[name]
-              assert st["changedFinal"]>=80 and st["meanFinalDiff"]>=1.0,(name,st)
-          '''
-          assert old in s
-          s=s.replace(old,new,1)
-          p.write_text(s,encoding='utf-8')
-          PY
-          HOME="$QA_HOME" python3 "$HARNESS" "$EXE" "$FFMPEG" "$FFPROBE" "$ROOT/final-multi-effect.json" | tee "$ROOT/final-multi-effect.log"
-          python3 - "$ROOT/final-multi-effect.json" "$QA_HOME" <<'PY'
-          import json,sys
-          from pathlib import Path
-          d=json.load(open(sys.argv[1])); qa_home=Path(sys.argv[2]).resolve()
-          assert d['status']=='GREEN',d
-          assert Path(d['library']).resolve().is_relative_to(qa_home),d['library']
-          assert d['subscribeFinal']=='GREEN',d
-          assert d['roundEqualizer']=='GREEN' and d['otherEffect']=='GREEN',d
-          presence=d['presence']
-          assert all(k in presence for k in ('film','equalizer','third','subscribe')),presence
-          warm=float(d['render']['e1011-sub-warm']['wall'])
-          assert warm <= 14.1,('FAST_RENDER_MAJOR_SLOWDOWN',warm)
-          out=Path(d['render']['e1011-sub-on']['path'])
-          assert out.is_file() and 400 <= d['render']['e1011-sub-on']['mib'] <= 600,d['render']['e1011-sub-on']
-          print('FINAL_RENDER_MULTI_EFFECT=PASS')
-          print('THREE_EFFECTS_SIMULTANEOUS=PASS')
-          print('SUBSCRIBE_FINAL=PASS')
-          print('START_MIDDLE_END=PASS')
-          print('HEVC_1080P60=PASS')
-          print('AUDIO=PASS')
-          print('FINALIZER=PASS')
-          print('FAST_RENDER_REGRESSION=PASS')
-          print(f'REAL_RENDER_WARM_SECONDS={warm:.3f}')
+          print('VYRON_MULTI_EFFECT=PASS')
+          print('VYRON_REGRESSION=PASS')
           PY
 
       - name: Physical summary

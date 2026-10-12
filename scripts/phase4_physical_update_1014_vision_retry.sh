@@ -122,9 +122,14 @@ for attempt in $(seq 1 18); do
   front_app "$APP_PID"
   sleep 1
   SHOT="$ROOT/update-modal-$attempt.png"
+  # A missing OCR target is an expected retry condition while the startup modal
+  # is still appearing. Temporarily remove the inherited rollback ERR trap so a
+  # non-zero Vision exit can be inspected/retried instead of rolling back at once.
+  trap - ERR
   set +e
   OUT="$(/usr/bin/xcrun swift "$VISION" 'ОБНОВИТЬ' "$SHOT" 2>&1)"; RC=$?
   set -e
+  trap on_error ERR
   printf '%s\n' "$OUT" | tee "$ROOT/update-modal-$attempt.vision.txt"
   echo "UPDATE_VISION_ATTEMPT=$attempt RC=$RC PID=$APP_PID"
   if [ "$RC" -eq 0 ] && printf '%s' "$OUT" | grep -q 'VISION_CLICKED'; then
@@ -177,9 +182,11 @@ PY2
     if [ "$ST" = 'RESTART_REQUIRED' ] && [ -n "$CURRENT_PID" ]; then
       front_app "$CURRENT_PID"
       SHOT="$ROOT/restart-modal-$i.png"
+      trap - ERR
       set +e
       OUT="$(/usr/bin/xcrun swift "$VISION" 'RESTART ENDLUME' "$SHOT" 2>&1)"; RC=$?
       set -e
+      trap on_error ERR
       printf '%s\n' "$OUT" | tee "$ROOT/restart-modal-$i.vision.txt"
       if [ "$RC" -eq 0 ] && printf '%s' "$OUT" | grep -q 'VISION_CLICKED'; then echo RESTART_UI_CLICK=PASS; fi
     fi

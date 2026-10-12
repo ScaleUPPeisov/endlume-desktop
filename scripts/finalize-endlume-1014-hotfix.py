@@ -23,12 +23,36 @@ if text.count(needle)!=1:
 text=text.replace(needle,'',1)
 path.write_text(text,encoding='utf-8')
 
+# 10.0.13 tests encoded the reconstruction regression itself: they expected
+# Render/<channel> even when the fixture explicitly declared outputDir. Restore
+# the contract in tests too. The channel-sanitization test deliberately removes
+# outputDir so it still verifies the compatibility fallback.
+tests=ROOT/'src-tauri'/'src'/'vyron_bridge_tests.rs'
+t=tests.read_text(encoding='utf-8')
+old='''  let expected=base.join("ВАЙРОН").join("Render").join("NEON").canonicalize().unwrap();\n  assert_eq!(PathBuf::from(&info.output_dir),expected);assert!(expected.is_dir());'''
+new='''  let expected=manifest.parent().unwrap().join("output").canonicalize().unwrap();\n  assert_eq!(PathBuf::from(&info.output_dir),expected);assert!(expected.is_dir());'''
+if t.count(old)!=1: raise SystemExit('vyron_bridge_tests.rs: roundtrip expectation shape changed')
+t=t.replace(old,new,1)
+old='''  let mut v:serde_json::Value=serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();v["channelName"]=json!("Aegean/Afterglow: Live");fs::write(&manifest,serde_json::to_vec_pretty(&v).unwrap()).unwrap();'''
+new='''  let mut v:serde_json::Value=serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();v["channelName"]=json!("Aegean/Afterglow: Live");v.as_object_mut().unwrap().remove("outputDir");fs::write(&manifest,serde_json::to_vec_pretty(&v).unwrap()).unwrap();'''
+if t.count(old)!=1: raise SystemExit('vyron_bridge_tests.rs: sanitization fixture shape changed')
+t=t.replace(old,new,1)
+old='''  assert!(PathBuf::from(info.output_dir).ends_with(PathBuf::from("Render").join("NEON")));'''
+new='''  assert_eq!(PathBuf::from(info.output_dir),manifest.parent().unwrap().join("output").canonicalize().unwrap());'''
+if t.count(old)!=1: raise SystemExit('vyron_bridge_tests.rs: selected-project expectation shape changed')
+t=t.replace(old,new,1)
+
+insert='''\n#[test]\nfn vyron_explicit_output_dir_may_live_outside_workspace(){\n  let(base,manifest,_)=fixture();\n  let external=base.join("EXTERNAL_OUTPUT");\n  let mut v:serde_json::Value=serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();\n  v["outputDir"]=json!(external.to_string_lossy());\n  fs::write(&manifest,serde_json::to_vec_pretty(&v).unwrap()).unwrap();\n  let info=load_vyron_batch_manifest(manifest.to_string_lossy().into_owned(),None).unwrap();\n  assert_eq!(PathBuf::from(info.output_dir),external.canonicalize().unwrap());\n  assert!(external.is_dir());\n  fs::remove_dir_all(base).unwrap();\n}\n'''
+if 'fn vyron_explicit_output_dir_may_live_outside_workspace' not in t:
+    t += insert
+tests.write_text(t,encoding='utf-8')
+
 qa=ROOT/'scripts'/'qa-endlume-1014-hotfix.py'
 qa_text=qa.read_text(encoding='utf-8')
 anchor='assert "v.get(\\"outputDir\\")" in vyron and "validate_output_writable" in vyron\n'
 if anchor not in qa_text:
     raise SystemExit('qa-endlume-1014-hotfix.py: VYRON QA anchor missing')
-qa_text=qa_text.replace(anchor,anchor+'assert "validate_output_scope(&output,batch_root)?" not in vyron\n',1)
+qa_text=qa_text.replace(anchor,anchor+'assert "validate_output_scope(&output,batch_root)?" not in vyron\nassert "vyron_explicit_output_dir_may_live_outside_workspace" in text("src-tauri/src/vyron_bridge_tests.rs")\n',1)
 qa.write_text(qa_text,encoding='utf-8')
 
-print('PASS: explicit VYRON outputDir remains valid outside workspace, including external volumes')
+print('PASS: explicit VYRON outputDir remains canonical, including destinations outside workspace')

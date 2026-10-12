@@ -19,7 +19,7 @@ if 'fn proxy_probe_metadata_valid' not in text:
     text=text.replace(old_probe_fn,new_probe_fn,1)
 
 old_args='''  let decode_error=decode_proxy_frame(app,out).await.err();\n  let probe_args=vec![\n    "-v","error","-select_streams","v:0","-count_frames",\n    "-show_entries","stream=codec_type,width,height,nb_read_frames:format=duration",\n    "-of","json",out.to_string_lossy().as_ref()\n  ].into_iter().map(String::from).collect::<Vec<_>>();'''
-new_args='''  let decode_error=decode_proxy_frame(app,out).await.err();\n  let deep_probe=decode_error.is_some();\n  let probe_args=(if deep_probe{\n    vec![\n      "-v","error","-select_streams","v:0","-count_frames",\n      "-show_entries","stream=codec_type,width,height,nb_read_frames:format=duration",\n      "-of","json",out.to_string_lossy().as_ref()\n    ]\n  }else{\n    vec![\n      "-v","error","-select_streams","v:0",\n      "-show_entries","stream=codec_type,width,height:format=duration",\n      "-of","json",out.to_string_lossy().as_ref()\n    ]\n  }).into_iter().map(String::from).collect::<Vec<_>>();\n  if live_preview_diag_enabled(){eprintln!("ENDLUME_PREVIEW_PROBE_MODE={} path={}",if deep_probe{"count-frames-fallback"}else{"metadata-after-real-decode"},out.display());}'''
+new_args='''  let decode_error=decode_proxy_frame(app,out).await.err();\n  let deep_probe=decode_error.is_some();\n  let out_arg=out.to_string_lossy().into_owned();\n  let probe_args=if deep_probe{\n    vec![\n      "-v".into(),"error".into(),"-select_streams".into(),"v:0".into(),"-count_frames".into(),\n      "-show_entries".into(),"stream=codec_type,width,height,nb_read_frames:format=duration".into(),\n      "-of".into(),"json".into(),out_arg.clone()\n    ]\n  }else{\n    vec![\n      "-v".into(),"error".into(),"-select_streams".into(),"v:0".into(),\n      "-show_entries".into(),"stream=codec_type,width,height:format=duration".into(),\n      "-of".into(),"json".into(),out_arg\n    ]\n  };\n  if live_preview_diag_enabled(){eprintln!("ENDLUME_PREVIEW_PROBE_MODE={} path={}",if deep_probe{"count-frames-fallback"}else{"metadata-after-real-decode"},out.display());}'''
 if old_args in text:
     if text.count(old_args)!=1:
         raise SystemExit(f'live_preview.rs: probe args shape mismatch: {text.count(old_args)}')
@@ -40,8 +40,10 @@ path.write_text(text,encoding='utf-8')
 
 qa=ROOT/'scripts'/'qa-endlume-1014-hotfix.py'
 q=qa.read_text(encoding='utf-8')
-extra='''\nlive_preview_probe=text("src-tauri/src/live_preview.rs")\nassert 'fn proxy_probe_metadata_valid' in live_preview_probe\nassert 'ENDLUME_PREVIEW_PROBE_MODE=' in live_preview_probe\nassert 'let deep_probe=decode_error.is_some()' in live_preview_probe\nassert 'let probe_valid=if deep_probe' in live_preview_probe\n'''
+extra='''\nlive_preview_probe=text("src-tauri/src/live_preview.rs")\nassert 'fn proxy_probe_metadata_valid' in live_preview_probe\nassert 'ENDLUME_PREVIEW_PROBE_MODE=' in live_preview_probe\nassert 'let deep_probe=decode_error.is_some()' in live_preview_probe\nassert 'let out_arg=out.to_string_lossy().into_owned()' in live_preview_probe\nassert 'let probe_valid=if deep_probe' in live_preview_probe\n'''
 if 'ENDLUME_PREVIEW_PROBE_MODE=' not in q:
     q += extra
+elif 'let out_arg=out.to_string_lossy().into_owned()' not in q:
+    q += '''\nlive_preview_probe=text("src-tauri/src/live_preview.rs")\nassert 'let out_arg=out.to_string_lossy().into_owned()' in live_preview_probe\n'''
 qa.write_text(q,encoding='utf-8')
-print('PASS: successful real Preview decode uses bounded metadata FFprobe; count_frames remains decode-error fallback only')
+print('PASS: successful real Preview decode uses bounded metadata FFprobe; count_frames remains decode-error fallback only; probe path is owned')

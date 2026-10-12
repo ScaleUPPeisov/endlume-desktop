@@ -31,7 +31,7 @@ export function ProjectPage(){
   const {
     draftProjects,setDraftProjects,invalidProjects,setInvalidProjects,appendProjects,
     settings,patchSettings,effects,subscribes,ambient,setAmbient,ambientSettings,patchAmbientSettings,openEditor,setPage,setLastRoot,setPreviewProjectPath,
-    selectedEffectByPath,setSelectedEffectForProject
+    selectedEffectByPath,selectedEffectIdsByPath,setSelectedEffectForProject,setSelectedEffectsForProject
   }=useApp();
   const [busy,setBusy]=useState(false),[scanNote,setScanNote]=useState(''),[features,setFeatures]=useState<FeatureFlags>(loadFeatures);
   const librarySaveQueue=useRef<Promise<void>>(Promise.resolve());
@@ -42,14 +42,37 @@ export function ProjectPage(){
   const activeSubscribesReady=subscribes.filter(item=>item.enabled&&item.usageMode!=='off'&&!effectNeedsRepair(item));
   const effectIdCounts=effects.reduce<Record<string,number>>((acc,e)=>{const id=e.id.trim();if(id)acc[id]=(acc[id]||0)+1;return acc},{});
   const duplicateEffectIds=Object.entries(effectIdCounts).filter(([,count])=>count>1).map(([id])=>id);
-  const selectedEffectIdForPath=(path:string)=>selectedEffectByPath[path]||'';
+  const selectedEffectIdsForPath=(path:string)=>{
+    const multi=selectedEffectIdsByPath[path];
+    if(Array.isArray(multi)&&multi.length)return Array.from(new Set(multi));
+    const legacy=selectedEffectByPath[path];
+    return legacy?[legacy]:[];
+  };
+  const selectedEffectIdForPath=(path:string)=>selectedEffectIdsForPath(path)[0]||'';
+  const setNoEffect=(path:string)=>setSelectedEffectsForProject(path,[NO_EFFECT_SELECTION]);
+  const toggleEffectForProject=(path:string,effectId:string)=>{
+    const current=selectedEffectIdsForPath(path).filter(id=>id!==NO_EFFECT_SELECTION);
+    const next=current.includes(effectId)?current.filter(id=>id!==effectId):[...current,effectId];
+    setSelectedEffectsForProject(path,next.length?next:[NO_EFFECT_SELECTION]);
+  };
+  const addEffectToAll=(effectId:string)=>draftProjects.forEach(project=>{
+    const current=selectedEffectIdsForPath(project.path).filter(id=>id!==NO_EFFECT_SELECTION);
+    setSelectedEffectsForProject(project.path,Array.from(new Set([...current,effectId])));
+  });
+  const applyAllEffectsToAll=()=>{
+    const ids=selectableEffects.filter(effect=>!duplicateEffectIds.includes(effect.id)).map(effect=>effect.id);
+    draftProjects.forEach(project=>setSelectedEffectsForProject(project.path,ids.length?ids:[NO_EFFECT_SELECTION]));
+  };
   const selectionIssueForPath=(path:string)=>{
-    const selectedId=selectedEffectIdForPath(path);
-    if(!selectedId||selectedId===NO_EFFECT_SELECTION)return '';
-    const effect=effects.find(item=>item.id===selectedId);
-    if(!effect)return `Сохранённый effect ID ${selectedId} больше не существует после migration. ENDLUME не будет угадывать замену — выберите эффект заново.`;
-    if(effectNeedsRepair(effect))return `${effect.name}: ${effect.assetError||'файл эффекта недоступен; требуется восстановить источник.'}`;
-    if(!effect.enabled||effect.usageMode==='off')return `${effect.name}: эффект выключен. Включите его или выберите другой.`;
+    const selectedIds=selectedEffectIdsForPath(path);
+    if(!selectedIds.length)return '';
+    if(selectedIds.includes(NO_EFFECT_SELECTION))return selectedIds.length===1?'':'«Без эффекта» нельзя сочетать с выбранными эффектами.';
+    for(const selectedId of selectedIds){
+      const effect=effects.find(item=>item.id===selectedId);
+      if(!effect)return `Сохранённый effect ID ${selectedId} больше не существует после migration. ENDLUME не будет угадывать замену — выберите эффект заново.`;
+      if(effectNeedsRepair(effect))return `${effect.name}: ${effect.assetError||'файл эффекта недоступен; требуется восстановить источник.'}`;
+      if(!effect.enabled||effect.usageMode==='off')return `${effect.name}: эффект выключен. Включите его или выберите другой.`;
+    }
     return '';
   };
   const persistCurrentLibrary=()=>{
@@ -132,24 +155,33 @@ export function ProjectPage(){
       const activeSubscribes=features.subscribe?activeSubscribesReady:[];
       const activeAmbient=features.ambient?ambient:undefined;
       const resolved=draftProjects.map(project=>{
-        if(!features.effects)return {project,selectedEffect:undefined};
-        const selectedId=selectedEffectIdForPath(project.path);
-        if(!selectedId){throw new Error(`Выберите эффект для проекта «${project.name}» или явно укажите «Без эффекта».`);}
-        if(selectedId===NO_EFFECT_SELECTION)return {project,selectedEffect:undefined};
-        const persistedEffect=effects.find(effect=>effect.id===selectedId);
-        if(!persistedEffect){throw new Error(`Сохранённый effect ID ${selectedId} для проекта «${project.name}» больше не существует. Возможна migration старого duplicate ID. ENDLUME не будет угадывать замену — выберите эффект заново.`);}
-        if(effectNeedsRepair(persistedEffect)){throw new Error(`Эффект «${persistedEffect.name}» (${persistedEffect.id}) требует восстановления файла. ${persistedEffect.assetError||'Выберите исходный файл заново в настройках Effects.'}`);}
-        if(!persistedEffect.enabled||persistedEffect.usageMode==='off'){throw new Error(`Эффект «${persistedEffect.name}» (${persistedEffect.id}) выключен. Включите его или выберите другой эффект.`);}
-        const selectedEffect=effectRegistry.find(effect=>effect.id===selectedId);
-        if(!selectedEffect){throw new Error(`Эффект ${selectedId} для проекта «${project.name}» недоступен. ENDLUME не будет подставлять другой эффект.`);}
-        return {project,selectedEffect};
+        if(!features.effects)return {project,selectedEffects:[] as EffectPreset[]};
+        const selectedIds=selectedEffectIdsForPath(project.path);
+        if(!selectedIds.length){throw new Error(`Выберите один или несколько эффектов для проекта «${project.name}» или явно укажите «Без эффекта».`);}
+        if(selectedIds.includes(NO_EFFECT_SELECTION)){
+          if(selectedIds.length!==1)throw new Error(`Проект «${project.name}» одновременно содержит «Без эффекта» и реальные Effects.`);
+          return {project,selectedEffects:[] as EffectPreset[]};
+        }
+        const selectedEffects=selectedIds.map(selectedId=>{
+          const persistedEffect=effects.find(effect=>effect.id===selectedId);
+          if(!persistedEffect){throw new Error(`Сохранённый effect ID ${selectedId} для проекта «${project.name}» больше не существует. ENDLUME не будет угадывать замену — выберите эффект заново.`);}
+          if(effectNeedsRepair(persistedEffect)){throw new Error(`Эффект «${persistedEffect.name}» (${persistedEffect.id}) требует восстановления файла. ${persistedEffect.assetError||'Выберите исходный файл заново в настройках Effects.'}`);}
+          if(!persistedEffect.enabled||persistedEffect.usageMode==='off'){throw new Error(`Эффект «${persistedEffect.name}» (${persistedEffect.id}) выключен. Включите его или выберите другой эффект.`);}
+          const selectedEffect=effectRegistry.find(effect=>effect.id===selectedId);
+          if(!selectedEffect){throw new Error(`Эффект ${selectedId} для проекта «${project.name}» недоступен. ENDLUME не будет подставлять другой эффект.`);}
+          return selectedEffect;
+        });
+        return {project,selectedEffects};
       });
-      const fastStaticProjects=resolved.filter(({project,selectedEffect})=>project.media.length>0&&project.media.every(isImagePath)&&(project.media.length===1||(!selectedEffect&&activeSubscribes.length===0)));
+      const fastStaticProjects=resolved.filter(({project,selectedEffects})=>project.media.length>0&&project.media.every(isImagePath)&&(project.media.length===1||(selectedEffects.length===0&&activeSubscribes.length===0)));
       if(fastStaticProjects.length&&(settings.crossfadeSec>0||settings.normalizeLufs||!!activeAmbient)){
         await api.showInfo(`Processed Audio включён для ${fastStaticProjects.length} статичных проектов. Быстрый visual/manifest pipeline сохраняется, но музыка будет реально декодирована и обработана (crossfade / LUFS / ambient), поэтому MP3 packet-copy отключается и рендер может быть медленнее или больше. Чтобы получить Original MP3 bitstream-copy, выключите audio processing.`);
       }
       const stamp=Date.now().toString(36);
-      const queuedProjects=resolved.map(({project,selectedEffect},i)=>({...project,selectedEffectId:selectedEffect?.id||NO_EFFECT_SELECTION,id:`${project.id}-${stamp}-${i}-${Math.random().toString(36).slice(2,8)}`,status:'queued' as const,progress:0,stage:'Ожидает в очереди',elapsedSec:0}));
+      const queuedProjects=resolved.map(({project,selectedEffects},i)=>{
+        const ids=selectedEffects.length?selectedEffects.map(effect=>effect.id):[NO_EFFECT_SELECTION];
+        return {...project,selectedEffectIds:ids,selectedEffectId:ids.length===1?ids[0]:undefined,id:`${project.id}-${stamp}-${i}-${Math.random().toString(36).slice(2,8)}`,status:'queued' as const,progress:0,stage:'Ожидает в очереди',elapsedSec:0};
+      });
       const groups=new Map<string,typeof queuedProjects>();
       for(const project of queuedProjects){
         const outputDir=resolvedDestination(project);
@@ -202,12 +234,12 @@ export function ProjectPage(){
 
     <section className="sectionBlock">
       <div className="sectionTitle">ЭФФЕКТЫ</div>
-      <div className="featureRow"><span className="featureIcon blue"><Icon name="effects"/></span><div><b>Эффект для каждого проекта</b><small>{!features.effects?'Отключено для текущих рендеров':effects.length?`В библиотеке: ${effects.length} • доступно: ${selectableEffects.length}${repairRequiredEffects.length?` • восстановить: ${repairRequiredEffects.length}`:''}`:'Эффекты в библиотеке не настроены'}</small></div><div className="rowButtons"><button onClick={()=>setFeature('effects',!features.effects)}>{features.effects?'ВЫКЛЮЧИТЬ':'ВКЛЮЧИТЬ'}</button><button onClick={()=>openEditor({kind:'effects'})}>НАСТРОИТЬ →</button></div></div>
+      <div className="featureRow"><span className="featureIcon blue"><Icon name="effects"/></span><div><b>Эффекты для каждого проекта</b><small>{!features.effects?'Отключено для текущих рендеров':effects.length?`В библиотеке: ${effects.length} • доступно: ${selectableEffects.length}${repairRequiredEffects.length?` • восстановить: ${repairRequiredEffects.length}`:''}`:'Эффекты в библиотеке не настроены'}</small></div><div className="rowButtons"><button onClick={()=>setFeature('effects',!features.effects)}>{features.effects?'ВЫКЛЮЧИТЬ':'ВКЛЮЧИТЬ'}</button><button onClick={()=>openEditor({kind:'effects'})}>НАСТРОИТЬ →</button></div></div>
       {features.effects&&repairRequiredEffects.length>0&&<div className="validationBox"><b>Effects требуют восстановления:</b>{repairRequiredEffects.map((effect,index)=><div key={`repair-${effect.id}-${index}`}><strong>{effect.name}</strong> — ⚠ REPAIR REQUIRED{effect.assetError?` • ${effect.assetError}`:''} <button onClick={()=>void repairEffectSource(effect)}>ВОССТАНОВИТЬ ФАЙЛ</button></div>)}</div>}
       {features.effects&&duplicateEffectIds.length>0&&<div className="validationBox"><b>Effects registry заблокирован:</b><div>Одинаковый ID назначен нескольким эффектам: {duplicateEffectIds.join(', ')}. Рендер с эффектами запрещён, чтобы ENDLUME не подставил другой эффект.</div></div>}
       {features.effects&&draftProjects.length>0&&<div className="renderCard">
-        <div className="optionGroup"><span>Применить ко всем найденным проектам</span><div className="chipRow"><button className={draftProjects.every(p=>selectedEffectIdForPath(p.path)===NO_EFFECT_SELECTION)?'selected':''} onClick={()=>draftProjects.forEach(p=>setSelectedEffectForProject(p.path,NO_EFFECT_SELECTION))}>БЕЗ ЭФФЕКТА</button>{effects.map((effect,index)=>{const selectable=effectIsSelectable(effect)&&!duplicateEffectIds.includes(effect.id);const selectedForAll=draftProjects.every(p=>selectedEffectIdForPath(p.path)===effect.id);return <button key={`all-${effect.id}-${index}`} className={selectedForAll?'selected':''} disabled={!selectable} title={effect.assetError||effectStatusLabel(effect)} onClick={()=>selectable&&draftProjects.forEach(p=>setSelectedEffectForProject(p.path,effect.id))}>{effect.name} • {effectStatusLabel(effect)}</button>})}</div></div>
-        {draftProjects.map(project=>{const selectionIssue=selectionIssueForPath(project.path);return <div className="optionGroup" key={`effect-${project.path}`}><span>{project.name}</span><div className="chipRow"><button className={selectedEffectIdForPath(project.path)===NO_EFFECT_SELECTION?'selected':''} onClick={()=>setSelectedEffectForProject(project.path,NO_EFFECT_SELECTION)}>БЕЗ ЭФФЕКТА</button>{effects.map((effect,index)=>{const duplicate=duplicateEffectIds.includes(effect.id);const selectable=effectIsSelectable(effect)&&!duplicate;return <button key={`${project.path}-${effect.id}-${index}`} disabled={!selectable} title={effect.assetError||effectStatusLabel(effect)} className={selectedEffectIdForPath(project.path)===effect.id&&!duplicate?'selected':''} onClick={()=>selectable&&setSelectedEffectForProject(project.path,effect.id)}>{effect.name} • {effectStatusLabel(effect)}</button>})}</div>{selectionIssue&&<small>⚠ {selectionIssue} <button type="button" onClick={()=>setSelectedEffectForProject(project.path,NO_EFFECT_SELECTION)}>СБРОСИТЬ → БЕЗ ЭФФЕКТА</button></small>}</div>})}
+        <div className="optionGroup"><span>Массовое назначение</span><div className="chipRow"><button onClick={applyAllEffectsToAll}>Все эффекты → ко всем видео</button><button className={draftProjects.every(p=>selectedEffectIdsForPath(p.path).length===1&&selectedEffectIdsForPath(p.path)[0]===NO_EFFECT_SELECTION)?'selected':''} onClick={()=>draftProjects.forEach(p=>setNoEffect(p.path))}>БЕЗ ЭФФЕКТА</button>{effects.map((effect,index)=>{const selectable=effectIsSelectable(effect)&&!duplicateEffectIds.includes(effect.id);const selectedForAll=draftProjects.every(p=>selectedEffectIdsForPath(p.path).includes(effect.id));return <button key={`all-${effect.id}-${index}`} className={selectedForAll?'selected':''} disabled={!selectable} title={effect.assetError||effectStatusLabel(effect)} onClick={()=>selectable&&addEffectToAll(effect.id)}>{effect.name} • {effectStatusLabel(effect)}</button>})}</div></div>
+        {draftProjects.map(project=>{const selectionIssue=selectionIssueForPath(project.path);const selectedIds=selectedEffectIdsForPath(project.path);return <div className="optionGroup" key={`effect-${project.path}`}><span>{project.name}</span><div className="chipRow"><button className={selectedIds.length===1&&selectedIds[0]===NO_EFFECT_SELECTION?'selected':''} onClick={()=>setNoEffect(project.path)}>БЕЗ ЭФФЕКТА</button>{effects.map((effect,index)=>{const duplicate=duplicateEffectIds.includes(effect.id);const selectable=effectIsSelectable(effect)&&!duplicate;return <button key={`${project.path}-${effect.id}-${index}`} disabled={!selectable} title={effect.assetError||effectStatusLabel(effect)} className={selectedIds.includes(effect.id)&&!duplicate?'selected':''} onClick={()=>selectable&&toggleEffectForProject(project.path,effect.id)}>{selectedIds.includes(effect.id)?'✓ ':''}{effect.name} • {effectStatusLabel(effect)}</button>})}</div>{selectionIssue&&<small>⚠ {selectionIssue} <button type="button" onClick={()=>setNoEffect(project.path)}>СБРОСИТЬ → БЕЗ ЭФФЕКТА</button></small>}</div>})}
       </div>}
     </section>
 

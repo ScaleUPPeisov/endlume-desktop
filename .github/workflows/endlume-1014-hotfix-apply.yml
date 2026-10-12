@@ -16,6 +16,7 @@ on:
       - 'scripts/run-endlume-1014-hotfix.py'
       - 'scripts/run-endlume-1014-hotfix-v2.py'
       - 'scripts/finalize-endlume-1014-hotfix.py'
+      - 'scripts/fix-endlume-1014-macos-preview-runtime.py'
       - 'scripts/qa-endlume-1014-hotfix.py'
       - 'scripts/sign-macos-ffmpeg-runtime.mjs'
       - '.github/workflows/endlume-1014-hotfix-apply.yml'
@@ -53,6 +54,7 @@ jobs:
           set -Eeuo pipefail
           python3 scripts/run-endlume-1014-hotfix-v2.py
           python3 scripts/finalize-endlume-1014-hotfix.py
+          python3 scripts/fix-endlume-1014-macos-preview-runtime.py
           python3 scripts/qa-endlume-1014-hotfix.py
           git diff --check
 

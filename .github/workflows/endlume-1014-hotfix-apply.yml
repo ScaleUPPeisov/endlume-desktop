@@ -1,0 +1,93 @@
+name: ENDLUME 10.0.14 Hotfix Apply + Compile Gate
+
+on:
+  push:
+    branches:
+      - hotfix/endlume-10.0.14-vyron-effects-preview-subscribe
+
+permissions:
+  contents: write
+
+concurrency:
+  group: endlume-1014-hotfix-apply
+  cancel-in-progress: false
+
+jobs:
+  apply-and-gate:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: hotfix/endlume-10.0.14-vyron-effects-preview-subscribe
+          fetch-depth: 0
+          clean: true
+          persist-credentials: true
+
+      - name: Verify isolated source lineage
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git merge-base --is-ancestor c01e9ae0c0dad8ab4b001064ee60ad1d714370a6 HEAD
+          test "$(git rev-parse hotfix/endlume-10.0.14-vyron-effects-preview-subscribe^{commit})" = "$(git rev-parse HEAD)"
+          echo "SOURCE_BASE=c01e9ae0c0dad8ab4b001064ee60ad1d714370a6"
+
+      - name: Apply focused 10.0.14 hotfix
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/apply-endlume-1014-hotfix.py
+          python3 scripts/qa-endlume-1014-hotfix.py
+          git diff --check
+
+      - name: Restore embedded FFmpeg sidecars
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          FOUNDATION="$HOME/.endlume-local-builder/endlume-desktop-8.40-bootstrap"
+          test -d "$FOUNDATION/src-tauri/binaries"
+          mkdir -p src-tauri/binaries
+          rsync -a "$FOUNDATION/src-tauri/binaries/" src-tauri/binaries/
+
+      - name: Frontend compile
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          npm ci
+          npm run check
+          npm run build
+
+      - name: Rust compile and tests
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cargo check --manifest-path src-tauri/Cargo.toml
+          cargo test --manifest-path src-tauri/Cargo.toml -- --nocapture
+
+      - name: macOS production compile validation
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          npm run tauri:build -- --no-bundle
+
+      - name: Commit tested hotfix source
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          if git diff --quiet && git diff --cached --quiet; then
+            echo "No source changes to commit (already applied)."
+            exit 0
+          fi
+          git config user.name "ENDLUME Hotfix Gate"
+          git config user.email "actions@users.noreply.github.com"
+          git add src src-tauri/src scripts/qa-endlume-1014-hotfix.py
+          git diff --cached --check
+          git commit -m "hotfix(10.0.14): restore VYRON routing and live preview reliability"
+          git push origin HEAD:hotfix/endlume-10.0.14-vyron-effects-preview-subscribe
+
+      - name: Summary
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          echo "Candidate source commit: $(git rev-parse HEAD)"
+          echo "Stable release/updater: NOT PUBLISHED"

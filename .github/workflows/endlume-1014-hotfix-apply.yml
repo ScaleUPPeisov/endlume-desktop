@@ -16,6 +16,8 @@ jobs:
   apply-and-gate:
     runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
     timeout-minutes: 35
+    env:
+      CARGO_TARGET_DIR: ${{ runner.temp }}/../_endlume-cache/target-1014-hotfix
     steps:
       - uses: actions/checkout@v4
         with:
@@ -36,7 +38,7 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-          python3 scripts/run-endlume-1014-hotfix.py
+          python3 scripts/run-endlume-1014-hotfix-v2.py
           python3 scripts/qa-endlume-1014-hotfix.py
           git diff --check
 
@@ -61,6 +63,7 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
+          mkdir -p "$CARGO_TARGET_DIR"
           cargo check --manifest-path src-tauri/Cargo.toml
           cargo test --manifest-path src-tauri/Cargo.toml -- --nocapture
 

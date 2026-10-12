@@ -59,11 +59,11 @@ jobs:
           echo FUNCTIONAL_PRODUCT_DIFF=0
           echo RELEASE_HEAD="$GITHUB_SHA"
 
-      - name: Fresh production build sign and packaged physical smoke
+      - name: Fresh production build sign and exact-artifact physical smoke
         shell: bash
         env:
           RELEASE_HEAD: ${{ github.sha }}
-        run: bash scripts/phase4_build_sign_1014_retry.sh
+        run: bash scripts/phase4_build_sign_1014_artifact_qa.sh
 
       - name: Pin signed evidence to exact build source
         shell: bash

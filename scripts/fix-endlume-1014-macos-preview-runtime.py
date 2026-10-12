@@ -66,11 +66,21 @@ elif 'ENDLUME_PREVIEW_CANONICAL_TIMEOUT_SHORT_FALLBACK' not in p:
     raise SystemExit('preview.rs: canonical fallback patch anchor missing')
 preview_path.write_text(p,encoding='utf-8')
 
+# ---------------------------------------------------------------------------
+# C) Phase-3 fast renderer must obey the same Apple AAC final contract.
+# ---------------------------------------------------------------------------
+fast_fix=ROOT/'scripts'/'fix-endlume-1014-fast-aac.py'
+if not fast_fix.is_file(): raise SystemExit('missing scripts/fix-endlume-1014-fast-aac.py')
+ns={'__name__':'__main__','__file__':str(fast_fix)}
+exec(compile(fast_fix.read_text(encoding='utf-8'),str(fast_fix),'exec'),ns,ns)
+
 # Static source-contract assertions.
 qa=ROOT/'scripts'/'qa-endlume-1014-hotfix.py'
 q=qa.read_text(encoding='utf-8')
-extra='''\nlive_preview=text("src-tauri/src/live_preview.rs")\nassert 'mode=bundle-direct' in live_preview\nassert '@executable_path/../Frameworks' in live_preview\nassert 'ENDLUME_PREVIEW_HW_TIMEOUT_DIRECT_SAFE_FALLBACK' in live_preview\nassert 'safe_prefix.as_ref()' in live_preview\nassert 'if hw_error.contains("timeout after"){let _=fs::remove_file(out);return Err(hw_error)}' not in live_preview\ncanonical_preview=text("src-tauri/src/preview.rs")\nassert 'ENDLUME_PREVIEW_CANONICAL_TIMEOUT_SHORT_FALLBACK' in canonical_preview\nassert '\"-t\",\"0.75\",\"-c:v\",\"libx264\"' in canonical_preview\nassert 'primary.extend(vec![\"-t\",\"3.0\"]' in canonical_preview\n'''
+extra='''\nlive_preview=text("src-tauri/src/live_preview.rs")\nassert 'mode=bundle-direct' in live_preview\nassert '@executable_path/../Frameworks' in live_preview\nassert 'ENDLUME_PREVIEW_HW_TIMEOUT_DIRECT_SAFE_FALLBACK' in live_preview\nassert 'safe_prefix.as_ref()' in live_preview\nassert 'if hw_error.contains("timeout after"){let _=fs::remove_file(out);return Err(hw_error)}' not in live_preview\ncanonical_preview=text("src-tauri/src/preview.rs")\nassert 'ENDLUME_PREVIEW_CANONICAL_TIMEOUT_SHORT_FALLBACK' in canonical_preview\nassert '\"-t\",\"0.75\",\"-c:v\",\"libx264\"' in canonical_preview\nassert 'primary.extend(vec![\"-t\",\"3.0\"]' in canonical_preview\nfast_render=text("src-tauri/src/fast_render.rs")\nassert 'audio_codec:\"aac\".into()' in fast_render\nassert 'AAC-LC audio stream missing' in fast_render\nassert fast_render.count('\"-c:a\",\"aac_at\",\"-b:a\",\"320k\"')>=2\n'''
 if "ENDLUME_PREVIEW_CANONICAL_TIMEOUT_SHORT_FALLBACK" not in q:
     q += extra
+elif 'AAC-LC audio stream missing' not in q:
+    q += '''\nfast_render=text("src-tauri/src/fast_render.rs")\nassert 'audio_codec:\"aac\".into()' in fast_render\nassert 'AAC-LC audio stream missing' in fast_render\nassert fast_render.count('\"-c:a\",\"aac_at\",\"-b:a\",\"320k\"')>=2\n'''
 qa.write_text(q,encoding='utf-8')
-print('PASS: macOS Preview keeps Frameworks resolvable and both helper/canonical paths have bounded cold-start fallbacks')
+print('PASS: macOS Preview fallbacks are bounded and Phase-3 fast output is AAC-safe')

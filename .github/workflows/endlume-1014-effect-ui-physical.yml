@@ -1,0 +1,87 @@
+name: ENDLUME 10.0.14 Effect Assignment Physical UI
+
+on:
+  push:
+    branches:
+      - hotfix/endlume-10.0.14-vyron-effects-preview-subscribe
+    paths:
+      - '.github/workflows/endlume-1014-effect-ui-physical.yml'
+      - 'scripts/qa-endlume-1014-effect-assignment-ui.py'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-1014-effect-ui-physical
+  cancel-in-progress: true
+
+jobs:
+  effect-ui:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: hotfix/endlume-10.0.14-vyron-effects-preview-subscribe
+          fetch-depth: 0
+          clean: true
+          persist-credentials: false
+
+      - name: Verify product source is exact tested candidate
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git merge-base --is-ancestor d4e35c6bf26470a689d95e149e0d2bd82172c733 HEAD
+          git diff --quiet d4e35c6bf26470a689d95e149e0d2bd82172c733 HEAD -- src src-tauri/src package.json package-lock.json src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/tauri.conf.json
+          test -d '/Volumes/TOSHIBA EXT'
+          echo PRODUCT_SOURCE_REUSE=GREEN
+
+      - name: Reuse exact packaged E2E candidate from physical gate
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ROOT="$RUNNER_TEMP/endlume-1014-effect-ui"
+          mkdir -p "$ROOT"
+          CACHE="$RUNNER_TEMP/../_endlume-cache/target-1014-physical/aarch64-apple-darwin/release/bundle/macos"
+          APP="$(find "$CACHE" -maxdepth 1 -type d -name '*.app' -print -quit 2>/dev/null || true)"
+          test -n "$APP" -a -d "$APP"
+          /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP"
+          FFMPEG="$(find "$APP/Contents" -maxdepth 7 -type f -name 'ffmpeg' -perm -111 -print -quit)"
+          test -x "$FFMPEG"
+          printf '%s' "$APP" > "$ROOT/app.txt"
+          printf '%s' "$FFMPEG" > "$ROOT/ffmpeg.txt"
+          echo CACHED_PACKAGED_APP=GREEN
+
+      - name: Real 20-project effect selection restart switch disable queue test
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ROOT="$RUNNER_TEMP/endlume-1014-effect-ui"
+          APP="$(cat "$ROOT/app.txt")"
+          FFMPEG="$(cat "$ROOT/ffmpeg.txt")"
+          python3 scripts/qa-endlume-1014-effect-assignment-ui.py "$APP" "$FFMPEG" "$ROOT/effect-ui.json" | tee "$ROOT/effect-ui.log"
+          python3 - "$ROOT/effect-ui.json" <<'PY'
+          import json,sys
+          d=json.load(open(sys.argv[1]))
+          assert d['status']=='GREEN',d
+          assert d['projectCount']==20,d
+          assert d['assignmentPersistedAcrossRestart'] is True,d
+          assert d['all20QueuedWithRound'] is True,d
+          assert d['switchToAnotherEffect'] is True,d
+          assert d['disableAssignment'] is True,d
+          assert d['persistedRoundQueue']['count']>=20,d
+          assert len(set(d['persistedRoundQueue']['selectedIds']))==1,d
+          assert len(set(d['otherQueue']['selectedIds']))==1,d
+          assert set(d['noneQueue']['selectedIds'])=={'__none__'},d
+          print('EFFECT_ASSIGNMENT_PHYSICAL_UI=GREEN')
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ENDLUME-10.0.14-EFFECT-UI-PHYSICAL-EVIDENCE
+          path: |
+            ${{ runner.temp }}/endlume-1014-effect-ui/**
+          if-no-files-found: warn
+          retention-days: 14

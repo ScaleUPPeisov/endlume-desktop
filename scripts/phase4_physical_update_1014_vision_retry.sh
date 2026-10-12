@@ -11,9 +11,10 @@ src=Path(sys.argv[1]).read_text()
 start=src.index('# REAL normal ENDLUME updater path. No manual 10.0.14 app copy is allowed here.')
 end=src.index('echo UPDATE_DETECTED_10_0_13_TO_10_0_14=PASS\n',start)+len('echo UPDATE_DETECTED_10_0_13_TO_10_0_14=PASS\n')
 replacement=r'''# REAL normal ENDLUME updater path. No manual 10.0.14 app copy is allowed here.
-# WebKit controls are not reliably exposed through macOS Accessibility on this runner,
-# so use Apple Vision OCR on the real foreground window and physically click the
-# exact `ОБНОВИТЬ` button. Native updater state.json is the acceptance oracle.
+# WebKit controls are not reliably exposed through macOS Accessibility on this runner.
+# Capture the real foreground display with the macOS screencapture utility, run Apple
+# Vision OCR on that PNG, and physically click the exact `ОБНОВИТЬ` button. Native
+# updater state.json remains the acceptance oracle.
 VISION="$ROOT/vision_click.swift"
 cat > "$VISION" <<'SWIFT'
 import Foundation
@@ -26,10 +27,9 @@ let args=CommandLine.arguments
 if args.count < 3 { fail("usage: vision_click.swift TARGET SCREENSHOT") }
 let target=args[1].trimmingCharacters(in:.whitespacesAndNewlines).uppercased()
 let shot=args[2]
-let display=CGMainDisplayID()
-guard let image=CGDisplayCreateImage(display) else { fail("SCREEN_CAPTURE_FAILED") }
-let rep=NSBitmapImageRep(cgImage:image)
-if let png=rep.representation(using:.png,properties:[:]) { try? png.write(to:URL(fileURLWithPath:shot)) }
+guard let nsImage=NSImage(contentsOfFile:shot) else { fail("SCREENSHOT_LOAD_FAILED") }
+var proposed=NSRect(origin:.zero,size:nsImage.size)
+guard let image=nsImage.cgImage(forProposedRect:&proposed,context:nil,hints:nil) else { fail("SCREENSHOT_CGIMAGE_FAILED") }
 let req=VNRecognizeTextRequest()
 req.recognitionLevel = .accurate
 req.usesLanguageCorrection = true
@@ -54,7 +54,7 @@ print("VISION_TEXT="+texts.joined(separator:" | "))
 guard let obs=hit else { print("VISION_TARGET_NOT_FOUND"); exit(3) }
 let bb=obs.boundingBox
 let pxW=CGFloat(image.width), pxH=CGFloat(image.height)
-let screen=NSScreen.screens.first(where:{ $0.frame.contains(NSEvent.mouseLocation) }) ?? NSScreen.main ?? NSScreen.screens[0]
+let screen=NSScreen.main ?? NSScreen.screens[0]
 let scale=pxW / max(screen.frame.width,1)
 let x=screen.frame.minX + (bb.midX*pxW)/scale
 let y=screen.frame.minY + screen.frame.height - (bb.midY*pxH)/scale
@@ -93,6 +93,25 @@ on run argv
 end run
 APPLESCRIPT
 }
+vision_click(){
+  local target="$1" shot="$2" out rc cap_rc
+  trap - ERR
+  set +e
+  /usr/sbin/screencapture -x -D 1 "$shot" >/dev/null 2>&1
+  cap_rc=$?
+  if [ "$cap_rc" -eq 0 ] && [ -s "$shot" ]; then
+    out="$(/usr/bin/xcrun swift "$VISION" "$target" "$shot" 2>&1)"
+    rc=$?
+  else
+    out="SCREEN_CAPTURE_COMMAND_FAILED rc=$cap_rc"
+    rc=${cap_rc:-1}
+    [ "$rc" -eq 0 ] && rc=1
+  fi
+  set -e
+  trap on_error ERR
+  printf '%s\n' "$out"
+  return "$rc"
+}
 
 STATE="$HOME/Library/Caches/studio.endlume.desktop/update-center/state.json"
 mkdir -p "$ROOT"
@@ -111,7 +130,6 @@ echo PREUPDATE_APP_PID="$APP_PID"
 
 clicked=0
 for attempt in $(seq 1 18); do
-  # Re-acquire after any normalize/relaunch transition.
   CURRENT_PID="$(find_live_pid "$OLD_EXE" || true)"
   if [ -n "$CURRENT_PID" ]; then APP_PID="$CURRENT_PID"; fi
   if [ -z "$APP_PID" ] || ! kill -0 "$APP_PID" 2>/dev/null; then
@@ -122,12 +140,9 @@ for attempt in $(seq 1 18); do
   front_app "$APP_PID"
   sleep 1
   SHOT="$ROOT/update-modal-$attempt.png"
-  # A missing OCR target is an expected retry condition while the startup modal
-  # is still appearing. Temporarily remove the inherited rollback ERR trap so a
-  # non-zero Vision exit can be inspected/retried instead of rolling back at once.
   trap - ERR
   set +e
-  OUT="$(/usr/bin/xcrun swift "$VISION" 'ОБНОВИТЬ' "$SHOT" 2>&1)"; RC=$?
+  OUT="$(vision_click 'ОБНОВИТЬ' "$SHOT")"; RC=$?
   set -e
   trap on_error ERR
   printf '%s\n' "$OUT" | tee "$ROOT/update-modal-$attempt.vision.txt"
@@ -184,7 +199,7 @@ PY2
       SHOT="$ROOT/restart-modal-$i.png"
       trap - ERR
       set +e
-      OUT="$(/usr/bin/xcrun swift "$VISION" 'RESTART ENDLUME' "$SHOT" 2>&1)"; RC=$?
+      OUT="$(vision_click 'RESTART ENDLUME' "$SHOT")"; RC=$?
       set -e
       trap on_error ERR
       printf '%s\n' "$OUT" | tee "$ROOT/restart-modal-$i.vision.txt"

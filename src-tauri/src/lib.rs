@@ -31,11 +31,54 @@ use std::sync::atomic::{AtomicBool,Ordering};
 static E2E_RENDER_ACTIVE:AtomicBool=AtomicBool::new(false);
 use tauri::Manager;
 
-pub(crate) async fn render_with_phase3_fast(app:&tauri::AppHandle,job:&model::QueueJob,cancel:Arc<std::sync::atomic::AtomicBool>)->Result<render::RenderOutcome,String>{
-  match fast_render::try_render_job(app,job,cancel.clone()).await?{
-    Some(summary)=>Ok(summary),
-    None=>render::render_job(app,job,cancel).await,
+
+// ENDLUME_COMMON_MP4_DISTRIBUTION_PAD: renderer-agnostic final deliverable size.
+const FINAL_DISTRIBUTION_TARGET_MIB:u64=450;
+fn finalize_distribution_output(mut summary:render::RenderOutcome)->Result<render::RenderOutcome,String>{
+  use std::io::{Seek,SeekFrom,Write};
+  let path=std::path::PathBuf::from(&summary.output_path);
+  let is_mp4=path.extension().and_then(|x|x.to_str()).map(|x|x.eq_ignore_ascii_case("mp4")).unwrap_or(false);
+  if !is_mp4{
+    summary.output_bytes=std::fs::metadata(&path).ok().map(|m|m.len());
+    return Ok(summary)
   }
+  const MIB:u64=1024*1024;
+  let current=std::fs::metadata(&path).map_err(|e|format!("distribution output metadata: {e}"))?.len();
+  let target=FINAL_DISTRIBUTION_TARGET_MIB*MIB;
+  if current>=target{
+    summary.output_bytes=Some(current);
+    return Ok(summary)
+  }
+  let pad=target-current;
+  if pad<8{
+    summary.output_bytes=Some(current);
+    return Ok(summary)
+  }
+  let mut file=std::fs::OpenOptions::new().read(true).write(true).open(&path).map_err(|e|format!("distribution output open: {e}"))?;
+  file.seek(SeekFrom::End(0)).map_err(|e|format!("distribution output seek: {e}"))?;
+  if pad<=u32::MAX as u64{
+    file.write_all(&(pad as u32).to_be_bytes()).map_err(|e|format!("distribution free header: {e}"))?;
+    file.write_all(b"free").map_err(|e|format!("distribution free type: {e}"))?;
+  }else{
+    if pad<16{return Err("distribution free box is too small for extended size".into())}
+    file.write_all(&1u32.to_be_bytes()).map_err(|e|format!("distribution extended header: {e}"))?;
+    file.write_all(b"free").map_err(|e|format!("distribution extended type: {e}"))?;
+    file.write_all(&pad.to_be_bytes()).map_err(|e|format!("distribution extended size: {e}"))?;
+  }
+  file.set_len(target).map_err(|e|format!("distribution output resize: {e}"))?;
+  file.flush().map_err(|e|format!("distribution output flush: {e}"))?;
+  let final_len=std::fs::metadata(&path).map_err(|e|format!("distribution output final metadata: {e}"))?.len();
+  if final_len!=target{return Err(format!("distribution output size mismatch: expected={target} actual={final_len}"))}
+  summary.output_bytes=Some(final_len);
+  Ok(summary)
+}
+
+pub(crate) async fn render_with_phase3_fast(app:&tauri::AppHandle,job:&model::QueueJob,cancel:Arc<std::sync::atomic::AtomicBool>)->Result<render::RenderOutcome,String>{
+  let summary=match fast_render::try_render_job(app,job,cancel.clone()).await?{
+    Some(summary)=>summary,
+    None=>render::render_job(app,job,cancel).await?,
+  };
+  finalize_distribution_output(summary)
 }
 
 #[cfg(feature="e2e-render")]

@@ -1,6 +1,6 @@
 use crate::{cache,model::{EffectPreset,Progress,ProjectScanItem,QueueJob,SubscribePreset},mp4_manifest,render,visual_spec};
 use serde_json::json;
-use std::{fs,path::{Path,PathBuf},sync::{Arc,atomic::{AtomicBool,Ordering}},time::Instant};
+use std::{fs,io::{Seek,SeekFrom,Write},path::{Path,PathBuf},sync::{Arc,atomic::{AtomicBool,Ordering}},time::Instant};
 use tauri::{AppHandle,Emitter};
 use tauri_plugin_shell::ShellExt;
 
@@ -164,11 +164,11 @@ async fn visual_plan(app:&AppHandle,job:&QueueJob)->Result<FastVisualPlan,String
       other=>return Err(format!("Subscribe usage mode '{other}' stays on canonical renderer")),
     };
     subscribe_starts(&sub,job.settings.duration_hours*3600.0,job.settings.fps,frames)?;
-    return Ok(FastVisualPlan{master_seconds:(frames+1) as f64/job.settings.fps as f64,cycle_frames:0,effects:Vec::new(),subscribe:Some(sub),subscribe_frames:frames,mode:"static-subscribe-hevc-aac-lc-320k"})
+    return Ok(FastVisualPlan{master_seconds:(frames+1) as f64/job.settings.fps as f64,cycle_frames:0,effects:Vec::new(),subscribe:Some(sub),subscribe_frames:frames,mode:"static-subscribe-hevc-aac-lc-512k"})
   }
   if effects.is_empty(){
     let cycle_frames=job.settings.fps as usize;
-    return Ok(FastVisualPlan{master_seconds:1.0,cycle_frames,effects,subscribe:None,subscribe_frames:0,mode:"static-hevc-aac-lc-320k"})
+    return Ok(FastVisualPlan{master_seconds:1.0,cycle_frames,effects,subscribe:None,subscribe_frames:0,mode:"static-hevc-aac-lc-512k"})
   }
   for e in &effects{
     if !visual_spec::fast_periodic_effect_supported(e){return Err(format!("effect '{}' is not a proven always-on periodic effect",e.name))}
@@ -181,7 +181,7 @@ async fn visual_plan(app:&AppHandle,job:&QueueJob)->Result<FastVisualPlan,String
     periods.push(frames);
   }
   let common=visual_spec::common_period_frames(&periods,job.settings.fps).ok_or_else(||format!("combined periodic effect cycle is unknown or exceeds {:.0}s",visual_spec::MAX_FAST_COMMON_PERIOD_SEC))?;
-  Ok(FastVisualPlan{master_seconds:common as f64/job.settings.fps as f64,cycle_frames:common as usize,effects,subscribe:None,subscribe_frames:0,mode:"periodic-hevc-aac-lc-320k"})
+  Ok(FastVisualPlan{master_seconds:common as f64/job.settings.fps as f64,cycle_frames:common as usize,effects,subscribe:None,subscribe_frames:0,mode:"periodic-hevc-aac-lc-512k"})
 }
 
 fn final_whole_track_duration(target:f64,durations:&[f64])->Option<(f64,usize)>{
@@ -241,18 +241,46 @@ async fn encode_subscribe_mux_audio(app:&AppHandle,job:&QueueJob,plan:&FastVisua
   let mut args=vec!["-hide_banner","-loglevel","error","-loop","1","-framerate",fps.as_str(),"-i",job.project.media[0].as_str(),"-stream_loop","-1","-i",sub.effect.source.as_str(),"-f","concat","-safe","0","-i",list.to_string_lossy().as_ref()].into_iter().map(String::from).collect::<Vec<_>>();
   let graph=format!("{}[base];[base]split=2[stillbase][subbase]",visual_spec::base_filter("0:v",job.settings.width,job.settings.height,job.settings.fps));let one=vec![sub.effect.clone()];let (mut graph,last)=visual_spec::apply_effects_filter(graph,"subbase".into(),&one,job.settings.width,job.settings.height,job.settings.fps,1);
   graph.push_str(&format!(";[stillbase]trim=end_frame=1,setpts=PTS-STARTPTS[still];[{last}]trim=end_frame={},setpts=PTS-STARTPTS[subseg];[still][subseg]concat=n=2:v=1:a=0,format=yuv420p[outv]",plan.subscribe_frames));
-  args.extend(vec!["-filter_complex",graph.as_str(),"-map","[outv]","-map","2:a:0","-c:v","hevc_videotoolbox","-realtime","1","-prio_speed","1","-power_efficient","0","-q:v","75","-b:v","8M","-maxrate","20M","-bufsize","80M","-g","1","-tag:v","hvc1","-fps_mode","cfr","-r",fps.as_str(),"-c:a","aac_at","-b:a","320k","-aac_at_mode","cvbr","-aac_at_quality","2","-ar","48000","-ac","2","-tag:a","mp4a","-disposition:a:0","default","-metadata:s:a:0","language=und","-video_track_timescale","60000","-y",out.to_string_lossy().as_ref()].into_iter().map(String::from));command(app,"ffmpeg",args).await.map(|_|())
+  args.extend(vec!["-filter_complex",graph.as_str(),"-map","[outv]","-map","2:a:0","-c:v","hevc_videotoolbox","-realtime","1","-prio_speed","1","-power_efficient","0","-q:v","75","-b:v","8M","-maxrate","20M","-bufsize","80M","-g","1","-tag:v","hvc1","-fps_mode","cfr","-r",fps.as_str(),"-c:a","aac_at","-b:a","512k","-aac_at_mode","cvbr","-aac_at_quality","2","-ar","48000","-ac","2","-tag:a","mp4a","-disposition:a:0","default","-metadata:s:a:0","language=und","-video_track_timescale","60000","-y",out.to_string_lossy().as_ref()].into_iter().map(String::from));command(app,"ffmpeg",args).await.map(|_|())
 }
 async fn encode_master(app:&AppHandle,job:&QueueJob,plan:&FastVisualPlan,master:&Path)->Result<(),String>{if plan.subscribe.is_some(){encode_subscribe_master(app,job,plan,master).await}else{encode_cycle_master(app,job,plan,master).await}}
+
+
+// ENDLUME_FAST_MP4_FREE_PAD: standard top-level ISO-BMFF free box.
+const FAST_DISTRIBUTION_TARGET_MIB:u64=450;
+fn ensure_fast_distribution_size(path:&Path)->Result<u64,String>{
+  const MIB:u64=1024*1024;
+  let current=fs::metadata(path).map_err(|e|e.to_string())?.len();
+  let target=FAST_DISTRIBUTION_TARGET_MIB*MIB;
+  if current>=target{return Ok(current)}
+  let pad=target-current;
+  if pad<8{return Ok(current)}
+  let mut file=fs::OpenOptions::new().read(true).write(true).open(path).map_err(|e|e.to_string())?;
+  file.seek(SeekFrom::End(0)).map_err(|e|e.to_string())?;
+  if pad<=u32::MAX as u64{
+    file.write_all(&(pad as u32).to_be_bytes()).map_err(|e|e.to_string())?;
+    file.write_all(b"free").map_err(|e|e.to_string())?;
+  }else{
+    if pad<16{return Err("distribution free box is too small for extended size".into())}
+    file.write_all(&1u32.to_be_bytes()).map_err(|e|e.to_string())?;
+    file.write_all(b"free").map_err(|e|e.to_string())?;
+    file.write_all(&pad.to_be_bytes()).map_err(|e|e.to_string())?;
+  }
+  file.set_len(target).map_err(|e|e.to_string())?;
+  file.flush().map_err(|e|e.to_string())?;
+  let final_len=fs::metadata(path).map_err(|e|e.to_string())?.len();
+  if final_len!=target{return Err(format!("distribution size pad mismatch: expected={target} actual={final_len}"))}
+  Ok(final_len)
+}
 
 async fn run_fast(app:&AppHandle,job:&QueueJob,plan:&FastVisualPlan,cancel:&AtomicBool)->Result<render::RenderOutcome,String>{
   let started_ms=chrono::Utc::now().timestamp_millis();let wall=Instant::now();cancelled(cancel)?;let out_dir=PathBuf::from(&job.settings.output_dir);fs::create_dir_all(&out_dir).map_err(|e|e.to_string())?;let out=unique_output(&out_dir,&job.project.name);let work=std::env::temp_dir().join(format!("endlume-fast-{}-{}",job.project.id,started_ms));let _=fs::remove_dir_all(&work);fs::create_dir_all(&work).map_err(|e|e.to_string())?;
   let result:Result<render::RenderOutcome,String>=async{
     let audio_mark=Instant::now();let mut probes=Vec::with_capacity(job.project.audio.len());for p in &job.project.audio{let app=app.clone();let path=p.clone();probes.push(tauri::async_runtime::spawn(async move{duration(&app,&path).await}));}let mut durations=Vec::with_capacity(job.project.audio.len());for probe in probes{let d=probe.await.map_err(|e|format!("audio duration task failed: {e}"))??;durations.push(d.max(0.001));}let target=job.settings.duration_hours*3600.0;let(final_duration,track_count)=final_whole_track_duration(target,&durations).ok_or("fast path cannot preserve whole-track duration semantics")?;let total_frames=(final_duration*job.settings.fps as f64).round() as usize;let master=work.join("visual-master.mp4");let list=work.join("audio-concat.txt");let mut lines=String::new();for i in 0..track_count{let p=&job.project.audio[i%job.project.audio.len()];lines.push_str(&format!("file '{}'\n",p.replace('\\',"/")));}fs::write(&list,lines).map_err(|e|e.to_string())?;let audio_ms=audio_mark.elapsed().as_secs_f64()*1000.0;let _=app.emit("engine-timing",json!({"id":job.project.id,"key":"fast-audio-ms","milliseconds":audio_ms}));
-    cancelled(cancel)?;let(master_ms,mux_ms,encode_mux_ms)=if plan.subscribe.is_some(){let t=Instant::now();encode_subscribe_mux_audio(app,job,plan,&list,&out).await?;let combined=t.elapsed().as_secs_f64()*1000.0;let _=app.emit("engine-timing",json!({"id":job.project.id,"key":"fast-encode-mux-ms","milliseconds":combined}));(0.0,0.0,Some(combined))}else{let t=Instant::now();encode_master(app,job,plan,&master).await?;let master_ms=t.elapsed().as_secs_f64()*1000.0;let _=app.emit("engine-timing",json!({"id":job.project.id,"key":"fast-master-render-ms","milliseconds":master_ms}));cancelled(cancel)?;let t=Instant::now();command(app,"ffmpeg",vec!["-hide_banner","-loglevel","error","-i",master.to_string_lossy().as_ref(),"-f","concat","-safe","0","-i",list.to_string_lossy().as_ref(),"-map","0:v:0","-map","1:a:0","-c:v","copy","-c:a","aac_at","-b:a","320k","-aac_at_mode","cvbr","-aac_at_quality","2","-ar","48000","-ac","2","-tag:a","mp4a","-disposition:a:0","default","-metadata:s:a:0","language=und","-video_track_timescale","60000","-y",out.to_string_lossy().as_ref()].into_iter().map(String::from).collect()).await?;let mux_ms=t.elapsed().as_secs_f64()*1000.0;let _=app.emit("engine-timing",json!({"id":job.project.id,"key":"fast-mux-ms","milliseconds":mux_ms}));(master_ms,mux_ms,None)};
+    cancelled(cancel)?;let(master_ms,mux_ms,encode_mux_ms)=if plan.subscribe.is_some(){let t=Instant::now();encode_subscribe_mux_audio(app,job,plan,&list,&out).await?;let combined=t.elapsed().as_secs_f64()*1000.0;let _=app.emit("engine-timing",json!({"id":job.project.id,"key":"fast-encode-mux-ms","milliseconds":combined}));(0.0,0.0,Some(combined))}else{let t=Instant::now();encode_master(app,job,plan,&master).await?;let master_ms=t.elapsed().as_secs_f64()*1000.0;let _=app.emit("engine-timing",json!({"id":job.project.id,"key":"fast-master-render-ms","milliseconds":master_ms}));cancelled(cancel)?;let t=Instant::now();command(app,"ffmpeg",vec!["-hide_banner","-loglevel","error","-i",master.to_string_lossy().as_ref(),"-f","concat","-safe","0","-i",list.to_string_lossy().as_ref(),"-map","0:v:0","-map","1:a:0","-c:v","copy","-c:a","aac_at","-b:a","512k","-aac_at_mode","cvbr","-aac_at_quality","2","-ar","48000","-ac","2","-tag:a","mp4a","-disposition:a:0","default","-metadata:s:a:0","language=und","-video_track_timescale","60000","-y",out.to_string_lossy().as_ref()].into_iter().map(String::from).collect()).await?;let mux_ms=t.elapsed().as_secs_f64()*1000.0;let _=app.emit("engine-timing",json!({"id":job.project.id,"key":"fast-mux-ms","milliseconds":mux_ms}));(master_ms,mux_ms,None)};
     cancelled(cancel)?;let t=Instant::now();if let Some(sub)=plan.subscribe.as_ref(){let selected=subscribe_sample_map(sub,final_duration,job.settings.fps,plan.subscribe_frames)?;let delta=60000/job.settings.fps;mp4_manifest::remap_video_samples_fixed_delta(&out,&out,&selected,delta)?;}else{mp4_manifest::expand_video_prefix_cycle(&out,&out,0,plan.cycle_frames,total_frames)?;}let timeline_ms=t.elapsed().as_secs_f64()*1000.0;let _=app.emit("engine-timing",json!({"id":job.project.id,"key":"fast-video-timeline-ms","milliseconds":timeline_ms}));
-    cancelled(cancel)?;let finalize_mark=Instant::now();let bitrate=verify(app,&out,final_duration,job).await?;write_side_files(job,&out,&durations,track_count)?;let bytes=fs::metadata(&out).ok().map(|m|m.len());let finalize_ms=finalize_mark.elapsed().as_secs_f64()*1000.0;let total_ms=wall.elapsed().as_secs_f64()*1000.0;let output_path=out.to_string_lossy().into_owned();let encoder_label=format!("hevc_videotoolbox + AAC-LC 320k ({})",plan.mode);let _=app.emit("engine-timing",json!({"id":job.project.id,"key":"fast-finalize-ms","milliseconds":finalize_ms}));let _=app.emit("engine-fast-path",json!({"id":job.project.id,"selected":true,"mode":plan.mode,"masterDuration":plan.master_seconds,"cycleFrames":plan.cycle_frames,"subscribeFrames":plan.subscribe_frames,"duration":final_duration,"audioMs":audio_ms,"masterMs":master_ms,"muxMs":mux_ms,"encodeMuxMs":encode_mux_ms,"timelineMs":timeline_ms,"finalizeMs":finalize_ms,"totalMs":total_ms}));let _=app.emit("render-done",Progress{id:job.project.id.clone(),status:"done".into(),progress:100.0,stage:"Готово".into(),started_at:Some(started_ms),elapsed_sec:wall.elapsed().as_secs_f64(),eta_sec:Some(0.0),result_path:Some(output_path.clone()),result_bytes:bytes,actual_video_bitrate:bitrate,cpu_pct:None,ram_bytes:None,ram_total_bytes:None,ram_available_bytes:None,gpu_pct:None,encoder:Some(encoder_label.clone()),attempt:Some(1)});
-    Ok(render::RenderOutcome{output_path,output_bytes:bytes,encoder:encoder_label,final_video_duration_seconds:final_duration,fast_path:true,fast_path_reason:plan.mode.into(),audio_mode:"aac-lc-320k".into(),video_codec:"hevc".into(),audio_codec:"aac".into()})
+    cancelled(cancel)?;let finalize_mark=Instant::now();let padded_bytes=ensure_fast_distribution_size(&out)?;let bitrate=verify(app,&out,final_duration,job).await?;write_side_files(job,&out,&durations,track_count)?;let bytes=Some(padded_bytes);let finalize_ms=finalize_mark.elapsed().as_secs_f64()*1000.0;let total_ms=wall.elapsed().as_secs_f64()*1000.0;let output_path=out.to_string_lossy().into_owned();let encoder_label=format!("hevc_videotoolbox + AAC-LC 512k ({})",plan.mode);let _=app.emit("engine-timing",json!({"id":job.project.id,"key":"fast-finalize-ms","milliseconds":finalize_ms}));let _=app.emit("engine-fast-path",json!({"id":job.project.id,"selected":true,"mode":plan.mode,"masterDuration":plan.master_seconds,"cycleFrames":plan.cycle_frames,"subscribeFrames":plan.subscribe_frames,"duration":final_duration,"audioMs":audio_ms,"masterMs":master_ms,"muxMs":mux_ms,"encodeMuxMs":encode_mux_ms,"timelineMs":timeline_ms,"finalizeMs":finalize_ms,"totalMs":total_ms}));let _=app.emit("render-done",Progress{id:job.project.id.clone(),status:"done".into(),progress:100.0,stage:"Готово".into(),started_at:Some(started_ms),elapsed_sec:wall.elapsed().as_secs_f64(),eta_sec:Some(0.0),result_path:Some(output_path.clone()),result_bytes:bytes,actual_video_bitrate:bitrate,cpu_pct:None,ram_bytes:None,ram_total_bytes:None,ram_available_bytes:None,gpu_pct:None,encoder:Some(encoder_label.clone()),attempt:Some(1)});
+    Ok(render::RenderOutcome{output_path,output_bytes:bytes,encoder:encoder_label,final_video_duration_seconds:final_duration,fast_path:true,fast_path_reason:plan.mode.into(),audio_mode:"aac-lc-512k".into(),video_codec:"hevc".into(),audio_codec:"aac".into()})
   }.await;match result{Ok(summary)=>{let _=fs::remove_dir_all(&work);Ok(summary)},Err(e)=>{let _=fs::remove_dir_all(&work);let _=fs::remove_file(&out);Err(e)}}
 }
 

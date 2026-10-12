@@ -1,0 +1,17 @@
+{
+  "version": "10.0.14",
+  "functionalSource": "55372b94a35ef76ee160347783cf8c62e003fa4e",
+  "releaseCommit": "b2d3ea03a3c5ecd0293df83260d0c35f2a54bcc9",
+  "signedRunId": "38249457225",
+  "signedHead": "39772360596b859f9e8bd2a495e3ae9f68eff533",
+  "artifact": "ENDLUME-10.0.14-PHASE4-SIGNED-MACOS-ARM64",
+  "artifactWorkflowDigest": "fed2414c3122ebdfbf593579b6d2d955bbd189bfcbba6b6afaa9a0d45c443aea",
+  "tarGzSha256": "f84a321fe90f833b4a50edd20851fe9ac4f999b85d5272d2e6f3ffd3f13d5c78",
+  "signatureVerify": "PASS",
+  "packagedSmoke": "PASS",
+  "vyron": "PASS",
+  "effectsPreview": "PASS",
+  "subscribePreview": "PASS",
+  "realRender": "PASS",
+  "status": "PASS"
+}

@@ -56,4 +56,5 @@ assert 'primary.extend(vec!["-t","3.0"]' in canonical_preview
 fast_render=text("src-tauri/src/fast_render.rs")
 assert 'audio_codec:"aac".into()' in fast_render
 assert 'AAC-LC audio stream missing' in fast_render
-assert fast_render.count('"-c:a","aac_at","-b:a","320k"')>=2
+assert fast_render.count('"-c:a","aac_at","-b:a","512k"')>=2
+assert '"-c:a","aac_at","-b:a","320k"' not in fast_render

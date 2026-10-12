@@ -4,6 +4,21 @@ on:
   push:
     branches:
       - hotfix/endlume-10.0.14-vyron-effects-preview-subscribe
+    paths:
+      - 'src/**'
+      - 'src-tauri/src/**'
+      - 'src-tauri/Cargo.toml'
+      - 'src-tauri/Cargo.lock'
+      - 'src-tauri/tauri.conf.json'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'scripts/apply-endlume-1014-hotfix.py'
+      - 'scripts/run-endlume-1014-hotfix.py'
+      - 'scripts/run-endlume-1014-hotfix-v2.py'
+      - 'scripts/finalize-endlume-1014-hotfix.py'
+      - 'scripts/qa-endlume-1014-hotfix.py'
+      - 'scripts/sign-macos-ffmpeg-runtime.mjs'
+      - '.github/workflows/endlume-1014-hotfix-apply.yml'
 
 permissions:
   contents: write
@@ -114,5 +129,3 @@ jobs:
           set -Eeuo pipefail
           echo "Candidate source commit: $(git rev-parse HEAD)"
           echo "Stable release/updater: NOT PUBLISHED"
-
-# 10.0.14 rerun marker: idempotent-finalize gate

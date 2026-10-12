@@ -3,10 +3,9 @@
   "functionalSource": "55372b94a35ef76ee160347783cf8c62e003fa4e",
   "releaseCommit": "b2d3ea03a3c5ecd0293df83260d0c35f2a54bcc9",
   "signedRunId": "38249457225",
-  "publishRunId": "38255790625",
-  "publishHead": "cfdda0687426c668a6a7e36bc09f3c20b7f39bc7",
+  "publishRunId": "38257054613",
+  "publishHead": "ba0c55224d27c8061670da19a80448d2f2edb5ee",
   "liveArtifactSha256": "f84a321fe90f833b4a50edd20851fe9ac4f999b85d5272d2e6f3ffd3f13d5c78",
   "liveLatestVersion": "10.0.14",
-  "status": "PASS_PENDING_REAL_UPDATER",
-  "acceptanceTrigger": "VISION_OCR_REAL_UPDATER_RETRY"
+  "status": "PASS_PENDING_REAL_UPDATER"
 }

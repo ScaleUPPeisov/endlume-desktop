@@ -1,15 +1,14 @@
 name: ENDLUME 10.0.14 Build Sign Physical Gate
 
 on:
-  workflow_run:
-    workflows:
-      - ENDLUME 10.0.14 Compile Gate
-    types: [completed]
+  push:
     branches:
       - release-endlume-10.0.14
+    paths:
+      - 'release/ENDLUME_10.0.14_COMPILE_PASS.json'
 
 permissions:
-  contents: read
+  contents: write
   actions: read
 
 concurrency:
@@ -18,44 +17,47 @@ concurrency:
 
 jobs:
   build-sign-smoke:
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
           clean: true
-          persist-credentials: false
+          persist-credentials: true
 
-      - name: Exact successful compile run and branch head
+      - name: Exact successful compile sentinel and branch head
         shell: bash
-        env:
-          COMPILE_RUN_ID: ${{ github.event.workflow_run.id }}
-          RELEASE_HEAD: ${{ github.event.workflow_run.head_sha }}
         run: |
           set -Eeuo pipefail
-          test "${{ github.event.workflow_run.head_branch }}" = 'release-endlume-10.0.14'
-          test "$(git rev-parse HEAD)" = "$RELEASE_HEAD"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           git fetch origin release-endlume-10.0.14
-          test "$(git rev-parse origin/release-endlume-10.0.14)" = "$RELEASE_HEAD"
-          echo COMPILE_RUN_ID="$COMPILE_RUN_ID"
-          echo RELEASE_HEAD="$RELEASE_HEAD"
+          test "$(git rev-parse origin/release-endlume-10.0.14)" = "$GITHUB_SHA"
+          python3 - release/ENDLUME_10.0.14_COMPILE_PASS.json <<'PY'
+          import json,sys,subprocess
+          d=json.load(open(sys.argv[1]))
+          assert d['version']=='10.0.14' and d['status']=='PASS',d
+          assert d['functionalSource']=='55372b94a35ef76ee160347783cf8c62e003fa4e',d
+          parent=subprocess.check_output(['git','rev-parse','HEAD^'],text=True).strip()
+          assert d['compileHead']==parent,(d['compileHead'],parent)
+          print('COMPILE_RUN_ID='+str(d['compileRunId']))
+          print('RELEASE_COMMIT_SHA='+d['releaseCommit'])
+          PY
+          git diff --quiet 55372b94a35ef76ee160347783cf8c62e003fa4e HEAD -- src src-tauri/src
+          echo RELEASE_HEAD="$GITHUB_SHA"
 
       - name: Fresh production build sign and packaged physical smoke
         shell: bash
         env:
-          RELEASE_HEAD: ${{ github.event.workflow_run.head_sha }}
+          RELEASE_HEAD: ${{ github.sha }}
         run: bash scripts/phase4_build_sign_1014.sh
 
-      - name: Pin signed evidence to exact release commit
+      - name: Pin signed evidence to exact build source
         shell: bash
-        env:
-          RELEASE_HEAD: ${{ github.event.workflow_run.head_sha }}
         run: |
           set -Eeuo pipefail
-          python3 - "$PHASE4_STAGE/ENDLUME-10.0.14-release.json" "$RELEASE_HEAD" <<'PY'
+          python3 - "$PHASE4_STAGE/ENDLUME-10.0.14-release.json" "$GITHUB_SHA" <<'PY'
           import json,sys
           p=sys.argv[1]; head=sys.argv[2]
           d=json.load(open(p)); d['releaseHead']=head
@@ -83,10 +85,29 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: Signed candidate summary
+      - name: Publish signed-pass release sentinel
         shell: bash
         run: |
           set -Eeuo pipefail
-          echo SIGNED_ARTIFACT=ENDLUME-10.0.14-PHASE4-SIGNED-MACOS-ARM64
-          echo PACKAGED_SMOKE=PASS
+          BUILD_SOURCE="$GITHUB_SHA"
+          RELEASE_COMMIT="$(python3 -c 'import json;print(json.load(open("release/ENDLUME_10.0.14_COMPILE_PASS.json"))["releaseCommit"])')"
+          cat > release/ENDLUME_10.0.14_SIGNED_PASS.json <<EOF
+          {
+            "version": "10.0.14",
+            "functionalSource": "55372b94a35ef76ee160347783cf8c62e003fa4e",
+            "releaseCommit": "$RELEASE_COMMIT",
+            "signedRunId": "$GITHUB_RUN_ID",
+            "signedHead": "$BUILD_SOURCE",
+            "artifact": "ENDLUME-10.0.14-PHASE4-SIGNED-MACOS-ARM64",
+            "packagedSmoke": "PASS",
+            "status": "PASS"
+          }
+          EOF
+          git config user.name 'ENDLUME Release Gate'
+          git config user.email 'actions@users.noreply.github.com'
+          git add release/ENDLUME_10.0.14_SIGNED_PASS.json
+          git commit -m 'release(10.0.14): signed packaged smoke passed'
+          git push origin HEAD:release-endlume-10.0.14
+          echo SIGNED_RUN_ID="$GITHUB_RUN_ID"
+          echo SIGNED_SOURCE_HEAD="$BUILD_SOURCE"
           echo STABLE_PUBLISH=NOT_YET

@@ -83,7 +83,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           test -n "${GH_TOKEN:-}"
-          bash scripts/phase4_physical_update_1014.sh
+          bash scripts/phase4_physical_update_1014_modal_retry.sh
 
       - uses: actions/upload-artifact@v4
         if: always()

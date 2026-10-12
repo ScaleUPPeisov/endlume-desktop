@@ -15,8 +15,10 @@ def write(path:str,text:str)->None:
 def one(path:str,old:str,new:str)->None:
     text=read(path)
     n=text.count(old)
+    if n==0 and new in text:
+        return
     if n!=1:
-        raise SystemExit(f'{path}: expected one match, got {n}: {old[:100]!r}')
+        raise SystemExit(f'{path}: expected one match or already-applied replacement, got {n}: {old[:100]!r}')
     write(path,text.replace(old,new,1))
 
 def rx(path:str,pattern:str,replacement:str)->None:

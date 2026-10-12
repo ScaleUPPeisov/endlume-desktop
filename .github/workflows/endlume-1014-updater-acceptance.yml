@@ -1,0 +1,77 @@
+name: ENDLUME 10.0.14 Real Updater Acceptance
+
+on:
+  workflow_run:
+    workflows:
+      - ENDLUME 10.0.14 Publish Stable
+    types: [completed]
+    branches:
+      - release-endlume-10.0.14
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: endlume-1014-real-updater
+  cancel-in-progress: false
+
+jobs:
+  real-updater:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+          clean: true
+          persist-credentials: false
+
+      - name: Download exact 10.0.13 rollback evidence
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PUBLISH_RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          set -Eeuo pipefail
+          test "${{ github.event.workflow_run.head_branch }}" = 'release-endlume-10.0.14'
+          RB="$RUNNER_TEMP/ENDLUME-10.0.13-STABLE-ROLLBACK"
+          mkdir -p "$RB"
+          gh run download "$PUBLISH_RUN_ID" --repo ScaleUPPeisov/endlume-desktop --name 'ENDLUME-10.0.13-STABLE-ROLLBACK' --dir "$RB"
+          test -s "$RB/latest.json"
+          test -s "$RB/ENDLUME-macos-aarch64.app.tar.gz"
+          test -s "$RB/ENDLUME-macos-aarch64.app.tar.gz.sig"
+          python3 - "$RB/latest.json" <<'PY'
+          import json,sys
+          m=json.load(open(sys.argv[1])); assert m['version']=='10.0.13',m
+          print('ROLLBACK_INPUT_10_0_13=PASS')
+          PY
+          echo "ROLLBACK_DIR=$RB" >> "$GITHUB_ENV"
+
+      - name: Real installed 10.0.13 to 10.0.14 updater and post-update physical smoke
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.ENDLUME_RELEASE_TOKEN }}
+        run: |
+          set -Eeuo pipefail
+          test -n "${GH_TOKEN:-}"
+          bash scripts/phase4_physical_update_1014.sh
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ENDLUME-10.0.14-REAL-UPDATER-EVIDENCE
+          path: ${{ runner.temp }}/endlume-1014-updater-acceptance/**
+          if-no-files-found: warn
+          retention-days: 60
+
+      - name: Final gate marker
+        if: success()
+        shell: bash
+        run: |
+          echo NORMAL_UPDATER_10_0_13_TO_10_0_14=PASS
+          echo POSTUPDATE_PACKAGED_SMOKE=PASS
+          echo FINAL_APPLICATION_VERSION=10.0.14
+          echo ENDLUME_10_0_14_STABLE_RELEASE_GATE=PASS

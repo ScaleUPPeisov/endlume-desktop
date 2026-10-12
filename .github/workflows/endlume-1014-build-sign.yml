@@ -63,7 +63,7 @@ jobs:
         shell: bash
         env:
           RELEASE_HEAD: ${{ github.sha }}
-        run: bash scripts/phase4_build_sign_1014.sh
+        run: bash scripts/phase4_build_sign_1014_retry.sh
 
       - name: Pin signed evidence to exact build source
         shell: bash

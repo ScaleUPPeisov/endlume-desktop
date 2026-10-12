@@ -65,6 +65,17 @@ fn stage_packaged_tool(app:&AppHandle,name:&str)->Option<PathBuf>{
   let source=exe_dir.join(name);
   if !executable_file(&source){return None}
 
+  // macOS packaged FFmpeg/FFprobe use @executable_path/../Frameworks for their
+  // portable dylib closure. Moving only the executable into app cache breaks
+  // that loader contract and Preview fails before decoding its first frame.
+  // Execute the signed bundled sibling in Contents/MacOS directly; Windows keeps
+  // the proven staged-cache path below.
+  #[cfg(target_os="macos")]
+  {
+    if live_preview_diag_enabled(){eprintln!("ENDLUME_PREVIEW_TOOL_STAGE name={name} mode=bundle-direct source={}",source.display());}
+    return Some(source);
+  }
+
   let root=app.path().app_cache_dir().ok()?.join("live-preview-tools-v1");
   fs::create_dir_all(&root).ok()?;
   let source_meta=fs::metadata(&source).ok()?;
@@ -406,13 +417,24 @@ async fn encode_proxy(app:&AppHandle,prefix:Vec<String>,safe_prefix:Option<Vec<S
   let hw=proxy_attempt(app,&prefix,hardware_codec_args(),out).await;
   if hw.is_ok(){return Ok(())}
   let hw_error=hw.err().unwrap_or_else(||"unknown hardware preview failure".into());
-  if hw_error.contains("timeout after"){let _=fs::remove_file(out);return Err(hw_error)}
   #[cfg(target_os="macos")]
   {
+    if hw_error.contains("timeout after"){
+      if live_preview_diag_enabled(){eprintln!("ENDLUME_PREVIEW_HW_TIMEOUT_DIRECT_SAFE_FALLBACK error={:?}",hw_error);}
+      if let Some(safe)=safe_prefix.as_ref(){
+        let safe_result=proxy_attempt(app,safe,software_codec_args(),out).await;
+        if safe_result.is_ok(){return Ok(())}
+        let safe_error=safe_result.err().unwrap_or_else(||"unknown safe preview failure".into());
+        let _=fs::remove_file(out);
+        return Err(format!("VideoToolbox Live Preview timeout: {hw_error}; safe fps fallback: {safe_error}"))
+      }
+      let _=fs::remove_file(out);
+      return Err(hw_error)
+    }
     let sw=proxy_attempt(app,&prefix,software_codec_args(),out).await;
     if sw.is_ok(){return Ok(())}
     let sw_error=sw.err().unwrap_or_else(||"unknown libx264 preview failure".into());
-    if sw_error.contains("timeout after"){let _=fs::remove_file(out);return Err(format!("VideoToolbox Live Preview: {hw_error}; libx264: {sw_error}"))}
+    if sw_error.contains("timeout after")&&live_preview_diag_enabled(){eprintln!("ENDLUME_PREVIEW_SW_TIMEOUT_SAFE_FALLBACK error={:?}",sw_error);}
     if let Some(safe)=safe_prefix{
       let safe_result=proxy_attempt(app,&safe,software_codec_args(),out).await;
       if safe_result.is_ok(){return Ok(())}

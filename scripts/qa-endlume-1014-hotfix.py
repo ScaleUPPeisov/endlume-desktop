@@ -27,3 +27,10 @@ assert "patchSettings({outputDir:info.outputDir})" in bridge
 assert "FFprobe sidecar preview timeout" in live and "ffprobe frame diagnostic timeout" in live
 assert "Файл существует: ${exists}" in editors
 print("PASS: ENDLUME 10.0.14 source contracts")
+
+live_preview=text("src-tauri/src/live_preview.rs")
+assert 'mode=bundle-direct' in live_preview
+assert '@executable_path/../Frameworks' in live_preview
+assert 'ENDLUME_PREVIEW_HW_TIMEOUT_DIRECT_SAFE_FALLBACK' in live_preview
+assert 'safe_prefix.as_ref()' in live_preview
+assert 'if hw_error.contains("timeout after"){let _=fs::remove_file(out);return Err(hw_error)}' not in live_preview

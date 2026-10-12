@@ -1,12 +1,11 @@
 name: ENDLUME 10.0.14 Real Updater Acceptance
 
 on:
-  workflow_run:
-    workflows:
-      - ENDLUME 10.0.14 Publish Stable
-    types: [completed]
+  push:
     branches:
       - release-endlume-10.0.14
+    paths:
+      - 'release/ENDLUME_10.0.14_PUBLISH_PASS.json'
 
 permissions:
   contents: read
@@ -18,25 +17,41 @@ concurrency:
 
 jobs:
   real-updater:
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
           clean: true
           persist-credentials: false
 
-      - name: Download exact 10.0.13 rollback evidence
+      - name: Resolve successful publish run and exact rollback evidence
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          PUBLISH_RUN_ID: ${{ github.event.workflow_run.id }}
         run: |
           set -Eeuo pipefail
-          test "${{ github.event.workflow_run.head_branch }}" = 'release-endlume-10.0.14'
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git diff --quiet 55372b94a35ef76ee160347783cf8c62e003fa4e HEAD -- src src-tauri/src
+          readarray -t META < <(python3 - release/ENDLUME_10.0.14_PUBLISH_PASS.json <<'PY'
+          import json,sys,subprocess
+          d=json.load(open(sys.argv[1]))
+          assert d['version']=='10.0.14' and d['status']=='PASS_PENDING_REAL_UPDATER',d
+          assert d['functionalSource']=='55372b94a35ef76ee160347783cf8c62e003fa4e',d
+          parent=subprocess.check_output(['git','rev-parse','HEAD^'],text=True).strip()
+          assert d['publishHead']==parent,(d['publishHead'],parent)
+          print(d['publishRunId']); print(d['releaseCommit']); print(d['signedRunId']); print(d['liveArtifactSha256'])
+          PY
+          )
+          PUBLISH_RUN_ID="${META[0]}"; RELEASE_COMMIT="${META[1]}"; SIGNED_RUN_ID="${META[2]}"; EXPECTED_LIVE_SHA="${META[3]}"
+          for i in $(seq 1 60); do
+            STATUS="$(gh api repos/ScaleUPPeisov/endlume-desktop/actions/runs/$PUBLISH_RUN_ID --jq '.status+":"+(.conclusion//"")')"
+            [ "$STATUS" = 'completed:success' ] && break
+            sleep 2
+          done
+          test "$STATUS" = 'completed:success'
           RB="$RUNNER_TEMP/ENDLUME-10.0.13-STABLE-ROLLBACK"
           mkdir -p "$RB"
           gh run download "$PUBLISH_RUN_ID" --repo ScaleUPPeisov/endlume-desktop --name 'ENDLUME-10.0.13-STABLE-ROLLBACK' --dir "$RB"
@@ -48,6 +63,10 @@ jobs:
           m=json.load(open(sys.argv[1])); assert m['version']=='10.0.13',m
           print('ROLLBACK_INPUT_10_0_13=PASS')
           PY
+          echo "PUBLISH_RUN_ID=$PUBLISH_RUN_ID" >> "$GITHUB_ENV"
+          echo "RELEASE_COMMIT=$RELEASE_COMMIT" >> "$GITHUB_ENV"
+          echo "SIGNED_RUN_ID=$SIGNED_RUN_ID" >> "$GITHUB_ENV"
+          echo "EXPECTED_LIVE_SHA=$EXPECTED_LIVE_SHA" >> "$GITHUB_ENV"
           echo "ROLLBACK_DIR=$RB" >> "$GITHUB_ENV"
 
       - name: Real installed 10.0.13 to 10.0.14 updater and post-update physical smoke
@@ -71,6 +90,10 @@ jobs:
         if: success()
         shell: bash
         run: |
+          echo RELEASE_COMMIT_SHA="$RELEASE_COMMIT"
+          echo SIGNED_RUN_ID="$SIGNED_RUN_ID"
+          echo PUBLISH_RUN_ID="$PUBLISH_RUN_ID"
+          echo LIVE_ARTIFACT_SHA256="$EXPECTED_LIVE_SHA"
           echo NORMAL_UPDATER_10_0_13_TO_10_0_14=PASS
           echo POSTUPDATE_PACKAGED_SMOKE=PASS
           echo FINAL_APPLICATION_VERSION=10.0.14

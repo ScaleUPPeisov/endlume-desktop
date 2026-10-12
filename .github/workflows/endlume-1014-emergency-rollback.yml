@@ -1,0 +1,90 @@
+name: ENDLUME 10.0.14 Emergency Rollback 10.0.13
+
+on:
+  push:
+    branches:
+      - release-endlume-10.0.14
+    paths:
+      - 'release/ENDLUME_10.0.14_ROLLBACK_TRIGGER.md'
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: endlume-1014-emergency-rollback
+  cancel-in-progress: false
+
+jobs:
+  rollback:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Restore exact 10.0.13 production channel
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.ENDLUME_RELEASE_TOKEN }}
+        run: |
+          set -Eeuo pipefail
+          test -n "${GH_TOKEN:-}"
+          STABLE_REPO='ScaleUPPeisov/scaleup-site'
+          STABLE_TAG='endlume-stable'
+          BASE_URL="https://github.com/$STABLE_REPO/releases/download/$STABLE_TAG"
+          RB="$RUNNER_TEMP/ENDLUME-10.0.13-STABLE-ROLLBACK"
+          mkdir -p "$RB"
+          gh run download 38258239049 --repo ScaleUPPeisov/endlume-desktop --name 'ENDLUME-10.0.13-STABLE-ROLLBACK' --dir "$RB"
+          test -s "$RB/latest.json"
+          test -s "$RB/ENDLUME-macos-aarch64.app.tar.gz"
+          test -s "$RB/ENDLUME-macos-aarch64.app.tar.gz.sig"
+          python3 - "$RB/latest.json" "$RB/ENDLUME-macos-aarch64.app.tar.gz" "$RB/ENDLUME-macos-aarch64.app.tar.gz.sig" <<'PY'
+          import hashlib,json,sys
+          latest,tar,sig=sys.argv[1:]
+          m=json.load(open(latest)); assert m['version']=='10.0.13',m
+          p=m['platforms']['darwin-aarch64']
+          sha=hashlib.sha256(open(tar,'rb').read()).hexdigest()
+          sigtxt=open(sig).read().strip()
+          assert p['sha256']==sha,(p.get('sha256'),sha)
+          assert p['signature']==sigtxt
+          print('ROLLBACK_INPUT_VERSION=10.0.13')
+          print('ROLLBACK_INPUT_SHA256='+sha)
+          PY
+          upload_retry(){
+            local attempt rc=1
+            for attempt in 1 2 3 4 5 6 7 8; do
+              if gh release upload "$STABLE_TAG" "$@" --clobber --repo "$STABLE_REPO"; then
+                echo "ROLLBACK_UPLOAD_PASS attempt=$attempt files=$*"
+                return 0
+              fi
+              rc=$?
+              echo "ROLLBACK_UPLOAD_RETRY attempt=$attempt rc=$rc files=$*" >&2
+              sleep $((attempt*2))
+            done
+            return "$rc"
+          }
+          upload_retry "$RB/ENDLUME-macos-aarch64.app.tar.gz" "$RB/ENDLUME-macos-aarch64.app.tar.gz.sig"
+          upload_retry "$RB/latest.json"
+          sleep 3
+          CACHE="emergency-rollback-$(date +%s)-$GITHUB_RUN_ID"
+          curl -fL --retry 8 --retry-all-errors "$BASE_URL/latest.json?$CACHE" -o "$RUNNER_TEMP/live-latest.json"
+          curl -fL --retry 8 --retry-all-errors "$BASE_URL/ENDLUME-macos-aarch64.app.tar.gz?$CACHE" -o "$RUNNER_TEMP/live.tar.gz"
+          curl -fL --retry 8 --retry-all-errors "$BASE_URL/ENDLUME-macos-aarch64.app.tar.gz.sig?$CACHE" -o "$RUNNER_TEMP/live.sig"
+          python3 - "$RUNNER_TEMP/live-latest.json" "$RUNNER_TEMP/live.tar.gz" "$RUNNER_TEMP/live.sig" <<'PY'
+          import hashlib,json,sys
+          latest,tar,sig=sys.argv[1:]
+          m=json.load(open(latest)); assert m['version']=='10.0.13',m
+          p=m['platforms']['darwin-aarch64']
+          sha=hashlib.sha256(open(tar,'rb').read()).hexdigest()
+          sigtxt=open(sig).read().strip()
+          assert p['sha256']==sha,(p.get('sha256'),sha)
+          assert p['signature']==sigtxt
+          print('ROLLBACK_LIVE_VERSION=10.0.13')
+          print('ROLLBACK_LIVE_SHA256='+sha)
+          print('ROLLBACK_LIVE_SIGNATURE=PASS')
+          PY
+          echo ENDLUME_10_0_13_EMERGENCY_ROLLBACK=PASS

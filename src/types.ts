@@ -28,6 +28,7 @@ export interface ProjectScanItem {
   error?: string;
   anchors?: SceneAnchors;
   selectedEffectId?: string;
+  selectedEffectIds?: string[];
   outputDir?: string;
   outputSource?: 'vyron'|'manual';
   vyronManifestPath?: string;

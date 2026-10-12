@@ -8,6 +8,7 @@ on:
       - '.github/workflows/endlume-1015-hotfix-targeted.yml'
       - 'src/**'
       - 'src-tauri/src/model.rs'
+      - 'src-tauri/src/scan.rs'
       - 'src-tauri/src/queue.rs'
       - 'package.json'
       - 'src-tauri/Cargo.toml'

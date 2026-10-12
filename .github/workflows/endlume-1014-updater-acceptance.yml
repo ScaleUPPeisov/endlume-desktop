@@ -6,6 +6,7 @@ on:
       - release-endlume-10.0.14
     paths:
       - 'release/ENDLUME_10.0.14_PUBLISH_PASS.json'
+      - 'release/ENDLUME_10.0.14_UPDATER_TRIGGER.md'
 
 permissions:
   contents: read
@@ -35,23 +36,29 @@ jobs:
           set -Eeuo pipefail
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           git diff --quiet 55372b94a35ef76ee160347783cf8c62e003fa4e HEAD -- src src-tauri/src
-          readarray -t META < <(python3 - release/ENDLUME_10.0.14_PUBLISH_PASS.json <<'PY'
-          import json,sys,subprocess
+          PUBLISH_RUN_ID="$(python3 -c 'import json;print(json.load(open("release/ENDLUME_10.0.14_PUBLISH_PASS.json"))["publishRunId"])')"
+          PUBLISH_HEAD="$(python3 -c 'import json;print(json.load(open("release/ENDLUME_10.0.14_PUBLISH_PASS.json"))["publishHead"])')"
+          RELEASE_COMMIT="$(python3 -c 'import json;print(json.load(open("release/ENDLUME_10.0.14_PUBLISH_PASS.json"))["releaseCommit"])')"
+          SIGNED_RUN_ID="$(python3 -c 'import json;print(json.load(open("release/ENDLUME_10.0.14_PUBLISH_PASS.json"))["signedRunId"])')"
+          EXPECTED_LIVE_SHA="$(python3 -c 'import json;print(json.load(open("release/ENDLUME_10.0.14_PUBLISH_PASS.json"))["liveArtifactSha256"])')"
+          python3 - release/ENDLUME_10.0.14_PUBLISH_PASS.json <<'PY'
+          import json,sys
           d=json.load(open(sys.argv[1]))
           assert d['version']=='10.0.14' and d['status']=='PASS_PENDING_REAL_UPDATER',d
           assert d['functionalSource']=='55372b94a35ef76ee160347783cf8c62e003fa4e',d
-          parent=subprocess.check_output(['git','rev-parse','HEAD^'],text=True).strip()
-          assert d['publishHead']==parent,(d['publishHead'],parent)
-          print(d['publishRunId']); print(d['releaseCommit']); print(d['signedRunId']); print(d['liveArtifactSha256'])
+          assert d['releaseCommit']=='b2d3ea03a3c5ecd0293df83260d0c35f2a54bcc9',d
+          assert len(d['liveArtifactSha256'])==64,d
+          print('PUBLISH_SENTINEL=PASS')
           PY
-          )
-          PUBLISH_RUN_ID="${META[0]}"; RELEASE_COMMIT="${META[1]}"; SIGNED_RUN_ID="${META[2]}"; EXPECTED_LIVE_SHA="${META[3]}"
+          git merge-base --is-ancestor "$PUBLISH_HEAD" HEAD
           for i in $(seq 1 60); do
             STATUS="$(gh api repos/ScaleUPPeisov/endlume-desktop/actions/runs/$PUBLISH_RUN_ID --jq '.status+":"+(.conclusion//"")')"
             [ "$STATUS" = 'completed:success' ] && break
             sleep 2
           done
           test "$STATUS" = 'completed:success'
+          RUN_HEAD="$(gh api repos/ScaleUPPeisov/endlume-desktop/actions/runs/$PUBLISH_RUN_ID --jq .head_sha)"
+          test "$RUN_HEAD" = "$PUBLISH_HEAD"
           RB="$RUNNER_TEMP/ENDLUME-10.0.13-STABLE-ROLLBACK"
           mkdir -p "$RB"
           gh run download "$PUBLISH_RUN_ID" --repo ScaleUPPeisov/endlume-desktop --name 'ENDLUME-10.0.13-STABLE-ROLLBACK' --dir "$RB"

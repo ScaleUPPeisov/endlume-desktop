@@ -1,0 +1,104 @@
+name: ENDLUME 10.0.14 Publish Stable
+
+on:
+  workflow_run:
+    workflows:
+      - ENDLUME 10.0.14 Build Sign Physical Gate
+    types: [completed]
+    branches:
+      - release-endlume-10.0.14
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: endlume-1014-publish-stable
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Freeze and exact signed run proof
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SIGNED_RUN_ID: ${{ github.event.workflow_run.id }}
+          RELEASE_HEAD: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -Eeuo pipefail
+          BASE='55372b94a35ef76ee160347783cf8c62e003fa4e'
+          test "${{ github.event.workflow_run.head_branch }}" = 'release-endlume-10.0.14'
+          test "$(git rev-parse HEAD)" = "$RELEASE_HEAD"
+          git merge-base --is-ancestor "$BASE" HEAD
+          git diff --quiet "$BASE" HEAD -- src src-tauri/src
+          git diff --quiet "$BASE" HEAD -- src-tauri/icons
+          STATUS="$(gh api repos/ScaleUPPeisov/endlume-desktop/actions/runs/$SIGNED_RUN_ID --jq '.status+":"+.conclusion')"
+          test "$STATUS" = 'completed:success'
+          RUN_HEAD="$(gh api repos/ScaleUPPeisov/endlume-desktop/actions/runs/$SIGNED_RUN_ID --jq .head_sha)"
+          test "$RUN_HEAD" = "$RELEASE_HEAD"
+          echo FUNCTIONAL_PRODUCT_DIFF=0
+          echo SIGNED_RUN_EXACT=PASS
+
+      - name: Download exact signed candidate
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SIGNED_RUN_ID: ${{ github.event.workflow_run.id }}
+          RELEASE_HEAD: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -Eeuo pipefail
+          ART="$RUNNER_TEMP/endlume-1014-signed"
+          RB="$RUNNER_TEMP/ENDLUME-10.0.13-STABLE-ROLLBACK"
+          mkdir -p "$ART" "$RB"
+          gh run download "$SIGNED_RUN_ID" --repo ScaleUPPeisov/endlume-desktop --name 'ENDLUME-10.0.14-PHASE4-SIGNED-MACOS-ARM64' --dir "$ART"
+          test -s "$ART/ENDLUME-10.0.14-release.json"
+          python3 - "$ART/ENDLUME-10.0.14-release.json" "$RELEASE_HEAD" <<'PY'
+          import json,sys
+          d=json.load(open(sys.argv[1])); head=sys.argv[2]
+          assert d['releaseHead']==head,(d.get('releaseHead'),head)
+          assert d['releaseVersion']=='10.0.14'
+          assert d['functionalSourceHead']=='55372b94a35ef76ee160347783cf8c62e003fa4e'
+          assert d['functionalProductDiff']==0
+          assert d['signatureVerify']=='PASS' and d['packagedSmoke']=='PASS'
+          print('SIGNED_ARTIFACT_RELEASE_HEAD=PASS')
+          PY
+          echo "PHASE4_ARTIFACT_DIR=$ART" >> "$GITHUB_ENV"
+          echo "ROLLBACK_DIR=$RB" >> "$GITHUB_ENV"
+
+      - name: Backup 10.0.13 and publish 10.0.14 rollback-safe
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.ENDLUME_RELEASE_TOKEN }}
+        run: |
+          set -Eeuo pipefail
+          test -n "${GH_TOKEN:-}"
+          bash scripts/phase4_publish_1014.sh
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ENDLUME-10.0.13-STABLE-ROLLBACK
+          path: ${{ env.ROLLBACK_DIR }}
+          if-no-files-found: error
+          retention-days: 60
+
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: ENDLUME-10.0.14-PUBLISH-EVIDENCE
+          path: |
+            ${{ env.PHASE4_ARTIFACT_DIR }}/live-latest.json
+            ${{ env.PHASE4_ARTIFACT_DIR }}/LIVE_ARTIFACT_SHA256.txt
+            ${{ env.PHASE4_ARTIFACT_DIR }}/ENDLUME-10.0.14-release.json
+          if-no-files-found: error
+          retention-days: 60

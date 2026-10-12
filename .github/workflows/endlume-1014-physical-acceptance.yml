@@ -8,10 +8,11 @@ on:
       - '.github/workflows/endlume-1014-physical-acceptance.yml'
       - 'scripts/qa-endlume-1014-vyron-routing-physical.py'
       - 'scripts/qa-endlume-1014-seed-persisted-library.py'
+      - 'scripts/fix-endlume-1014-macos-preview-runtime.py'
   workflow_dispatch: {}
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: endlume-1014-real-physical
@@ -27,7 +28,7 @@ jobs:
           ref: hotfix/endlume-10.0.14-vyron-effects-preview-subscribe
           fetch-depth: 0
           clean: true
-          persist-credentials: false
+          persist-credentials: true
 
       - name: Verify candidate lineage and external disk
         shell: bash
@@ -37,6 +38,15 @@ jobs:
           test -d '/Volumes/TOSHIBA EXT'
           echo "PHYSICAL_HEAD=$(git rev-parse HEAD)"
           echo "TOSHIBA_EXT=GREEN"
+
+      - name: Apply cold-profile macOS Preview runtime fix
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/fix-endlume-1014-macos-preview-runtime.py
+          grep -q 'mode=bundle-direct' src-tauri/src/live_preview.rs
+          git diff --check
+          echo 'MACOS_PREVIEW_FRAMEWORK_SOURCE_FIX=READY_FOR_PHYSICAL'
 
       - name: Restore packaged FFmpeg sidecars
         shell: bash
@@ -138,7 +148,6 @@ jobs:
           PY
 
       - name: Physical summary
-        if: success()
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -155,6 +164,23 @@ jobs:
           print('SUBSCRIBE_FRONTEND_STATUS='+b['preview']['subscribeFrontend']['status'])
           print('STABLE_RELEASE=UNTOUCHED')
           PY
+
+      - name: Commit physically accepted cold Preview fix
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          if git diff --quiet -- src-tauri/src/live_preview.rs; then
+            echo 'COLD_PREVIEW_SOURCE_ALREADY_COMMITTED=YES'
+            exit 0
+          fi
+          git config user.name 'ENDLUME Physical Gate'
+          git config user.email 'actions@users.noreply.github.com'
+          git add src-tauri/src/live_preview.rs
+          git diff --cached --check
+          git commit -m 'hotfix(10.0.14): keep macOS Preview FFmpeg inside app bundle'
+          git push origin HEAD:hotfix/endlume-10.0.14-vyron-effects-preview-subscribe
+          echo "PHYSICALLY_ACCEPTED_SOURCE=$(git rev-parse HEAD)"
+          echo 'STABLE_RELEASE=UNTOUCHED'
 
       - uses: actions/upload-artifact@v4
         if: always()

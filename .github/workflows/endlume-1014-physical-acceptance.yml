@@ -53,11 +53,13 @@ jobs:
           grep -q 'ENDLUME_PREVIEW_PROBE_MODE=' src-tauri/src/live_preview.rs
           grep -q 'proxy_probe_metadata_valid' src-tauri/src/live_preview.rs
           grep -q '"-c:a","aac_at","-b:a","512k"' src-tauri/src/fast_render.rs
+          grep -q 'ENDLUME_COMMON_MP4_DISTRIBUTION_PAD' src-tauri/src/lib.rs
           git diff --check
           echo 'MACOS_PREVIEW_FRAMEWORK_SOURCE_FIX=READY_FOR_PHYSICAL'
           echo 'CANONICAL_PREVIEW_SHORT_FALLBACK=READY_FOR_PHYSICAL'
           echo 'PREVIEW_METADATA_PROBE_FAST_PATH=READY_FOR_PHYSICAL'
           echo 'PHASE3_AAC_512K_SIZE_TARGET=READY_FOR_PHYSICAL'
+          echo 'COMMON_MP4_450M_FINALIZER=READY_FOR_PHYSICAL'
 
       - name: Restore packaged FFmpeg sidecars
         shell: bash
@@ -176,19 +178,26 @@ jobs:
           print('STABLE_RELEASE=UNTOUCHED')
           PY
 
-      - name: Commit physically accepted cold Preview fix
+      - name: Commit physically accepted source
         shell: bash
         run: |
           set -Eeuo pipefail
-          if git diff --quiet -- src-tauri/src/live_preview.rs src-tauri/src/preview.rs; then
-            echo 'COLD_PREVIEW_SOURCE_ALREADY_COMMITTED=YES'
+          ACCEPTED=(
+            src-tauri/src/live_preview.rs
+            src-tauri/src/preview.rs
+            src-tauri/src/fast_render.rs
+            src-tauri/src/lib.rs
+          )
+          if git diff --quiet -- "${ACCEPTED[@]}"; then
+            echo 'PHYSICALLY_ACCEPTED_SOURCE_ALREADY_COMMITTED=YES'
+            echo 'STABLE_RELEASE=UNTOUCHED'
             exit 0
           fi
           git config user.name 'ENDLUME Physical Gate'
           git config user.email 'actions@users.noreply.github.com'
-          git add src-tauri/src/live_preview.rs src-tauri/src/preview.rs
+          git add "${ACCEPTED[@]}"
           git diff --cached --check
-          git commit -m 'hotfix(10.0.14): bound cold macOS Preview and avoid redundant full-frame validation'
+          git commit -m 'hotfix(10.0.14): persist physically accepted Preview and render source'
           git push origin HEAD:hotfix/endlume-10.0.14-vyron-effects-preview-subscribe
           echo "PHYSICALLY_ACCEPTED_SOURCE=$(git rev-parse HEAD)"
           echo 'STABLE_RELEASE=UNTOUCHED'

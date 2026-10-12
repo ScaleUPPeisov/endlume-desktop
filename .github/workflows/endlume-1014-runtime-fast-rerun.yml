@@ -1,0 +1,127 @@
+name: ENDLUME 10.0.14 Fast Runtime Physical Rerun
+
+on:
+  push:
+    branches:
+      - hotfix/endlume-10.0.14-vyron-effects-preview-subscribe
+    paths:
+      - '.github/workflows/endlume-1014-runtime-fast-rerun.yml'
+      - 'scripts/qa-endlume-1014-preview-subscribe-final.py'
+      - 'scripts/qa-endlume-1014-effect-assignment-ui-v2.py'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-1014-runtime-fast-rerun
+  cancel-in-progress: true
+
+jobs:
+  runtime:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: hotfix/endlume-10.0.14-vyron-effects-preview-subscribe
+          fetch-depth: 0
+          clean: true
+          persist-credentials: false
+
+      - name: Reuse exact compiled candidate
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          BASE=d4e35c6bf26470a689d95e149e0d2bd82172c733
+          git merge-base --is-ancestor "$BASE" HEAD
+          git diff --quiet "$BASE" HEAD -- src src-tauri/src package.json package-lock.json src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/tauri.conf.json
+          test -d '/Volumes/TOSHIBA EXT'
+          ROOT="$RUNNER_TEMP/endlume-1014-fast-runtime"
+          rm -rf "$ROOT"; mkdir -p "$ROOT"
+          CACHE="$RUNNER_TEMP/../_endlume-cache/target-1014-physical/aarch64-apple-darwin/release/bundle/macos"
+          APP="$(find "$CACHE" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          test -n "$APP" -a -d "$APP"
+          /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP"
+          EXE_NAME="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
+          EXE="$APP/Contents/MacOS/$EXE_NAME"
+          FFMPEG="$(find "$APP/Contents" -maxdepth 7 -type f -name ffmpeg -perm -111 -print -quit)"
+          FFPROBE="$(find "$APP/Contents" -maxdepth 7 -type f -name ffprobe -perm -111 -print -quit)"
+          test -x "$EXE" -a -x "$FFMPEG" -a -x "$FFPROBE"
+          printf '%s' "$APP" > "$ROOT/app.txt"
+          printf '%s' "$EXE" > "$ROOT/exe.txt"
+          printf '%s' "$FFMPEG" > "$ROOT/ffmpeg.txt"
+          printf '%s' "$FFPROBE" > "$ROOT/ffprobe.txt"
+          echo CANDIDATE_REUSE=GREEN
+
+      - name: Real Effects and Subscribe Preview plus final render
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ROOT="$RUNNER_TEMP/endlume-1014-fast-runtime"
+          EXE="$(cat "$ROOT/exe.txt")"
+          FFMPEG="$(cat "$ROOT/ffmpeg.txt")"
+          FFPROBE="$(cat "$ROOT/ffprobe.txt")"
+          python3 scripts/qa-endlume-1014-preview-subscribe-final.py "$EXE" "$FFMPEG" "$FFPROBE" "$ROOT/preview-subscribe-render.json" | tee "$ROOT/preview-subscribe-render.log"
+          python3 - "$ROOT/preview-subscribe-render.json" <<'PY'
+          import json,sys
+          d=json.load(open(sys.argv[1]))
+          assert d['status']=='GREEN',d
+          assert d['preview']['effectsBackend']=='GREEN',d
+          assert d['preview']['effectsFrontend']['status']=='GREEN',d
+          assert d['preview']['subscribeBackend']=='GREEN',d
+          assert d['preview']['subscribeFrontend']['status']=='GREEN',d
+          assert d['subscribeState']=='GREEN' and d['subscribeRecipe']=='GREEN' and d['subscribeMaster']=='GREEN' and d['subscribeFinal']=='GREEN',d
+          assert d['roundEqualizer']=='GREEN' and d['otherEffect']=='GREEN',d
+          assert d['cacheInvalidation']=='GREEN',d
+          print('REAL_EFFECTS_PREVIEW=GREEN')
+          print('REAL_SUBSCRIBE_PREVIEW=GREEN')
+          print('REAL_FINAL_RENDER=GREEN')
+          PY
+
+      - name: Real 20-project Effects assignment UI
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ROOT="$RUNNER_TEMP/endlume-1014-fast-runtime"
+          APP="$(cat "$ROOT/app.txt")"
+          FFMPEG="$(cat "$ROOT/ffmpeg.txt")"
+          python3 scripts/qa-endlume-1014-effect-assignment-ui-v2.py "$APP" "$FFMPEG" "$ROOT/effect-ui.json" | tee "$ROOT/effect-ui.log"
+          python3 - "$ROOT/effect-ui.json" <<'PY'
+          import json,sys
+          d=json.load(open(sys.argv[1]))
+          assert d['status']=='GREEN' and d['projectCount']==20,d
+          assert d['assignmentPersistedAcrossRestart'] is True,d
+          assert d['all20QueuedWithRound'] is True,d
+          assert d['switchToAnotherEffect'] is True,d
+          assert d['disableAssignment'] is True,d
+          assert set(d['persistedRoundQueue']['selectedIds'])=={d['roundId']},d
+          assert set(d['otherQueue']['selectedIds'])=={d['otherId']},d
+          assert set(d['noneQueue']['selectedIds'])=={'__none__'},d
+          print('EFFECT_ASSIGNMENT_20_PROJECTS=GREEN')
+          PY
+
+      - name: Runtime summary
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ROOT="$RUNNER_TEMP/endlume-1014-fast-runtime"
+          python3 - "$ROOT/preview-subscribe-render.json" "$ROOT/effect-ui.json" <<'PY'
+          import json,sys
+          a=json.load(open(sys.argv[1])); b=json.load(open(sys.argv[2]))
+          print('ENDLUME_1014_RUNTIME_PHYSICAL=GREEN')
+          print('EFFECTS_FRONTEND='+a['preview']['effectsFrontend']['status'])
+          print('SUBSCRIBE_FRONTEND='+a['preview']['subscribeFrontend']['status'])
+          print('RENDER_WARM_SECONDS=%.3f'%a['render']['e1011-sub-warm']['wall'])
+          print('EFFECT_PROJECTS='+str(b['projectCount']))
+          print('STABLE_RELEASE=UNTOUCHED')
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ENDLUME-10.0.14-FAST-RUNTIME-PHYSICAL-EVIDENCE
+          path: |
+            ${{ runner.temp }}/endlume-1014-fast-runtime/**
+          if-no-files-found: warn
+          retention-days: 14

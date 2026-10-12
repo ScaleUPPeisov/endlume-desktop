@@ -34,3 +34,10 @@ assert '@executable_path/../Frameworks' in live_preview
 assert 'ENDLUME_PREVIEW_HW_TIMEOUT_DIRECT_SAFE_FALLBACK' in live_preview
 assert 'safe_prefix.as_ref()' in live_preview
 assert 'if hw_error.contains("timeout after"){let _=fs::remove_file(out);return Err(hw_error)}' not in live_preview
+
+# The physical gate owns the metadata-vs-count_frames split. Lock the Rust
+# lifetime fix here so a later edit cannot reintroduce E0716 before physical QA.
+probe_fixer=text("scripts/fix-endlume-1014-preview-probe.py")
+assert 'let out_arg=out.to_string_lossy().into_owned()' in probe_fixer
+assert 'ENDLUME_PREVIEW_PROBE_MODE=' in probe_fixer
+assert 'let probe_valid=if deep_probe' in probe_fixer

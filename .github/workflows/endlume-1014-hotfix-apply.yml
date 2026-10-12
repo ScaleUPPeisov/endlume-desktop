@@ -36,7 +36,7 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-          python3 scripts/apply-endlume-1014-hotfix.py
+          python3 scripts/run-endlume-1014-hotfix.py
           python3 scripts/qa-endlume-1014-hotfix.py
           git diff --check
 

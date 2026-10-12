@@ -10,7 +10,7 @@ permissions:
 
 concurrency:
   group: endlume-1014-hotfix-apply
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   apply-and-gate:

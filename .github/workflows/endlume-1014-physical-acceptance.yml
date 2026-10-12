@@ -45,8 +45,10 @@ jobs:
           set -Eeuo pipefail
           python3 scripts/fix-endlume-1014-macos-preview-runtime.py
           grep -q 'mode=bundle-direct' src-tauri/src/live_preview.rs
+          grep -q 'ENDLUME_PREVIEW_CANONICAL_TIMEOUT_SHORT_FALLBACK' src-tauri/src/preview.rs
           git diff --check
           echo 'MACOS_PREVIEW_FRAMEWORK_SOURCE_FIX=READY_FOR_PHYSICAL'
+          echo 'CANONICAL_PREVIEW_SHORT_FALLBACK=READY_FOR_PHYSICAL'
 
       - name: Restore packaged FFmpeg sidecars
         shell: bash
@@ -169,15 +171,15 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-          if git diff --quiet -- src-tauri/src/live_preview.rs; then
+          if git diff --quiet -- src-tauri/src/live_preview.rs src-tauri/src/preview.rs; then
             echo 'COLD_PREVIEW_SOURCE_ALREADY_COMMITTED=YES'
             exit 0
           fi
           git config user.name 'ENDLUME Physical Gate'
           git config user.email 'actions@users.noreply.github.com'
-          git add src-tauri/src/live_preview.rs
+          git add src-tauri/src/live_preview.rs src-tauri/src/preview.rs
           git diff --cached --check
-          git commit -m 'hotfix(10.0.14): keep macOS Preview FFmpeg inside app bundle'
+          git commit -m 'hotfix(10.0.14): bound cold macOS helper and canonical Preview paths'
           git push origin HEAD:hotfix/endlume-10.0.14-vyron-effects-preview-subscribe
           echo "PHYSICALLY_ACCEPTED_SOURCE=$(git rev-parse HEAD)"
           echo 'STABLE_RELEASE=UNTOUCHED'

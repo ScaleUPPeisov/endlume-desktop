@@ -38,6 +38,18 @@ jobs:
           npm ci
           npm run build
 
+      - name: Provision existing QA ffmpeg binaries
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          APP="/Users/Shared/endlume-qa/cache/endlume-10.0.14-physical/ENDLUME YT Studio PEISOV.app"
+          test -x "$APP/Contents/MacOS/ffmpeg"
+          test -x "$APP/Contents/MacOS/ffprobe"
+          mkdir -p src-tauri/binaries
+          cp "$APP/Contents/MacOS/ffmpeg" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp "$APP/Contents/MacOS/ffprobe" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          chmod +x src-tauri/binaries/ffmpeg-aarch64-apple-darwin src-tauri/binaries/ffprobe-aarch64-apple-darwin
+
       - name: Rust targeted compile
         shell: bash
         run: |

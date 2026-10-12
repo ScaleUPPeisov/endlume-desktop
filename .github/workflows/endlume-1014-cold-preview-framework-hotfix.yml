@@ -1,0 +1,145 @@
+name: ENDLUME 10.0.14 Cold Preview Framework Hotfix
+
+on:
+  push:
+    branches:
+      - hotfix/endlume-10.0.14-vyron-effects-preview-subscribe
+    paths:
+      - '.github/workflows/endlume-1014-cold-preview-framework-hotfix.yml'
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: endlume-1014-cold-preview-framework-hotfix
+  cancel-in-progress: true
+
+jobs:
+  patch-test-commit:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: hotfix/endlume-10.0.14-vyron-effects-preview-subscribe
+          fetch-depth: 0
+          clean: true
+          persist-credentials: true
+
+      - name: Patch macOS Preview tool resolver
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          p=Path('src-tauri/src/live_preview.rs')
+          s=p.read_text(encoding='utf-8')
+          if 'mode=bundle-direct' in s:
+              print('COLD_PREVIEW_FRAMEWORK_FIX=ALREADY_APPLIED')
+          else:
+              pattern=r'''fn stage_packaged_tool\(app:&AppHandle,name:&str\)->Option<PathBuf>\{.*?\n\}\n\npub\(crate\) fn staged_ffmpeg'''
+              repl='''fn stage_packaged_tool(app:&AppHandle,name:&str)->Option<PathBuf>{
+            let exe=std::env::current_exe().ok()?;
+            let exe_dir=exe.parent()?;
+            #[cfg(target_os="windows")]
+            let source=exe_dir.join(format!("{name}.exe"));
+            #[cfg(not(target_os="windows"))]
+            let source=exe_dir.join(name);
+            if !executable_file(&source){return None}
+
+            // macOS packaged FFmpeg is intentionally linked against
+            // @executable_path/../Frameworks/*.dylib. Copying only the executable
+            // into ~/Library/Caches breaks that relative loader contract on a cold
+            // profile. Execute the exact signed bundle sibling instead; it keeps
+            // Contents/MacOS <-> Contents/Frameworks intact and is still fully
+            // bounded by staged_process_output below.
+            #[cfg(target_os="macos")]
+            {
+              if live_preview_diag_enabled(){eprintln!("ENDLUME_PREVIEW_TOOL_STAGE name={name} mode=bundle-direct source={} staged={} bytes={}",source.display(),source.display(),fs::metadata(&source).ok()?.len());}
+              return Some(source)
+            }
+
+            #[cfg(not(target_os="macos"))]
+            {
+              let root=app.path().app_cache_dir().ok()?.join("live-preview-tools-v1");
+              fs::create_dir_all(&root).ok()?;
+              let source_meta=fs::metadata(&source).ok()?;
+              let file_name=source.file_name()?;
+              let target=root.join(file_name);
+              if fs::metadata(&target).map(|m|m.is_file()&&m.len()==source_meta.len()).unwrap_or(false)&&executable_file(&target){
+                if live_preview_diag_enabled(){eprintln!("ENDLUME_PREVIEW_TOOL_STAGE name={name} mode=cache-hit source={} staged={} bytes={}",source.display(),target.display(),source_meta.len());}
+                return Some(target)
+              }
+
+              let tmp=root.join(format!(".{}-{}.tmp",name,uuid::Uuid::new_v4()));
+              let _=fs::remove_file(&tmp);
+              let mode=if fs::hard_link(&source,&tmp).is_ok(){
+                "hard-link"
+              }else{
+                fs::copy(&source,&tmp).ok()?;
+                "copy"
+              };
+              #[cfg(unix)]
+              {
+                use std::os::unix::fs::PermissionsExt;
+                let mut permissions=fs::metadata(&tmp).ok()?.permissions();
+                permissions.set_mode(permissions.mode()|0o755);
+                fs::set_permissions(&tmp,permissions).ok()?;
+              }
+              if target.exists(){let _=fs::remove_file(&target);}
+              fs::rename(&tmp,&target).ok()?;
+              if !executable_file(&target){let _=fs::remove_file(&target);return None}
+              if live_preview_diag_enabled(){eprintln!("ENDLUME_PREVIEW_TOOL_STAGE name={name} mode={mode} source={} staged={} bytes={}",source.display(),target.display(),source_meta.len());}
+              Some(target)
+            }
+          }
+
+          pub(crate) fn staged_ffmpeg'''
+              out,n=re.subn(pattern,repl,s,count=1,flags=re.S)
+              if n!=1: raise SystemExit(f'live_preview stage_packaged_tool shape mismatch: {n}')
+              p.write_text(out,encoding='utf-8')
+              print('COLD_PREVIEW_FRAMEWORK_FIX=APPLIED')
+          s=p.read_text(encoding='utf-8')
+          assert 'mode=bundle-direct' in s
+          assert '@executable_path/../Frameworks' in s
+          assert '#[cfg(not(target_os="macos"))]' in s
+          PY
+          git diff --check
+
+      - name: Restore FFmpeg sidecars
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          FOUNDATION="$HOME/.endlume-local-builder/endlume-desktop-8.40-bootstrap"
+          test -d "$FOUNDATION/src-tauri/binaries"
+          mkdir -p src-tauri/binaries
+          rsync -a "$FOUNDATION/src-tauri/binaries/" src-tauri/binaries/
+
+      - name: Compile and unit gate
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export CARGO_TARGET_DIR="$RUNNER_TEMP/../_endlume-cache/target-1014-hotfix"
+          npm ci
+          npm run check
+          cargo check --manifest-path src-tauri/Cargo.toml
+          cargo test --manifest-path src-tauri/Cargo.toml -- --nocapture
+
+      - name: Commit cold-profile fix
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          if git diff --quiet -- src-tauri/src/live_preview.rs; then
+            echo 'SOURCE_ALREADY_GREEN=YES'
+            exit 0
+          fi
+          git config user.name 'ENDLUME Hotfix Gate'
+          git config user.email 'actions@users.noreply.github.com'
+          git add src-tauri/src/live_preview.rs
+          git diff --cached --check
+          git commit -m 'hotfix(10.0.14): keep macOS Preview FFmpeg inside app bundle'
+          git push origin HEAD:hotfix/endlume-10.0.14-vyron-effects-preview-subscribe
+          echo "CANDIDATE_COMMIT=$(git rev-parse HEAD)"
+          echo 'STABLE_RELEASE=UNTOUCHED'

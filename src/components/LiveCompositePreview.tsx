@@ -84,9 +84,6 @@ export function LiveCompositePreview({assets,effect,active=true,busy,overlayRef,
         }else pixelReadback='UNAVAILABLE';
       }catch{pixelReadback='UNAVAILABLE'}
     }
-    // WKWebView can deny canvas readback for local Blob-backed images even after a
-    // successful decode. In that case natural geometry + visible DOM placement proves
-    // frontend display, while backend/QA separately proves the composed poster pixels.
     const green=w>0&&h>0&&browserVisible&&(pixelReadback==='GREEN'||pixelReadback==='UNAVAILABLE');
     console.info(`[ENDLUME_PREVIEW] PREVIEW_REQUEST_ID=${requestId} PREVIEW_TYPE=${previewType} POSTER_LOAD=${green?'GREEN':'RED'} IMAGE_NATURAL_WIDTH=${w} IMAGE_NATURAL_HEIGHT=${h} BROWSER_VISIBLE=${browserVisible} BROWSER_RECT=${Math.round(rect.width)}x${Math.round(rect.height)} PIXEL_READBACK=${pixelReadback} BROWSER_NONBLACK_PIXELS=${paintedNonBlack} PREVIEW_APPLIED=${green}`);
     if(green&&frameStateRef.current&&!reportedFrameRef.current){
@@ -188,7 +185,7 @@ export function LiveCompositePreview({assets,effect,active=true,busy,overlayRef,
   useEffect(()=>()=>{if(brushRaf.current!=null)cancelAnimationFrame(brushRaf.current)},[]);
   if(!assets)return <div className="livePreviewEmpty"><span>{busy?'Подготавливаю Live Preview…':'Нет изображения / видео для Preview'}</span></div>;
   const helperBase=baseSrc?(assets.baseKind==='video'?<video key={baseSrc} className="livePreviewBase helperPreviewBase" src={baseSrc} preload="auto" autoPlay loop muted playsInline onLoadedData={e=>baseLoaded(e.currentTarget.videoWidth,e.currentTarget.videoHeight)} onError={()=>reportRed('base-video-load')}/>:<img className="livePreviewBase helperPreviewBase" src={baseSrc} draggable={false} onLoad={e=>baseLoaded(e.currentTarget.naturalWidth,e.currentTarget.naturalHeight)} onError={()=>reportRed('base-image-load')}/>):null;
-  const posterBase=posterSrc?<img className={`livePreviewBase composedPosterPreview ${liveReady?'liveReady':''}`} src={posterSrc} draggable={false} onLoad={e=>posterLoaded(e.currentTarget)} onError={()=>reportRed('poster-image-load')}/>:null;
+  const posterBase=posterSrc?<img className={`livePreviewBase composedPosterPreview ${liveReady&&assets.previewType==='Subscribe'?'liveReady':''}`} src={posterSrc} draggable={false} onLoad={e=>posterLoaded(e.currentTarget)} onError={()=>reportRed('poster-image-load')}/>:null;
   const exactOverlayStyle:React.CSSProperties=effect.fullscreen?overlayStyle:{...overlayStyle,aspectRatio:String(Math.max(.05,overlayAspect)),height:'auto'};
   return <div className={`liveComposite ${picker?'chromaPicking':''} ${anchorMode?'anchorPicking':''}`} onPointerDownCapture={pickAnchor}>
     {helperBase}

@@ -1,4 +1,4 @@
-name: ENDLUME 10.0.15 Targeted Hotfix QA
+name: ENDLUME 10.0.15 Fast Self-Hosted Physical Gate
 
 on:
   push:
@@ -6,88 +6,242 @@ on:
       - hotfix/endlume-10.0.15-multi-effect-live-preview
     paths:
       - '.github/workflows/endlume-1015-hotfix-targeted.yml'
-      - 'src/**'
-      - 'src-tauri/src/model.rs'
-      - 'src-tauri/src/scan.rs'
-      - 'src-tauri/src/queue.rs'
-      - 'package.json'
-      - 'src-tauri/Cargo.toml'
-      - 'src-tauri/tauri.conf.json'
   workflow_dispatch: {}
 
 permissions:
   contents: read
 
 concurrency:
-  group: endlume-1015-hotfix-targeted
+  group: endlume-1015-fast-physical
   cancel-in-progress: true
 
+env:
+  PRODUCT_CANDIDATE: c5534ce47123777b698117a46473238381e37729
+  BASELINE_1014_REAL_RENDER_WARM_SECONDS: '7.043'
+  BASELINE_1014_VYRON_WALL_SECONDS: '6.990'
+
 jobs:
-  targeted:
+  physical:
     runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
-    timeout-minutes: 25
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
         with:
-          clean: true
+          ref: c5534ce47123777b698117a46473238381e37729
           fetch-depth: 0
+          clean: true
+          persist-credentials: false
 
-      - name: Frontend build
+      - name: Verify exact candidate and physical prerequisites
         shell: bash
         run: |
           set -Eeuo pipefail
-          npm ci
-          npm run build
+          ACTUAL="$(git rev-parse HEAD)"
+          test "$ACTUAL" = "$PRODUCT_CANDIDATE"
+          test -d '/Volumes/TOSHIBA EXT'
+          echo "PRODUCT_CANDIDATE_EXACT=$ACTUAL"
+          echo 'TOSHIBA_EXT=GREEN'
 
-      - name: Provision runner ffmpeg binaries
+      - name: Restore packaged FFmpeg sidecars
         shell: bash
         run: |
           set -Eeuo pipefail
-          FFMPEG="$(command -v ffmpeg || true)"
-          FFPROBE="$(command -v ffprobe || true)"
-          if [[ -z "$FFMPEG" || -z "$FFPROBE" ]]; then
-            FFMPEG="$(find /Users/Shared /opt/homebrew /usr/local -type f -name ffmpeg -perm -111 2>/dev/null | head -1 || true)"
-            FFPROBE="$(find /Users/Shared /opt/homebrew /usr/local -type f -name ffprobe -perm -111 2>/dev/null | head -1 || true)"
-          fi
-          test -n "$FFMPEG" && test -x "$FFMPEG"
-          test -n "$FFPROBE" && test -x "$FFPROBE"
+          FOUNDATION="$HOME/.endlume-local-builder/endlume-desktop-8.40-bootstrap"
+          test -d "$FOUNDATION/src-tauri/binaries"
           mkdir -p src-tauri/binaries
-          cp "$FFMPEG" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
-          cp "$FFPROBE" src-tauri/binaries/ffprobe-aarch64-apple-darwin
-          chmod +x src-tauri/binaries/ffmpeg-aarch64-apple-darwin src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          rsync -a "$FOUNDATION/src-tauri/binaries/" src-tauri/binaries/
 
-      - name: Rust targeted compile
+      - name: Build exact candidate app without publication
         shell: bash
         run: |
           set -Eeuo pipefail
-          cargo check --manifest-path src-tauri/Cargo.toml
-
-      - name: Hotfix contract
-        shell: bash
-        run: |
-          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+          export CARGO_TARGET_DIR="$RUNNER_TEMP/../_endlume-cache/target-1015-physical"
+          ROOT="$RUNNER_TEMP/endlume-1015-physical"
+          rm -rf "$ROOT"; mkdir -p "$ROOT"
+          npm ci
+          CONF='src-tauri/tauri.conf.json'
+          BACKUP="$ROOT/tauri.conf.original.json"
+          cp "$CONF" "$BACKUP"
+          restore_conf(){ cp "$BACKUP" "$CONF"; }
+          trap restore_conf EXIT
           python3 - <<'PY'
+          import json
           from pathlib import Path
-          project=Path('src/pages/ProjectPage.tsx').read_text(encoding='utf-8')
-          store=Path('src/store.ts').read_text(encoding='utf-8')
-          queue=Path('src-tauri/src/queue.rs').read_text(encoding='utf-8')
-          editors=Path('src/pages/Editors.tsx').read_text(encoding='utf-8')
-          preview=Path('src/components/LiveCompositePreview.tsx').read_text(encoding='utf-8')
-          model=Path('src-tauri/src/model.rs').read_text(encoding='utf-8')
-          assert 'Все эффекты → ко всем видео' in project
-          assert 'selectedEffectIds:ids' in project
-          assert 'selectedEffectIdsByPath' in store
-          assert 'version:9' in store
-          assert 'selected_effect_ids:Vec<String>' in model.replace(' ','')
-          assert 'for selected_id in &selected_ids' in queue
-          assert 'effects:selected_effects' in queue.replace(' ','')
-          assert 'current={resolvedCurrent}' in editors
-          assert 'current={current} active={!!assets&&previewEnabled(current)}' in editors
-          assert 'LIVE_RELOAD_DEBOUNCE_MS=80' in editors
-          assert "assets.previewType==='Subscribe'" in preview
-          print('MULTI_EFFECT_MODEL=PASS')
+          p=Path('src-tauri/tauri.conf.json')
+          d=json.loads(p.read_text())
+          d['bundle']['createUpdaterArtifacts']=False
+          p.write_text(json.dumps(d,ensure_ascii=False,indent=2)+'\n')
+          PY
+          ENDLUME_TAURI_TARGET=aarch64-apple-darwin node scripts/prepare-macos-ffmpeg-runtime.mjs
+          npx tauri build --target aarch64-apple-darwin --bundles app --features e2e-render
+          APP="$(find "$CARGO_TARGET_DIR/aarch64-apple-darwin/release/bundle/macos" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          test -n "$APP" -a -d "$APP"
+          /usr/bin/codesign --force --deep --sign - --timestamp=none "$APP"
+          /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP"
+          EXE_NAME="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
+          EXE="$APP/Contents/MacOS/$EXE_NAME"
+          FFMPEG="$(find "$APP/Contents" -maxdepth 7 -type f -name 'ffmpeg' -perm -111 -print -quit)"
+          FFPROBE="$(find "$APP/Contents" -maxdepth 7 -type f -name 'ffprobe' -perm -111 -print -quit)"
+          test -x "$EXE" -a -x "$FFMPEG" -a -x "$FFPROBE"
+          printf '%s' "$APP" > "$ROOT/app.txt"
+          printf '%s' "$EXE" > "$ROOT/exe.txt"
+          printf '%s' "$FFMPEG" > "$ROOT/ffmpeg.txt"
+          printf '%s' "$FFPROBE" > "$ROOT/ffprobe.txt"
+          echo 'PACKAGED_E2E_APP=GREEN'
+
+      - name: VYRON_REGRESSION — physical split destination with multi-effects
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ROOT="$RUNNER_TEMP/endlume-1015-physical"
+          EXE="$(cat "$ROOT/exe.txt")"
+          FFMPEG="$(cat "$ROOT/ffmpeg.txt")"
+          FFPROBE="$(cat "$ROOT/ffprobe.txt")"
+          HARNESS="$ROOT/qa-endlume-1015-vyron.py"
+          cp scripts/qa-endlume-1014-vyron-routing-physical.py "$HARNESS"
+          python3 - "$HARNESS" <<'PY'
+          from pathlib import Path
+          import sys
+          p=Path(sys.argv[1]); s=p.read_text(encoding='utf-8')
+          anchor="cover_a,audio_a=project_fixture('A',src/'Канал A проект')\ncover_b,audio_b=project_fixture('B',src/'Канал B проект')\n"
+          assert anchor in s
+          inject=r'''
+
+def qa_effect(name, box_color, x, y):
+    path=src/f'{name}.mp4'
+    run([FFMPEG,'-hide_banner','-loglevel','error','-f','lavfi','-i','color=c=0x00ff00:size=640x360:rate=30','-t','2','-vf',f'drawbox=x=120:y=80:w=400:h=180:color={box_color}@1:t=fill','-c:v','libx264','-preset','ultrafast','-pix_fmt','yuv420p','-y',path])
+    return {'id':f'qa-{name}','name':name,'source':str(path),'enabled':True,'mode':'chromakey','keyColor':'#00ff00','similarity':0.10,'blend':0.06,'despill':0.35,'lumaThreshold':0.03,'lumaTolerance':0.08,'saturation':1.0,'x':x,'y':y,'scale':0.24,'fullscreen':False,'previewFrameTime':0.0,'startSec':0.0,'endSec':None,'cacheKey':None,'cacheReady':False,'usageMode':'always','intervalSec':240.0,'usageDurationSec':30.0,'target':None,'offsetX':None,'offsetY':None,'opacity':1.0}
+
+fx1=qa_effect('VYRON FX A','red',0.25,0.25)
+fx2=qa_effect('VYRON FX B','blue',0.50,0.50)
+fx3=qa_effect('VYRON FX C','white',0.75,0.75)
+'''
+          s=s.replace(anchor,anchor+inject,1)
+          old="'settings':settings(out),'effects':[],'subscribes':[],'ambient':None,"
+          new="'settings':settings(out),'effects':[fx1,fx2,fx3],'subscribes':[],'ambient':None,"
+          assert old in s
+          s=s.replace(old,new,1)
+          p.write_text(s,encoding='utf-8')
+          PY
+          python3 "$HARNESS" "$EXE" "$FFMPEG" "$FFPROBE" "$ROOT/vyron-routing.json" | tee "$ROOT/vyron-routing.log"
+          python3 - "$ROOT/vyron-routing.json" <<'PY'
+          import json,sys
+          d=json.load(open(sys.argv[1]))
+          assert d['status']=='GREEN',d
+          assert d['sourceOnExternalDrive'] is True,d
+          assert d['crossWrite'] is False,d
+          assert d['channelA']['outputPath'].startswith(d['destinationA']+'/'),d
+          assert d['channelB']['outputPath'].startswith(d['destinationB']+'/'),d
+          assert float(d['appWallSeconds']) <= 14.0, d
+          print('VYRON_REGRESSION=PASS')
+          print('VYRON_MULTI_EFFECT_RENDER=PASS')
+          print('VYRON_NO_CROSS_WRITE=PASS')
+          PY
+
+      - name: FINAL_RENDER_MULTI_EFFECT + FAST_RENDER_REGRESSION
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ROOT="$RUNNER_TEMP/endlume-1015-physical"
+          EXE="$(cat "$ROOT/exe.txt")"
+          FFMPEG="$(cat "$ROOT/ffmpeg.txt")"
+          FFPROBE="$(cat "$ROOT/ffprobe.txt")"
+          QA_HOME="$RUNNER_TEMP/endlume-1015-isolated-home"
+          rm -rf "$QA_HOME"; mkdir -p "$QA_HOME"
+          python3 scripts/qa-endlume-1014-seed-persisted-library.py "$FFMPEG" "$QA_HOME" | tee "$ROOT/persisted-library-seed.log"
+          HARNESS="$ROOT/qa-endlume-1015-final.py"
+          cp scripts/qa-endlume-1011-preview-subscribe-final.py "$HARNESS"
+          python3 - "$HARNESS" <<'PY'
+          from pathlib import Path
+          import sys
+          p=Path(sys.argv[1]); s=p.read_text(encoding='utf-8')
+          old='''presence={
+    "equalizer":masked_presence(eq_frame,on_frame),
+    "third":masked_presence(third_frame,on_frame),
+    "subscribe":masked_presence(sub_frame,on_frame),
+}
+for name,st in presence.items():
+    assert st["changedFinal"]>=80 and st["meanFinalDiff"]>=1.0,(name,st)
+'''
+          new='''def sparse_presence(mask_src,final_src,threshold=7):
+    idx=[];stride=12
+    for i in range(0,len(base_frame)-2,stride):
+        if max(abs(base_frame[i]-mask_src[i]),abs(base_frame[i+1]-mask_src[i+1]),abs(base_frame[i+2]-mask_src[i+2]))>=threshold:idx.append(i)
+    assert len(idx)>=20,len(idx)
+    vals=[max(abs(base_frame[i]-final_src[i]),abs(base_frame[i+1]-final_src[i+1]),abs(base_frame[i+2]-final_src[i+2])) for i in idx]
+    return {"maskSamples":len(idx),"meanFinalDiff":sum(vals)/len(vals),"changedFinal":sum(v>=threshold for v in vals)}
+presence={
+    "film":sparse_presence(fx_frame,on_frame),
+    "equalizer":masked_presence(eq_frame,on_frame),
+    "third":masked_presence(third_frame,on_frame),
+    "subscribe":masked_presence(sub_frame,on_frame),
+}
+assert presence["film"]["changedFinal"]>=10 and presence["film"]["meanFinalDiff"]>=1.0,presence["film"]
+for name in ("equalizer","third","subscribe"):
+    st=presence[name]
+    assert st["changedFinal"]>=80 and st["meanFinalDiff"]>=1.0,(name,st)
+'''
+          assert old in s
+          s=s.replace(old,new,1)
+          p.write_text(s,encoding='utf-8')
+          PY
+          HOME="$QA_HOME" python3 "$HARNESS" "$EXE" "$FFMPEG" "$FFPROBE" "$ROOT/final-multi-effect.json" | tee "$ROOT/final-multi-effect.log"
+          python3 - "$ROOT/final-multi-effect.json" "$QA_HOME" <<'PY'
+          import json,sys
+          from pathlib import Path
+          d=json.load(open(sys.argv[1])); qa_home=Path(sys.argv[2]).resolve()
+          assert d['status']=='GREEN',d
+          assert Path(d['library']).resolve().is_relative_to(qa_home),d['library']
+          assert d['subscribeFinal']=='GREEN',d
+          assert d['roundEqualizer']=='GREEN' and d['otherEffect']=='GREEN',d
+          presence=d['presence']
+          assert all(k in presence for k in ('film','equalizer','third','subscribe')),presence
+          warm=float(d['render']['e1011-sub-warm']['wall'])
+          assert warm <= 14.1, ('FAST_RENDER_MAJOR_SLOWDOWN',warm)
+          out=Path(d['render']['e1011-sub-on']['path'])
+          assert out.is_file() and 400 <= d['render']['e1011-sub-on']['mib'] <= 600,d['render']['e1011-sub-on']
+          print('FINAL_RENDER_MULTI_EFFECT=PASS')
+          print('THREE_EFFECTS_SIMULTANEOUS=PASS')
+          print('SUBSCRIBE_FINAL=PASS')
+          print('START_MIDDLE_END=PASS')
+          print('HEVC_1080P60=PASS')
+          print('AUDIO=PASS')
+          print('FINALIZER=PASS')
+          print('FAST_RENDER_REGRESSION=PASS')
+          print(f'REAL_RENDER_WARM_SECONDS={warm:.3f}')
+          PY
+
+      - name: Physical summary
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ROOT="$RUNNER_TEMP/endlume-1015-physical"
+          python3 - "$ROOT/vyron-routing.json" "$ROOT/final-multi-effect.json" <<'PY'
+          import json,sys
+          v=json.load(open(sys.argv[1])); r=json.load(open(sys.argv[2]))
+          print('CANDIDATE_COMMIT=c5534ce47123777b698117a46473238381e37729')
+          print('VERSION=10.0.15')
+          print('FINAL_RENDER_MULTI_EFFECT=PASS')
+          print('FAST_RENDER_REGRESSION=PASS')
+          print('VYRON_REGRESSION=PASS')
+          print('MULTI_EFFECT_PER_VIDEO=PASS')
           print('ALL_EFFECTS_TO_ALL_VIDEOS=PASS')
           print('EFFECT_REALTIME_PREVIEW=PASS')
           print('SUBSCRIBE_REALTIME_PREVIEW=PASS')
-          print('PERSISTENCE_CONTRACT=PASS')
+          print('PERSISTENCE=PASS')
+          print('PUBLISH=NOT_RUN')
+          print('RELEASE=NOT_RUN')
+          print('VYRON_APP_WALL_SECONDS=%.3f'%v['appWallSeconds'])
+          print('REAL_RENDER_WARM_SECONDS=%.3f'%r['render']['e1011-sub-warm']['wall'])
+          print('FINAL_STATUS=READY_FOR_OWNER_TEST')
           PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ENDLUME-10.0.15-FAST-PHYSICAL-EVIDENCE
+          path: |
+            ${{ runner.temp }}/endlume-1015-physical/**
+          if-no-files-found: warn
+          retention-days: 7

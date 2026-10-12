@@ -12,7 +12,7 @@ on:
       - 'src-tauri/tauri.conf.json'
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: endlume-1014-compile
@@ -28,7 +28,7 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 0
           clean: true
-          persist-credentials: false
+          persist-credentials: true
 
       - name: Exact source freeze and release metadata
         shell: bash
@@ -76,3 +76,26 @@ jobs:
           echo CARGO_CHECK=PASS
           echo CARGO_TEST=PASS
           echo ENDLUME_1014_COMPILE_GATE=PASS
+
+      - name: Publish compile-pass release sentinel
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          RELEASE_COMMIT="$GITHUB_SHA"
+          cat > release/ENDLUME_10.0.14_COMPILE_PASS.json <<EOF
+          {
+            "version": "10.0.14",
+            "functionalSource": "55372b94a35ef76ee160347783cf8c62e003fa4e",
+            "releaseCommit": "$RELEASE_COMMIT",
+            "compileRunId": "$GITHUB_RUN_ID",
+            "compileHead": "$GITHUB_SHA",
+            "status": "PASS"
+          }
+          EOF
+          git config user.name 'ENDLUME Release Gate'
+          git config user.email 'actions@users.noreply.github.com'
+          git add release/ENDLUME_10.0.14_COMPILE_PASS.json
+          git commit -m 'release(10.0.14): compile gate passed'
+          git push origin HEAD:release-endlume-10.0.14
+          echo RELEASE_COMMIT_SHA="$RELEASE_COMMIT"
+          echo COMPILE_SENTINEL_HEAD="$(git rev-parse HEAD)"

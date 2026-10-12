@@ -22,6 +22,7 @@ const toggleSubscribeEnabled = (item: SubscribePreset): SubscribePreset => {
 const previewEnabled = (item: EffectPreset) => item.enabled && effectiveUsageMode(item) !== 'off';
 const previewDiag = (scope:'effects'|'subscribe',phase:'START'|'FINISH'|'APPLY'|'DISCARD',request:number,extra:Record<string,unknown>={}) => console.info('[ENDLUME_PREVIEW]',{scope,phase,request,...extra});
 const PREVIEW_TIMEOUT_MS=12000;
+const LIVE_RELOAD_DEBOUNCE_MS=80;
 function previewWithTimeout<T>(promise:Promise<T>,label:string):Promise<T>{return new Promise((resolve,reject)=>{const timer=window.setTimeout(()=>reject(new Error(`${label}: timeout ${PREVIEW_TIMEOUT_MS/1000}s`)),PREVIEW_TIMEOUT_MS);promise.then(value=>{window.clearTimeout(timer);resolve(value)},error=>{window.clearTimeout(timer);reject(error)})})}
 
 const emptyEffect = (source = ''): EffectPreset => ({
@@ -77,6 +78,12 @@ export function EditorRouter() {
 
 function useProjectPath() {
   return useApp((s) => s.previewProjectPath);
+}
+
+function resolveEffectForProject(effect:EffectPreset,projectPath:string,state:ReturnType<typeof useApp.getState>):EffectPreset{
+  const target=(effect.target||'CUSTOM').trim().toUpperCase()||'CUSTOM';
+  const anchor=state.sceneAnchorsByPath[projectPath]?.[target];
+  return {...effect,target,opacity:effect.opacity??1,x:anchor?clamp01(anchor.x+(effect.offsetX??0)):effect.x,y:anchor?clamp01(anchor.y+(effect.offsetY??0)):effect.y};
 }
 
 function EffectsEditor() {
@@ -179,21 +186,24 @@ function EffectsEditor() {
   };
 
   const loadLive = async (request = ++previewRequest.current) => {
-    const latest = useApp.getState().effects.find((e) => e.id === selected);
+    const state=useApp.getState();
+    const latest = state.effects.find((e) => e.id === selected);
     if (!projectPath || !latest) { setAssets(undefined);setPreviewSnapshot(undefined);setPreviewError(!projectPath?'Не выбрана сцена проекта для Preview.':undefined);return; }
     setAssets(undefined);setPreviewSnapshot(undefined);setPreviewError(undefined);
     const requestId=`effects-${request}`;
     previewDiag('effects','START',request,{requestId,projectPath,source:latest.source});
     setPreviewBusy(true);
     try {
-      const composed={...latest,target:(latest.target||'CUSTOM').trim().toUpperCase()||'CUSTOM',opacity:latest.opacity??1,x:sceneAnchor?clamp01(sceneAnchor.x+(latest.offsetX??0)):latest.x,y:sceneAnchor?clamp01(sceneAnchor.y+(latest.offsetY??0)):latest.y};
+      const composed=resolveEffectForProject(latest,projectPath,state);
+      const storedIds=state.selectedEffectIdsByPath[projectPath]?.length?state.selectedEffectIdsByPath[projectPath]:(state.selectedEffectByPath[projectPath]?[state.selectedEffectByPath[projectPath]]:[]);
+      const otherEffects=storedIds.filter(id=>id!=='__none__'&&id!==latest.id).map(id=>state.effects.find(effect=>effect.id===id)).filter((effect):effect is EffectPreset=>!!effect&&previewEnabled(effect)).map(effect=>resolveEffectForProject(effect,projectPath,state));
       const result = await previewWithTimeout(api.prepareLivePreview(projectPath, latest.source, latest.previewFrameTime, requestId, 'Effects'),'Effects Live Preview');
       previewDiag('effects','FINISH',request,{requestId,basePath:result.basePath,overlayPath:result.overlayPath});
       if (request !== previewRequest.current) { previewDiag('effects','DISCARD',request,{requestId,latest:previewRequest.current}); return; }
       setPreviewSnapshot(composed);
       setAssets({basePath:api.previewUrl(result.basePath),baseFilePath:result.basePath,baseKind:result.baseKind,overlayPath:api.previewUrl(result.overlayPath),overlayFilePath:result.overlayPath,baseBytes:result.baseBytes,overlayBytes:result.overlayBytes,requestId,previewType:'Effects'});
-      previewDiag('effects','APPLY',request,{requestId});
-      void previewWithTimeout(api.generatePreviewPoster(projectPath, latest.previewFrameTime, [composed], [], requestId),'Effects poster').then(posterPath=>{
+      previewDiag('effects','APPLY',request,{requestId,multiEffectCount:otherEffects.length+1});
+      void previewWithTimeout(api.generatePreviewPoster(projectPath, latest.previewFrameTime, otherEffects, [], requestId),'Effects poster').then(posterPath=>{
         if(request!==previewRequest.current)return;
         setAssets(previous=>previous?.requestId===requestId?{...previous,posterPath:api.previewUrl(posterPath),posterFilePath:posterPath}:previous);
       }).catch(error=>console.warn('[preview/error] optional Effects poster failed',requestId,String(error)));
@@ -210,7 +220,7 @@ function EffectsEditor() {
   useEffect(() => {
     if (!current || !projectPath) return;
     const request=++previewRequest.current;
-    const timer = window.setTimeout(() => void loadLive(request), 180);
+    const timer = window.setTimeout(() => void loadLive(request), LIVE_RELOAD_DEBOUNCE_MS);
     return () => window.clearTimeout(timer);
   }, [selected, projectPath, current?.source, current?.previewFrameTime]);
 
@@ -236,8 +246,8 @@ function EffectsEditor() {
             title={anchorMode ? `ПОКАЖИ НА ИЗОБРАЖЕНИИ: ${target}` : "LIVE PREVIEW"}
             assets={assets}
             busy={previewBusy}
-            current={previewSnapshot || resolvedCurrent}
-            active={!!assets&&!!previewSnapshot&&previewEnabled(previewSnapshot)}
+            current={resolvedCurrent}
+            active={!!assets&&previewEnabled(resolvedCurrent)}
             anchor={sceneAnchor}
             anchorMode={anchorMode}
             onAnchorPick={pickAnchor}
@@ -391,7 +401,7 @@ function SubscribeEditor() {
   useEffect(() => {
     if (!current || !projectPath) return;
     const request=++previewRequest.current;
-    const timer = window.setTimeout(() => void loadLive(request), 180);
+    const timer = window.setTimeout(() => void loadLive(request), LIVE_RELOAD_DEBOUNCE_MS);
     return () => window.clearTimeout(timer);
   }, [selected, projectPath, current?.source, current?.previewFrameTime]);
 
@@ -412,7 +422,7 @@ function SubscribeEditor() {
 
       <main className="visualEditor">
         {current ? <>
-          <PreviewStage title="LIVE PREVIEW" assets={assets} busy={previewBusy} current={previewSnapshot || current} active={!!assets&&!!previewSnapshot&&previewEnabled(previewSnapshot)} onMove={(x, y) => patch({ x, y })} onScale={(scale) => patch({ scale })} onPickColor={(hex) => patch({ keyColor: hex, similarity: 0.10, blend: 0.06 })} />
+          <PreviewStage title="LIVE PREVIEW" assets={assets} busy={previewBusy} current={current} active={!!assets&&previewEnabled(current)} onMove={(x, y) => patch({ x, y })} onScale={(scale) => patch({ scale })} onPickColor={(hex) => patch({ keyColor: hex, similarity: 0.10, blend: 0.06 })} />
           {previewError&&<div className="validationBox"><b>Subscribe Preview не готов:</b><div>{previewError}</div><div><button type="button" onClick={()=>void loadLive()}>ПОВТОРИТЬ</button><button type="button" onClick={()=>void reselectSource()}>ВЫБРАТЬ ЗАНОВО</button></div></div>}
           <div className="previewTime"><span>Стартовый кадр Subscribe-видео</span><Range value={current.previewFrameTime} min={0} max={60} step={0.1} onChange={(value) => patch({ previewFrameTime: value })} minLabel="0:00" maxLabel="1:00" /><b>{current.previewFrameTime.toFixed(1)} сек</b></div>
           <button className="refreshPreview" disabled={previewBusy} onClick={() => void loadLive()}><Icon name="refresh" /> {previewBusy ? 'ГОТОВЛЮ PROXY…' : 'ОБНОВИТЬ LIVE PREVIEW'}</button>
@@ -428,7 +438,7 @@ function SubscribeEditor() {
           <p className="editorHint chromaHint">Пипеткой/кистью в Preview выбери фон Subscribe-видео.</p>
           <SmallRange label="Similarity" value={current.similarity} min={0.001} max={0.6} step={0.001} onChange={(value) => patch({ similarity: value })} />
           <SmallRange label="Blend / мягкость края" value={current.blend} min={0.001} max={0.35} step={0.001} onChange={(value) => patch({ blend: value })} />
-            <SmallRange label="Despill / убрать зелёный ореол" value={current.despill} min={0} max={1} step={0.01} onChange={(value) => patch({ despill: value })} />
+          <SmallRange label="Despill / убрать зелёный ореол" value={current.despill} min={0} max={1} step={0.01} onChange={(value) => patch({ despill: value })} />
           <UsageModeControl value={effectiveUsageMode(current)} onChange={(usageMode) => patch({ usageMode, enabled: usageMode !== 'off' })} />
           {effectiveUsageMode(current) === 'interval' && <>
             <div className="usageSliders">

@@ -1,0 +1,75 @@
+name: ENDLUME 10.0.15 Targeted Hotfix QA
+
+on:
+  push:
+    branches:
+      - hotfix/endlume-10.0.15-multi-effect-live-preview
+    paths:
+      - '.github/workflows/endlume-1015-hotfix-targeted.yml'
+      - 'src/**'
+      - 'src-tauri/src/model.rs'
+      - 'src-tauri/src/queue.rs'
+      - 'package.json'
+      - 'src-tauri/Cargo.toml'
+      - 'src-tauri/tauri.conf.json'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-1015-hotfix-targeted
+  cancel-in-progress: true
+
+jobs:
+  targeted:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          clean: true
+          fetch-depth: 0
+
+      - name: Frontend build
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          npm ci
+          npm run build
+
+      - name: Rust targeted compile
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cargo check --manifest-path src-tauri/Cargo.toml
+
+      - name: Hotfix contract
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          project=Path('src/pages/ProjectPage.tsx').read_text(encoding='utf-8')
+          store=Path('src/store.ts').read_text(encoding='utf-8')
+          queue=Path('src-tauri/src/queue.rs').read_text(encoding='utf-8')
+          editors=Path('src/pages/Editors.tsx').read_text(encoding='utf-8')
+          preview=Path('src/components/LiveCompositePreview.tsx').read_text(encoding='utf-8')
+          model=Path('src-tauri/src/model.rs').read_text(encoding='utf-8')
+          assert 'Все эффекты → ко всем видео' in project
+          assert 'selectedEffectIds:ids' in project
+          assert 'selectedEffectIdsByPath' in store
+          assert 'version:9' in store
+          assert 'selected_effect_ids:Vec<String>' in model.replace(' ','')
+          assert 'for selected_id in &selected_ids' in queue
+          assert 'effects:selected_effects' in queue.replace(' ','')
+          assert 'current={resolvedCurrent}' in editors
+          assert 'current={current} active={!!assets&&previewEnabled(current)}' in editors
+          assert 'LIVE_RELOAD_DEBOUNCE_MS=80' in editors
+          assert "assets.previewType==='Subscribe'" in preview
+          print('MULTI_EFFECT_MODEL=PASS')
+          print('ALL_EFFECTS_TO_ALL_VIDEOS=PASS')
+          print('EFFECT_REALTIME_PREVIEW=PASS')
+          print('SUBSCRIBE_REALTIME_PREVIEW=PASS')
+          print('PERSISTENCE_CONTRACT=PASS')
+          PY

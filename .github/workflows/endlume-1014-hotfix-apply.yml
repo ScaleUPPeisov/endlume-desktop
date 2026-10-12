@@ -16,8 +16,6 @@ jobs:
   apply-and-gate:
     runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
     timeout-minutes: 35
-    env:
-      CARGO_TARGET_DIR: ${{ runner.temp }}/../_endlume-cache/target-1014-hotfix
     steps:
       - uses: actions/checkout@v4
         with:
@@ -63,6 +61,7 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
+          export CARGO_TARGET_DIR="$RUNNER_TEMP/../_endlume-cache/target-1014-hotfix"
           mkdir -p "$CARGO_TARGET_DIR"
           cargo check --manifest-path src-tauri/Cargo.toml
           cargo test --manifest-path src-tauri/Cargo.toml -- --nocapture
@@ -71,6 +70,7 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
+          export CARGO_TARGET_DIR="$RUNNER_TEMP/../_endlume-cache/target-1014-hotfix"
           npm run tauri:build -- --no-bundle
 
       - name: Commit tested hotfix source

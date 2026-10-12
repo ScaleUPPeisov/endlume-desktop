@@ -52,3 +52,8 @@ canonical_preview=text("src-tauri/src/preview.rs")
 assert 'ENDLUME_PREVIEW_CANONICAL_TIMEOUT_SHORT_FALLBACK' in canonical_preview
 assert '"-t","0.75","-c:v","libx264"' in canonical_preview
 assert 'primary.extend(vec!["-t","3.0"]' in canonical_preview
+
+fast_render=text("src-tauri/src/fast_render.rs")
+assert 'audio_codec:"aac".into()' in fast_render
+assert 'AAC-LC audio stream missing' in fast_render
+assert fast_render.count('"-c:a","aac_at","-b:a","320k"')>=2

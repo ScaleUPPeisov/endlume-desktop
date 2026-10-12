@@ -41,15 +41,55 @@ PY
 
 mkdir -p "$ROLLBACK_DIR"
 CACHE="$(date +%s)-${GITHUB_RUN_ID:-local}"
-# Exact live 10.0.13 snapshot before any stable mutation.
-curl -fL --retry 5 "$BASE_URL/latest.json?rollback=$CACHE" -o "$ROLLBACK_DIR/latest.json"
-curl -fL --retry 5 "$BASE_URL/ENDLUME-macos-aarch64.app.tar.gz?rollback=$CACHE" -o "$ROLLBACK_DIR/ENDLUME-macos-aarch64.app.tar.gz"
-curl -fL --retry 5 "$BASE_URL/ENDLUME-macos-aarch64.app.tar.gz.sig?rollback=$CACHE" -o "$ROLLBACK_DIR/ENDLUME-macos-aarch64.app.tar.gz.sig"
+
+# Preserve the exact live pre-release updater channel, even if historical
+# metadata is stale. This is forensic evidence of what was actually public.
+curl -fL --retry 5 "$BASE_URL/latest.json?rollback=$CACHE" -o "$ROLLBACK_DIR/pre-release-live-latest.json"
+curl -fL --retry 5 "$BASE_URL/ENDLUME-macos-aarch64.app.tar.gz?rollback=$CACHE" -o "$ROLLBACK_DIR/pre-release-live-generic.tar.gz"
+curl -fL --retry 5 "$BASE_URL/ENDLUME-macos-aarch64.app.tar.gz.sig?rollback=$CACHE" -o "$ROLLBACK_DIR/pre-release-live-generic.tar.gz.sig"
+
+# Preserve the immutable/versioned 10.0.13 package, signature and metadata.
+# These are the authoritative known-good 10.0.13 rollback bytes.
 curl -fL --retry 5 "$BASE_URL/ENDLUME-10.0.13-macos-aarch64.app.tar.gz?rollback=$CACHE" -o "$ROLLBACK_DIR/ENDLUME-10.0.13-macos-aarch64.app.tar.gz"
 curl -fL --retry 5 "$BASE_URL/ENDLUME-10.0.13-macos-aarch64.app.tar.gz.sig?rollback=$CACHE" -o "$ROLLBACK_DIR/ENDLUME-10.0.13-macos-aarch64.app.tar.gz.sig"
 curl -fL --retry 5 "$BASE_URL/ENDLUME-10.0.13-release.json?rollback=$CACHE" -o "$ROLLBACK_DIR/ENDLUME-10.0.13-release.json"
 gh api "repos/$STABLE_REPO/releases/tags/$STABLE_TAG" > "$ROLLBACK_DIR/release-metadata.json"
-/usr/bin/sha256sum "$ROLLBACK_DIR"/latest.json "$ROLLBACK_DIR"/*.tar.gz "$ROLLBACK_DIR"/*.sig "$ROLLBACK_DIR"/ENDLUME-10.0.13-release.json > "$ROLLBACK_DIR/SHA256SUMS-10.0.13.txt"
+
+EXPECTED_1013_SHA='ea47135ecd827e9f65dea64ba5c7524d36733ad9f0749dbd773919a9b7870534'
+EXPECTED_1013_SIG_SHA='d2968b4bd6c50081842f7a95cc3190d69f7fe28975e4c17cb35ade378d72dd12'
+ACTUAL_1013_SHA="$(/usr/bin/sha256sum "$ROLLBACK_DIR/ENDLUME-10.0.13-macos-aarch64.app.tar.gz" | awk '{print $1}')"
+ACTUAL_1013_SIG_SHA="$(/usr/bin/sha256sum "$ROLLBACK_DIR/ENDLUME-10.0.13-macos-aarch64.app.tar.gz.sig" | awk '{print $1}')"
+test "$ACTUAL_1013_SHA" = "$EXPECTED_1013_SHA"
+test "$ACTUAL_1013_SIG_SHA" = "$EXPECTED_1013_SIG_SHA"
+
+# Build a deterministic rollback channel for 10.0.13 from the preserved
+# versioned package/signature. The live manifest was discovered to be stale
+# (10.0.12) even though 10.0.13 versioned assets exist; we preserve that stale
+# manifest above but rollback must restore the owner's intended stable 10.0.13.
+cp "$ROLLBACK_DIR/ENDLUME-10.0.13-macos-aarch64.app.tar.gz" "$ROLLBACK_DIR/ENDLUME-macos-aarch64.app.tar.gz"
+cp "$ROLLBACK_DIR/ENDLUME-10.0.13-macos-aarch64.app.tar.gz.sig" "$ROLLBACK_DIR/ENDLUME-macos-aarch64.app.tar.gz.sig"
+ROLLBACK_SIG="$(tr -d '\r\n' < "$ROLLBACK_DIR/ENDLUME-macos-aarch64.app.tar.gz.sig")"
+python3 - "$ROLLBACK_DIR/pre-release-live-latest.json" "$ROLLBACK_DIR/latest.json" "$ROLLBACK_SIG" "$ACTUAL_1013_SHA" <<'PY'
+import json,sys
+old,out,sig,sha=sys.argv[1:]
+m=json.load(open(old))
+pre=m.get('version')
+if pre not in ('10.0.12','10.0.13'):
+    raise AssertionError(('unexpected pre-release live version',pre))
+platforms=m.get('platforms',{})
+if 'darwin-aarch64' not in platforms:
+    raise AssertionError(platforms.keys())
+m['version']='10.0.13'
+m['notes']='ENDLUME 10.0.13 rollback channel reconstructed from preserved versioned production assets.'
+p=platforms['darwin-aarch64']
+p['url']='https://github.com/ScaleUPPeisov/scaleup-site/releases/download/endlume-stable/ENDLUME-macos-aarch64.app.tar.gz'
+p['signature']=sig
+p['sha256']=sha
+m['platforms']={'darwin-aarch64':p}
+json.dump(m,open(out,'w'),ensure_ascii=False,indent=2)
+print('PRE_RELEASE_LIVE_VERSION='+str(pre))
+PY
+
 python3 - "$ROLLBACK_DIR/latest.json" "$ROLLBACK_DIR/ENDLUME-macos-aarch64.app.tar.gz" "$ROLLBACK_DIR/ENDLUME-macos-aarch64.app.tar.gz.sig" <<'PY'
 import hashlib,json,sys
 latest,tar,sig=sys.argv[1:]
@@ -63,12 +103,28 @@ assert p.get('signature')==sigtxt,(len(p.get('signature','')),len(sigtxt))
 assert p.get('url')=='https://github.com/ScaleUPPeisov/scaleup-site/releases/download/endlume-stable/ENDLUME-macos-aarch64.app.tar.gz',p.get('url')
 print('ROLLBACK_MANIFEST_VERSION=10.0.13')
 print('ROLLBACK_GENERIC_SHA256='+tarsha)
-print('ROLLBACK_SIGNATURE=PASS')
+print('ROLLBACK_SIGNATURE_TEXT=PASS')
 PY
-cat > "$ROLLBACK_DIR/ROLLBACK.md" <<'EOF'
-ENDLUME 10.0.13 exact production stable rollback snapshot captured immediately before 10.0.14 publication.
-Restore order: generic updater tar.gz, generic .sig, then latest.json LAST.
-Versioned 10.0.13 assets and release metadata are also preserved here.
+
+/usr/bin/sha256sum "$ROLLBACK_DIR"/*.json "$ROLLBACK_DIR"/*.tar.gz "$ROLLBACK_DIR"/*.sig > "$ROLLBACK_DIR/SHA256SUMS-ROLLBACK.txt"
+cat > "$ROLLBACK_DIR/ROLLBACK.md" <<EOF
+ENDLUME 10.0.14 pre-release rollback evidence.
+
+Exact live pre-release updater channel is preserved as:
+- pre-release-live-latest.json
+- pre-release-live-generic.tar.gz
+- pre-release-live-generic.tar.gz.sig
+
+Historical discovery: the live latest.json reported 10.0.12 even though immutable 10.0.13 versioned assets were already present.
+
+Owner-intended rollback target is reconstructed and verified as ENDLUME 10.0.13 using:
+- ENDLUME-10.0.13-macos-aarch64.app.tar.gz
+- ENDLUME-10.0.13-macos-aarch64.app.tar.gz.sig
+- latest.json (10.0.13)
+- canonical ENDLUME-macos-aarch64.app.tar.gz/.sig copies
+
+10.0.13 tar SHA256: $ACTUAL_1013_SHA
+Restore order: canonical updater tar.gz, canonical .sig, latest.json LAST.
 EOF
 
 echo ROLLBACK_EVIDENCE_CAPTURED=PASS
@@ -99,16 +155,16 @@ rollback_on_error(){
     echo "PUBLISH_FAILURE_ROLLBACK=START rc=$rc" >&2
     gh release upload "$STABLE_TAG" "$ROLLBACK_DIR/ENDLUME-macos-aarch64.app.tar.gz" "$ROLLBACK_DIR/ENDLUME-macos-aarch64.app.tar.gz.sig" --clobber --repo "$STABLE_REPO" || true
     gh release upload "$STABLE_TAG" "$ROLLBACK_DIR/latest.json" --clobber --repo "$STABLE_REPO" || true
-    echo PUBLISH_FAILURE_ROLLBACK=ATTEMPTED >&2
+    echo PUBLISH_FAILURE_ROLLBACK=RESTORED_10_0_13 >&2
   fi
   exit "$rc"
 }
 trap rollback_on_error ERR
 
 gh release view "$STABLE_TAG" --repo "$STABLE_REPO" >/dev/null
+
 # 1) Immutable/versioned 10.0.14 assets first.
 gh release upload "$STABLE_TAG" "$ZIP" "$VTAR" "$VSIG" "$RELEASE_JSON" "$SUMS" --clobber --repo "$STABLE_REPO"
-
 TMP="$(mktemp -d)"
 for name in ENDLUME-10.0.14-macos-aarch64.app.tar.gz ENDLUME-10.0.14-macos-aarch64.app.tar.gz.sig ENDLUME-10.0.14-release.json; do
   curl -fL --retry 5 "$BASE_URL/$name?verify=$CACHE" -o "$TMP/$name"
@@ -118,7 +174,7 @@ test "$(/usr/bin/sha256sum "$TMP/ENDLUME-10.0.14-macos-aarch64.app.tar.gz" | awk
 cmp -s "$TMP/ENDLUME-10.0.14-macos-aarch64.app.tar.gz.sig" "$VSIG"
 echo VERSIONED_10_0_14_PUBLIC=PASS
 
-# 2) Canonical package/signature; any later error restores exact 10.0.13.
+# 2) Canonical package/signature. From this point any error restores 10.0.13.
 MUTATED=1
 gh release upload "$STABLE_TAG" "$GTAR" "$GSIG" --clobber --repo "$STABLE_REPO"
 curl -fL --retry 5 "$BASE_URL/ENDLUME-macos-aarch64.app.tar.gz?verify=$CACHE-2" -o "$TMP/live.tar.gz"

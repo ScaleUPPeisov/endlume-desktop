@@ -1,0 +1,69 @@
+name: ENDLUME 10.0.14 Release Prepare
+
+on:
+  push:
+    branches:
+      - release-endlume-10.0.14
+    paths:
+      - 'release/ENDLUME_10.0.14_RELEASE.md'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: endlume-1014-release-prepare
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: release-endlume-10.0.14
+          fetch-depth: 0
+          clean: true
+          persist-credentials: true
+
+      - name: Freeze functional source and bump release-only versions
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          BASE='55372b94a35ef76ee160347783cf8c62e003fa4e'
+          test "$(git rev-parse "$BASE")" = "$BASE"
+          git merge-base --is-ancestor "$BASE" HEAD
+          git diff --quiet "$BASE" HEAD -- src src-tauri/src
+          git diff --quiet "$BASE" HEAD -- src-tauri/icons
+          python3 - <<'PY'
+          import json,re
+          from pathlib import Path
+          v='10.0.14'
+          p=Path('package.json'); d=json.loads(p.read_text()); assert d['version']=='10.0.13'; d['version']=v; p.write_text(json.dumps(d,ensure_ascii=False,indent=2)+'\n')
+          p=Path('package-lock.json'); d=json.loads(p.read_text()); assert d['version']=='10.0.13'; assert d['packages']['']['version']=='10.0.13'; d['version']=v; d['packages']['']['version']=v; p.write_text(json.dumps(d,ensure_ascii=False,indent=2)+'\n')
+          p=Path('src-tauri/Cargo.toml'); s=p.read_text(); old='[package]\nname = "endlume"\nversion = "10.0.13"'; new='[package]\nname = "endlume"\nversion = "10.0.14"'; assert s.count(old)==1; p.write_text(s.replace(old,new,1))
+          p=Path('src-tauri/Cargo.lock'); s=p.read_text(); old='[[package]]\nname = "endlume"\nversion = "10.0.13"'; new='[[package]]\nname = "endlume"\nversion = "10.0.14"'; assert s.count(old)==1; p.write_text(s.replace(old,new,1))
+          p=Path('src-tauri/tauri.conf.json'); d=json.loads(p.read_text()); assert d['version']=='10.0.13'; d['version']=v; p.write_text(json.dumps(d,ensure_ascii=False,indent=2)+'\n')
+          PY
+          git diff --check
+          BAD="$(git diff --name-only | grep -Ev '^(package\.json|package-lock\.json|src-tauri/Cargo\.toml|src-tauri/Cargo\.lock|src-tauri/tauri\.conf\.json)$' || true)"
+          test -z "$BAD"
+          git diff --quiet "$BASE" HEAD -- src src-tauri/src
+          python3 - <<'PY'
+          import json,re
+          from pathlib import Path
+          v='10.0.14'
+          assert json.loads(Path('package.json').read_text())['version']==v
+          lock=json.loads(Path('package-lock.json').read_text()); assert lock['version']==v and lock['packages']['']['version']==v
+          assert json.loads(Path('src-tauri/tauri.conf.json').read_text())['version']==v
+          assert re.search(r'\[package\][\s\S]*?\nversion\s*=\s*"10\.0\.14"',Path('src-tauri/Cargo.toml').read_text())
+          assert re.search(r'\[\[package\]\]\nname = "endlume"\nversion = "10\.0\.14"',Path('src-tauri/Cargo.lock').read_text())
+          PY
+          git config user.name 'ENDLUME Release Gate'
+          git config user.email 'actions@users.noreply.github.com'
+          git add package.json package-lock.json src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/tauri.conf.json
+          git commit -m 'release(10.0.14): bump frozen candidate version'
+          git push origin HEAD:release-endlume-10.0.14
+          echo "RELEASE_COMMIT_SHA=$(git rev-parse HEAD)"
+          echo FUNCTIONAL_SOURCE_HEAD="$BASE"
+          echo FUNCTIONAL_PRODUCT_DIFF=0

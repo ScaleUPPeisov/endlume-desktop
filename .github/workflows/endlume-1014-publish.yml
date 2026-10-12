@@ -6,6 +6,7 @@ on:
       - release-endlume-10.0.14
     paths:
       - 'release/ENDLUME_10.0.14_SIGNED_PASS.json'
+      - 'release/ENDLUME_10.0.14_PUBLISH_TRIGGER.md'
 
 permissions:
   contents: write
@@ -33,23 +34,29 @@ jobs:
         run: |
           set -Eeuo pipefail
           BASE='55372b94a35ef76ee160347783cf8c62e003fa4e'
+          RELEASE_COMMIT='b2d3ea03a3c5ecd0293df83260d0c35f2a54bcc9'
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           git fetch origin release-endlume-10.0.14
           test "$(git rev-parse origin/release-endlume-10.0.14)" = "$GITHUB_SHA"
           git merge-base --is-ancestor "$BASE" HEAD
+          git merge-base --is-ancestor "$RELEASE_COMMIT" HEAD
           git diff --quiet "$BASE" HEAD -- src src-tauri/src
           git diff --quiet "$BASE" HEAD -- src-tauri/icons
-          readarray -t META < <(python3 - release/ENDLUME_10.0.14_SIGNED_PASS.json <<'PY'
-          import json,sys,subprocess
+          git diff --quiet "$RELEASE_COMMIT" HEAD -- package.json package-lock.json src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/tauri.conf.json
+          SIGNED_RUN_ID="$(python3 -c 'import json;print(json.load(open("release/ENDLUME_10.0.14_SIGNED_PASS.json"))["signedRunId"])')"
+          SIGNED_HEAD="$(python3 -c 'import json;print(json.load(open("release/ENDLUME_10.0.14_SIGNED_PASS.json"))["signedHead"])')"
+          SENTINEL_RELEASE_COMMIT="$(python3 -c 'import json;print(json.load(open("release/ENDLUME_10.0.14_SIGNED_PASS.json"))["releaseCommit"])')"
+          python3 - release/ENDLUME_10.0.14_SIGNED_PASS.json <<'PY'
+          import json,sys
           d=json.load(open(sys.argv[1]))
           assert d['version']=='10.0.14' and d['status']=='PASS' and d['packagedSmoke']=='PASS',d
           assert d['functionalSource']=='55372b94a35ef76ee160347783cf8c62e003fa4e',d
-          parent=subprocess.check_output(['git','rev-parse','HEAD^'],text=True).strip()
-          assert d['signedHead']==parent,(d['signedHead'],parent)
-          print(d['signedRunId']); print(d['signedHead']); print(d['releaseCommit'])
+          assert d['releaseCommit']=='b2d3ea03a3c5ecd0293df83260d0c35f2a54bcc9',d
+          assert d['signatureVerify']=='PASS' and d['vyron']=='PASS' and d['effectsPreview']=='PASS' and d['subscribePreview']=='PASS' and d['realRender']=='PASS',d
+          print('SIGNED_SENTINEL=PASS')
           PY
-          )
-          SIGNED_RUN_ID="${META[0]}"; SIGNED_HEAD="${META[1]}"; RELEASE_COMMIT="${META[2]}"
+          test "$SENTINEL_RELEASE_COMMIT" = "$RELEASE_COMMIT"
+          git merge-base --is-ancestor "$SIGNED_HEAD" HEAD
           STATUS="$(gh api repos/ScaleUPPeisov/endlume-desktop/actions/runs/$SIGNED_RUN_ID --jq '.status+":"+.conclusion')"
           test "$STATUS" = 'completed:success'
           RUN_HEAD="$(gh api repos/ScaleUPPeisov/endlume-desktop/actions/runs/$SIGNED_RUN_ID --jq .head_sha)"
@@ -84,7 +91,7 @@ jobs:
           echo "PHASE4_ARTIFACT_DIR=$ART" >> "$GITHUB_ENV"
           echo "ROLLBACK_DIR=$RB" >> "$GITHUB_ENV"
 
-      - name: Backup 10.0.13 and publish 10.0.14 rollback-safe
+      - name: Back up live state and publish 10.0.14 rollback-safe
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.ENDLUME_RELEASE_TOKEN }}

@@ -1,0 +1,159 @@
+name: ENDLUME 10.0.14 Real Physical Acceptance
+
+on:
+  push:
+    branches:
+      - hotfix/endlume-10.0.14-vyron-effects-preview-subscribe
+    paths:
+      - '.github/workflows/endlume-1014-physical-acceptance.yml'
+      - 'scripts/qa-endlume-1014-vyron-routing-physical.py'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-1014-real-physical
+  cancel-in-progress: true
+
+jobs:
+  physical:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: hotfix/endlume-10.0.14-vyron-effects-preview-subscribe
+          fetch-depth: 0
+          clean: true
+          persist-credentials: false
+
+      - name: Verify candidate lineage and external disk
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git merge-base --is-ancestor c01e9ae0c0dad8ab4b001064ee60ad1d714370a6 HEAD
+          test -d '/Volumes/TOSHIBA EXT'
+          echo "PHYSICAL_HEAD=$(git rev-parse HEAD)"
+          echo "TOSHIBA_EXT=GREEN"
+
+      - name: Restore packaged FFmpeg sidecars
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          FOUNDATION="$HOME/.endlume-local-builder/endlume-desktop-8.40-bootstrap"
+          test -d "$FOUNDATION/src-tauri/binaries"
+          mkdir -p src-tauri/binaries
+          rsync -a "$FOUNDATION/src-tauri/binaries/" src-tauri/binaries/
+
+      - name: Build packaged E2E candidate app without updater publication
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+          export CARGO_TARGET_DIR="$RUNNER_TEMP/../_endlume-cache/target-1014-physical"
+          ROOT="$RUNNER_TEMP/endlume-1014-physical"
+          rm -rf "$ROOT"; mkdir -p "$ROOT"
+          npm ci
+          CONF='src-tauri/tauri.conf.json'
+          BACKUP="$ROOT/tauri.conf.original.json"
+          cp "$CONF" "$BACKUP"
+          restore_conf(){ cp "$BACKUP" "$CONF"; }
+          trap restore_conf EXIT
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('src-tauri/tauri.conf.json')
+          d=json.loads(p.read_text())
+          d['bundle']['createUpdaterArtifacts']=False
+          p.write_text(json.dumps(d,ensure_ascii=False,indent=2)+'\n')
+          PY
+          ENDLUME_TAURI_TARGET=aarch64-apple-darwin node scripts/prepare-macos-ffmpeg-runtime.mjs
+          npx tauri build --target aarch64-apple-darwin --bundles app --features e2e-render
+          APP="$(find "$CARGO_TARGET_DIR/aarch64-apple-darwin/release/bundle/macos" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          test -n "$APP" -a -d "$APP"
+          /usr/bin/codesign --force --deep --sign - --timestamp=none "$APP"
+          /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP"
+          EXE_NAME="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
+          EXE="$APP/Contents/MacOS/$EXE_NAME"
+          FFMPEG="$(find "$APP/Contents" -maxdepth 7 -type f -name 'ffmpeg' -perm -111 -print -quit)"
+          FFPROBE="$(find "$APP/Contents" -maxdepth 7 -type f -name 'ffprobe' -perm -111 -print -quit)"
+          test -x "$EXE" -a -x "$FFMPEG" -a -x "$FFPROBE"
+          printf '%s' "$APP" > "$ROOT/app.txt"
+          printf '%s' "$EXE" > "$ROOT/exe.txt"
+          printf '%s' "$FFMPEG" > "$ROOT/ffmpeg.txt"
+          printf '%s' "$FFPROBE" > "$ROOT/ffprobe.txt"
+          echo "PACKAGED_E2E_APP=GREEN"
+
+      - name: Physical VYRON split-destination acceptance on TOSHIBA
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ROOT="$RUNNER_TEMP/endlume-1014-physical"
+          EXE="$(cat "$ROOT/exe.txt")"
+          FFMPEG="$(cat "$ROOT/ffmpeg.txt")"
+          FFPROBE="$(cat "$ROOT/ffprobe.txt")"
+          python3 scripts/qa-endlume-1014-vyron-routing-physical.py "$EXE" "$FFMPEG" "$FFPROBE" "$ROOT/vyron-routing.json" | tee "$ROOT/vyron-routing.log"
+          python3 - "$ROOT/vyron-routing.json" <<'PY'
+          import json,sys
+          d=json.load(open(sys.argv[1]))
+          assert d['status']=='GREEN',d
+          assert d['sourceOnExternalDrive'] is True,d
+          assert d['crossWrite'] is False,d
+          assert d['channelA']['outputPath'].startswith(d['destinationA']+'/'),d
+          assert d['channelB']['outputPath'].startswith(d['destinationB']+'/'),d
+          print('VYRON_PHYSICAL_ROUTING_GATE=GREEN')
+          PY
+
+      - name: Cold Effects + Subscribe + real production render acceptance
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ROOT="$RUNNER_TEMP/endlume-1014-physical"
+          EXE="$(cat "$ROOT/exe.txt")"
+          FFMPEG="$(cat "$ROOT/ffmpeg.txt")"
+          FFPROBE="$(cat "$ROOT/ffprobe.txt")"
+          python3 scripts/qa-endlume-1011-preview-subscribe-final.py "$EXE" "$FFMPEG" "$FFPROBE" "$ROOT/preview-subscribe-render.json" | tee "$ROOT/preview-subscribe-render.log"
+          python3 - "$ROOT/preview-subscribe-render.json" <<'PY'
+          import json,sys
+          d=json.load(open(sys.argv[1]))
+          assert d['status']=='GREEN',d
+          assert d['preview']['effectsBackend']=='GREEN',d
+          assert d['preview']['effectsFrontend']['status']=='GREEN',d
+          assert d['preview']['subscribeBackend']=='GREEN',d
+          assert d['preview']['subscribeFrontend']['status']=='GREEN',d
+          assert d['subscribeState']=='GREEN' and d['subscribeRecipe']=='GREEN' and d['subscribeMaster']=='GREEN' and d['subscribeFinal']=='GREEN',d
+          assert d['roundEqualizer']=='GREEN' and d['otherEffect']=='GREEN',d
+          assert d['cacheInvalidation']=='GREEN',d
+          print('REAL_EFFECTS_PREVIEW=GREEN')
+          print('REAL_SUBSCRIBE_PREVIEW=GREEN')
+          print('REAL_FINAL_RENDER=GREEN')
+          PY
+
+      - name: Physical summary
+        if: success()
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ROOT="$RUNNER_TEMP/endlume-1014-physical"
+          python3 - "$ROOT/vyron-routing.json" "$ROOT/preview-subscribe-render.json" <<'PY'
+          import json,sys
+          a=json.load(open(sys.argv[1])); b=json.load(open(sys.argv[2]))
+          print('ENDLUME_1014_PHYSICAL=GREEN')
+          print('VYRON_A_OUTPUT='+a['channelA']['outputPath'])
+          print('VYRON_B_OUTPUT='+a['channelB']['outputPath'])
+          print('VYRON_APP_WALL_SECONDS=%.3f'%a['appWallSeconds'])
+          print('REAL_RENDER_WARM_SECONDS=%.3f'%b['render']['e1011-sub-warm']['wall'])
+          print('EFFECTS_FRONTEND_STATUS='+b['preview']['effectsFrontend']['status'])
+          print('SUBSCRIBE_FRONTEND_STATUS='+b['preview']['subscribeFrontend']['status'])
+          print('STABLE_RELEASE=UNTOUCHED')
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ENDLUME-10.0.14-REAL-PHYSICAL-EVIDENCE
+          path: |
+            ${{ runner.temp }}/endlume-1014-physical/**
+          if-no-files-found: warn
+          retention-days: 14

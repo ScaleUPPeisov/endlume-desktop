@@ -20,6 +20,7 @@ interface State {
   libraryLoaded: boolean;
   sceneAnchorsByPath: Record<string, SceneAnchors>;
   selectedEffectByPath: Record<string, string>;
+  selectedEffectIdsByPath: Record<string, string[]>;
   setPage:(p:Page)=>void;
   openEditor:(editor:Editor)=>void;
   setProjects:(p:RenderProject[])=>void;
@@ -38,6 +39,7 @@ interface State {
   setLibraryLoaded:(v:boolean)=>void;
   setSceneAnchor:(projectPath:string,target:string,anchor:AnchorPoint)=>void;
   setSelectedEffectForProject:(projectPath:string,effectId:string)=>void;
+  setSelectedEffectsForProject:(projectPath:string,effectIds:string[])=>void;
   patchSettings:(p:Partial<RenderSettings>)=>void;
   setLastRoot:(v?:string)=>void;
   setPreviewProjectPath:(v?:string)=>void;
@@ -51,8 +53,10 @@ const initialSettings:RenderSettings={
   outputDir:'',preset:'fast',encoderPreference:'auto'
 };
 
+const normalizeEffectIds=(effectIds:string[])=>Array.from(new Set(effectIds.map(id=>id.trim()).filter(Boolean)));
+
 export const useApp=create<State>()(persist((set)=>({
-  page:'project',editor:null,projects:[],draftProjects:[],invalidProjects:[],effects:[],subscribes:[],ambientSettings:defaultBackgroundMusicSettings,settings:initialSettings,libraryLoaded:false,sceneAnchorsByPath:{},selectedEffectByPath:{},
+  page:'project',editor:null,projects:[],draftProjects:[],invalidProjects:[],effects:[],subscribes:[],ambientSettings:defaultBackgroundMusicSettings,settings:initialSettings,libraryLoaded:false,sceneAnchorsByPath:{},selectedEffectByPath:{},selectedEffectIdsByPath:{},
   setPage:(page)=>set({page,editor:null}),
   openEditor:(editor)=>set({editor}),
   setProjects:(projects)=>set({projects}),
@@ -89,8 +93,17 @@ export const useApp=create<State>()(persist((set)=>({
       draftProjects:s.draftProjects.map(p=>p.path===projectPath?{...p,anchors}:p)
     };
   }),
-  setSelectedEffectForProject:(projectPath,effectId)=>set(s=>({selectedEffectByPath:{...s.selectedEffectByPath,[projectPath]:effectId}})),
+  setSelectedEffectForProject:(projectPath,effectId)=>set(s=>{
+    const ids=normalizeEffectIds([effectId]);
+    return {selectedEffectByPath:{...s.selectedEffectByPath,[projectPath]:ids[0]||''},selectedEffectIdsByPath:{...s.selectedEffectIdsByPath,[projectPath]:ids}};
+  }),
+  setSelectedEffectsForProject:(projectPath,effectIds)=>set(s=>{
+    const ids=normalizeEffectIds(effectIds);
+    const legacy={...s.selectedEffectByPath};
+    if(ids.length===1)legacy[projectPath]=ids[0];else delete legacy[projectPath];
+    return {selectedEffectByPath:legacy,selectedEffectIdsByPath:{...s.selectedEffectIdsByPath,[projectPath]:ids}};
+  }),
   patchSettings:(patch)=>set(s=>({settings:{...s.settings,...patch}})),
   setLastRoot:(lastRoot)=>set({lastRoot}),
   setPreviewProjectPath:(previewProjectPath)=>set({previewProjectPath})
-}),{name:'endlume-1-ui',version:8,migrate:(persisted:any)=>{const p:any=persisted||{};if(p.settings){p.settings={...p.settings,width:1920,height:1080,fps:60,crossfadeSec:3,normalizeLufs:false,codec:'h265'};}p.projects=[];p.sceneAnchorsByPath=p.sceneAnchorsByPath||{};p.selectedEffectByPath=p.selectedEffectByPath||{};return p;},partialize:(s)=>({settings:s.settings,lastRoot:s.lastRoot,sceneAnchorsByPath:s.sceneAnchorsByPath,selectedEffectByPath:s.selectedEffectByPath})}));
+}),{name:'endlume-1-ui',version:9,migrate:(persisted:any)=>{const p:any=persisted||{};if(p.settings){p.settings={...p.settings,width:1920,height:1080,fps:60,crossfadeSec:3,normalizeLufs:false,codec:'h265'};}p.projects=[];p.sceneAnchorsByPath=p.sceneAnchorsByPath||{};p.selectedEffectByPath=p.selectedEffectByPath||{};p.selectedEffectIdsByPath=p.selectedEffectIdsByPath||Object.fromEntries(Object.entries(p.selectedEffectByPath).map(([path,id])=>[path,[id]]));return p;},partialize:(s)=>({settings:s.settings,lastRoot:s.lastRoot,sceneAnchorsByPath:s.sceneAnchorsByPath,selectedEffectByPath:s.selectedEffectByPath,selectedEffectIdsByPath:s.selectedEffectIdsByPath})}));

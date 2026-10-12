@@ -7,6 +7,7 @@ on:
     paths:
       - '.github/workflows/endlume-1014-physical-acceptance.yml'
       - 'scripts/qa-endlume-1014-vyron-routing-physical.py'
+      - 'scripts/qa-endlume-1014-seed-persisted-library.py'
   workflow_dispatch: {}
 
 permissions:
@@ -113,11 +114,16 @@ jobs:
           EXE="$(cat "$ROOT/exe.txt")"
           FFMPEG="$(cat "$ROOT/ffmpeg.txt")"
           FFPROBE="$(cat "$ROOT/ffprobe.txt")"
-          python3 scripts/qa-endlume-1011-preview-subscribe-final.py "$EXE" "$FFMPEG" "$FFPROBE" "$ROOT/preview-subscribe-render.json" | tee "$ROOT/preview-subscribe-render.log"
-          python3 - "$ROOT/preview-subscribe-render.json" <<'PY'
+          QA_HOME="$RUNNER_TEMP/endlume-1014-isolated-home"
+          rm -rf "$QA_HOME"; mkdir -p "$QA_HOME"
+          python3 scripts/qa-endlume-1014-seed-persisted-library.py "$FFMPEG" "$QA_HOME" | tee "$ROOT/persisted-library-seed.log"
+          HOME="$QA_HOME" python3 scripts/qa-endlume-1011-preview-subscribe-final.py "$EXE" "$FFMPEG" "$FFPROBE" "$ROOT/preview-subscribe-render.json" | tee "$ROOT/preview-subscribe-render.log"
+          python3 - "$ROOT/preview-subscribe-render.json" "$QA_HOME" <<'PY'
           import json,sys
-          d=json.load(open(sys.argv[1]))
+          from pathlib import Path
+          d=json.load(open(sys.argv[1])); qa_home=Path(sys.argv[2]).resolve()
           assert d['status']=='GREEN',d
+          assert Path(d['library']).resolve().is_relative_to(qa_home),d['library']
           assert d['preview']['effectsBackend']=='GREEN',d
           assert d['preview']['effectsFrontend']['status']=='GREEN',d
           assert d['preview']['subscribeBackend']=='GREEN',d
@@ -125,6 +131,7 @@ jobs:
           assert d['subscribeState']=='GREEN' and d['subscribeRecipe']=='GREEN' and d['subscribeMaster']=='GREEN' and d['subscribeFinal']=='GREEN',d
           assert d['roundEqualizer']=='GREEN' and d['otherEffect']=='GREEN',d
           assert d['cacheInvalidation']=='GREEN',d
+          print('ISOLATED_PERSISTED_LIBRARY=GREEN')
           print('REAL_EFFECTS_PREVIEW=GREEN')
           print('REAL_SUBSCRIBE_PREVIEW=GREEN')
           print('REAL_FINAL_RENDER=GREEN')

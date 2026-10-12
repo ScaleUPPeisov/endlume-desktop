@@ -94,7 +94,7 @@ jobs:
           QA_HOME="$RUNNER_TEMP/endlume-1015-isolated-home"
           rm -rf "$QA_HOME"; mkdir -p "$QA_HOME"
           python3 scripts/qa-endlume-1014-seed-persisted-library.py "$FFMPEG" "$QA_HOME" | tee "$ROOT/persisted-library-seed.log"
-          HOME="$QA_HOME" python3 scripts/qa-endlume-1011-preview-subscribe-final.py "$EXE" "$FFMPEG" "$FFPROBE" "$ROOT/final-multi-effect.json" | tee "$ROOT/final-multi-effect.log"
+          TMPDIR="$RUNNER_TEMP" HOME="$QA_HOME" python3 scripts/qa-endlume-1011-preview-subscribe-final.py "$EXE" "$FFMPEG" "$FFPROBE" "$ROOT/final-multi-effect.json" | tee "$ROOT/final-multi-effect.log"
           python3 - "$ROOT/final-multi-effect.json" "$FFMPEG" "$RUNNER_TEMP" <<'PY'
           import json,subprocess,sys
           from pathlib import Path

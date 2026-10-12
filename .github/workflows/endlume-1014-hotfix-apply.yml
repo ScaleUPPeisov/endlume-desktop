@@ -72,10 +72,24 @@ jobs:
         run: |
           set -Eeuo pipefail
           export CARGO_TARGET_DIR="$RUNNER_TEMP/../_endlume-cache/target-1014-hotfix"
+          CONF="src-tauri/tauri.conf.json"
+          BACKUP="$RUNNER_TEMP/tauri-conf-1014.json"
+          cp "$CONF" "$BACKUP"
+          restore_conf(){ cp "$BACKUP" "$CONF"; }
+          trap restore_conf EXIT
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('src-tauri/tauri.conf.json')
+          d=json.loads(p.read_text())
+          d['bundle']['createUpdaterArtifacts']=False
+          p.write_text(json.dumps(d,ensure_ascii=False,indent=2)+'\n')
+          PY
           npm run tauri:build -- --bundles app
           APP="$(find "$CARGO_TARGET_DIR/release/bundle/macos" -maxdepth 1 -type d -name '*.app' -print -quit)"
           test -n "$APP"
           test -x "$APP/Contents/MacOS/endlume"
+          /usr/bin/codesign --force --deep --sign - --timestamp=none "$APP"
           /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP"
           echo "MACOS_APP=$APP"
 

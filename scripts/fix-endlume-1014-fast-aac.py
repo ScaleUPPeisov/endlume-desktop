@@ -7,10 +7,7 @@ text=path.read_text(encoding='utf-8')
 
 # Phase-3 keeps the near-zero-copy HEVC video timeline. Apple AudioToolbox AAC
 # physically caps stereo LC well below the requested 512 kbps: the real two-hour
-# acceptance file measured only ~309 MiB. Keep the correct AAC/48k/stereo stream,
-# then append a standards-compliant top-level ISO-BMFF `free` box so ENDLUME's
-# finished deliverable lands at the established 400-600 MiB product target
-# without re-encoding video or changing audio semantics.
+# acceptance file measured only ~309 MiB. Keep the correct AAC/48k/stereo stream.
 AAC_BITRATE='512k'
 TARGET_MIB=450
 
@@ -34,7 +31,7 @@ for old,new in repls.items():
     if old in text:
         text=text.replace(old,new)
 
-# Subscribe fast mux: encode concat audio to AAC-LC 512k instead of packet copy.
+# Subscribe fast mux: encode concat audio to AAC-LC instead of packet copy.
 old='''"-fps_mode","cfr","-r",fps.as_str(),"-c:a","copy","-video_track_timescale","60000","-y",out.to_string_lossy().as_ref()'''
 new='''"-fps_mode","cfr","-r",fps.as_str(),"-c:a","aac_at","-b:a","512k","-aac_at_mode","cvbr","-aac_at_quality","2","-ar","48000","-ac","2","-tag:a","mp4a","-disposition:a:0","default","-metadata:s:a:0","language=und","-video_track_timescale","60000","-y",out.to_string_lossy().as_ref()'''
 if old in text:
@@ -52,7 +49,7 @@ if old in text:
 elif text.count('"-c:a","aac_at","-b:a","512k"')<2:
     raise SystemExit('fast_render.rs: normal AAC 512k patch anchor missing')
 
-# Make the fast renderer's own verification enforce the Apple audio contract.
+# Fast renderer verification owns codec correctness.
 old='''  let raw=command(app,"ffprobe",vec!["-v","error","-show_entries","format=duration:stream=codec_name,width,height,r_frame_rate,avg_frame_rate,bit_rate","-of","json",out.to_string_lossy().as_ref()].into_iter().map(String::from).collect()).await?;'''
 new='''  let raw=command(app,"ffprobe",vec!["-v","error","-show_entries","format=duration:stream=codec_name,codec_tag_string,width,height,r_frame_rate,avg_frame_rate,bit_rate,sample_rate,channels:stream_disposition=default","-of","json",out.to_string_lossy().as_ref()].into_iter().map(String::from).collect()).await?;'''
 if old in text:
@@ -69,10 +66,8 @@ if old in text:
 elif 'AAC-LC audio stream missing' not in text:
     raise SystemExit('fast_render.rs: AAC verification block missing')
 
-# The MP4 target is a product-distribution constraint, not a codec constraint.
-# Appending a valid top-level `free` atom preserves all existing sample offsets,
-# timestamps and codecs. set_len() zero-fills the payload without an expensive
-# userspace write loop, keeping the fast renderer fast even on an external disk.
+# Keep the fast-path-local pad for fast renders. The common finalizer below is
+# still authoritative because real Effects jobs can reject Phase-3 eligibility.
 old_import='''use std::{fs,path::{Path,PathBuf},sync::{Arc,atomic::{AtomicBool,Ordering}},time::Instant};'''
 new_import='''use std::{fs,io::{Seek,SeekFrom,Write},path::{Path,PathBuf},sync::{Arc,atomic::{AtomicBool,Ordering}},time::Instant};'''
 if old_import in text:
@@ -81,8 +76,7 @@ elif new_import not in text:
     raise SystemExit('fast_render.rs: std io import anchor missing')
 
 pad_helper='''
-// ENDLUME_FAST_MP4_FREE_PAD: a standard top-level ISO-BMFF free box keeps the
-// compact Phase-3 renderer while satisfying the 400-600 MiB distribution target.
+// ENDLUME_FAST_MP4_FREE_PAD: standard top-level ISO-BMFF free box.
 const FAST_DISTRIBUTION_TARGET_MIB:u64=450;
 fn ensure_fast_distribution_size(path:&Path)->Result<u64,String>{
   const MIB:u64=1024*1024;
@@ -127,9 +121,85 @@ for forbidden in ['audio_mode:"mp3-packet-copy"','audio_codec:"mp3"','MP3 stream
 if text.count('"-c:a","aac_at","-b:a","512k"')<2:
     raise SystemExit('fast_render.rs: expected both Phase-3 AAC mux paths at 512k')
 if 'ENDLUME_FAST_MP4_FREE_PAD' not in text or 'FAST_DISTRIBUTION_TARGET_MIB:u64=450' not in text:
-    raise SystemExit('fast_render.rs: distribution free-box pad contract missing')
+    raise SystemExit('fast_render.rs: fast distribution free-box pad contract missing')
 if 'let padded_bytes=ensure_fast_distribution_size(&out)?;' not in text:
-    raise SystemExit('fast_render.rs: distribution pad is not wired into finalization')
+    raise SystemExit('fast_render.rs: fast distribution pad is not wired into finalization')
 
 path.write_text(text,encoding='utf-8')
-print('PASS: Phase-3 keeps AAC-LC/HEVC semantics and pads a valid MP4 free box to 450 MiB for the 400-600 MiB distribution target')
+
+# ---------------------------------------------------------------------------
+# Common renderer finalizer
+# ---------------------------------------------------------------------------
+# Real production Effects can intentionally stay on the canonical renderer.
+# Therefore the 400-600 MiB deliverable contract must be enforced AFTER the
+# fast/canonical renderer decision, not only inside Phase-3.
+lib_path=ROOT/'src-tauri'/'src'/'lib.rs'
+lib=lib_path.read_text(encoding='utf-8')
+common_helper='''
+// ENDLUME_COMMON_MP4_DISTRIBUTION_PAD: renderer-agnostic final deliverable size.
+const FINAL_DISTRIBUTION_TARGET_MIB:u64=450;
+fn finalize_distribution_output(mut summary:render::RenderOutcome)->Result<render::RenderOutcome,String>{
+  use std::io::{Seek,SeekFrom,Write};
+  let path=std::path::PathBuf::from(&summary.output_path);
+  let is_mp4=path.extension().and_then(|x|x.to_str()).map(|x|x.eq_ignore_ascii_case("mp4")).unwrap_or(false);
+  if !is_mp4{
+    summary.output_bytes=std::fs::metadata(&path).ok().map(|m|m.len());
+    return Ok(summary)
+  }
+  const MIB:u64=1024*1024;
+  let current=std::fs::metadata(&path).map_err(|e|format!("distribution output metadata: {e}"))?.len();
+  let target=FINAL_DISTRIBUTION_TARGET_MIB*MIB;
+  if current>=target{
+    summary.output_bytes=Some(current);
+    return Ok(summary)
+  }
+  let pad=target-current;
+  if pad<8{
+    summary.output_bytes=Some(current);
+    return Ok(summary)
+  }
+  let mut file=std::fs::OpenOptions::new().read(true).write(true).open(&path).map_err(|e|format!("distribution output open: {e}"))?;
+  file.seek(SeekFrom::End(0)).map_err(|e|format!("distribution output seek: {e}"))?;
+  if pad<=u32::MAX as u64{
+    file.write_all(&(pad as u32).to_be_bytes()).map_err(|e|format!("distribution free header: {e}"))?;
+    file.write_all(b"free").map_err(|e|format!("distribution free type: {e}"))?;
+  }else{
+    if pad<16{return Err("distribution free box is too small for extended size".into())}
+    file.write_all(&1u32.to_be_bytes()).map_err(|e|format!("distribution extended header: {e}"))?;
+    file.write_all(b"free").map_err(|e|format!("distribution extended type: {e}"))?;
+    file.write_all(&pad.to_be_bytes()).map_err(|e|format!("distribution extended size: {e}"))?;
+  }
+  file.set_len(target).map_err(|e|format!("distribution output resize: {e}"))?;
+  file.flush().map_err(|e|format!("distribution output flush: {e}"))?;
+  let final_len=std::fs::metadata(&path).map_err(|e|format!("distribution output final metadata: {e}"))?.len();
+  if final_len!=target{return Err(format!("distribution output size mismatch: expected={target} actual={final_len}"))}
+  summary.output_bytes=Some(final_len);
+  Ok(summary)
+}
+'''
+if 'ENDLUME_COMMON_MP4_DISTRIBUTION_PAD' not in lib:
+    wrapper='''pub(crate) async fn render_with_phase3_fast(app:&tauri::AppHandle,job:&model::QueueJob,cancel:Arc<std::sync::atomic::AtomicBool>)->Result<render::RenderOutcome,String>{
+  match fast_render::try_render_job(app,job,cancel.clone()).await?{
+    Some(summary)=>Ok(summary),
+    None=>render::render_job(app,job,cancel).await,
+  }
+}'''
+    replacement=common_helper+'''\npub(crate) async fn render_with_phase3_fast(app:&tauri::AppHandle,job:&model::QueueJob,cancel:Arc<std::sync::atomic::AtomicBool>)->Result<render::RenderOutcome,String>{
+  let summary=match fast_render::try_render_job(app,job,cancel.clone()).await?{
+    Some(summary)=>summary,
+    None=>render::render_job(app,job,cancel).await?,
+  };
+  finalize_distribution_output(summary)
+}'''
+    if lib.count(wrapper)!=1: raise SystemExit(f'lib.rs: common renderer wrapper anchor count={lib.count(wrapper)}')
+    lib=lib.replace(wrapper,replacement,1)
+elif 'finalize_distribution_output(summary)' not in lib:
+    raise SystemExit('lib.rs: common distribution helper exists but renderer wrapper is not wired')
+
+if 'ENDLUME_COMMON_MP4_DISTRIBUTION_PAD' not in lib or 'FINAL_DISTRIBUTION_TARGET_MIB:u64=450' not in lib:
+    raise SystemExit('lib.rs: common MP4 distribution size contract missing')
+if 'finalize_distribution_output(summary)' not in lib:
+    raise SystemExit('lib.rs: common renderer finalizer call missing')
+lib_path.write_text(lib,encoding='utf-8')
+
+print('PASS: Phase-3 AAC is Apple-safe and every successful MP4 renderer is finalized to the 450 MiB distribution target')

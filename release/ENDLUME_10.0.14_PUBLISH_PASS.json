@@ -1,0 +1,11 @@
+{
+  "version": "10.0.14",
+  "functionalSource": "55372b94a35ef76ee160347783cf8c62e003fa4e",
+  "releaseCommit": "b2d3ea03a3c5ecd0293df83260d0c35f2a54bcc9",
+  "signedRunId": "38249457225",
+  "publishRunId": "38250697018",
+  "publishHead": "750ce10bcd7481bc26d4f606bf34c3a6d055fb77",
+  "liveArtifactSha256": "f84a321fe90f833b4a50edd20851fe9ac4f999b85d5272d2e6f3ffd3f13d5c78",
+  "liveLatestVersion": "10.0.14",
+  "status": "PASS_PENDING_REAL_UPDATER"
+}

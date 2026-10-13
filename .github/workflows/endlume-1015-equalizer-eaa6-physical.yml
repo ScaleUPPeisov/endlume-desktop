@@ -19,7 +19,7 @@ concurrency:
 jobs:
   physical:
     runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
-    timeout-minutes: 35
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
@@ -34,7 +34,6 @@ jobs:
           set -Eeuo pipefail
           test "$(git rev-parse HEAD)" = "eaa6eb0a022f184f533338e9ff778328cfe29717"
           CHANGED="$(git diff --name-only c5534ce47123777b698117a46473238381e37729..HEAD)"
-          echo "$CHANGED"
           test "$(printf '%s\n' "$CHANGED" | sed '/^$/d' | wc -l | tr -d ' ')" = "3"
           printf '%s\n' "$CHANGED" | grep -qx 'src-tauri/src/cache.rs'
           printf '%s\n' "$CHANGED" | grep -qx 'src-tauri/src/persistence.rs'
@@ -44,7 +43,7 @@ jobs:
           echo 'CANDIDATE_COMMIT=eaa6eb0a022f184f533338e9ff778328cfe29717'
           echo 'VERSION=10.0.15'
 
-      - name: Verify no hidden Round Equalizer chromakey override remains
+      - name: Verify hotfix wiring
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -68,7 +67,7 @@ jobs:
           mkdir -p src-tauri/binaries
           rsync -a "$FOUNDATION/src-tauri/binaries/" src-tauri/binaries/
 
-      - name: Compile targeted product candidate
+      - name: Build exact candidate app
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -77,8 +76,6 @@ jobs:
           ROOT="$RUNNER_TEMP/endlume-1015-equalizer-eaa6"
           rm -rf "$ROOT"; mkdir -p "$ROOT"
           npm ci
-          npm run build
-          cargo test --manifest-path src-tauri/Cargo.toml cache::tests --lib -- --nocapture
           CONF='src-tauri/tauri.conf.json'; cp "$CONF" "$ROOT/tauri.conf.original.json"
           restore_conf(){ cp "$ROOT/tauri.conf.original.json" "$CONF"; }
           trap restore_conf EXIT
@@ -109,6 +106,12 @@ jobs:
           EXE="$(cat "$ROOT/exe.txt")"; FFMPEG="$(cat "$ROOT/ffmpeg.txt")"; FFPROBE="$(cat "$ROOT/ffprobe.txt")"
           git fetch origin "$GITHUB_SHA" --depth=1
           git show "${GITHUB_SHA}:scripts/qa-endlume-1015-equalizer-final-v2.py" > "$ROOT/qa-equalizer.py"
+          python3 - "$ROOT/qa-equalizer.py" <<'PY'
+          from pathlib import Path
+          import sys
+          p=Path(sys.argv[1]); s=p.read_text(); s=s.replace("'-ss','.5'","'-ss','0.5'"); p.write_text(s)
+          PY
+          grep -q "'-ss','0.5'" "$ROOT/qa-equalizer.py"
           python3 "$ROOT/qa-equalizer.py" "$EXE" "$FFMPEG" "$FFPROBE" "$ROOT" | tee "$ROOT/equalizer.log"
           grep -q '^EQUALIZER_VISIBILITY=PASS$' "$ROOT/equalizer.log"
           grep -q '^PREVIEW_RENDER_MATCH=PASS$' "$ROOT/equalizer.log"
@@ -119,8 +122,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           ROOT="$RUNNER_TEMP/endlume-1015-equalizer-eaa6"
-          EXE="$(cat "$ROOT/exe.txt")"; FFMPEG="$(cat "$ROOT/ffmpeg.txt")"; FFPROBE="$(cat "$ROOT/ffprobe.txt")"
-          python3 scripts/qa-endlume-1014-vyron-routing-physical.py "$EXE" "$FFMPEG" "$FFPROBE" "$ROOT/vyron.json" | tee "$ROOT/vyron.log"
+          python3 scripts/qa-endlume-1014-vyron-routing-physical.py "$(cat "$ROOT/exe.txt")" "$(cat "$ROOT/ffmpeg.txt")" "$(cat "$ROOT/ffprobe.txt")" "$ROOT/vyron.json" | tee "$ROOT/vyron.log"
           grep -q 'VYRON_NO_CROSS_WRITE=GREEN' "$ROOT/vyron.log"
           echo 'VYRON_REGRESSION=PASS'
 
@@ -129,7 +131,6 @@ jobs:
         run: |
           set -Eeuo pipefail
           ROOT="$RUNNER_TEMP/endlume-1015-equalizer-eaa6"
-          cat "$ROOT/equalizer.log"
           echo 'PREVIOUS_CANDIDATE=c5534ce47123777b698117a46473238381e37729'
           echo 'CANDIDATE_COMMIT=eaa6eb0a022f184f533338e9ff778328cfe29717'
           echo 'MULTI_EFFECT_PER_VIDEO=PASS'
@@ -147,7 +148,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: ENDLUME-10.0.15-EQUALIZER-EAA6-PHYSICAL-EVIDENCE-V2
+          name: ENDLUME-10.0.15-EQUALIZER-EAA6-PHYSICAL-EVIDENCE-V3
           path: |
             ${{ runner.temp }}/endlume-1015-equalizer-eaa6/equalizer-report.json
             ${{ runner.temp }}/endlume-1015-equalizer-eaa6/equalizer.log

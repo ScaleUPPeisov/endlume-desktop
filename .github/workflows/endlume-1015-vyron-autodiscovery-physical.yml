@@ -5,19 +5,26 @@ on:
     branches:
       - hotfix/endlume-10.0.15-render-destination-routing
     paths:
-      - .github/workflows/endlume-1015-vyron-autodiscovery-physical.yml
-  workflow_dispatch:
+      - '.github/workflows/endlume-1015-vyron-autodiscovery-physical.yml'
+  workflow_dispatch: {}
 
 permissions:
   contents: read
 
+concurrency:
+  group: endlume-1015-vyron-autodiscovery-physical
+  cancel-in-progress: true
+
 jobs:
   physical:
     runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - name: Checkout ENDLUME QA branch
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          clean: true
 
       - name: Checkout current VYRON product branch
         uses: actions/checkout@v4
@@ -26,115 +33,68 @@ jobs:
           ref: hotfix/vyron-6.1.10-product-correctness
           path: vyron-product
 
-      - name: Discover physical VYRON root and inspect native discovery path
+      - name: Discover physical VYRON root and native discovery references
         shell: bash
         run: |
           set -Eeuo pipefail
-          ROOT="$(python3 - <<'PY'
+          python3 - <<'PY'
+          import os
           from pathlib import Path
           found=[]
-          for v in Path('/Volumes').iterdir():
-              if not v.is_dir(): continue
-              cands=[v]
-              try: cands += [p for p in v.iterdir() if p.is_dir()]
-              except PermissionError: pass
-              for p in cands:
-                  if (p/'ProductionManager'/'Batches').is_dir() and (p/'Render').is_dir(): found.append(p.resolve())
-          uniq=[]
+          for volume in Path('/Volumes').iterdir():
+            if not volume.is_dir(): continue
+            candidates=[volume]
+            try: candidates += [p for p in volume.iterdir() if p.is_dir()]
+            except PermissionError: continue
+            for root in candidates:
+              if (root/'ProductionManager'/'Batches').is_dir() and (root/'Render').is_dir(): found.append(root.resolve())
+          unique=[]
           for p in found:
-              if p not in uniq: uniq.append(p)
-          if len(uniq)!=1: raise SystemExit(f'Expected one physical VYRON root, got {uniq}')
-          print(uniq[0])
+            if p not in unique: unique.append(p)
+          if len(unique)!=1: raise SystemExit(f'Expected exactly one physical VYRON workspace, found {unique}')
+          root=unique[0]
+          with open(os.environ['GITHUB_ENV'],'a',encoding='utf-8') as f: f.write(f'VYRON_PHYSICAL_ROOT={root}\n')
+          print(f'VYRON ROOT={root}')
+          print('EXTERNAL_WORKSPACE_DISCOVERY=PASS')
           PY
-          )"
-          echo "VYRON_PHYSICAL_ROOT=$ROOT" >> "$GITHUB_ENV"
-          echo "VYRON ROOT=$ROOT"
           cd vyron-product
-          echo '--- native discovery references ---'
-          rg -n "render-inventory-changed|inventory_watch_roots|scan_render|render_folder|renderFolder|Live Inventory|live inventory" src src-tauri 2>/dev/null | head -250 | tee "$RUNNER_TEMP/vyron-discovery-refs.txt" || true
+          rg -n "render-inventory-changed|inventory_watch_roots|scan_render|render_folder|renderFolder|Live Inventory|live inventory" src src-tauri 2>/dev/null | head -300 | tee "$RUNNER_TEMP/vyron-discovery-refs.txt" || true
           test -s "$RUNNER_TEMP/vyron-discovery-refs.txt"
 
-      - name: Run current VYRON native inventory watcher tests
+      - name: Run current VYRON inventory tests
         shell: bash
         run: |
           set -Eeuo pipefail
           export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
           cd vyron-product
-          cargo test --manifest-path src-tauri/Cargo.toml inventory_watch -- --nocapture
-          echo 'VYRON_NATIVE_INVENTORY_WATCH_TESTS=PASS'
+          cargo test --manifest-path src-tauri/Cargo.toml inventory -- --nocapture
+          echo 'VYRON_NATIVE_INVENTORY_TESTS=PASS'
 
-      - name: Physical FSEvents gate on actual Render channel
+      - name: Physical native FSEvents gate on actual external Render channel
         shell: bash
         run: |
           set -Eeuo pipefail
           export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+          python3 scripts/inject-vyron-physical-autodiscovery-test.py
           cd vyron-product
-          python3 - "$VYRON_PHYSICAL_ROOT" <<'PY'
-          from pathlib import Path
-          import sys
-          p=Path('src-tauri/src/inventory_watch.rs')
-          s=p.read_text()
-          marker='physical_external_render_event_is_observed_1015'
-          if marker not in s:
-              insert=r'''
-
-    #[test]
-    fn physical_external_render_event_is_observed_1015() {
-        use std::{fs, sync::mpsc, time::{Duration, Instant}};
-        let root_raw=std::env::var("VYRON_PHYSICAL_ROOT_FOR_TEST").expect("physical root env");
-        let render_root=PathBuf::from(root_raw).join("Render");
-        let mut channels=fs::read_dir(&render_root).expect("Render root")
-            .filter_map(Result::ok).map(|e|e.path()).filter(|p|p.is_dir()).collect::<Vec<_>>();
-        channels.sort();
-        let root=channels.into_iter().next().expect("at least one channel render dir").canonicalize().expect("canonical channel dir");
-        let (tx,rx)=mpsc::channel();
-        let mut watcher=RecommendedWatcher::new(move |r:notify::Result<Event>|{let _=tx.send(r);},Config::default()).expect("watcher");
-        watcher.watch(&root,RecursiveMode::Recursive).expect("watch physical render channel");
-        std::thread::sleep(Duration::from_millis(700));
-        let target=root.join(format!(".ENDLUME-VYRON-AUTODISCOVERY-QA-{}.mov",std::process::id()));
-        let _=fs::remove_file(&target);
-        fs::write(&target,b"qa-video-event").expect("create physical render fixture");
-        let deadline=Instant::now()+Duration::from_secs(10);
-        let mut found=false;
-        while Instant::now()<deadline && !found {
-            match rx.recv_timeout(Duration::from_millis(500)) {
-                Ok(Ok(event)) if event.paths.iter().any(|p|p==&root||p.starts_with(&root))=>found=true,
-                Ok(_)=>{},
-                Err(mpsc::RecvTimeoutError::Timeout)=>{},
-                Err(e)=>panic!("watch channel failed: {e}"),
-            }
-        }
-        drop(watcher);
-        let _=fs::remove_file(&target);
-        assert!(found,"VYRON native watcher did not observe actual external Render channel");
-    }
-'''
-              pos=s.rfind('\n}')
-              if pos<0: raise SystemExit('inventory_watch tests module closing brace not found')
-              s=s[:pos]+insert+s[pos:]
-              p.write_text(s)
-          PY
           VYRON_PHYSICAL_ROOT_FOR_TEST="$VYRON_PHYSICAL_ROOT" cargo test --manifest-path src-tauri/Cargo.toml physical_external_render_event_is_observed_1015 -- --nocapture
           git checkout -- src-tauri/src/inventory_watch.rs
           echo 'VYRON_EXTERNAL_RENDER_WATCH=PASS'
 
-      - name: Verify actual ENDLUME outputs are discoverable by current VYRON inventory contract
+      - name: Verify physical Render folders match VYRON media discovery contract
         shell: bash
         run: |
           set -Eeuo pipefail
           python3 - "$VYRON_PHYSICAL_ROOT" <<'PY'
           from pathlib import Path
           import sys
-          root=Path(sys.argv[1]); render=root/'Render'
-          exts={'.mp4','.mov','.m4v','.mkv'}
-          channels=[]
+          root=Path(sys.argv[1]); render=root/'Render'; exts={'.mp4','.mov','.m4v','.mkv'}
+          rows=[]
           for d in sorted(p for p in render.iterdir() if p.is_dir()):
-              files=[p for p in d.iterdir() if p.is_file() and p.suffix.lower() in exts and not p.name.startswith('.')]
-              if files: channels.append((d.name,files))
-          if len(channels)<3:
-              raise SystemExit(f'Need >=3 physical Render channels containing video, found {[(n,len(f)) for n,f in channels]}')
-          for name,files in channels[:3]:
-              print(f'CHANNEL={name} DISCOVERABLE_VIDEO_COUNT={len(files)} SAMPLE={files[-1]}')
+            files=sorted(p for p in d.iterdir() if p.is_file() and p.suffix.lower() in exts and not p.name.startswith('.'))
+            if files: rows.append((d.name,files))
+          if len(rows)<3: raise SystemExit(f'Expected videos in >=3 real Render channels, found {[(n,len(f)) for n,f in rows]}')
+          for name,files in rows[:3]: print(f'CHANNEL={name} DISCOVERABLE_VIDEO_COUNT={len(files)} SAMPLE={files[-1]}')
           print('VYRON_PHYSICAL_RENDER_SCAN_CONTRACT=PASS')
           PY
 

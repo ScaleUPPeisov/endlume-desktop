@@ -1,3 +1,4 @@
+# Triggered after physical Round Equalizer repro confirmed destructive legacy chromakey.
 name: ENDLUME 10.0.15 Apply Equalizer Visibility Hotfix
 on:
   push:
@@ -27,7 +28,6 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
 
-          # 1) Final/fast renderer: stop hiding user controls behind a Round Equalizer hard override.
           p=Path('src-tauri/src/cache.rs'); s=p.read_text()
           old='''const ROUND_EQUALIZER_859_ID:&str="825dd7a4-f0cf-4032-a3c9-64290cb5756d";\nconst ROUND_EQUALIZER_859_SIMILARITY:f64=0.18;\nconst ROUND_EQUALIZER_859_BLEND:f64=0.03;'''
           new='''const ROUND_EQUALIZER_859_ID:&str="825dd7a4-f0cf-4032-a3c9-64290cb5756d";'''
@@ -42,7 +42,6 @@ jobs:
           assert old in s; s=s.replace(old,new,1)
           p.write_text(s)
 
-          # 2) Live Preview: Similarity/Blend must react immediately instead of being silently forced.
           p=Path('src/components/LiveCompositePreview.tsx'); s=p.read_text()
           old="""            const eq=e.id==='825dd7a4-f0cf-4032-a3c9-64290cb5756d'&&e.mode==='chromakey';\n            const destructiveSubscribe=assets?.previewType==='Subscribe'&&e.mode==='chromakey'&&Math.abs(e.similarity-.60)<.000001&&Math.abs(e.blend-.35)<.000001;\n            const sim=eq?0.18:destructiveSubscribe?0.10:e.similarity,blend=eq?0.03:destructiveSubscribe?0.06:e.blend;"""
           new="""            const destructiveSubscribe=assets?.previewType==='Subscribe'&&e.mode==='chromakey'&&Math.abs(e.similarity-.60)<.000001&&Math.abs(e.blend-.35)<.000001;\n            const sim=destructiveSubscribe?0.10:e.similarity,blend=destructiveSubscribe?0.06:e.blend;"""
@@ -52,24 +51,21 @@ jobs:
           assert old in s; s=s.replace(old,new,1)
           p.write_text(s)
 
-          # 3) One-time persisted-owner migration: exact destructive owner max triple -> physically proven safe defaults.
           p=Path('src-tauri/src/persistence.rs'); s=p.read_text()
           anchor='''fn migrate_library(app:&AppHandle,v:&mut Value)->bool{\n  let Some(obj)=v.as_object_mut() else{return false};\n  let mut changed=false;'''
-          insert='''fn migrate_library(app:&AppHandle,v:&mut Value)->bool{\n  let Some(obj)=v.as_object_mut() else{return false};\n  let mut changed=false;\n\n  // 10.0.15 owner physical repro: Round Equalizer at the old UI max triple\n  // 0.60 / 0.35 / 1.0 retained only ~7.5% foreground alpha. Migrate that\n  // exact legacy owner state once to the physically validated safe defaults.\n  // The marker lets the owner manually increase any slider afterwards without\n  // ENDLUME silently rewriting the value on a later save/load.\n  const EQ_VIS_MIGRATION:&str="roundEqualizerVisibility1015SafeDefaults";\n  let already_migrated=obj.get("_migrations").and_then(Value::as_object).and_then(|m|m.get(EQ_VIS_MIGRATION)).and_then(Value::as_u64).unwrap_or(0)>=1;\n  let mut found_round_equalizer=false;\n  if !already_migrated{\n    if let Some(items)=obj.get_mut("effects").and_then(Value::as_array_mut){\n      for item in items.iter_mut(){\n        let Some(effect)=item.as_object_mut() else{continue};\n        let id=effect.get("id").and_then(Value::as_str).unwrap_or("");\n        let name=effect.get("name").and_then(Value::as_str).unwrap_or("").trim().to_lowercase();\n        let is_round=id=="825dd7a4-f0cf-4032-a3c9-64290cb5756d"||name=="эквалайзер круглый";\n        if !is_round{continue}\n        found_round_equalizer=true;\n        if effect.get("mode").and_then(Value::as_str)==Some("chromakey"){\n          let sim=effect.get("similarity").and_then(Value::as_f64).unwrap_or(0.10);\n          let blend=effect.get("blend").and_then(Value::as_f64).unwrap_or(0.06);\n          let despill=effect.get("despill").and_then(Value::as_f64).unwrap_or(0.35);\n          if (sim-0.60).abs()<0.000_001&&(blend-0.35).abs()<0.000_001&&(despill-1.0).abs()<0.000_001{\n            effect.insert("similarity".into(),json!(0.10));\n            effect.insert("blend".into(),json!(0.06));\n            effect.insert("despill".into(),json!(0.35));\n            effect.insert("cacheReady".into(),json!(false));\n            effect.insert("cacheKey".into(),Value::Null);\n            changed=true;\n          }\n        }\n      }\n    }\n    if found_round_equalizer{\n      let migrations=obj.entry("_migrations").or_insert_with(||json!({}));\n      if !migrations.is_object(){*migrations=json!({});}\n      if let Some(map)=migrations.as_object_mut(){map.insert(EQ_VIS_MIGRATION.into(),json!(1));}\n      changed=true;\n    }\n  }'''
+          insert='''fn migrate_library(app:&AppHandle,v:&mut Value)->bool{\n  let Some(obj)=v.as_object_mut() else{return false};\n  let mut changed=false;\n\n  const EQ_VIS_MIGRATION:&str="roundEqualizerVisibility1015SafeDefaults";\n  let already_migrated=obj.get("_migrations").and_then(Value::as_object).and_then(|m|m.get(EQ_VIS_MIGRATION)).and_then(Value::as_u64).unwrap_or(0)>=1;\n  let mut found_round_equalizer=false;\n  if !already_migrated{\n    if let Some(items)=obj.get_mut("effects").and_then(Value::as_array_mut){\n      for item in items.iter_mut(){\n        let Some(effect)=item.as_object_mut() else{continue};\n        let id=effect.get("id").and_then(Value::as_str).unwrap_or("");\n        let name=effect.get("name").and_then(Value::as_str).unwrap_or("").trim().to_lowercase();\n        let is_round=id=="825dd7a4-f0cf-4032-a3c9-64290cb5756d"||name=="эквалайзер круглый";\n        if !is_round{continue}\n        found_round_equalizer=true;\n        if effect.get("mode").and_then(Value::as_str)==Some("chromakey"){\n          let sim=effect.get("similarity").and_then(Value::as_f64).unwrap_or(0.10);\n          let blend=effect.get("blend").and_then(Value::as_f64).unwrap_or(0.06);\n          let despill=effect.get("despill").and_then(Value::as_f64).unwrap_or(0.35);\n          if (sim-0.60).abs()<0.000_001&&(blend-0.35).abs()<0.000_001&&(despill-1.0).abs()<0.000_001{\n            effect.insert("similarity".into(),json!(0.10));\n            effect.insert("blend".into(),json!(0.06));\n            effect.insert("despill".into(),json!(0.35));\n            effect.insert("cacheReady".into(),json!(false));\n            effect.insert("cacheKey".into(),Value::Null);\n            changed=true;\n          }\n        }\n      }\n    }\n    if found_round_equalizer{\n      let migrations=obj.entry("_migrations").or_insert_with(||json!({}));\n      if !migrations.is_object(){*migrations=json!({});}\n      if let Some(map)=migrations.as_object_mut(){map.insert(EQ_VIS_MIGRATION.into(),json!(1));}\n      changed=true;\n    }\n  }'''
           assert anchor in s; s=s.replace(anchor,insert,1)
           old='''pub fn save_library(app:AppHandle,mut payload:Value)->Result<(),String>{\n  let _=migrate_library(&app,&mut payload);\n  write_value(&app,"library.json",&payload).map_err(|e|e.to_string())\n}'''
-          new='''pub fn save_library(app:AppHandle,mut payload:Value)->Result<(),String>{\n  // The frontend intentionally sends only public library fields. Preserve\n  // backend migration markers so a deliberate later max-slider choice stays deliberate.\n  let existing=read_value(&app,"library.json");\n  if let (Some(dst),Some(migrations))=(payload.as_object_mut(),existing.get("_migrations").cloned()){dst.insert("_migrations".into(),migrations);}\n  let _=migrate_library(&app,&mut payload);\n  write_value(&app,"library.json",&payload).map_err(|e|e.to_string())\n}'''
+          new='''pub fn save_library(app:AppHandle,mut payload:Value)->Result<(),String>{\n  let existing=read_value(&app,"library.json");\n  if let (Some(dst),Some(migrations))=(payload.as_object_mut(),existing.get("_migrations").cloned()){dst.insert("_migrations".into(),migrations);}\n  let _=migrate_library(&app,&mut payload);\n  write_value(&app,"library.json",&payload).map_err(|e|e.to_string())\n}'''
           assert old in s; s=s.replace(old,new,1)
           p.write_text(s)
 
-          # Existing UI default/reset must remain the safe values and expert maxima must remain unchanged.
           editors=Path('src/pages/Editors.tsx').read_text()
           assert 'similarity:0.10' in editors and 'blend:0.06' in editors and 'despill:0.35' in editors
           assert 'max={0.6}' in editors and 'max={0.35}' in editors and 'max={1}' in editors
           assert 'СБРОСИТЬ CHROMAKEY' in editors
           PY
           git diff --check
-          git diff -- src-tauri/src/cache.rs src/components/LiveCompositePreview.tsx src-tauri/src/persistence.rs
       - name: Commit clean product candidate
         shell: bash
         run: |

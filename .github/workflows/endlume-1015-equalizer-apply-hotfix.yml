@@ -60,10 +60,10 @@ jobs:
           assert old in s; s=s.replace(old,new,1)
           p.write_text(s)
 
-          editors=Path('src/pages/Editors.tsx').read_text()
+          editors=''.join(Path('src/pages/Editors.tsx').read_text().split())
           assert 'similarity:0.10' in editors and 'blend:0.06' in editors and 'despill:0.35' in editors
           assert 'max={0.6}' in editors and 'max={0.35}' in editors and 'max={1}' in editors
-          assert 'СБРОСИТЬ CHROMAKEY' in editors
+          assert 'СБРОСИТЬCHROMAKEY' in editors
           PY
           git diff --check
       - name: Commit clean product candidate

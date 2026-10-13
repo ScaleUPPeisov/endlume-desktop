@@ -33,7 +33,7 @@ jobs:
           ref: hotfix/vyron-6.1.10-product-correctness
           path: vyron-product
 
-      - name: Discover physical VYRON root and native discovery references
+      - name: Discover physical VYRON root
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -57,9 +57,8 @@ jobs:
           print(f'VYRON ROOT={root}')
           print('EXTERNAL_WORKSPACE_DISCOVERY=PASS')
           PY
-          cd vyron-product
-          rg -n "render-inventory-changed|inventory_watch_roots|scan_render|render_folder|renderFolder|Live Inventory|live inventory" src src-tauri 2>/dev/null | head -300 | tee "$RUNNER_TEMP/vyron-discovery-refs.txt" || true
-          test -s "$RUNNER_TEMP/vyron-discovery-refs.txt"
+          echo "VYRON_SOURCE_HEAD=$(git -C vyron-product rev-parse HEAD)"
+          grep -R -n -E 'render-inventory-changed|inventory_watch_roots' vyron-product/src vyron-product/src-tauri 2>/dev/null | head -100 || true
 
       - name: Run current VYRON inventory tests
         shell: bash

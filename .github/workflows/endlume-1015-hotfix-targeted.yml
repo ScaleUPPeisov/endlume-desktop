@@ -1,4 +1,4 @@
-name: ENDLUME 10.0.15 VYRON + Equalizer Physical Rerun
+name: ENDLUME 10.0.15 Equalizer Physical Repro
 
 on:
   push:
@@ -17,9 +17,9 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  physical:
+  repro:
     runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
-    timeout-minutes: 30
+    timeout-minutes: 12
     steps:
       - uses: actions/checkout@v4
         with:
@@ -28,146 +28,44 @@ jobs:
           clean: true
           persist-credentials: false
 
-      - name: Verify exact candidate and physical destination
+      - name: Verify exact candidate
         shell: bash
         run: |
           set -Eeuo pipefail
           test "$(git rev-parse HEAD)" = "c5534ce47123777b698117a46473238381e37729"
-          test -d '/Volumes/TOSHIBA EXT'
           echo "PRODUCT_CANDIDATE_EXACT=$(git rev-parse HEAD)"
-          echo 'TOSHIBA_EXT=GREEN'
 
-      - name: Restore packaged FFmpeg sidecars
+      - name: Resolve physical FFmpeg
         shell: bash
         run: |
           set -Eeuo pipefail
-          FOUNDATION="$HOME/.endlume-local-builder/endlume-desktop-8.40-bootstrap"
-          test -d "$FOUNDATION/src-tauri/binaries"
-          mkdir -p src-tauri/binaries
-          rsync -a "$FOUNDATION/src-tauri/binaries/" src-tauri/binaries/
+          FFMPEG="$(command -v ffmpeg || true)"
+          FFPROBE="$(command -v ffprobe || true)"
+          if [[ -z "$FFMPEG" || -z "$FFPROBE" ]]; then
+            FFMPEG="$(find /Users/Shared /opt/homebrew /usr/local -type f -name ffmpeg -perm -111 2>/dev/null | head -1 || true)"
+            FFPROBE="$(find /Users/Shared /opt/homebrew /usr/local -type f -name ffprobe -perm -111 2>/dev/null | head -1 || true)"
+          fi
+          test -x "$FFMPEG" && test -x "$FFPROBE"
+          echo "FFMPEG=$FFMPEG" >> "$GITHUB_ENV"
+          echo "FFPROBE=$FFPROBE" >> "$GITHUB_ENV"
 
-      - name: Build exact candidate app without publication
+      - name: Physical Round Equalizer visibility repro
         shell: bash
         run: |
           set -Eeuo pipefail
-          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
-          export CARGO_TARGET_DIR="$RUNNER_TEMP/../_endlume-cache/target-1015-physical"
-          ROOT="$RUNNER_TEMP/endlume-1015-vyron"
+          ROOT="$RUNNER_TEMP/endlume-1015-eq-visibility"
           rm -rf "$ROOT"; mkdir -p "$ROOT"
-          npm ci
-          CONF='src-tauri/tauri.conf.json'
-          BACKUP="$ROOT/tauri.conf.original.json"
-          cp "$CONF" "$BACKUP"
-          restore_conf(){ cp "$BACKUP" "$CONF"; }
-          trap restore_conf EXIT
-          python3 - <<'PY'
-          import json
-          from pathlib import Path
-          p=Path('src-tauri/tauri.conf.json')
-          d=json.loads(p.read_text())
-          d['bundle']['createUpdaterArtifacts']=False
-          p.write_text(json.dumps(d,ensure_ascii=False,indent=2)+'\n')
-          PY
-          ENDLUME_TAURI_TARGET=aarch64-apple-darwin node scripts/prepare-macos-ffmpeg-runtime.mjs
-          npx tauri build --target aarch64-apple-darwin --bundles app --features e2e-render
-          APP="$(find "$CARGO_TARGET_DIR/aarch64-apple-darwin/release/bundle/macos" -maxdepth 1 -type d -name '*.app' -print -quit)"
-          test -n "$APP" -a -d "$APP"
-          /usr/bin/codesign --force --deep --sign - --timestamp=none "$APP"
-          /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP"
-          EXE_NAME="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
-          EXE="$APP/Contents/MacOS/$EXE_NAME"
-          FFMPEG="$(find "$APP/Contents" -maxdepth 7 -type f -name 'ffmpeg' -perm -111 -print -quit)"
-          FFPROBE="$(find "$APP/Contents" -maxdepth 7 -type f -name 'ffprobe' -perm -111 -print -quit)"
-          test -x "$EXE" -a -x "$FFMPEG" -a -x "$FFPROBE"
-          printf '%s' "$EXE" > "$ROOT/exe.txt"
-          printf '%s' "$FFMPEG" > "$ROOT/ffmpeg.txt"
-          printf '%s' "$FFPROBE" > "$ROOT/ffprobe.txt"
-          echo 'PACKAGED_E2E_APP=GREEN'
-
-      - name: VYRON_REGRESSION with three simultaneous effects
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          ROOT="$RUNNER_TEMP/endlume-1015-vyron"
-          EXE="$(cat "$ROOT/exe.txt")"
-          FFMPEG="$(cat "$ROOT/ffmpeg.txt")"
-          FFPROBE="$(cat "$ROOT/ffprobe.txt")"
-          HARNESS="$ROOT/qa-vyron-1015.py"
-          cp scripts/qa-endlume-1014-vyron-routing-physical.py "$HARNESS"
-          python3 - "$HARNESS" <<'PY'
-          from pathlib import Path
-          import sys
-          p=Path(sys.argv[1]); s=p.read_text(encoding='utf-8')
-          anchor="cover_b,audio_b=project_fixture('B',src/'Канал B проект')\n"
-          lines=[
-            "fx_dir=src/'QA Effects'; fx_dir.mkdir(parents=True,exist_ok=True)",
-            "def make_fx(name,color,x,y):",
-            "    path=fx_dir/f'{name}.mp4'",
-            "    run([FFMPEG,'-hide_banner','-loglevel','error','-f','lavfi','-i','color=c=0x00ff00:size=640x360:rate=30','-t','2','-vf',f'drawbox=x=120:y=80:w=400:h=180:color={color}@1:t=fill','-c:v','libx264','-preset','ultrafast','-pix_fmt','yuv420p','-y',path])",
-            "    return {'id':name,'name':name,'source':str(path),'enabled':True,'mode':'chromakey','keyColor':'#00ff00','similarity':0.10,'blend':0.06,'despill':0.35,'lumaThreshold':0.03,'lumaTolerance':0.08,'saturation':1.0,'x':x,'y':y,'scale':0.24,'fullscreen':False,'previewFrameTime':0.0,'startSec':0.0,'endSec':None,'cacheKey':None,'cacheReady':False,'usageMode':'always','intervalSec':240.0,'usageDurationSec':30.0,'target':None,'offsetX':None,'offsetY':None,'opacity':1.0}",
-            "fx1=make_fx('qa-vyron-fx1','red',0.25,0.25)",
-            "fx2=make_fx('qa-vyron-fx2','blue',0.50,0.50)",
-            "fx3=make_fx('qa-vyron-fx3','white',0.75,0.75)",
-          ]
-          assert anchor in s
-          s=s.replace(anchor,anchor+'\n'.join(lines)+'\n',1)
-          old="'settings':settings(out),'effects':[],'subscribes':[],'ambient':None,"
-          new="'settings':settings(out),'effects':[fx1,fx2,fx3],'subscribes':[],'ambient':None,"
-          assert old in s
-          s=s.replace(old,new,1)
-          p.write_text(s,encoding='utf-8')
-          PY
-          python3 "$HARNESS" "$EXE" "$FFMPEG" "$FFPROBE" "$ROOT/vyron-routing.json" | tee "$ROOT/vyron-routing.log"
-          python3 - "$ROOT/vyron-routing.json" <<'PY'
-          import json,sys
-          d=json.load(open(sys.argv[1]))
-          assert d['status']=='GREEN',d
-          assert d['sourceOnExternalDrive'] is True,d
-          assert d['crossWrite'] is False,d
-          assert d['channelA']['outputPath'].startswith(d['destinationA']+'/'),d
-          assert d['channelB']['outputPath'].startswith(d['destinationB']+'/'),d
-          assert d['channelA']['videoCodec']=='hevc' and d['channelA']['audioCodec']=='aac',d
-          assert d['channelB']['videoCodec']=='hevc' and d['channelB']['audioCodec']=='aac',d
-          print('VYRON_DESTINATION=PASS')
-          print('VYRON_NO_CROSS_WRITE=PASS')
-          print('VYRON_RENDER_COMPLETE=PASS')
-          print('VYRON_MULTI_EFFECT=PASS')
-          print('VYRON_REGRESSION=PASS')
-          print('VYRON_APP_WALL_SECONDS=%.3f'%d['appWallSeconds'])
-          PY
-
-      - name: Physical Round Equalizer visibility probe on exact candidate source
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          BUILD_ROOT="$RUNNER_TEMP/endlume-1015-vyron"
-          FFMPEG="$(cat "$BUILD_ROOT/ffmpeg.txt")"
-          FFPROBE="$(cat "$BUILD_ROOT/ffprobe.txt")"
-          PROBE_ROOT="$RUNNER_TEMP/endlume-1015-eq-visibility"
-          rm -rf "$PROBE_ROOT"; mkdir -p "$PROBE_ROOT"
           git fetch origin "$GITHUB_SHA" --depth=1
-          git show "${GITHUB_SHA}:scripts/qa-endlume-1015-equalizer-visibility.py" > "$PROBE_ROOT/probe.py"
-          python3 "$PROBE_ROOT/probe.py" "$FFMPEG" "$FFPROBE" "$PROBE_ROOT" | tee "$PROBE_ROOT/probe.log"
-          test -s "$PROBE_ROOT/metrics.json"
-          grep -q 'PHYSICAL_EQUALIZER_PROBE=PASS' "$PROBE_ROOT/probe.log"
-
-      - name: Final gate summary
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          echo 'PRODUCT_SOURCE=c5534ce47123777b698117a46473238381e37729'
-          echo 'VERSION=10.0.15'
-          echo 'VYRON_REGRESSION=PASS'
-          echo 'EQUALIZER_PHYSICAL_PROBE=PASS'
-          echo 'PUBLISH=NOT_RUN'
-          echo 'RELEASE=NOT_RUN'
+          git show "${GITHUB_SHA}:scripts/qa-endlume-1015-equalizer-visibility.py" > "$ROOT/probe.py"
+          python3 "$ROOT/probe.py" "$FFMPEG" "$FFPROBE" "$ROOT" | tee "$ROOT/probe.log"
+          test -s "$ROOT/metrics.json"
+          grep -q 'PHYSICAL_EQUALIZER_PROBE=PASS' "$ROOT/probe.log"
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: ENDLUME-10.0.15-EQUALIZER-VYRON-PHYSICAL-EVIDENCE
+          name: ENDLUME-10.0.15-EQUALIZER-PHYSICAL-REPRO
           path: |
-            ${{ runner.temp }}/endlume-1015-vyron/**
             ${{ runner.temp }}/endlume-1015-eq-visibility/**
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 14

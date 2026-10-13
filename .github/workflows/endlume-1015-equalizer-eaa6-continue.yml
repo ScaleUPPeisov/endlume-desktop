@@ -1,0 +1,87 @@
+name: ENDLUME 10.0.15 Equalizer No-Rebuild Continuation
+on:
+  push:
+    branches: [qa/endlume-10.0.15-equalizer-eaa6]
+    paths:
+      - '.github/workflows/endlume-1015-equalizer-eaa6-continue.yml'
+      - 'scripts/qa-endlume-1015-equalizer-continue.py'
+  workflow_dispatch: {}
+permissions:
+  contents: read
+concurrency:
+  group: endlume-1015-equalizer-eaa6-continue
+  cancel-in-progress: true
+jobs:
+  physical:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: eaa6eb0a022f184f533338e9ff778328cfe29717
+          fetch-depth: 0
+          clean: true
+          persist-credentials: false
+      - name: Reuse exact already-built candidate app
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ROOT="$RUNNER_TEMP/endlume-1015-equalizer-continue"; rm -rf "$ROOT"; mkdir -p "$ROOT"
+          TARGET="$RUNNER_TEMP/../_endlume-cache/target-1015-equalizer-eaa6/aarch64-apple-darwin/release/bundle/macos"
+          APP="$(find "$TARGET" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          test -n "$APP" -a -d "$APP"
+          test "$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist")" = "10.0.15"
+          /usr/bin/codesign --verify --deep --strict "$APP"
+          EXE_NAME="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
+          EXE="$APP/Contents/MacOS/$EXE_NAME"
+          FFMPEG="$(find "$APP/Contents" -maxdepth 7 -type f -name ffmpeg -perm -111 -print -quit)"
+          FFPROBE="$(find "$APP/Contents" -maxdepth 7 -type f -name ffprobe -perm -111 -print -quit)"
+          test -x "$EXE" -a -x "$FFMPEG" -a -x "$FFPROBE"
+          printf '%s' "$EXE" > "$ROOT/exe"; printf '%s' "$FFMPEG" > "$ROOT/ffmpeg"; printf '%s' "$FFPROBE" > "$ROOT/ffprobe"
+          echo 'REUSED_CANDIDATE=eaa6eb0a022f184f533338e9ff778328cfe29717'
+      - name: Physical preview opacity + final render matrix
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ROOT="$RUNNER_TEMP/endlume-1015-equalizer-continue"
+          git fetch origin "$GITHUB_SHA" --depth=1
+          git show "${GITHUB_SHA}:scripts/qa-endlume-1015-equalizer-continue.py" > "$ROOT/gate.py"
+          python3 "$ROOT/gate.py" "$(cat "$ROOT/exe")" "$(cat "$ROOT/ffmpeg")" "$(cat "$ROOT/ffprobe")" "$ROOT" | tee "$ROOT/gate.log"
+          grep -q '^EQUALIZER_VISIBILITY=PASS$' "$ROOT/gate.log"
+          grep -q '^REALTIME_PREVIEW=PASS$' "$ROOT/gate.log"
+          grep -q '^FAST_RENDER_REGRESSION=PASS$' "$ROOT/gate.log"
+      - name: VYRON regression on same app
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ROOT="$RUNNER_TEMP/endlume-1015-equalizer-continue"
+          python3 scripts/qa-endlume-1014-vyron-routing-physical.py "$(cat "$ROOT/exe")" "$(cat "$ROOT/ffmpeg")" "$(cat "$ROOT/ffprobe")" "$ROOT/vyron.json" | tee "$ROOT/vyron.log"
+          grep -q 'VYRON_NO_CROSS_WRITE=GREEN' "$ROOT/vyron.log"
+          echo 'VYRON_REGRESSION=PASS'
+      - name: Summary
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ROOT="$RUNNER_TEMP/endlume-1015-equalizer-continue"
+          cat "$ROOT/gate.log"
+          echo 'PREVIOUS_CANDIDATE=c5534ce47123777b698117a46473238381e37729'
+          echo 'CANDIDATE_COMMIT=eaa6eb0a022f184f533338e9ff778328cfe29717'
+          echo 'VYRON_REGRESSION=PASS'
+          echo 'FAST_RENDER_REGRESSION=PASS'
+          echo 'PUBLISH=NOT_RUN'
+          echo 'RELEASE=NOT_RUN'
+          echo 'FINAL_STATUS=READY_FOR_OWNER_RETEST'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ENDLUME-10.0.15-EQUALIZER-CONTINUATION-EVIDENCE
+          path: |
+            ${{ runner.temp }}/endlume-1015-equalizer-continue/continuation-report.json
+            ${{ runner.temp }}/endlume-1015-equalizer-continue/gate.log
+            ${{ runner.temp }}/endlume-1015-equalizer-continue/preview.log
+            ${{ runner.temp }}/endlume-1015-equalizer-continue/render.log
+            ${{ runner.temp }}/endlume-1015-equalizer-continue/frames/*.png
+            ${{ runner.temp }}/endlume-1015-equalizer-continue/vyron.json
+            ${{ runner.temp }}/endlume-1015-equalizer-continue/vyron.log
+          if-no-files-found: warn
+          retention-days: 14

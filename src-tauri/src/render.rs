@@ -70,6 +70,17 @@ fn is_image(path:&str)->bool{Path::new(path).extension().and_then(|x|x.to_str())
 pub(crate) fn is_image_for_telemetry(path:&str)->bool{is_image(path)}
 fn safe_name(name:&str)->String{name.chars().map(|c|if ['/', '\\', ':', '*', '?', '"', '<', '>', '|'].contains(&c){'_'}else{c}).collect()}
 fn unique_output(dir:&Path,name:&str)->PathBuf{let safe=safe_name(name);let mut p=dir.join(format!("{} — Ready Videos.mp4",safe));let mut n=2;while p.exists(){p=dir.join(format!("{} — Ready Videos_{}.mp4",safe,n));n+=1}p}
+// ENDLUME_VYRON_STABLE_FINAL_FILENAME
+// A VYRON project represents one production job with one canonical final media
+// path. Re-running the same job (including after app restart) must replace that
+// final media instead of silently creating Ready Videos_2/_3 duplicates.
+// Standalone ENDLUME keeps the historical unique-output behavior.
+pub(crate) fn final_output_path(job:&QueueJob,dir:&Path)->PathBuf{
+  let vyron=job.project.output_source.as_deref().map(str::trim).map(|s|s.eq_ignore_ascii_case("vyron")).unwrap_or(false)
+    ||job.project.vyron_manifest_path.as_deref().map(str::trim).map(|s|!s.is_empty()).unwrap_or(false)
+    ||job.project.vyron_channel_name.as_deref().map(str::trim).map(|s|!s.is_empty()).unwrap_or(false);
+  if vyron{dir.join(format!("{} — Ready Videos.mp4",safe_name(&job.project.name)))}else{unique_output(dir,&job.project.name)}
+}
 fn unique_output_ext(dir:&Path,name:&str,ext:&str)->PathBuf{let safe=safe_name(name);let ext=ext.trim_start_matches('.');let mut p=dir.join(format!("{} — Ready Videos.{}",safe,ext));let mut n=2;while p.exists(){p=dir.join(format!("{} — Ready Videos_{}.{}",safe,n,ext));n+=1}p}
 fn fmt_ts(sec:f64)->String{let s=sec.max(0.0).round() as u64;format!("{:02}:{:02}:{:02}",s/3600,(s%3600)/60,s%60)}
 fn color_ffmpeg(hex:&str)->String{format!("0x{}",hex.trim().trim_start_matches('#').trim_start_matches("0x"))}
@@ -2413,7 +2424,7 @@ pub async fn render_job(app:&AppHandle,job:&QueueJob,cancel:Arc<AtomicBool>)->Re
   let started=chrono::Utc::now().timestamp_millis();let timer=Instant::now();let mut last_error=String::new();
   let ffmpeg_start=FFMPEG_LAUNCHES.load(Ordering::Relaxed);let ffprobe_start=FFPROBE_LAUNCHES.load(Ordering::Relaxed);
   let requested_out_dir=PathBuf::from(&job.settings.output_dir);let out_dir=resolve_output_dir(app,&requested_out_dir)?;if out_dir!=requested_out_dir{emit_warning(app,&job.project.id,&format!("Выбранная папка недоступна. Результат будет сохранён в {}",out_dir.display()));}
-  let out=if smart_repeat_project(job){unique_output(&out_dir,&job.project.name)}else{unique_output(&out_dir,&job.project.name)};
+  let out=final_output_path(job,&out_dir);
   let max_attempts=if smart_repeat_project(job){if cfg!(target_os="windows"){2}else{1}}else{2};
   for attempt in 1..=max_attempts{
     if cancel.load(Ordering::SeqCst){return Err(CANCELLED.into())}

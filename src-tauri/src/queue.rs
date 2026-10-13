@@ -1,7 +1,7 @@
 use crate::{license,model::{BackgroundMusicSettings,EffectPreset,ProjectScanItem,QueueJob,RenderSettings,SubscribePreset},persistence,render};
 use parking_lot::Mutex;
 use serde_json::{json,Value};
-use std::{collections::{HashSet,VecDeque},fs,path::PathBuf,sync::{Arc,atomic::{AtomicBool,Ordering}},time::{Instant,UNIX_EPOCH}};
+use std::{collections::{HashSet,VecDeque},fs,path::{Path,PathBuf},sync::{Arc,atomic::{AtomicBool,Ordering}},time::{Instant,UNIX_EPOCH}};
 use tauri::{AppHandle,Emitter,State};
 
 const LICENSE_BLOCKED:&str="__ENDLUME_LICENSE_BLOCKED__";
@@ -32,6 +32,100 @@ impl QueueRuntime{
 }
 
 fn queue_safe_name(name:&str)->String{name.chars().map(|c|if ['/', '\\', ':', '*', '?', '"', '<', '>', '|'].contains(&c){'_'}else{c}).collect()}
+
+
+// ENDLUME_VYRON_RENDER_DESTINATION_ROUTING_HOTFIX
+// VYRON project metadata owns the final destination. ProductionManager/Batches
+// remains orchestration/workspace only and is never accepted as final output.
+#[derive(Clone,Debug)]
+pub(crate) struct VyronRenderRoute{
+  vyron_root:String,
+  channel:String,
+  project_directory:String,
+  batch_directory:String,
+  final_render_directory:String,
+}
+
+fn is_vyron_managed(project:&ProjectScanItem)->bool{
+  project.output_source.as_deref().map(str::trim).map(|s|s.eq_ignore_ascii_case("vyron")).unwrap_or(false)
+    || project.vyron_manifest_path.as_deref().map(str::trim).map(|s|!s.is_empty()).unwrap_or(false)
+    || project.vyron_channel_name.as_deref().map(str::trim).map(|s|!s.is_empty()).unwrap_or(false)
+}
+
+fn canonical_existing(path:&Path,label:&str)->Result<PathBuf,String>{
+  path.canonicalize().map_err(|e|format!("VYRON routing: {label} недоступен: {} ({e})",path.display()))
+}
+
+fn resolve_vyron_render_route(project:&ProjectScanItem)->Result<Option<VyronRenderRoute>,String>{
+  if !is_vyron_managed(project){return Ok(None)}
+  let channel=project.vyron_channel_name.as_deref().map(str::trim).filter(|s|!s.is_empty()).ok_or_else(||format!("VYRON routing: project '{}' не содержит persisted channel identity",project.name))?;
+  if channel=="."||channel==".."||channel.chars().any(|c|c=='/'||c=='\\'){
+    return Err(format!("VYRON routing: некорректное channel name '{}' для project '{}'",channel,project.name))
+  }
+
+  let project_dir=canonical_existing(Path::new(&project.path),"PROJECT DIRECTORY")?;
+  let production_manager=project_dir.ancestors().find(|p|p.file_name().and_then(|x|x.to_str()).map(|x|x.eq_ignore_ascii_case("ProductionManager")).unwrap_or(false))
+    .ok_or_else(||format!("VYRON routing: PROJECT DIRECTORY '{}' не находится внутри ProductionManager",project_dir.display()))?;
+  let vyron_root=production_manager.parent().ok_or_else(||format!("VYRON routing: не удалось определить VYRON ROOT для '{}'",project.name))?.to_path_buf();
+  let vyron_root=canonical_existing(&vyron_root,"VYRON ROOT")?;
+  let batches_root=canonical_existing(&vyron_root.join("ProductionManager").join("Batches"),"ProductionManager/Batches")?;
+
+  let batch_dir=project.vyron_manifest_path.as_deref().map(str::trim).filter(|s|!s.is_empty())
+    .and_then(|s|Path::new(s).parent().map(Path::to_path_buf))
+    .or_else(||project_dir.parent().map(Path::to_path_buf))
+    .ok_or_else(||format!("VYRON routing: не удалось определить BATCH DIRECTORY для '{}'",project.name))?;
+  let batch_dir=canonical_existing(&batch_dir,"BATCH DIRECTORY")?;
+
+  let expected=vyron_root.join("Render").join(channel);
+  fs::create_dir_all(&expected).map_err(|e|format!("VYRON routing: не удалось создать FINAL RENDER DIRECTORY '{}': {e}",expected.display()))?;
+  let expected=canonical_existing(&expected,"FINAL RENDER DIRECTORY")?;
+
+  let resolved=if let Some(raw)=project.output_dir.as_deref().map(str::trim).filter(|s|!s.is_empty()){
+    let supplied=PathBuf::from(raw);
+    fs::create_dir_all(&supplied).map_err(|e|format!("VYRON routing: persisted outputDirectory '{}' недоступен: {e}",supplied.display()))?;
+    canonical_existing(&supplied,"persisted outputDirectory")?
+  }else{
+    // Deterministic recovery is allowed only when persisted output metadata is
+    // absent: VYRON ROOT + Render + persisted channel identity.
+    expected.clone()
+  };
+
+  if resolved.starts_with(&batches_root){
+    return Err(format!("VYRON routing blocked BATCH_OUTPUT_LEAK: project='{}' final='{}' batches='{}'",project.name,resolved.display(),batches_root.display()))
+  }
+  if resolved!=expected{
+    return Err(format!("VYRON routing destination mismatch for project '{}': persisted='{}' expected='{}'",project.name,resolved.display(),expected.display()))
+  }
+
+  Ok(Some(VyronRenderRoute{
+    vyron_root:vyron_root.to_string_lossy().into_owned(),
+    channel:channel.to_string(),
+    project_directory:project_dir.to_string_lossy().into_owned(),
+    batch_directory:batch_dir.to_string_lossy().into_owned(),
+    final_render_directory:expected.to_string_lossy().into_owned(),
+  }))
+}
+
+pub(crate) fn enforce_render_destination(job:&mut QueueJob)->Result<bool,String>{
+  let Some(route)=resolve_vyron_render_route(&job.project)? else{return Ok(false)};
+  job.settings.output_dir=route.final_render_directory.clone();
+  job.project.output_dir=Some(route.final_render_directory);
+  job.project.output_source=Some("vyron".into());
+  Ok(true)
+}
+
+pub(crate) fn log_render_route(job:&QueueJob){
+  let Ok(Some(route))=resolve_vyron_render_route(&job.project) else{return};
+  eprintln!("VYRON ROOT={}",route.vyron_root);
+  eprintln!("CHANNEL={}",route.channel);
+  eprintln!("PROJECT DIRECTORY={}",route.project_directory);
+  eprintln!("BATCH DIRECTORY={}",route.batch_directory);
+  eprintln!("FINAL RENDER DIRECTORY={}",route.final_render_directory);
+}
+
+pub(crate) fn log_final_output(job:&QueueJob,output_file:&str){
+  if is_vyron_managed(&job.project){eprintln!("FINAL OUTPUT FILE={output_file}")}
+}
 
 fn normalized_project_effect_ids(project:&ProjectScanItem)->Vec<String>{
   let source=if !project.selected_effect_ids.is_empty(){
@@ -86,7 +180,7 @@ pub(crate) fn done_payload_from_summary(job:&QueueJob,id:&str,summary:&render::R
 #[tauri::command]
 pub async fn enqueue_projects(app:AppHandle,runtime:State<'_,Arc<QueueRuntime>>,projects:Vec<ProjectScanItem>,settings:RenderSettings,effects:Vec<EffectPreset>,subscribes:Vec<SubscribePreset>,ambient:Option<String>,ambient_settings:BackgroundMusicSettings)->Result<(),String>{
   license::assert_production_allowed(&app).await?;
-  if settings.output_dir.trim().is_empty(){return Err("Не выбрана папка результата".into())}
+  if settings.output_dir.trim().is_empty()&&projects.iter().filter(|p|p.valid).any(|p|!is_vyron_managed(p)){return Err("Не выбрана папка результата".into())}
 
   let mut effect_ids=HashSet::new();
   for effect in &effects{
@@ -97,7 +191,7 @@ pub async fn enqueue_projects(app:AppHandle,runtime:State<'_,Arc<QueueRuntime>>,
     }
   }
 
-  let mut prepared=Vec::<(ProjectScanItem,Vec<EffectPreset>)>::new();
+  let mut prepared=Vec::<QueueJob>::new();
   for mut project in projects.into_iter().filter(|p|p.valid){
     let selected_ids=normalized_project_effect_ids(&project);
     let selected=if selected_ids.is_empty(){
@@ -122,7 +216,9 @@ pub async fn enqueue_projects(app:AppHandle,runtime:State<'_,Arc<QueueRuntime>>,
     };
     project.selected_effect_ids=if selected.is_empty(){vec![NO_EFFECT_SELECTION.into()]}else{selected.iter().map(|effect|effect.id.clone()).collect()};
     project.selected_effect_id=if project.selected_effect_ids.len()==1{Some(project.selected_effect_ids[0].clone())}else{None};
-    prepared.push((project,selected));
+    let mut job=QueueJob{project,settings:settings.clone(),effects:selected,subscribes:subscribes.clone(),ambient:ambient.clone(),ambient_settings:ambient_settings.clone()};
+    enforce_render_destination(&mut job)?;
+    prepared.push(job);
   }
 
   {
@@ -130,10 +226,10 @@ pub async fn enqueue_projects(app:AppHandle,runtime:State<'_,Arc<QueueRuntime>>,
     let mut q=runtime.pending.lock();
     let mut occupied=q.iter().map(|j|j.project.id.clone()).collect::<HashSet<_>>();
     if let Some(job)=active.as_ref(){occupied.insert(job.project.id.clone());}
-    for (project,selected_effects) in prepared{
-      if !occupied.insert(project.id.clone()){continue}
-      runtime.clear_terminal(&project.id);
-      q.push_back(QueueJob{project,settings:settings.clone(),effects:selected_effects,subscribes:subscribes.clone(),ambient:ambient.clone(),ambient_settings:ambient_settings.clone()});
+    for job in prepared{
+      if !occupied.insert(job.project.id.clone()){continue}
+      runtime.clear_terminal(&job.project.id);
+      q.push_back(job);
     }
   }
   runtime.persist(&app);let _=app.emit("queue-changed",queue_snapshot_value(runtime.inner().as_ref()));start_worker_if_needed(app,runtime.inner().clone());Ok(())
@@ -165,6 +261,11 @@ fn validate_recovered_effect_contract(job:&mut QueueJob)->Result<(),String>{
     if !source.is_file(){return Err(format!("recovery effect '{}' ({}) не найден: {}",effect.name,effect.id,source.display()))}
   }
   job.project.selected_effect_ids=selected.clone();job.project.selected_effect_id=if selected.len()==1{Some(selected[0].clone())}else{None};Ok(())
+}
+
+fn validate_recovered_job(job:&mut QueueJob)->Result<(),String>{
+  validate_recovered_effect_contract(job)?;
+  enforce_render_destination(job).map(|_|())
 }
 
 fn useful_detail(raw:&str)->String{
@@ -261,13 +362,13 @@ pub async fn resume_recovery(app:AppHandle,runtime:State<'_,Arc<QueueRuntime>>)-
   let mut jobs=Vec::new();let mut blocked=Vec::<String>::new();
   if let Some(active)=value.get("active").filter(|v|!v.is_null()){
     if let Ok(mut job)=serde_json::from_value::<QueueJob>(active.clone()){
-      match validate_recovered_effect_contract(&mut job){Ok(())=>jobs.push(job),Err(reason)=>blocked.push(format!("{}: {}",job.project.name,reason))}
+      match validate_recovered_job(&mut job){Ok(())=>jobs.push(job),Err(reason)=>blocked.push(format!("{}: {}",job.project.name,reason))}
     }
   }
   if let Some(pending)=value.get("pending").and_then(Value::as_array){
     for v in pending{
       if let Ok(mut job)=serde_json::from_value::<QueueJob>(v.clone()){
-        match validate_recovered_effect_contract(&mut job){Ok(())=>jobs.push(job),Err(reason)=>blocked.push(format!("{}: {}",job.project.name,reason))}
+        match validate_recovered_job(&mut job){Ok(())=>jobs.push(job),Err(reason)=>blocked.push(format!("{}: {}",job.project.name,reason))}
       }
     }
   }
@@ -287,4 +388,83 @@ pub async fn resume_recovery(app:AppHandle,runtime:State<'_,Arc<QueueRuntime>>)-
 #[tauri::command]
 pub async fn resume_license_queue(app:AppHandle,runtime:State<'_,Arc<QueueRuntime>>)->Result<(),String>{
   license::assert_production_allowed(&app).await?;start_worker_if_needed(app,runtime.inner().clone());Ok(())
+}
+
+
+#[cfg(test)]
+mod render_destination_routing_tests{
+  use super::*;
+  use uuid::Uuid;
+
+  fn fixture(channel:&str,explicit_output:bool)->(PathBuf,QueueJob,PathBuf,PathBuf){
+    let base=std::env::temp_dir().join(format!("endlume-routing-{}",Uuid::new_v4()));
+    let vyron=base.join("VYRON");
+    let batch=vyron.join("ProductionManager").join("Batches").join("batch-001");
+    let project_dir=batch.join("project-001");
+    let expected=vyron.join("Render").join(channel);
+    fs::create_dir_all(&project_dir).unwrap();
+    fs::create_dir_all(&expected).unwrap();
+    let project=ProjectScanItem{
+      id:"routing-test".into(),name:"routing-test".into(),path:project_dir.to_string_lossy().into_owned(),media:vec![],audio:vec![],valid:true,error:None,anchors:None,
+      selected_effect_id:None,selected_effect_ids:vec![],
+      output_dir:if explicit_output{Some(expected.to_string_lossy().into_owned())}else{None},
+      output_source:Some("vyron".into()),
+      vyron_manifest_path:Some(batch.join("batch.json").to_string_lossy().into_owned()),
+      vyron_channel_name:Some(channel.into()),
+    };
+    let settings=RenderSettings{width:1920,height:1080,fps:60,codec:"h265".into(),bitrate_mbps:30.0,duration_hours:1.0,duration_mode:"auto".into(),loop_mode:"image".into(),crossfade_sec:0.0,normalize_lufs:false,output_dir:project_dir.to_string_lossy().into_owned(),preset:"fast".into(),encoder_preference:"auto".into()};
+    let job=QueueJob{project,settings,effects:vec![],subscribes:vec![],ambient:None,ambient_settings:BackgroundMusicSettings::default()};
+    (base,job,expected,project_dir)
+  }
+
+  #[test]
+  fn vyron_explicit_project_output_overrides_poisoned_batch_settings(){
+    let(base,mut job,expected,project_dir)=fixture("Afterglow Highway",true);
+    assert_eq!(PathBuf::from(&job.settings.output_dir),project_dir);
+    assert!(enforce_render_destination(&mut job).unwrap());
+    assert_eq!(PathBuf::from(&job.settings.output_dir).canonicalize().unwrap(),expected.canonicalize().unwrap());
+    assert_eq!(PathBuf::from(job.project.output_dir.as_deref().unwrap()).canonicalize().unwrap(),expected.canonicalize().unwrap());
+    fs::remove_dir_all(base).unwrap();
+  }
+
+  #[test]
+  fn vyron_missing_output_metadata_recovers_root_render_channel(){
+    let(base,mut job,expected,_)=fixture("Aether Riff",false);
+    assert!(enforce_render_destination(&mut job).unwrap());
+    assert_eq!(PathBuf::from(&job.settings.output_dir).canonicalize().unwrap(),expected.canonicalize().unwrap());
+    assert_eq!(PathBuf::from(job.project.output_dir.as_deref().unwrap()).canonicalize().unwrap(),expected.canonicalize().unwrap());
+    fs::remove_dir_all(base).unwrap();
+  }
+
+  #[test]
+  fn vyron_recovery_repairs_legacy_serialized_batch_destination(){
+    let(base,job,expected,project_dir)=fixture("Aegean Afterglow",true);
+    let bytes=serde_json::to_vec(&job).unwrap();
+    let mut restored:QueueJob=serde_json::from_slice(&bytes).unwrap();
+    restored.settings.output_dir=project_dir.to_string_lossy().into_owned();
+    assert!(enforce_render_destination(&mut restored).unwrap());
+    assert_eq!(PathBuf::from(&restored.settings.output_dir).canonicalize().unwrap(),expected.canonicalize().unwrap());
+    fs::remove_dir_all(base).unwrap();
+  }
+
+  #[test]
+  fn vyron_batch_directory_is_rejected_as_final_output(){
+    let(base,mut job,_expected,project_dir)=fixture("After Dark Voice",true);
+    job.project.output_dir=Some(project_dir.to_string_lossy().into_owned());
+    let err=enforce_render_destination(&mut job).unwrap_err();
+    assert!(err.contains("BATCH_OUTPUT_LEAK"),"{err}");
+    fs::remove_dir_all(base).unwrap();
+  }
+
+  #[test]
+  fn standalone_endlume_keeps_existing_output_behavior(){
+    let base=std::env::temp_dir().join(format!("endlume-standalone-routing-{}",Uuid::new_v4()));
+    let project_dir=base.join("project");let output=base.join("standalone-output");fs::create_dir_all(&project_dir).unwrap();fs::create_dir_all(&output).unwrap();
+    let project=ProjectScanItem{id:"standalone".into(),name:"standalone".into(),path:project_dir.to_string_lossy().into_owned(),media:vec![],audio:vec![],valid:true,error:None,anchors:None,selected_effect_id:None,selected_effect_ids:vec![],output_dir:None,output_source:None,vyron_manifest_path:None,vyron_channel_name:None};
+    let settings=RenderSettings{width:1920,height:1080,fps:60,codec:"h265".into(),bitrate_mbps:30.0,duration_hours:1.0,duration_mode:"auto".into(),loop_mode:"image".into(),crossfade_sec:0.0,normalize_lufs:false,output_dir:output.to_string_lossy().into_owned(),preset:"fast".into(),encoder_preference:"auto".into()};
+    let mut job=QueueJob{project,settings,effects:vec![],subscribes:vec![],ambient:None,ambient_settings:BackgroundMusicSettings::default()};
+    assert!(!enforce_render_destination(&mut job).unwrap());
+    assert_eq!(PathBuf::from(&job.settings.output_dir).canonicalize().unwrap(),output.canonicalize().unwrap());
+    fs::remove_dir_all(base).unwrap();
+  }
 }

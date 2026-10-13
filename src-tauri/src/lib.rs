@@ -74,11 +74,19 @@ fn finalize_distribution_output(mut summary:render::RenderOutcome)->Result<rende
 }
 
 pub(crate) async fn render_with_phase3_fast(app:&tauri::AppHandle,job:&model::QueueJob,cancel:Arc<std::sync::atomic::AtomicBool>)->Result<render::RenderOutcome,String>{
-  let summary=match fast_render::try_render_job(app,job,cancel.clone()).await?{
+  // ENDLUME_VYRON_FINAL_WRITER_ROUTE_GUARD
+  // Re-assert routing at the renderer boundary so queue/import/recovery regressions
+  // can never silently leak a VYRON final file into ProductionManager/Batches.
+  let mut routed_job=job.clone();
+  let vyron_managed=queue::enforce_render_destination(&mut routed_job)?;
+  if vyron_managed{queue::log_render_route(&routed_job);}
+  let summary=match fast_render::try_render_job(app,&routed_job,cancel.clone()).await?{
     Some(summary)=>summary,
-    None=>render::render_job(app,job,cancel).await?,
+    None=>render::render_job(app,&routed_job,cancel).await?,
   };
-  finalize_distribution_output(summary)
+  let summary=finalize_distribution_output(summary)?;
+  if vyron_managed{queue::log_final_output(&routed_job,&summary.output_path);}
+  Ok(summary)
 }
 
 #[cfg(feature="e2e-render")]

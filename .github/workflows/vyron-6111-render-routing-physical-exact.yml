@@ -6,6 +6,7 @@ on:
       - qa/vyron-6111-render-routing-physical-20261013
     paths:
       - '.github/workflows/vyron-6111-render-routing-physical-exact.yml'
+      - 'scripts/qa-vyron-6111-render-routing-physical.py'
   workflow_dispatch: {}
 
 permissions:

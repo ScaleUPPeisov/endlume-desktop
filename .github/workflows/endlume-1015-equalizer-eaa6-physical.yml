@@ -33,7 +33,12 @@ jobs:
         run: |
           set -Eeuo pipefail
           test "$(git rev-parse HEAD)" = "eaa6eb0a022f184f533338e9ff778328cfe29717"
-          git diff --exit-code c5534ce47123777b698117a46473238381e37729..HEAD -- src-tauri/src/cache.rs src-tauri/src/persistence.rs src/components/LiveCompositePreview.tsx
+          CHANGED="$(git diff --name-only c5534ce47123777b698117a46473238381e37729..HEAD)"
+          echo "$CHANGED"
+          test "$(printf '%s\n' "$CHANGED" | sed '/^$/d' | wc -l | tr -d ' ')" = "3"
+          printf '%s\n' "$CHANGED" | grep -qx 'src-tauri/src/cache.rs'
+          printf '%s\n' "$CHANGED" | grep -qx 'src-tauri/src/persistence.rs'
+          printf '%s\n' "$CHANGED" | grep -qx 'src/components/LiveCompositePreview.tsx'
           test "$(node -p "require('./src-tauri/tauri.conf.json').version")" = "10.0.15"
           echo 'PREVIOUS_CANDIDATE=c5534ce47123777b698117a46473238381e37729'
           echo 'CANDIDATE_COMMIT=eaa6eb0a022f184f533338e9ff778328cfe29717'

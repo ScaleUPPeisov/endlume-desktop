@@ -18,115 +18,64 @@ concurrency:
 jobs:
   probe:
     runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
-    timeout-minutes: 20
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
           clean: true
 
-      - name: Inspect installed VYRON watcher and persisted inventory state
+      - name: Verify VYRON persisted discovery of exact hotfix physical outputs
         shell: bash
         run: |
           set -Eeuo pipefail
-          ROOT="$RUNNER_TEMP/vyron-autodiscovery-probe-v2"
-          rm -rf "$ROOT"; mkdir -p "$ROOT"
-          APP='/Applications/VYRON.app'
-          INFO="$APP/Contents/Info.plist"
-          test -d "$APP" -a -f "$INFO"
-          BUNDLE_ID="$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$INFO")"
-          EXE_NAME="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$INFO")"
-          VERSION="$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$INFO" 2>/dev/null || true)"
-          EXE="$APP/Contents/MacOS/$EXE_NAME"
-          echo "VYRON_APP=$APP"
-          echo "VYRON_BUNDLE_ID=$BUNDLE_ID"
-          echo "VYRON_EXECUTABLE=$EXE"
-          echo "VYRON_VERSION=$VERSION"
-          /usr/bin/plutil -p "$INFO" | tee "$ROOT/info.txt"
-          echo '--- PROCESS ---' | tee "$ROOT/process.txt"
-          ps aux | grep -E '[V]YRON|[c]hannelflow' | tee -a "$ROOT/process.txt" || true
-          echo '--- WATCHER SYMBOLS ---' | tee "$ROOT/symbols.txt"
-          (nm -nm "$EXE" 2>/dev/null || true) | grep -Ei 'inventory_watch|render_inventory|render_scan|discover_channel|scan.*render|filesystem.*render' | head -400 | tee -a "$ROOT/symbols.txt" || true
-          echo '--- DEFAULTS ---' | tee "$ROOT/defaults.txt"
-          defaults read "$BUNDLE_ID" 2>&1 | tee -a "$ROOT/defaults.txt" || true
-
-          python3 - "$ROOT" "$BUNDLE_ID" <<'PY'
-          import re,sys
+          STATE="$HOME/Library/Application Support/studio.channelflow.desktop/state.json"
+          test -f "$STATE"
+          pgrep -f '/Applications/VYRON.app/Contents/MacOS/channelflow' >/dev/null
+          python3 - "$STATE" <<'PY'
+          import json,sys
           from pathlib import Path
-          root=Path(sys.argv[1]); bundle=sys.argv[2]; home=Path.home()
-          token=re.compile(r'inventory_watch|render-inventory-changed|ProductionManager|Ready Videos|Aegean Afterglow|Aether Riff|Afterglow Highway|Render[/\\]|renderRoot|watchRoot|allowedRoots|channelName|Live Inventory',re.I)
-
-          state=[]
-          bases=[home/'Library'/'Application Support',home/'Library'/'Caches',home/'Library'/'Preferences',home/'Library'/'WebKit',home/'Library'/'Saved Application State']
-          for base in bases:
-            if not base.exists(): continue
-            try:
-              for p in base.rglob('*'):
-                if not p.is_file(): continue
-                try:
-                  if p.stat().st_size>50_000_000: continue
-                except Exception: continue
-                low=str(p).casefold()
-                likely=('vyron' in low or 'channelflow' in low or bundle.casefold() in low or p.suffix.lower() in ('.json','.db','.sqlite','.sqlite3','.plist','.log'))
-                if not likely: continue
-                try: text=p.read_bytes().decode('utf-8',errors='ignore')
-                except Exception: continue
-                if not token.search(text): continue
-                snippets=[]
-                for m in token.finditer(text):
-                  snippets.append(text[max(0,m.start()-220):min(len(text),m.end()+450)])
-                  if len(snippets)>=20: break
-                state.append(f'FILE={p}\n'+'\n...\n'.join(snippets)+'\n---')
-                if len(state)>=300: break
-            except Exception: pass
-            if len(state)>=300: break
-          (root/'state-evidence.txt').write_text('\n'.join(state),encoding='utf-8',errors='replace')
-          print('STATE_EVIDENCE_FILES='+str(len(state)))
-
-          workspaces=[]
-          for volume in Path('/Volumes').iterdir():
-            if not volume.is_dir(): continue
-            candidates=[volume]
-            try: candidates += [p for p in volume.iterdir() if p.is_dir()]
-            except Exception: pass
-            for ws in candidates:
-              if (ws/'ProductionManager'/'Batches').is_dir() and (ws/'Render').is_dir(): workspaces.append(ws.resolve())
-          workspaces=list(dict.fromkeys(workspaces))
-          for ws in workspaces: print('VYRON_WORKSPACE='+str(ws))
-          (root/'workspaces.txt').write_text('\n'.join(map(str,workspaces)),encoding='utf-8')
-
-          wsev=[]
-          for ws in workspaces:
-            for p in ws.rglob('*'):
-              if not p.is_file(): continue
-              try:
-                if p.stat().st_size>30_000_000: continue
-              except Exception: continue
-              low=p.name.casefold()
-              if p.suffix.lower() not in ('.json','.jsonl','.txt','.log','.db','.sqlite','.sqlite3','.toml','.yaml','.yml') and not any(x in low for x in ('state','inventory','index','status')): continue
-              try: text=p.read_bytes().decode('utf-8',errors='ignore')
-              except Exception: continue
-              if not token.search(text): continue
-              snippets=[]
-              for m in token.finditer(text):
-                snippets.append(text[max(0,m.start()-220):min(len(text),m.end()+450)])
-                if len(snippets)>=20: break
-              wsev.append(f'FILE={p}\n'+'\n...\n'.join(snippets)+'\n---')
-              if len(wsev)>=300: break
-            if len(wsev)>=300: break
-          (root/'workspace-evidence.txt').write_text('\n'.join(wsev),encoding='utf-8',errors='replace')
-          print('WORKSPACE_EVIDENCE_FILES='+str(len(wsev)))
+          state_path=Path(sys.argv[1])
+          data=json.loads(state_path.read_text(encoding='utf-8'))
+          targets=[
+            ('Aegean Afterglow','ENDLUME Routing QA 10.0.15 1 — Ready Videos.mp4'),
+            ('Aether Riff','ENDLUME Routing QA 10.0.15 2 — Ready Videos.mp4'),
+            ('Afterglow Highway','ENDLUME Routing QA 10.0.15 3 — Ready Videos.mp4'),
+          ]
+          hits=[]
+          def walk(x,path='$'):
+            if isinstance(x,dict):
+              blob=json.dumps(x,ensure_ascii=False)
+              for channel,name in targets:
+                if name in blob and '/Render/'+channel+'/' in blob:
+                  hits.append((channel,name,path,x))
+              for k,v in x.items(): walk(v,path+'.'+str(k))
+            elif isinstance(x,list):
+              for i,v in enumerate(x): walk(v,path+f'[{i}]')
+          walk(data)
+          ok={}
+          for channel,name in targets:
+            rows=[]
+            for ch,n,path,obj in hits:
+              if ch!=channel or n!=name: continue
+              text=json.dumps(obj,ensure_ascii=False)
+              discovered=('RENDER_DISCOVERED' in text or 'render-complete:' in text)
+              success=('SUCCESS' in text or 'Completed' in text or 'COMPLETED' in text)
+              rows.append((path,discovered,success,obj))
+            good=[r for r in rows if r[1] and r[2]]
+            ok[channel]=bool(good)
+            print(f'CHANNEL={channel}')
+            print(f'FILE={name}')
+            print(f'DISCOVERY_RECORDS={len(rows)}')
+            print(f'SUCCESS_RECORDS={len(good)}')
+            for path,disc,success,obj in good[:3]:
+              print('STATE_PATH='+path)
+              print('STATE_RECORD='+json.dumps(obj,ensure_ascii=False)[:2500])
+          missing=[ch for ch,v in ok.items() if not v]
+          if missing:
+            print('VYRON_AUTO_DISCOVERY=NOT_YET_PROVEN')
+            print('MISSING_CHANNELS='+','.join(missing))
+            raise SystemExit(2)
+          print('VYRON_AUTO_DISCOVERY=PASS')
+          print('VYRON_EXACT_PHYSICAL_OUTPUT_DISCOVERY=PASS')
           PY
-
-          echo '--- STATE EVIDENCE ---'
-          sed -n '1,400p' "$ROOT/state-evidence.txt" || true
-          echo '--- WORKSPACE EVIDENCE ---'
-          sed -n '1,500p' "$ROOT/workspace-evidence.txt" || true
-
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: ENDLUME-10.0.15-VYRON-AUTODISCOVERY-PROBE-V2
-          path: ${{ runner.temp }}/vyron-autodiscovery-probe-v2/**
-          if-no-files-found: warn
-          retention-days: 7

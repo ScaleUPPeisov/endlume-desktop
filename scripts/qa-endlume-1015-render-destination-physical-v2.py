@@ -2,6 +2,7 @@
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -73,13 +74,71 @@ def create_vyron_job(channel,idx):
 
 def invoke(jobs,label,require_vyron_diagnostics=True):
     fixture=run_root/f'{label}-jobs.json';result=run_root/f'{label}-result.json'
+    stdout_path=run_root/f'{label}-stdout.log';stderr_path=run_root/f'{label}-stderr.log'
     fixture.write_text(json.dumps({'jobs':jobs},ensure_ascii=False,indent=2),encoding='utf-8')
     env=os.environ.copy();env.update({'ENDLUME_E2E_RENDER_JOB':str(fixture),'ENDLUME_E2E_RESULT':str(result),'RUST_BACKTRACE':'1'})
-    started=time.perf_counter();p=run([APP],env=env,timeout=360,check=False);wall=time.perf_counter()-started
-    (run_root/f'{label}-stdout.log').write_text(p.stdout or '',encoding='utf-8');(run_root/f'{label}-stderr.log').write_text(p.stderr or '',encoding='utf-8')
-    assert p.returncode==0,(label,p.returncode,p.stderr[-12000:])
-    data=json.loads(result.read_text(encoding='utf-8'));assert data.get('status')=='passed',data
-    stderr=p.stderr or ''
+
+    out_fd=os.open(stdout_path,os.O_WRONLY|os.O_CREAT|os.O_TRUNC,0o600)
+    err_fd=os.open(stderr_path,os.O_WRONLY|os.O_CREAT|os.O_TRUNC,0o600)
+    file_actions=[
+        (os.POSIX_SPAWN_DUP2,out_fd,1),
+        (os.POSIX_SPAWN_DUP2,err_fd,2),
+        (os.POSIX_SPAWN_CLOSE,out_fd),
+        (os.POSIX_SPAWN_CLOSE,err_fd),
+    ]
+    started=time.perf_counter()
+    pid=os.posix_spawn(str(APP),[str(APP)],env,file_actions=file_actions)
+    os.close(out_fd);os.close(err_fd)
+
+    deadline=time.monotonic()+360
+    process_status=None
+    data=None
+    try:
+        while time.monotonic()<deadline:
+            waited,status=os.waitpid(pid,os.WNOHANG)
+            if waited==pid:
+                process_status=status
+                break
+            if result.is_file() and result.stat().st_size>0:
+                try:
+                    data=json.loads(result.read_text(encoding='utf-8'))
+                except (json.JSONDecodeError,OSError):
+                    data=None
+                if isinstance(data,dict) and data.get('status') in ('passed','failed'):
+                    break
+            time.sleep(0.25)
+        else:
+            raise TimeoutError(f'{label}: ENDLUME_E2E_RESULT timeout after 360s')
+    finally:
+        if process_status is None:
+            try:
+                os.kill(pid,signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            terminate_deadline=time.monotonic()+5
+            while time.monotonic()<terminate_deadline:
+                waited,status=os.waitpid(pid,os.WNOHANG)
+                if waited==pid:
+                    process_status=status
+                    break
+                time.sleep(0.1)
+            if process_status is None:
+                try:
+                    os.kill(pid,signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                try:
+                    _,process_status=os.waitpid(pid,0)
+                except ChildProcessError:
+                    process_status=0
+
+    wall=time.perf_counter()-started
+    stdout=stdout_path.read_text(encoding='utf-8',errors='replace') if stdout_path.exists() else ''
+    stderr=stderr_path.read_text(encoding='utf-8',errors='replace') if stderr_path.exists() else ''
+    if data is None and result.is_file() and result.stat().st_size>0:
+        data=json.loads(result.read_text(encoding='utf-8'))
+    assert data is not None,(label,'missing ENDLUME_E2E_RESULT',process_status,stderr[-12000:])
+    assert data.get('status')=='passed',data
     if require_vyron_diagnostics:
         for token in ('VYRON ROOT=','CHANNEL=','PROJECT DIRECTORY=','BATCH DIRECTORY=','FINAL RENDER DIRECTORY=','FINAL OUTPUT FILE='):
             assert token in stderr,(label,token,stderr[-12000:])

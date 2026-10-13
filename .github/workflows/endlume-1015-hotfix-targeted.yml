@@ -6,20 +6,20 @@ on:
       - hotfix/endlume-10.0.15-multi-effect-live-preview
     paths:
       - '.github/workflows/endlume-1015-hotfix-targeted.yml'
-      - 'scripts/qa-endlume-1015-equalizer-visibility.py'
+      - 'scripts/qa-endlume-1015-equalizer-physical.py'
   workflow_dispatch: {}
 
 permissions:
   contents: read
 
 concurrency:
-  group: endlume-1015-vyron-equalizer-rerun
+  group: endlume-1015-equalizer-repro
   cancel-in-progress: true
 
 jobs:
   repro:
     runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
-    timeout-minutes: 12
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
@@ -56,7 +56,7 @@ jobs:
           ROOT="$RUNNER_TEMP/endlume-1015-eq-visibility"
           rm -rf "$ROOT"; mkdir -p "$ROOT"
           git fetch origin "$GITHUB_SHA" --depth=1
-          git show "${GITHUB_SHA}:scripts/qa-endlume-1015-equalizer-visibility.py" > "$ROOT/probe.py"
+          git show "${GITHUB_SHA}:scripts/qa-endlume-1015-equalizer-physical.py" > "$ROOT/probe.py"
           python3 "$ROOT/probe.py" "$FFMPEG" "$FFPROBE" "$ROOT" | tee "$ROOT/probe.log"
           test -s "$ROOT/metrics.json"
           grep -q 'PHYSICAL_EQUALIZER_PROBE=PASS' "$ROOT/probe.log"

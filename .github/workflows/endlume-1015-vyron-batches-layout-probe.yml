@@ -1,0 +1,68 @@
+name: ENDLUME 10.0.15 VYRON Batches Layout Probe
+
+on:
+  push:
+    branches:
+      - hotfix/endlume-10.0.15-render-destination-routing
+    paths:
+      - '.github/workflows/endlume-1015-vyron-batches-layout-probe.yml'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          clean: true
+      - name: Print safe structural view of current VYRON batches
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import json,time
+          from pathlib import Path
+          roots=[]
+          for volume in Path('/Volumes').iterdir():
+            if not volume.is_dir(): continue
+            candidates=[volume]
+            try: candidates += [p for p in volume.iterdir() if p.is_dir()]
+            except Exception: pass
+            for r in candidates:
+              if (r/'ProductionManager'/'Batches').is_dir() and (r/'Render').is_dir(): roots.append(r.resolve())
+          roots=list(dict.fromkeys(roots)); assert len(roots)==1,roots
+          b=roots[0]/'ProductionManager'/'Batches'
+          print('BATCHES='+str(b))
+          entries=[]
+          for p in b.rglob('*'):
+            try: st=p.stat()
+            except Exception: continue
+            entries.append((st.st_mtime,p))
+          entries.sort(reverse=True,key=lambda x:x[0])
+          print('ENTRY_COUNT='+str(len(entries)))
+          for mt,p in entries[:250]:
+            rel=p.relative_to(b)
+            kind='DIR' if p.is_dir() else 'FILE'
+            size=p.stat().st_size if p.is_file() else 0
+            print(f'{time.strftime("%Y-%m-%dT%H:%M:%S",time.localtime(mt))}\t{kind}\t{size}\t{rel}')
+            if p.is_file() and size<=2_000_000 and p.suffix.lower() in ('.json','.jsonl','.txt','.toml','.yaml','.yml'):
+              try:
+                text=p.read_text(encoding='utf-8',errors='ignore')
+              except Exception: continue
+              # print only routing/project structure; redact likely credentials/tokens/emails
+              try:
+                obj=json.loads(text)
+                def redact(x):
+                  if isinstance(x,dict):
+                    return {k:('[REDACTED]' if any(t in k.casefold() for t in ('token','secret','email','client_id','oauth')) else redact(v)) for k,v in x.items()}
+                  if isinstance(x,list): return [redact(v) for v in x]
+                  return x
+                safe=json.dumps(redact(obj),ensure_ascii=False)
+                print('JSON='+safe[:9000])
+              except Exception:
+                print('TEXT='+text[:3000])
+          PY

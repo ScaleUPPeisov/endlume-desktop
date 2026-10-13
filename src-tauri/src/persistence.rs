@@ -158,6 +158,41 @@ fn normalize_effect_identities(items:&mut Vec<Value>)->bool{
 fn migrate_library(app:&AppHandle,v:&mut Value)->bool{
   let Some(obj)=v.as_object_mut() else{return false};
   let mut changed=false;
+
+  const EQ_VIS_MIGRATION:&str="roundEqualizerVisibility1015SafeDefaults";
+  let already_migrated=obj.get("_migrations").and_then(Value::as_object).and_then(|m|m.get(EQ_VIS_MIGRATION)).and_then(Value::as_u64).unwrap_or(0)>=1;
+  let mut found_round_equalizer=false;
+  if !already_migrated{
+    if let Some(items)=obj.get_mut("effects").and_then(Value::as_array_mut){
+      for item in items.iter_mut(){
+        let Some(effect)=item.as_object_mut() else{continue};
+        let id=effect.get("id").and_then(Value::as_str).unwrap_or("");
+        let name=effect.get("name").and_then(Value::as_str).unwrap_or("").trim().to_lowercase();
+        let is_round=id=="825dd7a4-f0cf-4032-a3c9-64290cb5756d"||name=="эквалайзер круглый";
+        if !is_round{continue}
+        found_round_equalizer=true;
+        if effect.get("mode").and_then(Value::as_str)==Some("chromakey"){
+          let sim=effect.get("similarity").and_then(Value::as_f64).unwrap_or(0.10);
+          let blend=effect.get("blend").and_then(Value::as_f64).unwrap_or(0.06);
+          let despill=effect.get("despill").and_then(Value::as_f64).unwrap_or(0.35);
+          if (sim-0.60).abs()<0.000_001&&(blend-0.35).abs()<0.000_001&&(despill-1.0).abs()<0.000_001{
+            effect.insert("similarity".into(),json!(0.10));
+            effect.insert("blend".into(),json!(0.06));
+            effect.insert("despill".into(),json!(0.35));
+            effect.insert("cacheReady".into(),json!(false));
+            effect.insert("cacheKey".into(),Value::Null);
+            changed=true;
+          }
+        }
+      }
+    }
+    if found_round_equalizer{
+      let migrations=obj.entry("_migrations").or_insert_with(||json!({}));
+      if !migrations.is_object(){*migrations=json!({});}
+      if let Some(map)=migrations.as_object_mut(){map.insert(EQ_VIS_MIGRATION.into(),json!(1));}
+      changed=true;
+    }
+  }
   if let Some(items)=obj.get_mut("effects").and_then(Value::as_array_mut){
     for item in items.iter_mut(){changed|=migrate_item(app,item,"effects");}
     changed|=normalize_effect_identities(items);
@@ -188,6 +223,8 @@ pub fn load_library(app:AppHandle)->Value{
 
 #[tauri::command]
 pub fn save_library(app:AppHandle,mut payload:Value)->Result<(),String>{
+  let existing=read_value(&app,"library.json");
+  if let (Some(dst),Some(migrations))=(payload.as_object_mut(),existing.get("_migrations").cloned()){dst.insert("_migrations".into(),migrations);}
   let _=migrate_library(&app,&mut payload);
   write_value(&app,"library.json",&payload).map_err(|e|e.to_string())
 }

@@ -6,8 +6,6 @@ use tauri::{AppHandle,Emitter,Manager};
 use tauri_plugin_shell::ShellExt;
 
 const ROUND_EQUALIZER_859_ID:&str="825dd7a4-f0cf-4032-a3c9-64290cb5756d";
-const ROUND_EQUALIZER_859_SIMILARITY:f64=0.18;
-const ROUND_EQUALIZER_859_BLEND:f64=0.03;
 
 fn color(hex:&str)->String{format!("0x{}",hex.trim().trim_start_matches('#').trim_start_matches("0x"))}
 pub(crate) fn despill_type(hex:&str)->&'static str{
@@ -27,9 +25,7 @@ pub(crate) fn chromakey_params_859(e:&EffectPreset)->(f64,f64){
   // fused-direct fast path those values are applied to the RAW overlay and can
   // key away almost the whole ordinary Effect. Treat only that exact legacy
   // signature as a migration sentinel; all real user-selected values survive.
-  if is_round_equalizer_859(e){
-    (ROUND_EQUALIZER_859_SIMILARITY,ROUND_EQUALIZER_859_BLEND)
-  }else if (e.similarity-0.60).abs()<0.000_001 && (e.blend-0.184).abs()<0.000_001{
+  if (e.similarity-0.60).abs()<0.000_001 && (e.blend-0.184).abs()<0.000_001{
     (0.10,0.06)
   }else{
     (e.similarity.clamp(0.001,0.60),e.blend.clamp(0.001,0.35))
@@ -64,7 +60,7 @@ fn fingerprint(e:&EffectPreset,fps:u32)->String{
   let mut h=Sha256::new();
   // Geometry is deliberately absent from the key: x/y/scale/fullscreen do not
   // change source pixels and therefore must not invalidate the chroma cache.
-  let eq859=if is_round_equalizer_859(e){"|round-equalizer-859-s018-b003-name-safe"}else{""};
+  let eq859=if is_round_equalizer_859(e){"|round-equalizer-1015-user-chromakey-safe-defaults"}else{""};
   h.update(format!("aspect-safe-v6-motion|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}{}",e.source,size,modified,fps,e.mode,e.key_color,e.similarity,e.blend,e.luma_threshold,e.luma_tolerance,e.saturation,e.despill,eq859));
   hex::encode(h.finalize())[..24].to_string()
 }
@@ -180,16 +176,17 @@ mod tests{
     sub.blend=0.34;
     assert_eq!(subscribe_chromakey_params_1011(&sub),(0.60,0.34));
     let eq=preset(ROUND_EQUALIZER_859_ID,"эквалайзер круглый");
-    assert_eq!(subscribe_chromakey_params_1011(&eq),(0.18,0.03));
+    assert_eq!(subscribe_chromakey_params_1011(&eq),(0.10,0.06));
   }
 
   #[test]
-  fn round_equalizer_859_only_gets_protected_key(){
-    let eq=preset(ROUND_EQUALIZER_859_ID,"эквалайзер круглый");
-    assert_eq!(chromakey_params_859(&eq),(0.18,0.03));
+  fn round_equalizer_1015_respects_user_chromakey_after_migration(){
+    let mut eq=preset(ROUND_EQUALIZER_859_ID,"эквалайзер круглый");
+    eq.similarity=0.10;eq.blend=0.06;
+    assert_eq!(chromakey_params_859(&eq),(0.10,0.06));
+    eq.similarity=0.31;eq.blend=0.09;
+    assert_eq!(chromakey_params_859(&eq),(0.31,0.09));
     let dust=preset("9951d1c3-5ff6-4a37-891f-1c323889a663","пыль и царапины 80-х");
     assert_eq!(chromakey_params_859(&dust),(0.10,0.06));
-    let mut custom=dust.clone();custom.similarity=0.31;custom.blend=0.09;
-    assert_eq!(chromakey_params_859(&custom),(0.31,0.09));
   }
 }

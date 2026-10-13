@@ -1,0 +1,282 @@
+name: VYRON 6.1.11 Exact Render Routing Physical Gate
+
+on:
+  push:
+    branches:
+      - qa/vyron-6111-render-routing-physical-20261013
+    paths:
+      - '.github/workflows/vyron-6111-render-routing-physical-exact.yml'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vyron-6111-render-routing-physical-exact
+  cancel-in-progress: true
+
+env:
+  ENDLUME_PRODUCT_SHA: 95a66fde7ab67e035ede3f6b094923bb457138c2
+  VYRON_PRODUCT_SHA: 6c142993673815ca62466e73aafdc2a3700ca314
+
+jobs:
+  physical:
+    name: Exact VYRON -> ENDLUME -> TOSHIBA gate
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 80
+    steps:
+      - name: Checkout QA bridge
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          clean: true
+          persist-credentials: false
+
+      - name: Verify QA-only ENDLUME delta
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git merge-base --is-ancestor "$ENDLUME_PRODUCT_SHA" HEAD
+          git diff --name-only "$ENDLUME_PRODUCT_SHA" HEAD | tee "$RUNNER_TEMP/qa-delta.txt"
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          allowed={
+            'scripts/qa-vyron-6111-render-routing-physical.py',
+            '.github/workflows/vyron-6111-render-routing-physical-exact.yml',
+          }
+          changed={x for x in Path(os.environ['RUNNER_TEMP']+'/qa-delta.txt').read_text().splitlines() if x}
+          assert changed and changed <= allowed, f'UNEXPECTED_QA_DELTA={sorted(changed-allowed)}'
+          print('ENDLUME_PRODUCT_SOURCE_UNCHANGED=PASS')
+          PY
+          grep -q 'ENDLUME_VYRON_RENDER_DESTINATION_ROUTING_HOTFIX' src-tauri/src/queue.rs
+          grep -q 'BATCH_OUTPUT_LEAK' src-tauri/src/queue.rs
+          echo "ENDLUME_PRODUCT_SHA=$ENDLUME_PRODUCT_SHA"
+
+      - name: Checkout exact VYRON hotfix commit
+        uses: actions/checkout@v4
+        with:
+          repository: ScaleUPPeisov/scaleup-dashboards
+          ref: 6c142993673815ca62466e73aafdc2a3700ca314
+          path: vyron-product
+          fetch-depth: 1
+          clean: true
+          persist-credentials: false
+
+      - name: Verify exact VYRON source and routing invariant
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(git -C vyron-product rev-parse HEAD)" = "$VYRON_PRODUCT_SHA"
+          grep -q 'INVALID_FINAL_RENDER_DESTINATION' vyron-product/src-tauri/src/production_manager.rs
+          grep -q 'join("Render")' vyron-product/src-tauri/src/production_manager.rs
+          ! grep -F 'output_dir: broot.join("Rendered")' vyron-product/src-tauri/src/production_manager.rs
+          ! grep -F 'destination_paths.push(PathBuf::from(&plan.batch_root).join("Rendered")' vyron-product/src-tauri/src/production_manager.rs
+          echo 'VYRON_EXACT_HOTFIX_SOURCE=PASS'
+
+      - name: Discover real TOSHIBA VYRON workspace
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          preferred=Path('/Volumes/TOSHIBA EXT/ВАЙРОН')
+          found=[]
+          if (preferred/'ProductionManager'/'Batches').is_dir() and (preferred/'Render').is_dir(): found.append(preferred.resolve())
+          if not found:
+            for volume in Path('/Volumes').iterdir():
+              if not volume.is_dir(): continue
+              candidates=[volume]
+              try: candidates += [p for p in volume.iterdir() if p.is_dir()]
+              except PermissionError: continue
+              for root in candidates:
+                if (root/'ProductionManager'/'Batches').is_dir() and (root/'Render').is_dir(): found.append(root.resolve())
+          unique=[]
+          for p in found:
+            if p not in unique: unique.append(p)
+          if len(unique)!=1: raise SystemExit(f'PHYSICAL_VYRON_ROOT_UNRESOLVED={unique}')
+          root=unique[0]
+          assert os.access(root,os.W_OK), f'VYRON_ROOT_NOT_WRITABLE={root}'
+          with open(os.environ['GITHUB_ENV'],'a',encoding='utf-8') as f: f.write(f'VYRON_PHYSICAL_ROOT={root}\n')
+          print(f'VYRON_PHYSICAL_ROOT={root}')
+          print('TOSHIBA_EXT=ONLINE')
+          PY
+          echo "RUNNER_HOST=$(hostname)"
+          echo "RUNNER_ARCH=$(uname -m)"
+          test "$(uname -m)" = 'arm64'
+          echo 'SELF_HOSTED_MAC_ARM64=ONLINE'
+
+      - name: Run committed VYRON routing tests on physical Mac
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+          cd vyron-product
+          cargo test --manifest-path src-tauri/Cargo.toml acceptance_render_output_routes_to_channel_render_root -- --nocapture
+          cargo test --manifest-path src-tauri/Cargo.toml acceptance_final_render_destination_rejects_batches_tree -- --nocapture
+          cargo test --manifest-path src-tauri/Cargo.toml acceptance_render_output_is_channel_isolated -- --nocapture
+          echo 'VYRON_COMMITTED_ROUTING_TESTS=PASS'
+
+      - name: Install ENDLUME dependencies and provision FFmpeg
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+          npm ci --no-audit --no-fund
+          FFMPEG="$(command -v ffmpeg || true)"; FFPROBE="$(command -v ffprobe || true)"
+          if [ -n "$FFMPEG" ] && [ -n "$FFPROBE" ]; then
+            mkdir -p src-tauri/binaries
+            cp "$FFMPEG" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+            cp "$FFPROBE" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          else
+            FOUNDATION="$HOME/.endlume-local-builder/endlume-desktop-8.40-bootstrap"
+            test -d "$FOUNDATION/src-tauri/binaries"
+            mkdir -p src-tauri/binaries
+            rsync -a "$FOUNDATION/src-tauri/binaries/" src-tauri/binaries/
+          fi
+          chmod +x src-tauri/binaries/ffmpeg-aarch64-apple-darwin src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          test -x src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          test -x src-tauri/binaries/ffprobe-aarch64-apple-darwin
+
+      - name: ENDLUME routing regression before build
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+          npm run build
+          cargo test --manifest-path src-tauri/Cargo.toml render_destination_routing_tests -- --nocapture
+          echo 'ENDLUME_ROUTING_REGRESSION=PASS'
+
+      - name: Build exact ENDLUME E2E app without updater publication
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+          export CARGO_TARGET_DIR="$RUNNER_TEMP/../_endlume-cache/target-1015-vyron-6111-exact-routing"
+          ROOT="$RUNNER_TEMP/vyron-6111-exact-routing"
+          rm -rf "$ROOT"; mkdir -p "$ROOT"
+          CONF='src-tauri/tauri.conf.json'; BACKUP="$ROOT/tauri.conf.original.json"; cp "$CONF" "$BACKUP"
+          restore_conf(){ cp "$BACKUP" "$CONF"; }
+          trap restore_conf EXIT
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('src-tauri/tauri.conf.json'); d=json.loads(p.read_text()); d['bundle']['createUpdaterArtifacts']=False; p.write_text(json.dumps(d,ensure_ascii=False,indent=2)+'\n')
+          PY
+          ENDLUME_TAURI_TARGET=aarch64-apple-darwin node scripts/prepare-macos-ffmpeg-runtime.mjs
+          npx tauri build --target aarch64-apple-darwin --bundles app --features e2e-render
+          APP="$(find "$CARGO_TARGET_DIR/aarch64-apple-darwin/release/bundle/macos" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          test -n "$APP" -a -d "$APP"
+          /usr/bin/codesign --force --deep --sign - --timestamp=none "$APP"
+          /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP"
+          EXE_NAME="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
+          EXE="$APP/Contents/MacOS/$EXE_NAME"
+          FFMPEG="$(find "$APP/Contents" -maxdepth 7 -type f -name 'ffmpeg' -perm -111 -print -quit)"
+          FFPROBE="$(find "$APP/Contents" -maxdepth 7 -type f -name 'ffprobe' -perm -111 -print -quit)"
+          test -x "$EXE" -a -x "$FFMPEG" -a -x "$FFPROBE"
+          printf '%s' "$EXE" > "$ROOT/exe.txt"
+          printf '%s' "$FFMPEG" > "$ROOT/ffmpeg.txt"
+          printf '%s' "$FFPROBE" > "$ROOT/ffprobe.txt"
+          echo 'PACKAGED_E2E_APP=PASS'
+
+      - name: Physical two-channel VYRON render routing on TOSHIBA
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ROOT="$RUNNER_TEMP/vyron-6111-exact-routing"
+          EXE="$(cat "$ROOT/exe.txt")"; FFMPEG="$(cat "$ROOT/ffmpeg.txt")"; FFPROBE="$(cat "$ROOT/ffprobe.txt")"
+          python3 scripts/qa-vyron-6111-render-routing-physical.py "$EXE" "$FFMPEG" "$FFPROBE" "$ROOT/physical-routing.json" "$VYRON_PHYSICAL_ROOT" | tee "$ROOT/physical-routing.log"
+          python3 - "$ROOT/physical-routing.json" <<'PY'
+          import json,sys
+          d=json.load(open(sys.argv[1])); assert d['status']=='PASS',d
+          assert len(d['channels'])==2,d
+          assert d['batchesFinalMp4Count']==0,d
+          assert d['manualFolderSelection'] is False,d
+          assert d['postRenderMove'] is False,d
+          for row in d['channels']:
+            assert '/ProductionManager/Batches/' in row['projectPath'],row
+            assert '/Render/' in row['finalMp4Path'],row
+            assert '/ProductionManager/Batches/' not in row['finalMp4Path'],row
+          print('PHYSICAL_TWO_CHANNEL_ROUTING=PASS')
+          print('BATCHES_FINAL_MP4_CHECK=0')
+          print('NO_MANUAL_FOLDER_SELECTION=PASS')
+          print('NO_POST_RENDER_MOVE=PASS')
+          PY
+
+      - name: Physical VYRON Live Inventory FSEvents gate
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+          python3 scripts/inject-vyron-physical-autodiscovery-test.py
+          cd vyron-product
+          VYRON_PHYSICAL_ROOT_FOR_TEST="$VYRON_PHYSICAL_ROOT" cargo test --manifest-path src-tauri/Cargo.toml physical_external_render_event_is_observed_1015 -- --nocapture
+          git checkout -- src-tauri/src/inventory_watch.rs
+          echo 'VYRON_LIVE_INVENTORY_FSEVENTS=PASS'
+
+      - name: Publisher and inventory runtime regression against physical outputs
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+          cd vyron-product
+          npm ci --no-audit --no-fund
+          npx vitest run src/vyron616PhysicalPublisherConsistency.test.ts src/vyron618PublisherIntegrity.test.ts src/vyron6111MetadataIdentityMapping.test.ts
+          cd ..
+          python3 - "$RUNNER_TEMP/vyron-6111-exact-routing/physical-routing.json" <<'PY'
+          import json,sys
+          from pathlib import Path
+          d=json.load(open(sys.argv[1]))
+          for row in d['channels']:
+            final=Path(row['finalMp4Path']); project=Path(row['projectPath'])
+            assert final.is_file() and final.parent.name==row['channel'],row
+            assert project.is_dir(),row
+          print('LIVE_INVENTORY_PHYSICAL_OUTPUT_VISIBLE=PASS')
+          print('PUBLISHER_PHYSICAL_OUTPUT_VISIBLE=PASS')
+          print('PUBLISHER_RUNTIME_REGRESSION=PASS')
+          PY
+
+      - name: Final physical evidence
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ROOT="$RUNNER_TEMP/vyron-6111-exact-routing"
+          cat "$ROOT/physical-routing.json"
+          echo "VYRON_PRODUCT_SHA=$VYRON_PRODUCT_SHA"
+          echo "ENDLUME_PRODUCT_SHA=$ENDLUME_PRODUCT_SHA"
+          echo 'RELEASED=NO'
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: VYRON-6111-EXACT-RENDER-ROUTING-PHYSICAL-EVIDENCE
+          path: |
+            ${{ runner.temp }}/vyron-6111-exact-routing/**
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Cleanup only this QA run
+        if: always()
+        shell: bash
+        run: |
+          set -u
+          git -C vyron-product checkout -- src-tauri/src/inventory_watch.rs 2>/dev/null || true
+          REPORT="$RUNNER_TEMP/vyron-6111-exact-routing/physical-routing.json"
+          if [ -f "$REPORT" ]; then
+            python3 - "$REPORT" <<'PY'
+          import json,shutil,sys
+          from pathlib import Path
+          d=json.load(open(sys.argv[1])); cleanup=d.get('cleanup') or {}
+          batch=Path(cleanup.get('batchPath','')) if cleanup.get('batchPath') else None
+          for raw in cleanup.get('outputFiles',[]):
+              p=Path(raw)
+              if p.is_file(): p.unlink()
+          if batch and batch.is_dir(): shutil.rmtree(batch,ignore_errors=True)
+          print('QA_EXACT_FILES_CLEANED=PASS')
+          PY
+          elif [ -n "${VYRON_PHYSICAL_ROOT:-}" ]; then
+            rm -rf "$VYRON_PHYSICAL_ROOT/ProductionManager/Batches/VYRON_6111_ROUTING_QA_${GITHUB_RUN_ID}" 2>/dev/null || true
+            find "$VYRON_PHYSICAL_ROOT/Render" -maxdepth 2 -type f -name "VYRON 6.1.11 Routing QA ${GITHUB_RUN_ID}*" -delete 2>/dev/null || true
+          fi
+          echo 'RELEASED=NO'

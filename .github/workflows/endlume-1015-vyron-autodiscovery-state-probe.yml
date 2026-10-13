@@ -1,0 +1,144 @@
+name: ENDLUME 10.0.15 VYRON Inventory Watch State Probe
+
+on:
+  push:
+    branches:
+      - hotfix/endlume-10.0.15-render-destination-routing
+    paths:
+      - '.github/workflows/endlume-1015-vyron-autodiscovery-state-probe.yml'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-1015-vyron-inventory-state-probe
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          clean: true
+
+      - name: Inspect VYRON bundle identity watcher symbols and local state
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ROOT="$RUNNER_TEMP/vyron-inventory-state-probe"
+          rm -rf "$ROOT"; mkdir -p "$ROOT"
+          APP='/Applications/VYRON.app'
+          INFO="$APP/Contents/Info.plist"
+          test -d "$APP" -a -f "$INFO"
+          BUNDLE_ID="$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$INFO")"
+          EXE_NAME="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$INFO")"
+          VERSION="$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$INFO" 2>/dev/null || true)"
+          EXE="$APP/Contents/MacOS/$EXE_NAME"
+          echo "VYRON_BUNDLE_ID=$BUNDLE_ID"
+          echo "VYRON_EXECUTABLE=$EXE"
+          echo "VYRON_VERSION=$VERSION"
+          /usr/bin/plutil -p "$INFO" | tee "$ROOT/info-plist.txt"
+
+          echo '--- PROCESS ---' | tee "$ROOT/process.txt"
+          ps aux | grep -E '[V]YRON|[c]hannelflow' | tee -a "$ROOT/process.txt" || true
+
+          echo '--- WATCHER SYMBOLS ---' | tee "$ROOT/watcher-symbols.txt"
+          (nm -nm "$EXE" 2>/dev/null || true) | grep -Ei 'inventory_watch|render_inventory|render_scan|discover_channel|filesystem.*render|scan.*render' | head -300 | tee -a "$ROOT/watcher-symbols.txt" || true
+
+          echo '--- DEFAULTS ---' | tee "$ROOT/defaults.txt"
+          defaults read "$BUNDLE_ID" 2>&1 | tee -a "$ROOT/defaults.txt" || true
+
+          python3 - "$ROOT" "$BUNDLE_ID" <<'PY'
+          import os,re,sys,time
+          from pathlib import Path
+          root=Path(sys.argv[1]); bundle=sys.argv[2]; home=Path.home()
+          names=[bundle,'VYRON','vyron','channelflow','com.scaleup.vyron','com.scaleup.channelflow']
+          bases=[home/'Library'/'Application Support',home/'Library'/'Caches',home/'Library'/'Preferences',home/'Library'/'WebKit',home/'Library'/'Saved Application State']
+          candidates=[]
+          for base in bases:
+            if not base.exists(): continue
+            for name in names:
+              p=base/name
+              if p.exists(): candidates.append(p.resolve())
+            try:
+              for p in base.iterdir():
+                low=p.name.casefold()
+                if 'vyron' in low or 'channelflow' in low or bundle.casefold() in low: candidates.append(p.resolve())
+            except Exception: pass
+          candidates=list(dict.fromkeys(candidates))
+          (root/'state-candidates.txt').write_text('\n'.join(map(str,candidates)),encoding='utf-8')
+          for p in candidates: print('STATE_CANDIDATE='+str(p))
+
+          tokens=re.compile(r'inventory_watch|render-inventory-changed|ProductionManager|Ready Videos|Aegean Afterglow|Aether Riff|Afterglow Highway|/Render/|Render\\|renderRoot|watchRoot|allowedRoots|channelName',re.I)
+          evidence=[]
+          for base in candidates:
+            files=[base] if base.is_file() else []
+            if base.is_dir():
+              try: files += [p for p in base.rglob('*') if p.is_file()]
+              except Exception: pass
+            for p in files[:20000]:
+              try:
+                if p.stat().st_size>100_000_000: continue
+                text=p.read_bytes().decode('utf-8',errors='ignore')
+              except Exception: continue
+              if not tokens.search(text): continue
+              snippets=[]
+              for m in tokens.finditer(text):
+                snippets.append(text[max(0,m.start()-250):min(len(text),m.end()+500)])
+                if len(snippets)>=25: break
+              evidence.append(f'FILE={p}\n'+'\n...\n'.join(snippets)+'\n---')
+              if len(evidence)>=400: break
+            if len(evidence)>=400: break
+          (root/'state-evidence.txt').write_text('\n'.join(evidence),encoding='utf-8',errors='replace')
+          print('STATE_EVIDENCE_FILE_COUNT='+str(len(evidence)))
+
+          # Also inspect the workspace itself for persisted inventory/status/index files.
+          workspaces=[]
+          for volume in Path('/Volumes').iterdir():
+            if not volume.is_dir(): continue
+            candidates2=[volume]
+            try: candidates2 += [p for p in volume.iterdir() if p.is_dir()]
+            except Exception: pass
+            for p in candidates2:
+              if (p/'ProductionManager'/'Batches').is_dir() and (p/'Render').is_dir(): workspaces.append(p.resolve())
+          workspaces=list(dict.fromkeys(workspaces))
+          wsev=[]
+          for ws in workspaces:
+            for p in ws.rglob('*'):
+              if not p.is_file(): continue
+              try:
+                if p.stat().st_size>30_000_000: continue
+              except Exception: continue
+              if p.suffix.lower() not in ('.json','.jsonl','.txt','.log','.db','.sqlite','.sqlite3','.toml','.yaml','.yml') and 'state' not in p.name.casefold() and 'inventory' not in p.name.casefold() and 'index' not in p.name.casefold(): continue
+              try: text=p.read_bytes().decode('utf-8',errors='ignore')
+              except Exception: continue
+              if tokens.search(text):
+                snippets=[]
+                for m in tokens.finditer(text):
+                  snippets.append(text[max(0,m.start()-250):min(len(text),m.end()+500)])
+                  if len(snippets)>=20: break
+                wsev.append(f'FILE={p}\n'+'\n...\n'.join(snippets)+'\n---')
+                if len(wsev)>=300: break
+            if len(wsev)>=300: break
+          (root/'workspace-state-evidence.txt').write_text('\n'.join(wsev),encoding='utf-8',errors='replace')
+          print('WORKSPACE_STATE_EVIDENCE_FILE_COUNT='+str(len(wsev)))
+          PY
+
+          echo '--- STATE CANDIDATES ---'
+          cat "$ROOT/state-candidates.txt" || true
+          echo '--- STATE EVIDENCE ---'
+          sed -n '1,300p' "$ROOT/state-evidence.txt" || true
+          echo '--- WORKSPACE STATE EVIDENCE ---'
+          sed -n '1,360p' "$ROOT/workspace-state-evidence.txt" || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ENDLUME-10.0.15-VYRON-INVENTORY-STATE-PROBE
+          path: ${{ runner.temp }}/vyron-inventory-state-probe/**
+          if-no-files-found: warn
+          retention-days: 7

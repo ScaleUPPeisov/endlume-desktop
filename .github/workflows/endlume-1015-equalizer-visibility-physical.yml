@@ -1,0 +1,214 @@
+name: ENDLUME 10.0.15 Equalizer Visibility Physical
+
+on:
+  push:
+    branches:
+      - qa/endlume-10.0.15-equalizer-visibility
+    paths:
+      - '.github/workflows/endlume-1015-equalizer-visibility-physical.yml'
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: endlume-1015-equalizer-visibility-physical
+  cancel-in-progress: true
+
+jobs:
+  physical:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: qa/endlume-10.0.15-equalizer-visibility
+          fetch-depth: 0
+          clean: true
+          persist-credentials: true
+
+      - name: Verify exact product source
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git merge-base --is-ancestor c5534ce47123777b698117a46473238381e37729 HEAD
+          CHANGED="$(git diff --name-only c5534ce47123777b698117a46473238381e37729..HEAD | grep -v '^.github/workflows/endlume-1015-equalizer-visibility-physical.yml$' || true)"
+          test -z "$CHANGED"
+          echo 'PRODUCT_SOURCE=c5534ce47123777b698117a46473238381e37729'
+
+      - name: Resolve physical FFmpeg
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          FFMPEG="$(command -v ffmpeg || true)"
+          FFPROBE="$(command -v ffprobe || true)"
+          if [[ -z "$FFMPEG" || -z "$FFPROBE" ]]; then
+            FFMPEG="$(find /Users/Shared /opt/homebrew /usr/local -type f -name ffmpeg -perm -111 2>/dev/null | head -1 || true)"
+            FFPROBE="$(find /Users/Shared /opt/homebrew /usr/local -type f -name ffprobe -perm -111 2>/dev/null | head -1 || true)"
+          fi
+          test -x "$FFMPEG" && test -x "$FFPROBE"
+          echo "FFMPEG=$FFMPEG" >> "$GITHUB_ENV"
+          echo "FFPROBE=$FFPROBE" >> "$GITHUB_ENV"
+
+      - name: Physical Round Equalizer chromakey matrix
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ROOT="$RUNNER_TEMP/endlume-1015-eq-visibility"
+          rm -rf "$ROOT"; mkdir -p "$ROOT/frames"
+          python3 - "$FFMPEG" "$FFPROBE" "$ROOT" <<'PY'
+          import json, math, os, subprocess, sys
+          from pathlib import Path
+
+          FFMPEG=Path(sys.argv[1]); FFPROBE=Path(sys.argv[2]); ROOT=Path(sys.argv[3]); FRAMES=ROOT/'frames'
+          EQ_ID='825dd7a4-f0cf-4032-a3c9-64290cb5756d'
+
+          def run(args,check=True,timeout=120):
+              p=subprocess.run([str(x) for x in args],stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=timeout)
+              if check and p.returncode!=0:
+                  raise RuntimeError(p.stderr.decode(errors='replace')[-6000:])
+              return p
+
+          def load_library():
+              roots=[Path.home()/'Library/Application Support',Path.home()/'Library/Containers']
+              found=[]
+              for base in roots:
+                  if not base.exists(): continue
+                  for p in base.rglob('library.json'):
+                      try:
+                          if p.stat().st_size>10_000_000: continue
+                          d=json.loads(p.read_text(errors='replace'))
+                      except Exception: continue
+                      for e in d.get('effects',[]):
+                          if not isinstance(e,dict): continue
+                          name=str(e.get('name','')).strip().lower()
+                          src=Path(str(e.get('source','')))
+                          if (e.get('id')==EQ_ID or name=='эквалайзер круглый') and src.is_file():
+                              found.append((p,d,e,src))
+              if not found: raise AssertionError('ROUND_EQUALIZER_PHYSICAL_SOURCE_NOT_FOUND')
+              found.sort(key=lambda x:x[0].stat().st_mtime,reverse=True)
+              return found[0]
+
+          lib_path,lib,eq,src=load_library()
+          probe=json.loads(run([FFPROBE,'-v','error','-show_entries','stream=width,height,duration:format=duration','-select_streams','v:0','-of','json',src]).stdout)
+          stream=probe['streams'][0]
+          w=int(stream['width']); h=int(stream['height'])
+          dur=float(stream.get('duration') or probe.get('format',{}).get('duration') or 2.0)
+          if not math.isfinite(dur) or dur<=0: dur=2.0
+          times=[max(0.0,min(dur-0.02,0.12)),max(0.0,dur/2.0),max(0.0,dur-0.12)]
+          labels=['begin','middle','end']
+          print('PHYSICAL_LIBRARY='+str(lib_path))
+          print('ROUND_EQUALIZER_SOURCE='+str(src))
+          print('SOURCE_GEOMETRY=%dx%d duration=%.3f'%(w,h,dur))
+          print('OWNER_UI_SETTINGS=similarity:0.6 blend:0.35 despill:1.0 opacity:1.0')
+          print('CANDIDATE_EFFECTIVE_EQ_KEY=similarity:0.18 blend:0.03 (hard override)')
+
+          def rgba_at(t,sim,blend,despill):
+              vf=f"format=rgba,colorkey=0x00ff00:{sim:.6f}:{blend:.6f},despill=type=green:mix={despill:.6f}:expand=0.20,format=rgba"
+              return run([FFMPEG,'-hide_banner','-loglevel','error','-ss',f'{t:.6f}','-i',src,'-vf',vf,'-frames:v','1','-f','rawvideo','-pix_fmt','rgba','-'],timeout=60).stdout
+
+          def raw_at(t):
+              return run([FFMPEG,'-hide_banner','-loglevel','error','-ss',f'{t:.6f}','-i',src,'-frames:v','1','-f','rawvideo','-pix_fmt','rgb24','-'],timeout=60).stdout
+
+          def metrics(raw,out):
+              n=min(len(raw)//3,len(out)//4)
+              fg_n=bg_n=0; fg_a=bg_a=0.0; fg_raw_energy=fg_out_energy=0.0; fg_green=0
+              for i in range(n):
+                  r,g,b=raw[i*3:i*3+3]
+                  or_,og,ob,oa=out[i*4:i*4+4]
+                  dist=math.sqrt(r*r+(g-255)*(g-255)+b*b)/441.67295593
+                  if dist>=0.22:
+                      fg_n+=1; fg_a+=oa/255.0
+                      fg_raw_energy+=(r+g+b)/765.0
+                      fg_out_energy+=(or_+og+ob)/765.0
+                      if g>max(r,b)+12: fg_green+=1
+                  elif dist<=0.055:
+                      bg_n+=1; bg_a+=oa/255.0
+              preserve=fg_a/max(1,fg_n)
+              remove=1.0-bg_a/max(1,bg_n)
+              energy=(fg_out_energy/max(1,fg_n))/(fg_raw_energy/max(1,fg_n)+1e-9)
+              return {'fgPixels':fg_n,'bgPixels':bg_n,'foregroundAlphaPreserved':preserve,'greenBackgroundRemoved':remove,'foregroundEnergyRatio':energy,'greenDominantForegroundRatio':fg_green/max(1,fg_n)}
+
+          cases={
+              'owner_raw_max':(0.60,0.35,1.00),
+              'candidate_effective_current':(0.18,0.03,1.00),
+              'safe_010_006_035':(0.10,0.06,0.35),
+              'safe_014_006_035':(0.14,0.06,0.35),
+              'safe_018_003_035':(0.18,0.03,0.35),
+              'safe_018_006_035':(0.18,0.06,0.35),
+              'safe_018_003_020':(0.18,0.03,0.20),
+              'safe_018_003_050':(0.18,0.03,0.50),
+          }
+          result={'source':str(src),'library':str(lib_path),'sourceWidth':w,'sourceHeight':h,'duration':dur,'ownerSettings':{'similarity':0.6,'blend':0.35,'despill':1.0,'opacity':1.0},'candidateEffective':{'similarity':0.18,'blend':0.03,'despill':1.0},'frames':{}}
+
+          for label,t in zip(labels,times):
+              raw=raw_at(t)
+              assert len(raw)>=w*h*3,(label,len(raw),w*h*3)
+              row={'time':t,'cases':{}}
+              for name,(sim,blend,dsp) in cases.items():
+                  out=rgba_at(t,sim,blend,dsp)
+                  assert len(out)>=w*h*4,(label,name,len(out),w*h*4)
+                  row['cases'][name]=metrics(raw,out)
+              result['frames'][label]=row
+
+              # visual evidence: candidate current and selected safe, composited on dark neutral canvas
+              for name in ('candidate_effective_current','safe_018_003_035'):
+                  sim,blend,dsp=cases[name]
+                  vf=(f"format=rgba,colorkey=0x00ff00:{sim:.6f}:{blend:.6f},"
+                      f"despill=type=green:mix={dsp:.6f}:expand=0.20,"
+                      f"colorchannelmixer=aa=1.0,format=rgba")
+                  keyed=FRAMES/f'{label}-{name}.png'
+                  run([FFMPEG,'-hide_banner','-loglevel','error','-ss',f'{t:.6f}','-i',src,'-vf',vf,'-frames:v','1','-y',keyed],timeout=60)
+                  flat=FRAMES/f'{label}-{name}-flat.png'
+                  run([FFMPEG,'-hide_banner','-loglevel','error','-f','lavfi','-i',f'color=c=0x202020:s={w}x{h}:r=1','-i',keyed,'-filter_complex','[0:v][1:v]overlay=0:0:format=auto','-frames:v','1','-y',flat],timeout=60)
+
+          # aggregate means and pick the strongest safe case that still removes background.
+          aggregate={}
+          for name in cases:
+              vals=[result['frames'][x]['cases'][name] for x in labels]
+              aggregate[name]={k:sum(v[k] for v in vals)/len(vals) for k in ('foregroundAlphaPreserved','greenBackgroundRemoved','foregroundEnergyRatio','greenDominantForegroundRatio')}
+          result['aggregate']=aggregate
+          eligible=[(name,m) for name,m in aggregate.items() if name.startswith('safe_') and m['greenBackgroundRemoved']>=0.985 and m['foregroundAlphaPreserved']>=0.88]
+          assert eligible,aggregate
+          selected=max(eligible,key=lambda x:(x[1]['foregroundEnergyRatio'],x[1]['foregroundAlphaPreserved'],x[1]['greenBackgroundRemoved']))
+          result['selectedSafeCase']=selected[0]
+          (ROOT/'metrics.json').write_text(json.dumps(result,ensure_ascii=False,indent=2))
+
+          cur=aggregate['candidate_effective_current']; safe=aggregate[selected[0]]; rawmax=aggregate['owner_raw_max']
+          print('OWNER_RAW_MAX_BG_REMOVAL=%.4f FG_ALPHA=%.4f FG_ENERGY=%.4f'%(rawmax['greenBackgroundRemoved'],rawmax['foregroundAlphaPreserved'],rawmax['foregroundEnergyRatio']))
+          print('CANDIDATE_CURRENT_BG_REMOVAL=%.4f FG_ALPHA=%.4f FG_ENERGY=%.4f'%(cur['greenBackgroundRemoved'],cur['foregroundAlphaPreserved'],cur['foregroundEnergyRatio']))
+          print('SELECTED_SAFE_CASE='+selected[0])
+          print('SAFE_BG_REMOVAL=%.4f FG_ALPHA=%.4f FG_ENERGY=%.4f'%(safe['greenBackgroundRemoved'],safe['foregroundAlphaPreserved'],safe['foregroundEnergyRatio']))
+          print('CURRENT_TO_SAFE_ENERGY_GAIN=%.4f'%(safe['foregroundEnergyRatio']/max(cur['foregroundEnergyRatio'],1e-9)))
+          # This probe must prove/desprove the suspected destructive chroma path, not merely detect pixels.
+          print('FRAME_EVIDENCE_BEGIN='+str(FRAMES/'begin-candidate_effective_current-flat.png'))
+          print('FRAME_EVIDENCE_MIDDLE='+str(FRAMES/'middle-candidate_effective_current-flat.png'))
+          print('FRAME_EVIDENCE_END='+str(FRAMES/'end-candidate_effective_current-flat.png'))
+          PY
+
+      - name: Build visual contact sheets
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ROOT="$RUNNER_TEMP/endlume-1015-eq-visibility"
+          for phase in begin middle end; do
+            "$FFMPEG" -hide_banner -loglevel error \
+              -i "$ROOT/frames/${phase}-candidate_effective_current-flat.png" \
+              -i "$ROOT/frames/${phase}-safe_018_003_035-flat.png" \
+              -filter_complex "[0:v]drawtext=text='CURRENT dsp=1.0':x=20:y=20:fontsize=28:fontcolor=white[a];[1:v]drawtext=text='SAFE dsp=0.35':x=20:y=20:fontsize=28:fontcolor=white[b];[a][b]hstack=inputs=2" \
+              -frames:v 1 -y "$ROOT/frames/${phase}-comparison.png" || \
+            "$FFMPEG" -hide_banner -loglevel error \
+              -i "$ROOT/frames/${phase}-candidate_effective_current-flat.png" \
+              -i "$ROOT/frames/${phase}-safe_018_003_035-flat.png" \
+              -filter_complex "hstack=inputs=2" -frames:v 1 -y "$ROOT/frames/${phase}-comparison.png"
+          done
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ENDLUME-10.0.15-EQUALIZER-VISIBILITY-PHYSICAL
+          path: |
+            ${{ runner.temp }}/endlume-1015-eq-visibility/metrics.json
+            ${{ runner.temp }}/endlume-1015-eq-visibility/frames/*.png
+          if-no-files-found: error
+          retention-days: 14

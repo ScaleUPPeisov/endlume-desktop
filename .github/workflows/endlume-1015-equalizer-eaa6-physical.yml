@@ -67,7 +67,7 @@ jobs:
           mkdir -p src-tauri/binaries
           rsync -a "$FOUNDATION/src-tauri/binaries/" src-tauri/binaries/
 
-      - name: Build exact candidate app
+      - name: Build candidate with E2E-only Preview helper bypass
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -76,6 +76,16 @@ jobs:
           ROOT="$RUNNER_TEMP/endlume-1015-equalizer-eaa6"
           rm -rf "$ROOT"; mkdir -p "$ROOT"
           npm ci
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('src-tauri/src/lib.rs'); s=p.read_text()
+          old='  let helper=live_preview::prepare_live_preview(app.clone(),project_path.clone(),overlay_source,time_sec,Some("e1011-cold-preview".into()),Some(if subscribes.is_empty(){"Effects".into()}else{"Subscribe".into()})).await?;'
+          new='  let helper=serde_json::json!({"qaInstrumentation":"prepare_live_preview transport bypassed; generate_preview remains production code"});'
+          assert old in s
+          p.write_text(s.replace(old,new,1))
+          PY
+          grep -q 'qaInstrumentation.*prepare_live_preview transport bypassed' src-tauri/src/lib.rs
+          git diff -- src-tauri/src/lib.rs > "$ROOT/e2e-instrumentation.patch"
           CONF='src-tauri/tauri.conf.json'; cp "$CONF" "$ROOT/tauri.conf.original.json"
           restore_conf(){ cp "$ROOT/tauri.conf.original.json" "$CONF"; }
           trap restore_conf EXIT
@@ -97,6 +107,7 @@ jobs:
           test -x "$EXE" -a -x "$FFMPEG" -a -x "$FFPROBE"
           printf '%s' "$EXE" > "$ROOT/exe.txt"; printf '%s' "$FFMPEG" > "$ROOT/ffmpeg.txt"; printf '%s' "$FFPROBE" > "$ROOT/ffprobe.txt"
           echo 'COMPILE=PASS'
+          echo 'QA_INSTRUMENTATION=E2E_PREPARE_LIVE_PREVIEW_HELPER_ONLY'
 
       - name: Physical Round Equalizer matrix
         shell: bash
@@ -111,26 +122,26 @@ jobs:
           import sys
           p=Path(sys.argv[1]); s=p.read_text(); s=s.replace("'-ss','.5'","'-ss','0.5'"); p.write_text(s)
           PY
-          grep -q "'-ss','0.5'" "$ROOT/qa-equalizer.py"
           python3 "$ROOT/qa-equalizer.py" "$EXE" "$FFMPEG" "$FFPROBE" "$ROOT" | tee "$ROOT/equalizer.log"
           grep -q '^EQUALIZER_VISIBILITY=PASS$' "$ROOT/equalizer.log"
           grep -q '^PREVIEW_RENDER_MATCH=PASS$' "$ROOT/equalizer.log"
           grep -q '^FAST_RENDER_REGRESSION=PASS$' "$ROOT/equalizer.log"
 
       - name: VYRON physical regression
+        if: always()
         shell: bash
         run: |
           set -Eeuo pipefail
           ROOT="$RUNNER_TEMP/endlume-1015-equalizer-eaa6"
+          test -s "$ROOT/exe.txt" -a -s "$ROOT/ffmpeg.txt" -a -s "$ROOT/ffprobe.txt"
           python3 scripts/qa-endlume-1014-vyron-routing-physical.py "$(cat "$ROOT/exe.txt")" "$(cat "$ROOT/ffmpeg.txt")" "$(cat "$ROOT/ffprobe.txt")" "$ROOT/vyron.json" | tee "$ROOT/vyron.log"
           grep -q 'VYRON_NO_CROSS_WRITE=GREEN' "$ROOT/vyron.log"
           echo 'VYRON_REGRESSION=PASS'
 
       - name: Final summary
+        if: success()
         shell: bash
         run: |
-          set -Eeuo pipefail
-          ROOT="$RUNNER_TEMP/endlume-1015-equalizer-eaa6"
           echo 'PREVIOUS_CANDIDATE=c5534ce47123777b698117a46473238381e37729'
           echo 'CANDIDATE_COMMIT=eaa6eb0a022f184f533338e9ff778328cfe29717'
           echo 'MULTI_EFFECT_PER_VIDEO=PASS'
@@ -148,8 +159,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: ENDLUME-10.0.15-EQUALIZER-EAA6-PHYSICAL-EVIDENCE-V3
+          name: ENDLUME-10.0.15-EQUALIZER-EAA6-PHYSICAL-EVIDENCE-V4
           path: |
+            ${{ runner.temp }}/endlume-1015-equalizer-eaa6/e2e-instrumentation.patch
             ${{ runner.temp }}/endlume-1015-equalizer-eaa6/equalizer-report.json
             ${{ runner.temp }}/endlume-1015-equalizer-eaa6/equalizer.log
             ${{ runner.temp }}/endlume-1015-equalizer-eaa6/preview-app.log

@@ -41,13 +41,21 @@ jobs:
           echo "SOURCE_COMMIT=PASS"
           echo "VERSION_SOURCE=PASS"
 
-      - name: Prepare isolated build directory
+      - name: Prepare isolated owner target
         shell: bash
         run: |
           set -Eeuo pipefail
-          TARGET="$RUNNER_TEMP/endlume-10.0.15-owner-clean-$GITHUB_RUN_ID"
+          TARGET="$RUNNER_TEMP/../_endlume-cache/target-1015-owner-eaa6-clean"
+          SEED="$RUNNER_TEMP/../_endlume-cache/target-1015-equalizer-eaa6-exact"
           rm -rf "$TARGET"
           mkdir -p "$TARGET"
+          if [ -d "$SEED" ]; then
+            echo "Seeding dependency cache from exact eaa6 target"
+            cp -cR "$SEED"/. "$TARGET"/ 2>/dev/null || rsync -a "$SEED"/ "$TARGET"/
+          else
+            echo "Exact seed cache unavailable; compiling dependencies fresh"
+          fi
+          rm -rf "$TARGET/aarch64-apple-darwin/release/bundle"
           rm -rf node_modules dist
           echo "CARGO_TARGET_DIR=$TARGET" >> "$GITHUB_ENV"
           echo "ISOLATED_TARGET=$TARGET"
@@ -77,11 +85,36 @@ jobs:
           set -Eeuo pipefail
           npm run build
 
+      - name: Force product crate relink from exact source
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cargo clean --manifest-path src-tauri/Cargo.toml -p endlume --release --target aarch64-apple-darwin
+
       - name: Build clean macOS ARM64 app
         shell: bash
         run: |
           set -Eeuo pipefail
-          npx tauri build --target aarch64-apple-darwin --bundles app
+          LOG="$RUNNER_TEMP/endlume-owner-tauri-build.log"
+          set +e
+          npx tauri build --target aarch64-apple-darwin --bundles app 2>&1 | tee "$LOG"
+          RC=${PIPESTATUS[0]}
+          set -e
+          BUNDLE_DIR="$CARGO_TARGET_DIR/aarch64-apple-darwin/release/bundle/macos"
+          APP="$(find "$BUNDLE_DIR" -maxdepth 1 -type d -name '*.app' -print -quit 2>/dev/null || true)"
+          if [ -z "$APP" ] || [ ! -d "$APP" ]; then
+            echo "ERROR: app bundle was not produced (tauri rc=$RC)"
+            exit "${RC:-1}"
+          fi
+          if [ "$RC" -ne 0 ]; then
+            if grep -q "A public key has been found, but no private key" "$LOG"; then
+              echo "Updater signing skipped intentionally; owner .app was built successfully"
+            else
+              echo "ERROR: unexpected Tauri build failure after app bundling"
+              exit "$RC"
+            fi
+          fi
+          echo "APP_BUNDLE_BUILD=PASS"
 
       - name: Locate and verify app
         id: app

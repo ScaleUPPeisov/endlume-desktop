@@ -1,0 +1,95 @@
+name: ENDLUME 10.0.15 VYRON Real Batch Probe
+
+on:
+  push:
+    branches:
+      - hotfix/endlume-10.0.15-render-destination-routing
+    paths:
+      - '.github/workflows/endlume-1015-vyron-real-batch-probe.yml'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          clean: true
+      - name: Inspect recent real VYRON batches and discovery state
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import json, os, time
+          from pathlib import Path
+
+          roots=[]
+          for volume in Path('/Volumes').iterdir():
+            if not volume.is_dir(): continue
+            candidates=[volume]
+            try: candidates += [p for p in volume.iterdir() if p.is_dir()]
+            except Exception: pass
+            for r in candidates:
+              if (r/'ProductionManager'/'Batches').is_dir() and (r/'Render').is_dir(): roots.append(r.resolve())
+          roots=list(dict.fromkeys(roots))
+          if len(roots)!=1: raise SystemExit(f'workspace count={len(roots)} {roots}')
+          root=roots[0]; batches=root/'ProductionManager'/'Batches'
+          print('VYRON_ROOT='+str(root))
+          rows=[]
+          for d in batches.iterdir():
+            if not d.is_dir() or d.name.startswith('ENDLUME_ROUTING_QA_'): continue
+            manifest=d/'batch.json'; status=d/'status.json'
+            if not manifest.is_file(): continue
+            try: m=json.loads(manifest.read_text(encoding='utf-8'))
+            except Exception: continue
+            s={}
+            if status.is_file():
+              try: s=json.loads(status.read_text(encoding='utf-8'))
+              except Exception: pass
+            rows.append((manifest.stat().st_mtime,d,m,s))
+          rows.sort(key=lambda x:x[0],reverse=True)
+          print('REAL_BATCH_COUNT='+str(len(rows)))
+          for mt,d,m,s in rows[:15]:
+            print('=== REAL BATCH ===')
+            print('MTIME='+time.strftime('%Y-%m-%dT%H:%M:%S',time.localtime(mt)))
+            print('DIR='+str(d))
+            print('BATCH_ID='+str(m.get('batchId')))
+            print('CHANNEL='+str(m.get('channelName')))
+            print('OUTPUT_DIR='+str(m.get('outputDir')))
+            print('PROJECT_COUNT='+str(m.get('projectCount')))
+            print('STATUS='+str(s.get('status')))
+            for p in (m.get('projects') or [])[:6]:
+              print('PROJECT='+json.dumps({k:p.get(k) for k in ('projectId','folderPath','name','outputFile','renderStatus')},ensure_ascii=False))
+            for p in (s.get('projects') or [])[:6]:
+              print('STATUS_PROJECT='+json.dumps(p,ensure_ascii=False))
+
+          state_path=Path.home()/'Library'/'Application Support'/'studio.channelflow.desktop'/'state.json'
+          if state_path.is_file():
+            data=json.loads(state_path.read_text(encoding='utf-8'))
+            print('=== RECENT DISCOVERY EVENTS ===')
+            events=[]
+            def walk(x):
+              if isinstance(x,dict):
+                text=json.dumps(x,ensure_ascii=False)
+                if ('RENDER_DISCOVERED' in text or 'render-complete:' in text) and '/Render/' in text:
+                  ts=str(x.get('timestamp') or x.get('createdAt') or '')
+                  events.append((ts,x))
+                for v in x.values(): walk(v)
+              elif isinstance(x,list):
+                for v in x: walk(v)
+            walk(data)
+            seen=set()
+            uniq=[]
+            for ts,obj in sorted(events,key=lambda x:x[0],reverse=True):
+              key=json.dumps(obj,sort_keys=True,ensure_ascii=False)
+              if key in seen: continue
+              seen.add(key); uniq.append((ts,obj))
+            for ts,obj in uniq[:20]:
+              # redact identity/auth fields; only routing/discovery metadata is needed.
+              out={k:v for k,v in obj.items() if k not in ('email','google_email','client_id','refresh_token','access_token','token')}
+              print('DISCOVERY='+json.dumps(out,ensure_ascii=False)[:3500])
+          PY

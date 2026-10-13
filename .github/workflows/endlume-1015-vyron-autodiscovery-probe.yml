@@ -1,0 +1,176 @@
+name: ENDLUME 10.0.15 VYRON Auto-Discovery Probe
+
+on:
+  push:
+    branches:
+      - hotfix/endlume-10.0.15-render-destination-routing
+    paths:
+      - '.github/workflows/endlume-1015-vyron-autodiscovery-probe.yml'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-1015-vyron-autodiscovery-probe
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          clean: true
+
+      - name: Inspect installed VYRON app and local discovery state
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ROOT="$RUNNER_TEMP/vyron-autodiscovery-probe"
+          rm -rf "$ROOT"; mkdir -p "$ROOT"
+
+          python3 - "$ROOT" <<'PY'
+          import os, re, subprocess, sys
+          from pathlib import Path
+          root=Path(sys.argv[1])
+          home=Path.home()
+
+          def write(name,text):
+            (root/name).write_text(text,encoding='utf-8',errors='replace')
+
+          # Locate installed VYRON application bundles without assuming exact spelling.
+          apps=[]
+          for base in (Path('/Applications'), home/'Applications', home/'Desktop'):
+            if not base.exists(): continue
+            try:
+              for p in base.rglob('*.app'):
+                low=p.name.casefold()
+                if 'vyron' in low or 'вайрон' in low or 'вайрон' in low:
+                  apps.append(p.resolve())
+            except (PermissionError,OSError): pass
+          # Spotlight may find a bundle outside the usual locations.
+          try:
+            out=subprocess.check_output(['mdfind','kMDItemContentType == "com.apple.application-bundle"'],text=True,stderr=subprocess.DEVNULL)
+            for raw in out.splitlines():
+              p=Path(raw)
+              low=p.name.casefold()
+              if p.suffix=='.app' and ('vyron' in low or 'вайрон' in low or 'вайрон' in low): apps.append(p.resolve())
+          except Exception: pass
+          apps=list(dict.fromkeys(apps))
+          write('apps.txt','\n'.join(map(str,apps)))
+          print('VYRON_APP_CANDIDATES='+str(len(apps)))
+          for p in apps: print('VYRON_APP='+str(p))
+
+          # Find user state folders/files with VYRON naming or production markers.
+          support=home/'Library'/'Application Support'
+          state_hits=[]
+          if support.exists():
+            for p in support.iterdir():
+              low=p.name.casefold()
+              if 'vyron' in low or 'вайрон' in low or 'вайрон' in low:
+                state_hits.append(p.resolve())
+          write('state-roots.txt','\n'.join(map(str,state_hits)))
+          for p in state_hits: print('VYRON_STATE_ROOT='+str(p))
+
+          # Discover actual external VYRON workspace by structure, not names.
+          workspaces=[]
+          vols=Path('/Volumes')
+          if vols.exists():
+            for volume in vols.iterdir():
+              if not volume.is_dir(): continue
+              candidates=[volume]
+              try: candidates += [p for p in volume.iterdir() if p.is_dir()]
+              except Exception: pass
+              for p in candidates:
+                if (p/'ProductionManager'/'Batches').is_dir() and (p/'Render').is_dir(): workspaces.append(p.resolve())
+          workspaces=list(dict.fromkeys(workspaces))
+          write('workspaces.txt','\n'.join(map(str,workspaces)))
+          for p in workspaces: print('VYRON_WORKSPACE='+str(p))
+
+          # Inspect app metadata and text resources/binary strings for discovery terminology.
+          patterns=re.compile(r'ProductionManager|Live Inventory|Ready Videos|finished.?video|Render[/\\]|auto.?discover|inventory|publisher',re.I)
+          evidence=[]
+          for app in apps:
+            info=app/'Contents'/'Info.plist'
+            if info.exists():
+              try:
+                txt=subprocess.check_output(['/usr/bin/plutil','-p',str(info)],text=True,stderr=subprocess.STDOUT)
+                write('app-info-'+re.sub(r'[^A-Za-z0-9]+','_',app.name)+'.txt',txt)
+              except Exception: pass
+            resources=app/'Contents'/'Resources'
+            if resources.exists():
+              count=0
+              for p in resources.rglob('*'):
+                if count>=4000: break
+                if not p.is_file() or p.stat().st_size>20_000_000: continue
+                count+=1
+                try:
+                  data=p.read_bytes()
+                  text=data.decode('utf-8',errors='ignore')
+                except Exception: continue
+                for m in patterns.finditer(text):
+                  s=max(0,m.start()-180); e=min(len(text),m.end()+260)
+                  evidence.append(f'FILE={p}\n{text[s:e]}\n---')
+                  if len(evidence)>=250: break
+                if len(evidence)>=250: break
+            exe_name=None
+            if info.exists():
+              try: exe_name=subprocess.check_output(['/usr/bin/plutil','-extract','CFBundleExecutable','raw','-o','-',str(info)],text=True).strip()
+              except Exception: pass
+            if exe_name:
+              exe=app/'Contents'/'MacOS'/exe_name
+              if exe.is_file():
+                try:
+                  out=subprocess.check_output(['/usr/bin/strings','-a',str(exe)],text=True,errors='ignore')
+                  lines=[x for x in out.splitlines() if patterns.search(x)]
+                  evidence += [f'BINARY={exe}\n{x}\n---' for x in lines[:250-len(evidence)]]
+                except Exception: pass
+          write('app-discovery-evidence.txt','\n'.join(evidence))
+          print('APP_DISCOVERY_EVIDENCE_LINES='+str(len(evidence)))
+
+          # Inspect likely JSON/SQLite/text state for channel/inventory/discovery data.
+          state_evidence=[]
+          for base in state_hits:
+            candidates=[]
+            try:
+              candidates=[p for p in base.rglob('*') if p.is_file() and p.stat().st_size<=50_000_000]
+            except Exception: pass
+            for p in candidates[:10000]:
+              suf=p.suffix.lower()
+              if suf in ('.json','.txt','.log','.yaml','.yml','.toml','.plist','.db','.sqlite','.sqlite3') or not suf:
+                try:
+                  text=p.read_bytes().decode('utf-8',errors='ignore')
+                except Exception: continue
+                if patterns.search(text) or 'Aegean Afterglow' in text or 'Afterglow Highway' in text:
+                  matches=[]
+                  for m in re.finditer(r'ProductionManager|Live Inventory|Ready Videos|Aegean Afterglow|Afterglow Highway|Aether Riff|Render[/\\]|publisher|inventory',text,re.I):
+                    s=max(0,m.start()-180); e=min(len(text),m.end()+300); matches.append(text[s:e])
+                    if len(matches)>=12: break
+                  state_evidence.append(f'FILE={p}\n'+'\n...\n'.join(matches)+'\n---')
+                  if len(state_evidence)>=250: break
+            if len(state_evidence)>=250: break
+          write('state-discovery-evidence.txt','\n'.join(state_evidence))
+          print('STATE_DISCOVERY_EVIDENCE_FILES='+str(len(state_evidence)))
+          PY
+
+          echo '--- APPS ---'
+          cat "$ROOT/apps.txt" || true
+          echo '--- STATE ROOTS ---'
+          cat "$ROOT/state-roots.txt" || true
+          echo '--- WORKSPACES ---'
+          cat "$ROOT/workspaces.txt" || true
+          echo '--- APP DISCOVERY EVIDENCE (first 160 lines) ---'
+          sed -n '1,160p' "$ROOT/app-discovery-evidence.txt" || true
+          echo '--- STATE DISCOVERY EVIDENCE (first 200 lines) ---'
+          sed -n '1,200p' "$ROOT/state-discovery-evidence.txt" || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ENDLUME-10.0.15-VYRON-AUTODISCOVERY-PROBE
+          path: ${{ runner.temp }}/vyron-autodiscovery-probe/**
+          if-no-files-found: warn
+          retention-days: 7

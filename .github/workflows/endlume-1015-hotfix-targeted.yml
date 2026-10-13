@@ -1,4 +1,4 @@
-name: ENDLUME 10.0.15 VYRON Physical Rerun
+name: ENDLUME 10.0.15 VYRON + Equalizer Physical Rerun
 
 on:
   push:
@@ -6,19 +6,20 @@ on:
       - hotfix/endlume-10.0.15-multi-effect-live-preview
     paths:
       - '.github/workflows/endlume-1015-hotfix-targeted.yml'
+      - 'scripts/qa-endlume-1015-equalizer-visibility.py'
   workflow_dispatch: {}
 
 permissions:
   contents: read
 
 concurrency:
-  group: endlume-1015-vyron-rerun
+  group: endlume-1015-vyron-equalizer-rerun
   cancel-in-progress: true
 
 jobs:
-  vyron-physical:
+  physical:
     runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
@@ -135,29 +136,38 @@ jobs:
           print('VYRON_APP_WALL_SECONDS=%.3f'%d['appWallSeconds'])
           PY
 
+      - name: Physical Round Equalizer visibility probe on exact candidate source
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          BUILD_ROOT="$RUNNER_TEMP/endlume-1015-vyron"
+          FFMPEG="$(cat "$BUILD_ROOT/ffmpeg.txt")"
+          FFPROBE="$(cat "$BUILD_ROOT/ffprobe.txt")"
+          PROBE_ROOT="$RUNNER_TEMP/endlume-1015-eq-visibility"
+          rm -rf "$PROBE_ROOT"; mkdir -p "$PROBE_ROOT"
+          git fetch origin "$GITHUB_SHA" --depth=1
+          git show "${GITHUB_SHA}:scripts/qa-endlume-1015-equalizer-visibility.py" > "$PROBE_ROOT/probe.py"
+          python3 "$PROBE_ROOT/probe.py" "$FFMPEG" "$FFPROBE" "$PROBE_ROOT" | tee "$PROBE_ROOT/probe.log"
+          test -s "$PROBE_ROOT/metrics.json"
+          grep -q 'PHYSICAL_EQUALIZER_PROBE=PASS' "$PROBE_ROOT/probe.log"
+
       - name: Final gate summary
         shell: bash
         run: |
           set -Eeuo pipefail
-          echo 'CANDIDATE_COMMIT=c5534ce47123777b698117a46473238381e37729'
+          echo 'PRODUCT_SOURCE=c5534ce47123777b698117a46473238381e37729'
           echo 'VERSION=10.0.15'
-          echo 'FINAL_RENDER_MULTI_EFFECT=PASS'
-          echo 'FAST_RENDER_REGRESSION=PASS'
           echo 'VYRON_REGRESSION=PASS'
-          echo 'MULTI_EFFECT_PER_VIDEO=PASS'
-          echo 'ALL_EFFECTS_TO_ALL_VIDEOS=PASS'
-          echo 'EFFECT_REALTIME_PREVIEW=PASS'
-          echo 'SUBSCRIBE_REALTIME_PREVIEW=PASS'
-          echo 'PERSISTENCE=PASS'
+          echo 'EQUALIZER_PHYSICAL_PROBE=PASS'
           echo 'PUBLISH=NOT_RUN'
           echo 'RELEASE=NOT_RUN'
-          echo 'FINAL_STATUS=READY_FOR_OWNER_TEST'
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: ENDLUME-10.0.15-VYRON-PHYSICAL-EVIDENCE
+          name: ENDLUME-10.0.15-EQUALIZER-VYRON-PHYSICAL-EVIDENCE
           path: |
             ${{ runner.temp }}/endlume-1015-vyron/**
+            ${{ runner.temp }}/endlume-1015-eq-visibility/**
           if-no-files-found: warn
-          retention-days: 7
+          retention-days: 14

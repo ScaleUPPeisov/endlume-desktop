@@ -6,7 +6,7 @@ on:
       - hotfix/endlume-10.0.15-multi-effect-live-preview
     paths:
       - '.github/workflows/endlume-1015-hotfix-targeted.yml'
-      - 'scripts/qa-endlume-1015-equalizer-physical.py'
+      - 'scripts/qa-endlume-1015-equalizer-managed.py'
   workflow_dispatch: {}
 
 permissions:
@@ -19,7 +19,7 @@ concurrency:
 jobs:
   repro:
     runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:
@@ -41,10 +41,6 @@ jobs:
           set -Eeuo pipefail
           FFMPEG="$(command -v ffmpeg || true)"
           FFPROBE="$(command -v ffprobe || true)"
-          if [[ -z "$FFMPEG" || -z "$FFPROBE" ]]; then
-            FFMPEG="$(find /Users/Shared /opt/homebrew /usr/local -type f -name ffmpeg -perm -111 2>/dev/null | head -1 || true)"
-            FFPROBE="$(find /Users/Shared /opt/homebrew /usr/local -type f -name ffprobe -perm -111 2>/dev/null | head -1 || true)"
-          fi
           test -x "$FFMPEG" && test -x "$FFPROBE"
           echo "FFMPEG=$FFMPEG" >> "$GITHUB_ENV"
           echo "FFPROBE=$FFPROBE" >> "$GITHUB_ENV"
@@ -56,7 +52,7 @@ jobs:
           ROOT="$RUNNER_TEMP/endlume-1015-eq-visibility"
           rm -rf "$ROOT"; mkdir -p "$ROOT"
           git fetch origin "$GITHUB_SHA" --depth=1
-          git show "${GITHUB_SHA}:scripts/qa-endlume-1015-equalizer-physical.py" > "$ROOT/probe.py"
+          git show "${GITHUB_SHA}:scripts/qa-endlume-1015-equalizer-managed.py" > "$ROOT/probe.py"
           python3 "$ROOT/probe.py" "$FFMPEG" "$FFPROBE" "$ROOT" | tee "$ROOT/probe.log"
           test -s "$ROOT/metrics.json"
           grep -q 'PHYSICAL_EQUALIZER_PROBE=PASS' "$ROOT/probe.log"

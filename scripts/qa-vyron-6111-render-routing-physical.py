@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import json, os, subprocess, sys, tempfile, time, uuid
+import json, os, signal, subprocess, sys, tempfile, time, uuid
 from pathlib import Path
 
 APP=Path(sys.argv[1]).resolve()
@@ -42,6 +42,39 @@ def run(args, *, env=None, timeout=360, check=True):
     return p
 
 
+def run_app_posix_spawn(app: Path, env: dict[str,str], stdout_path: Path, stderr_path: Path, timeout: int=360) -> int:
+    """Launch the macOS GUI executable without Python fork().
+
+    The physical E2E app starts rendering during Tauri setup. Using an explicit
+    posix_spawn keeps the outer QA harness out of Objective-C fork-safety paths.
+    """
+    flags=os.O_WRONLY|os.O_CREAT|os.O_TRUNC
+    out_fd=os.open(stdout_path, flags, 0o600)
+    err_fd=os.open(stderr_path, flags, 0o600)
+    actions=[
+        (os.POSIX_SPAWN_DUP2, out_fd, 1),
+        (os.POSIX_SPAWN_DUP2, err_fd, 2),
+        (os.POSIX_SPAWN_CLOSE, out_fd),
+        (os.POSIX_SPAWN_CLOSE, err_fd),
+    ]
+    try:
+        pid=os.posix_spawn(str(app), [str(app)], env, file_actions=actions)
+    finally:
+        os.close(out_fd)
+        os.close(err_fd)
+    deadline=time.monotonic()+timeout
+    while time.monotonic()<deadline:
+        done,status=os.waitpid(pid, os.WNOHANG)
+        if done:
+            if os.WIFEXITED(status): return os.WEXITSTATUS(status)
+            if os.WIFSIGNALED(status): return -os.WTERMSIG(status)
+            return 1
+        time.sleep(0.10)
+    os.kill(pid, signal.SIGKILL)
+    os.waitpid(pid, 0)
+    raise TimeoutError(f'ENDLUME_E2E_TIMEOUT:{timeout}s')
+
+
 def media(project, idx):
     cover=project/'cover.png'; audio=project/'track.mp3'
     run([FFMPEG,'-hide_banner','-loglevel','error','-f','lavfi','-i',f'color=c=0x{182033+idx*222222:06x}:s=1920x1080','-frames:v','1','-y',cover])
@@ -80,10 +113,11 @@ for idx,dest in enumerate(channels,1):
 fixture=run_root/'jobs.json'; result=run_root/'result.json'
 fixture.write_text(json.dumps({'jobs':jobs},ensure_ascii=False,indent=2),encoding='utf-8')
 env=os.environ.copy(); env.update({'ENDLUME_E2E_RENDER_JOB':str(fixture),'ENDLUME_E2E_RESULT':str(result),'RUST_BACKTRACE':'1'})
-started=time.perf_counter(); proc=run([APP],env=env,timeout=360,check=False); wall=time.perf_counter()-started
-(run_root/'stdout.log').write_text(proc.stdout or '',encoding='utf-8')
-(run_root/'stderr.log').write_text(proc.stderr or '',encoding='utf-8')
-assert proc.returncode==0,(proc.returncode,proc.stderr[-12000:])
+stdout_path=run_root/'stdout.log'; stderr_path=run_root/'stderr.log'
+started=time.perf_counter(); rc=run_app_posix_spawn(APP,env,stdout_path,stderr_path,360); wall=time.perf_counter()-started
+stdout=stdout_path.read_text(encoding='utf-8',errors='replace') if stdout_path.exists() else ''
+stderr=stderr_path.read_text(encoding='utf-8',errors='replace') if stderr_path.exists() else ''
+assert rc==0,(rc,stderr[-12000:])
 data=json.loads(result.read_text(encoding='utf-8')); assert data.get('status')=='passed',data
 rows={r['id']:r for r in data['results']}
 evidence=[]
@@ -105,7 +139,6 @@ batch_media=[str(p.resolve()) for p in batch.rglob('*') if p.is_file() and p.suf
 assert batch_media==[],batch_media
 assert evidence[0]['finalMp4Path'] != evidence[1]['finalMp4Path']
 assert Path(evidence[0]['finalMp4Path']).parent != Path(evidence[1]['finalMp4Path']).parent
-stderr=proc.stderr or ''
 for token in ('VYRON ROOT=','CHANNEL=','PROJECT DIRECTORY=','BATCH DIRECTORY=','FINAL RENDER DIRECTORY=','FINAL OUTPUT FILE='):
     assert token in stderr,(token,stderr[-12000:])
 
@@ -113,11 +146,12 @@ report={
  'status':'PASS','vyronRoot':str(VYRON),'batchesRoot':str(BATCHES),'renderRoot':str(RENDER),
  'batchPath':str(batch.resolve()),'channels':evidence,'manifestRows':manifest_rows,
  'batchesFinalMp4Count':0,'crossChannelRouting':False,'manualFolderSelection':False,
- 'postRenderMove':False,'endlumeWallSeconds':wall,
+ 'postRenderMove':False,'endlumeWallSeconds':wall,'launcher':'posix_spawn',
  'cleanup':{'batchPath':str(batch.resolve()),'outputFiles':[str(p) for p in created_outputs]}
 }
 REPORT.parent.mkdir(parents=True,exist_ok=True); REPORT.write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')
 print('PHYSICAL_RENDER_ROUTING=PASS')
+print('ENDLUME_QA_LAUNCHER=POSIX_SPAWN')
 for row in evidence:
     print('CHANNEL='+row['channel'])
     print('PROJECT_PATH='+row['projectPath'])

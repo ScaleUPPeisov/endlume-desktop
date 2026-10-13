@@ -1,0 +1,222 @@
+name: ENDLUME 10.0.15 Render Destination Physical Gate
+
+on:
+  push:
+    branches:
+      - hotfix/endlume-10.0.15-render-destination-routing
+    paths:
+      - '.github/workflows/endlume-1015-render-destination-physical.yml'
+      - 'scripts/fix-endlume-1015-render-destination-routing.py'
+      - 'scripts/qa-endlume-1015-render-destination-physical.py'
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: endlume-1015-render-destination-physical
+  cancel-in-progress: true
+
+jobs:
+  physical:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          clean: true
+          persist-credentials: true
+
+      - name: Verify exact candidate lineage and external VYRON root
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git merge-base --is-ancestor c5534ce47123777b698117a46473238381e37729 HEAD
+          test -d '/Volumes/TOSHIBA EXT/VYRON'
+          test -d '/Volumes/TOSHIBA EXT/VYRON/ProductionManager/Batches'
+          test -d '/Volumes/TOSHIBA EXT/VYRON/Render'
+          echo "PHYSICAL_SOURCE_HEAD=$(git rev-parse HEAD)"
+          echo 'CANDIDATE_LINEAGE=PASS'
+          echo 'TOSHIBA_VYRON_ROOT=PASS'
+
+      - name: Apply minimal destination routing hotfix in workspace
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/fix-endlume-1015-render-destination-routing.py
+          grep -q 'ENDLUME_VYRON_RENDER_DESTINATION_ROUTING_HOTFIX' src-tauri/src/queue.rs
+          grep -q 'ENDLUME_VYRON_FINAL_WRITER_ROUTE_GUARD' src-tauri/src/lib.rs
+          git diff --check
+          echo 'ROUTING_PATCH_APPLIED=PASS'
+
+      - name: Frontend build
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+          npm ci
+          npm run build
+
+      - name: Provision packaged FFmpeg sidecars
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          FFMPEG="$(command -v ffmpeg || true)"
+          FFPROBE="$(command -v ffprobe || true)"
+          if [[ -z "$FFMPEG" || -z "$FFPROBE" ]]; then
+            FOUNDATION="$HOME/.endlume-local-builder/endlume-desktop-8.40-bootstrap"
+            test -d "$FOUNDATION/src-tauri/binaries"
+            mkdir -p src-tauri/binaries
+            rsync -a "$FOUNDATION/src-tauri/binaries/" src-tauri/binaries/
+          else
+            mkdir -p src-tauri/binaries
+            cp "$FFMPEG" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+            cp "$FFPROBE" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+            chmod +x src-tauri/binaries/ffmpeg-aarch64-apple-darwin src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          fi
+
+      - name: Rust compile and destination contract unit tests
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+          cargo check --manifest-path src-tauri/Cargo.toml
+          cargo test --manifest-path src-tauri/Cargo.toml render_destination_routing_tests -- --nocapture
+          echo 'ROUTING_UNIT_TESTS=PASS'
+
+      - name: Build packaged E2E candidate without updater publication
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+          export CARGO_TARGET_DIR="$RUNNER_TEMP/../_endlume-cache/target-1015-render-routing"
+          ROOT="$RUNNER_TEMP/endlume-1015-render-routing"
+          rm -rf "$ROOT"; mkdir -p "$ROOT"
+          CONF='src-tauri/tauri.conf.json'
+          BACKUP="$ROOT/tauri.conf.original.json"
+          cp "$CONF" "$BACKUP"
+          restore_conf(){ cp "$BACKUP" "$CONF"; }
+          trap restore_conf EXIT
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('src-tauri/tauri.conf.json')
+          d=json.loads(p.read_text())
+          d['bundle']['createUpdaterArtifacts']=False
+          p.write_text(json.dumps(d,ensure_ascii=False,indent=2)+'\n')
+          PY
+          ENDLUME_TAURI_TARGET=aarch64-apple-darwin node scripts/prepare-macos-ffmpeg-runtime.mjs
+          npx tauri build --target aarch64-apple-darwin --bundles app --features e2e-render
+          APP="$(find "$CARGO_TARGET_DIR/aarch64-apple-darwin/release/bundle/macos" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          test -n "$APP" -a -d "$APP"
+          /usr/bin/codesign --force --deep --sign - --timestamp=none "$APP"
+          /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP"
+          EXE_NAME="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
+          EXE="$APP/Contents/MacOS/$EXE_NAME"
+          FFMPEG="$(find "$APP/Contents" -maxdepth 7 -type f -name 'ffmpeg' -perm -111 -print -quit)"
+          FFPROBE="$(find "$APP/Contents" -maxdepth 7 -type f -name 'ffprobe' -perm -111 -print -quit)"
+          test -x "$EXE" -a -x "$FFMPEG" -a -x "$FFPROBE"
+          printf '%s' "$APP" > "$ROOT/app.txt"
+          printf '%s' "$EXE" > "$ROOT/exe.txt"
+          printf '%s' "$FFMPEG" > "$ROOT/ffmpeg.txt"
+          printf '%s' "$FFPROBE" > "$ROOT/ffprobe.txt"
+          echo 'PACKAGED_E2E_APP=PASS'
+
+      - name: Physical 3-channel routing plus restart on TOSHIBA
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ROOT="$RUNNER_TEMP/endlume-1015-render-routing"
+          EXE="$(cat "$ROOT/exe.txt")"
+          FFMPEG="$(cat "$ROOT/ffmpeg.txt")"
+          FFPROBE="$(cat "$ROOT/ffprobe.txt")"
+          python3 scripts/qa-endlume-1015-render-destination-physical.py "$EXE" "$FFMPEG" "$FFPROBE" "$ROOT/render-destination.json" '/Volumes/TOSHIBA EXT' | tee "$ROOT/render-destination.log"
+          python3 - "$ROOT/render-destination.json" <<'PY'
+          import json,sys
+          d=json.load(open(sys.argv[1]))
+          assert d['status']=='GREEN',d
+          assert d['batchOutputLeak'] is False,d
+          assert d['duplicateFinalMedia'] is False,d
+          assert d['restartSameOutputFile'] is True,d
+          assert len(d['channels'])==3,d
+          assert all('/VYRON/Render/' in row['outputPath'] for row in d['channels']),d
+          assert '/VYRON/ProductionManager/Batches/' not in '\n'.join(row['outputPath'] for row in d['channels']),d
+          print('VYRON_RENDER_DESTINATION=PASS')
+          print('BATCH_OUTPUT_LEAK=PASS')
+          print('CHANNEL_ROUTING=PASS')
+          print('EXTERNAL_DISK_ROUTING=PASS')
+          print('RESTART_PERSISTENCE=PASS')
+          print('STANDALONE_ENDLUME_REGRESSION=PASS')
+          PY
+
+      - name: Existing Effects Subscribe and render regression
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ROOT="$RUNNER_TEMP/endlume-1015-render-routing"
+          EXE="$(cat "$ROOT/exe.txt")"
+          FFMPEG="$(cat "$ROOT/ffmpeg.txt")"
+          FFPROBE="$(cat "$ROOT/ffprobe.txt")"
+          QA_HOME="$RUNNER_TEMP/endlume-1015-routing-isolated-home"
+          rm -rf "$QA_HOME"; mkdir -p "$QA_HOME"
+          python3 scripts/qa-endlume-1014-seed-persisted-library.py "$FFMPEG" "$QA_HOME" | tee "$ROOT/effects-seed.log"
+          HOME="$QA_HOME" python3 scripts/qa-endlume-1011-preview-subscribe-final.py "$EXE" "$FFMPEG" "$FFPROBE" "$ROOT/effects-render-regression.json" | tee "$ROOT/effects-render-regression.log"
+          python3 - "$ROOT/effects-render-regression.json" <<'PY'
+          import json,sys
+          d=json.load(open(sys.argv[1]))
+          assert d['status']=='GREEN',d
+          assert d['preview']['effectsBackend']=='GREEN',d
+          assert d['preview']['subscribeBackend']=='GREEN',d
+          assert d['subscribeFinal']=='GREEN',d
+          print('EFFECT_PIPELINE_REGRESSION=PASS')
+          print('RENDER_PIPELINE_REGRESSION=PASS')
+          PY
+
+      - name: Commit physically accepted hotfix source to hotfix branch only
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git config user.name 'ENDLUME Physical Gate'
+          git config user.email 'actions@users.noreply.github.com'
+          git add src-tauri/src/queue.rs src-tauri/src/lib.rs
+          git diff --cached --check
+          if git diff --cached --quiet; then
+            echo 'HOTFIX_SOURCE_ALREADY_COMMITTED=YES'
+          else
+            git commit -m 'hotfix(10.0.15): route VYRON final renders by channel metadata'
+            git push origin HEAD:hotfix/endlume-10.0.15-render-destination-routing
+          fi
+          echo "PHYSICALLY_ACCEPTED_HEAD=$(git rev-parse HEAD)"
+          echo 'RELEASE=UNTOUCHED'
+
+      - name: Cleanup QA media from production VYRON folders
+        if: always()
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import shutil
+          root=Path('/Volumes/TOSHIBA EXT/VYRON')
+          batches=root/'ProductionManager'/'Batches'
+          if batches.is_dir():
+            for p in batches.glob('ENDLUME_ROUTING_QA_*'):
+              if p.is_dir(): shutil.rmtree(p,ignore_errors=True)
+          render=root/'Render'
+          for channel in ('Aegean Afterglow','Aether Riff','Afterglow Highway'):
+            d=render/channel
+            if not d.is_dir(): continue
+            for p in d.iterdir():
+              if p.is_file() and p.name.startswith('ENDLUME Routing QA 10.0.15') and p.suffix.lower() in ('.mp4','.mov'):
+                p.unlink(missing_ok=True)
+          print('QA_MEDIA_CLEANUP=DONE')
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ENDLUME-10.0.15-RENDER-DESTINATION-PHYSICAL-EVIDENCE
+          path: |
+            ${{ runner.temp }}/endlume-1015-render-routing/**
+          if-no-files-found: warn
+          retention-days: 14

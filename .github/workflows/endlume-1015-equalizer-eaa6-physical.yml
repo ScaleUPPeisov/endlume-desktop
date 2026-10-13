@@ -6,7 +6,7 @@ on:
       - qa/endlume-10.0.15-equalizer-eaa6
     paths:
       - '.github/workflows/endlume-1015-equalizer-eaa6-physical.yml'
-      - 'scripts/qa-endlume-1015-equalizer-final.py'
+      - 'scripts/qa-endlume-1015-equalizer-final-v2.py'
   workflow_dispatch: {}
 
 permissions:
@@ -73,7 +73,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
-          export CARGO_TARGET_DIR="$RUNNER_TEMP/../_endlume-cache/target-1015-equalizer-eaa6"
+          export CARGO_TARGET_DIR="$RUNNER_TEMP/../_endlume-cache/target-1015-equalizer-eaa6-v2"
           ROOT="$RUNNER_TEMP/endlume-1015-equalizer-eaa6"
           rm -rf "$ROOT"; mkdir -p "$ROOT"
           npm ci
@@ -108,7 +108,7 @@ jobs:
           ROOT="$RUNNER_TEMP/endlume-1015-equalizer-eaa6"
           EXE="$(cat "$ROOT/exe.txt")"; FFMPEG="$(cat "$ROOT/ffmpeg.txt")"; FFPROBE="$(cat "$ROOT/ffprobe.txt")"
           git fetch origin "$GITHUB_SHA" --depth=1
-          git show "${GITHUB_SHA}:scripts/qa-endlume-1015-equalizer-final.py" > "$ROOT/qa-equalizer.py"
+          git show "${GITHUB_SHA}:scripts/qa-endlume-1015-equalizer-final-v2.py" > "$ROOT/qa-equalizer.py"
           python3 "$ROOT/qa-equalizer.py" "$EXE" "$FFMPEG" "$FFPROBE" "$ROOT" | tee "$ROOT/equalizer.log"
           grep -q '^EQUALIZER_VISIBILITY=PASS$' "$ROOT/equalizer.log"
           grep -q '^PREVIEW_RENDER_MATCH=PASS$' "$ROOT/equalizer.log"
@@ -147,7 +147,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: ENDLUME-10.0.15-EQUALIZER-EAA6-PHYSICAL-EVIDENCE
+          name: ENDLUME-10.0.15-EQUALIZER-EAA6-PHYSICAL-EVIDENCE-V2
           path: |
             ${{ runner.temp }}/endlume-1015-equalizer-eaa6/equalizer-report.json
             ${{ runner.temp }}/endlume-1015-equalizer-eaa6/equalizer.log

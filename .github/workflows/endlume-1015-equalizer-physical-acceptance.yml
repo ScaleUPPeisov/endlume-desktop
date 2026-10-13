@@ -1,3 +1,4 @@
+# Trigger physical acceptance for candidate eaa6eb0a022f184f533338e9ff778328cfe29717.
 name: ENDLUME 10.0.15 Equalizer Physical Acceptance
 
 on:
@@ -59,13 +60,14 @@ jobs:
           assert 'current={resolvedCurrent}' in editors and 'current={current} active={!!assets&&previewEnabled(current)}' in editors
           assert 'LIVE_RELOAD_DEBOUNCE_MS=80' in editors
           compact=''.join(editors.split())
-          assert "similarity:0.10" in compact and "blend:0.06" in compact and "despill:0.35" in compact
+          assert 'similarity:0.10' in compact and 'blend:0.06' in compact and 'despill:0.35' in compact
           assert 'max={0.6}' in compact and 'max={0.35}' in compact and 'max={1}' in compact
           assert 'СБРОСИТЬCHROMAKEY' in compact
-          assert 'effectRef.current=effect' in preview.replace(' ','')
-          assert "constsim=destructiveSubscribe?0.10:e.similarity" in preview.replace(' ','')
-          assert "blend=destructiveSubscribe?0.06:e.blend" in preview.replace(' ','')
-          assert "eq?0.18" not in preview.replace(' ','') and "eq?0.03" not in preview.replace(' ','')
+          pcompact=preview.replace(' ','')
+          assert 'effectRef.current=effect' in pcompact
+          assert 'constsim=destructiveSubscribe?0.10:e.similarity' in pcompact
+          assert 'blend=destructiveSubscribe?0.06:e.blend' in pcompact
+          assert 'eq?0.18' not in pcompact and 'eq?0.03' not in pcompact
           assert 'ROUND_EQUALIZER_859_SIMILARITY' not in cache and 'ROUND_EQUALIZER_859_BLEND' not in cache
           assert 'round-equalizer-1015-user-chromakey-safe-defaults' in cache
           assert 'roundEqualizerVisibility1015SafeDefaults' in persistence

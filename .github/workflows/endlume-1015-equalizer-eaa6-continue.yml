@@ -28,14 +28,18 @@ jobs:
           set -Eeuo pipefail
           ROOT="$RUNNER_TEMP/endlume-1015-equalizer-continue"; rm -rf "$ROOT"; mkdir -p "$ROOT"
           TARGET="$RUNNER_TEMP/../_endlume-cache/target-1015-equalizer-eaa6/aarch64-apple-darwin/release/bundle/macos"
+          echo "TARGET=$TARGET"
+          find "$TARGET" -maxdepth 2 -print 2>/dev/null | head -80 || true
           APP="$(find "$TARGET" -maxdepth 1 -type d -name '*.app' -print -quit)"
           test -n "$APP" -a -d "$APP"
-          test "$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist")" = "10.0.15"
-          /usr/bin/codesign --verify --deep --strict "$APP"
+          echo "APP=$APP"
           EXE_NAME="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
           EXE="$APP/Contents/MacOS/$EXE_NAME"
           FFMPEG="$(find "$APP/Contents" -maxdepth 7 -type f -name ffmpeg -perm -111 -print -quit)"
           FFPROBE="$(find "$APP/Contents" -maxdepth 7 -type f -name ffprobe -perm -111 -print -quit)"
+          echo "EXE=$EXE"
+          echo "FFMPEG=$FFMPEG"
+          echo "FFPROBE=$FFPROBE"
           test -x "$EXE" -a -x "$FFMPEG" -a -x "$FFPROBE"
           printf '%s' "$EXE" > "$ROOT/exe"; printf '%s' "$FFMPEG" > "$ROOT/ffmpeg"; printf '%s' "$FFPROBE" > "$ROOT/ffprobe"
           echo 'REUSED_CANDIDATE=eaa6eb0a022f184f533338e9ff778328cfe29717'

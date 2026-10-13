@@ -1,0 +1,155 @@
+name: ENDLUME 10.0.15 Owner Build
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/endlume-1015-owner-build.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build-owner-macos-arm64:
+    name: Build clean ENDLUME 10.0.15
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 30
+
+    env:
+      PRODUCT_COMMIT: eaa6eb0a022f184f533338e9ff778328cfe29717
+      CARGO_TARGET_DIR: ${{ runner.temp }}/endlume-10.0.15-owner-clean-${{ github.run_id }}
+
+    steps:
+      - name: Checkout exact product candidate
+        uses: actions/checkout@v4
+        with:
+          ref: eaa6eb0a022f184f533338e9ff778328cfe29717
+          fetch-depth: 1
+          clean: true
+          persist-credentials: false
+
+      - name: Verify exact product source
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ACTUAL="$(git rev-parse HEAD)"
+          echo "EXPECTED=$PRODUCT_COMMIT"
+          echo "ACTUAL=$ACTUAL"
+          test "$ACTUAL" = "$PRODUCT_COMMIT"
+          test "$(node -p "require('./package.json').version")" = "10.0.15"
+          test "$(python3 -c 'import json; print(json.load(open("src-tauri/tauri.conf.json"))["version"])')" = "10.0.15"
+          echo "SOURCE_COMMIT=PASS"
+          echo "VERSION_SOURCE=PASS"
+
+      - name: Prepare isolated build directory
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          rm -rf "$CARGO_TARGET_DIR"
+          mkdir -p "$CARGO_TARGET_DIR"
+          rm -rf node_modules dist
+          echo "ISOLATED_TARGET=$CARGO_TARGET_DIR"
+
+      - name: Install frontend dependencies
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          npm install --no-audit --no-fund
+
+      - name: Prepare FFmpeg sidecars
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -x "$(command -v ffmpeg)"
+          test -x "$(command -v ffprobe)"
+          mkdir -p src-tauri/binaries
+          cp "$(command -v ffmpeg)" src-tauri/binaries/ffmpeg-aarch64-apple-darwin
+          cp "$(command -v ffprobe)" src-tauri/binaries/ffprobe-aarch64-apple-darwin
+          chmod +x src-tauri/binaries/*
+
+      - name: Frontend production build check
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          npm run build
+
+      - name: Build clean macOS ARM64 app
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export CARGO_TARGET_DIR="$CARGO_TARGET_DIR"
+          npx tauri build --target aarch64-apple-darwin --bundles app
+
+      - name: Locate and verify app
+        id: app
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          BUNDLE_DIR="$CARGO_TARGET_DIR/aarch64-apple-darwin/release/bundle/macos"
+          APP="$(find "$BUNDLE_DIR" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          test -n "$APP"
+          test -d "$APP"
+          VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")"
+          test "$VERSION" = "10.0.15"
+          echo "app_path=$APP" >> "$GITHUB_OUTPUT"
+          echo "APP=$APP"
+          echo "VERSION=$VERSION"
+          echo "VERSION_10_0_15=PASS"
+
+      - name: Verify QA instrumentation is absent
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          APP="${{ steps.app.outputs.app_path }}"
+          MARKERS='FRONTEND_PAYLOAD_BYTES|PIXEL_READBACK|PREVIEW_APPLIED|BROWSER_VISIBLE|paintedNonBlack'
+          if grep -RIE "$MARKERS" "$APP/Contents/Resources" >/tmp/endlume-owner-qa-markers.txt 2>/dev/null; then
+            echo "ERROR: QA instrumentation leaked into owner build"
+            cat /tmp/endlume-owner-qa-markers.txt
+            exit 1
+          fi
+          echo "QA_INSTRUMENTATION=ABSENT"
+
+      - name: Verify or apply local test signature
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          APP="${{ steps.app.outputs.app_path }}"
+          if ! codesign --verify --deep --strict "$APP"; then
+            codesign --force --deep --sign - "$APP"
+          fi
+          codesign --verify --deep --strict "$APP"
+          echo "CODESIGN=PASS"
+
+      - name: Package owner test build
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          APP="${{ steps.app.outputs.app_path }}"
+          OUT="$RUNNER_TEMP/ENDLUME-10.0.15-OWNER-TEST-ARM64.zip"
+          rm -f "$OUT"
+          ditto -c -k --sequesterRsrc --keepParent "$APP" "$OUT"
+          test -s "$OUT"
+          shasum -a 256 "$OUT" | tee "$RUNNER_TEMP/ENDLUME-10.0.15-OWNER-TEST-ARM64.sha256"
+          ls -lh "$OUT"
+
+      - name: Final owner build status
+        shell: bash
+        run: |
+          echo 'CANDIDATE_COMMIT=eaa6eb0a022f184f533338e9ff778328cfe29717'
+          echo 'VERSION=10.0.15'
+          echo 'CLEAN_ISOLATED_BUILD=PASS'
+          echo 'QA_INSTRUMENTATION=ABSENT'
+          echo 'PUBLISH=NOT_RUN'
+          echo 'RELEASE=NOT_RUN'
+          echo 'OWNER_BUILD=READY'
+
+      - name: Upload ENDLUME 10.0.15 owner test build
+        uses: actions/upload-artifact@v4
+        with:
+          name: ENDLUME-10.0.15-OWNER-TEST-ARM64
+          path: |
+            ${{ runner.temp }}/ENDLUME-10.0.15-OWNER-TEST-ARM64.zip
+            ${{ runner.temp }}/ENDLUME-10.0.15-OWNER-TEST-ARM64.sha256
+          if-no-files-found: error
+          retention-days: 7

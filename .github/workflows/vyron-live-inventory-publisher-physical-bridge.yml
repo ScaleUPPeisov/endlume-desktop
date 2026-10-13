@@ -1,0 +1,200 @@
+name: VYRON Live Inventory Publisher Physical Bridge
+
+on:
+  push:
+    branches:
+      - automation/vyron-live-inventory-publisher-physical-20261013
+    paths:
+      - '.github/workflows/vyron-live-inventory-publisher-physical-bridge.yml'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vyron-live-inventory-publisher-physical-bridge-20261013
+  cancel-in-progress: false
+
+env:
+  VYRON_PRODUCT_SHA: 6c142993673815ca62466e73aafdc2a3700ca314
+
+jobs:
+  physical:
+    name: Real macOS FSEvents + Publisher gate
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 35
+    steps:
+      - name: Checkout QA bridge
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          clean: true
+          persist-credentials: false
+
+      - name: Checkout exact VYRON product SHA
+        uses: actions/checkout@v4
+        with:
+          repository: ScaleUPPeisov/scaleup-dashboards
+          ref: ${{ env.VYRON_PRODUCT_SHA }}
+          path: vyron-source
+          fetch-depth: 1
+          clean: true
+          persist-credentials: false
+
+      - name: Prove runner source and external VYRON workspace
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          echo "RUNNER_HOST=$(hostname)"
+          echo "RUNNER_ARCH=$(uname -m)"
+          test "$(uname -m)" = "arm64"
+          cd vyron-source
+          test "$(git rev-parse HEAD)" = "$VYRON_PRODUCT_SHA"
+          grep -q 'INVALID_FINAL_RENDER_DESTINATION' src-tauri/src/production_manager.rs
+          grep -q 'join("Render")' src-tauri/src/production_manager.rs
+          cd ..
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          matches=[]
+          for volume in Path('/Volumes').iterdir():
+              if not volume.is_dir():
+                  continue
+              candidates=[volume]
+              try:
+                  candidates += [p for p in volume.iterdir() if p.is_dir()]
+              except PermissionError:
+                  continue
+              for root in candidates:
+                  if (root/'ProductionManager'/'Batches').is_dir() and (root/'Render').is_dir():
+                      matches.append(root.resolve())
+          unique=[]
+          for p in matches:
+              if p not in unique:
+                  unique.append(p)
+          if len(unique) != 1:
+              raise SystemExit(f'Expected exactly one physical VYRON workspace, got {unique}')
+          root=unique[0]
+          with open(os.environ['GITHUB_ENV'],'a',encoding='utf-8') as f:
+              f.write(f'PHYSICAL_VYRON_ROOT={root}\n')
+          print(f'PHYSICAL_VYRON_ROOT={root}')
+          print('SELF_HOSTED_MAC_ARM64=ONLINE')
+          print('VYRON_EXACT_SOURCE=PASS')
+          PY
+
+      - name: Install VYRON JS dependencies
+        working-directory: vyron-source
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+          npm ci
+
+      - name: Physical native Live Inventory FSEvents gate
+        working-directory: vyron-source
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+          cargo test --manifest-path src-tauri/Cargo.toml inventory_watch::tests::real_filesystem_create_event_is_observed -- --nocapture
+          echo 'LIVE_INVENTORY_FSEVENTS=PASS'
+
+      - name: Create real media in configured Render channel
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          FFMPEG="$(command -v ffmpeg)"
+          test -x "$FFMPEG"
+          python3 - <<'PY' >> "$GITHUB_ENV"
+          import os
+          from pathlib import Path
+          root=Path(os.environ['PHYSICAL_VYRON_ROOT'])/'Render'
+          preferred=['Aegean Afterglow','Aether Riff','Afterglow Highway','Midnight Interstate','Chrome City Radio','Silent Black Room']
+          dirs=[p for p in root.iterdir() if p.is_dir()]
+          by={p.name:p for p in dirs}
+          chosen=None
+          for name in preferred:
+              if name in by:
+                  chosen=by[name]
+                  break
+          if chosen is None and dirs:
+              chosen=sorted(dirs,key=lambda p:p.name.lower())[0]
+          if chosen is None:
+              raise SystemExit('No physical channel directory under Render')
+          smoke=chosen/f'VYRON Inventory Publisher QA {os.environ["GITHUB_RUN_ID"]}.mp4'
+          print(f'PHYSICAL_CHANNEL={chosen.name}')
+          print(f'PHYSICAL_CHANNEL_DIR={chosen}')
+          print(f'PHYSICAL_SMOKE_MP4={smoke}')
+          PY
+          "$FFMPEG" -hide_banner -loglevel error -f lavfi -i 'color=c=0x182033:s=1280x720:r=30:d=2' -f lavfi -i 'sine=frequency=440:sample_rate=48000:duration=2' -c:v h264_videotoolbox -b:v 2M -c:a aac -shortest -y "$PHYSICAL_SMOKE_MP4"
+          test -s "$PHYSICAL_SMOKE_MP4"
+          case "$PHYSICAL_SMOKE_MP4" in
+            "$PHYSICAL_VYRON_ROOT"/Render/*) ;;
+            *) echo "INVALID_SMOKE_DESTINATION=$PHYSICAL_SMOKE_MP4"; exit 41;;
+          esac
+          case "$PHYSICAL_SMOKE_MP4" in
+            *'/ProductionManager/Batches/'*) echo "BATCH_LEAK=$PHYSICAL_SMOKE_MP4"; exit 42;;
+            *) ;;
+          esac
+          echo "PHYSICAL_CHANNEL=$PHYSICAL_CHANNEL"
+          echo "FINAL_MP4_PATH=$PHYSICAL_SMOKE_MP4"
+          echo 'LIVE_INVENTORY_RENDER_FOLDER_FILE=PASS'
+
+      - name: Publisher consistency and integrity gate
+        working-directory: vyron-source
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+          test -s "$PHYSICAL_SMOKE_MP4"
+          npx vitest run src/vyron616PhysicalPublisherConsistency.test.ts src/vyron618PublisherIntegrity.test.ts
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          p=Path(os.environ['PHYSICAL_SMOKE_MP4']).resolve()
+          root=(Path(os.environ['PHYSICAL_VYRON_ROOT'])/'Render').resolve()
+          assert p.is_file() and p.stat().st_size>1024,p
+          assert p.is_relative_to(root),(p,root)
+          assert '/ProductionManager/Batches/' not in str(p),p
+          print('PUBLISHER_RENDER_FOLDER_PHYSICAL_VISIBILITY=PASS')
+          print('PUBLISHER_CONSISTENCY=PASS')
+          PY
+
+      - name: Save physical evidence
+        if: always()
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json,os
+          from pathlib import Path
+          out=Path(os.environ['RUNNER_TEMP'])/'vyron-live-inventory-publisher-evidence.json'
+          smoke=os.environ.get('PHYSICAL_SMOKE_MP4','')
+          data={
+            'productSha':os.environ.get('VYRON_PRODUCT_SHA'),
+            'runnerHost':os.uname().nodename,
+            'vyronRoot':os.environ.get('PHYSICAL_VYRON_ROOT'),
+            'channel':os.environ.get('PHYSICAL_CHANNEL'),
+            'finalMp4Path':smoke,
+            'finalMp4Exists':bool(smoke and Path(smoke).is_file()),
+            'releasePerformed':False,
+          }
+          out.write_text(json.dumps(data,ensure_ascii=False,indent=2),encoding='utf-8')
+          print(out.read_text(encoding='utf-8'))
+          print('RELEASE=NOT_PERFORMED')
+          PY
+
+      - name: Cleanup physical QA media
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          if [ -n "${PHYSICAL_SMOKE_MP4:-}" ] && [ -f "$PHYSICAL_SMOKE_MP4" ]; then rm -f "$PHYSICAL_SMOKE_MP4"; fi
+          echo 'QA_MEDIA_CLEANUP=DONE'
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: VYRON-LIVE-INVENTORY-PUBLISHER-PHYSICAL-EVIDENCE
+          path: ${{ runner.temp }}/vyron-live-inventory-publisher-evidence.json
+          if-no-files-found: warn
+          retention-days: 7

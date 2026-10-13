@@ -1,0 +1,185 @@
+name: ENDLUME 10.0.15 Equalizer Physical Acceptance
+
+on:
+  push:
+    branches: [hotfix/endlume-10.0.15-multi-effect-live-preview]
+    paths:
+      - '.github/workflows/endlume-1015-equalizer-physical-acceptance.yml'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-1015-equalizer-physical-acceptance
+  cancel-in-progress: true
+
+jobs:
+  physical:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: eaa6eb0a022f184f533338e9ff778328cfe29717
+          fetch-depth: 0
+          clean: true
+          persist-credentials: false
+
+      - name: Verify clean candidate scope
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(git rev-parse HEAD)" = 'eaa6eb0a022f184f533338e9ff778328cfe29717'
+          test "$(git rev-parse HEAD^)" = 'c5534ce47123777b698117a46473238381e37729'
+          test "$(git diff --name-only HEAD^ HEAD | sort | tr '\n' ' ')" = 'src-tauri/src/cache.rs src-tauri/src/persistence.rs src/components/LiveCompositePreview.tsx '
+          grep -q '"version": "10.0.15"' src-tauri/tauri.conf.json
+          echo 'CANDIDATE_SCOPE=PASS'
+          echo 'VERSION=10.0.15'
+
+      - name: Product regression contracts
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          project=Path('src/pages/ProjectPage.tsx').read_text()
+          store=Path('src/store.ts').read_text()
+          queue=Path('src-tauri/src/queue.rs').read_text()
+          editors=Path('src/pages/Editors.tsx').read_text()
+          preview=Path('src/components/LiveCompositePreview.tsx').read_text()
+          cache=Path('src-tauri/src/cache.rs').read_text()
+          persistence=Path('src-tauri/src/persistence.rs').read_text()
+          model=Path('src-tauri/src/model.rs').read_text()
+          assert 'Все эффекты → ко всем видео' in project
+          assert 'selectedEffectIds:ids' in project
+          assert 'selectedEffectIdsByPath' in store and 'version:9' in store
+          assert 'selected_effect_ids:Vec<String>' in model.replace(' ','')
+          assert 'for selected_id in &selected_ids' in queue and 'effects:selected_effects' in queue.replace(' ','')
+          assert 'current={resolvedCurrent}' in editors and 'current={current} active={!!assets&&previewEnabled(current)}' in editors
+          assert 'LIVE_RELOAD_DEBOUNCE_MS=80' in editors
+          compact=''.join(editors.split())
+          assert "similarity:0.10" in compact and "blend:0.06" in compact and "despill:0.35" in compact
+          assert 'max={0.6}' in compact and 'max={0.35}' in compact and 'max={1}' in compact
+          assert 'СБРОСИТЬCHROMAKEY' in compact
+          assert 'effectRef.current=effect' in preview.replace(' ','')
+          assert "constsim=destructiveSubscribe?0.10:e.similarity" in preview.replace(' ','')
+          assert "blend=destructiveSubscribe?0.06:e.blend" in preview.replace(' ','')
+          assert "eq?0.18" not in preview.replace(' ','') and "eq?0.03" not in preview.replace(' ','')
+          assert 'ROUND_EQUALIZER_859_SIMILARITY' not in cache and 'ROUND_EQUALIZER_859_BLEND' not in cache
+          assert 'round-equalizer-1015-user-chromakey-safe-defaults' in cache
+          assert 'roundEqualizerVisibility1015SafeDefaults' in persistence
+          assert 'effect.insert("similarity".into(),json!(0.10))' in persistence
+          assert 'effect.insert("blend".into(),json!(0.06))' in persistence
+          assert 'effect.insert("despill".into(),json!(0.35))' in persistence
+          print('MULTI_EFFECT_PER_VIDEO=PASS')
+          print('ALL_EFFECTS_TO_ALL_VIDEOS=PASS')
+          print('EFFECT_REALTIME_PREVIEW=PASS')
+          print('SUBSCRIBE_REALTIME_PREVIEW=PASS')
+          print('PERSISTENCE_CONTRACT=PASS')
+          PY
+
+      - name: Restore packaged FFmpeg sidecars
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          FOUNDATION="$HOME/.endlume-local-builder/endlume-desktop-8.40-bootstrap"
+          test -d "$FOUNDATION/src-tauri/binaries"
+          mkdir -p src-tauri/binaries
+          rsync -a "$FOUNDATION/src-tauri/binaries/" src-tauri/binaries/
+
+      - name: Compile candidate and targeted Rust tests
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+          npm ci
+          npm run build
+          cargo test --manifest-path src-tauri/Cargo.toml cache::tests -- --nocapture
+          cargo test --manifest-path src-tauri/Cargo.toml persistence::tests -- --nocapture
+          echo 'COMPILE_AND_UNIT=PASS'
+
+      - name: Build exact candidate app without publication
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+          export CARGO_TARGET_DIR="$RUNNER_TEMP/../_endlume-cache/target-1015-equalizer"
+          ROOT="$RUNNER_TEMP/endlume-1015-equalizer-acceptance"
+          rm -rf "$ROOT"; mkdir -p "$ROOT"
+          CONF='src-tauri/tauri.conf.json'; BACKUP="$ROOT/tauri.conf.original.json"; cp "$CONF" "$BACKUP"
+          restore_conf(){ cp "$BACKUP" "$CONF"; }
+          trap restore_conf EXIT
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('src-tauri/tauri.conf.json'); d=json.loads(p.read_text()); d['bundle']['createUpdaterArtifacts']=False; p.write_text(json.dumps(d,ensure_ascii=False,indent=2)+'\n')
+          PY
+          ENDLUME_TAURI_TARGET=aarch64-apple-darwin node scripts/prepare-macos-ffmpeg-runtime.mjs
+          npx tauri build --target aarch64-apple-darwin --bundles app --features e2e-render
+          APP="$(find "$CARGO_TARGET_DIR/aarch64-apple-darwin/release/bundle/macos" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          test -n "$APP" -a -d "$APP"
+          /usr/bin/codesign --force --deep --sign - --timestamp=none "$APP"
+          /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP"
+          EXE_NAME="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
+          EXE="$APP/Contents/MacOS/$EXE_NAME"
+          FFMPEG="$(find "$APP/Contents" -maxdepth 7 -type f -name 'ffmpeg' -perm -111 -print -quit)"
+          FFPROBE="$(find "$APP/Contents" -maxdepth 7 -type f -name 'ffprobe' -perm -111 -print -quit)"
+          test -x "$EXE" -a -x "$FFMPEG" -a -x "$FFPROBE"
+          printf '%s' "$EXE" > "$ROOT/exe.txt"; printf '%s' "$FFMPEG" > "$ROOT/ffmpeg.txt"; printf '%s' "$FFPROBE" > "$ROOT/ffprobe.txt"
+          echo 'PACKAGED_E2E_APP=PASS'
+
+      - name: Physical Equalizer visibility matrix
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ROOT="$RUNNER_TEMP/endlume-1015-equalizer-acceptance"
+          EXE="$(cat "$ROOT/exe.txt")"; FFMPEG="$(cat "$ROOT/ffmpeg.txt")"; FFPROBE="$(cat "$ROOT/ffprobe.txt")"
+          EQ='/Users/peisov/Library/Application Support/studio.endlume.desktop/library-assets/effects/4a8025216fb75fbc42ec8191e1295420.mp4'
+          test -f "$EQ"
+          git fetch origin "$GITHUB_SHA" --depth=1
+          git show "${GITHUB_SHA}:scripts/qa-endlume-1015-equalizer-acceptance.py" > "$ROOT/qa-equalizer.py"
+          python3 "$ROOT/qa-equalizer.py" "$EXE" "$FFMPEG" "$FFPROBE" "$ROOT" "$EQ" | tee "$ROOT/equalizer.log"
+          grep -q 'EQUALIZER_VISIBILITY=PASS' "$ROOT/equalizer.log"
+          grep -q 'PREVIEW_RENDER_MATCH=PASS' "$ROOT/equalizer.log"
+          grep -q 'MULTI_EFFECT_EQUALIZER_VISIBILITY=PASS' "$ROOT/equalizer.log"
+          grep -q 'FAST_RENDER_PHYSICAL=PASS' "$ROOT/equalizer.log"
+          echo 'FINAL_RENDER_MULTI_EFFECT=PASS'
+          echo 'FAST_RENDER_REGRESSION=PASS'
+
+      - name: VYRON regression only
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ROOT="$RUNNER_TEMP/endlume-1015-equalizer-acceptance"
+          EXE="$(cat "$ROOT/exe.txt")"; FFMPEG="$(cat "$ROOT/ffmpeg.txt")"; FFPROBE="$(cat "$ROOT/ffprobe.txt")"
+          test -d '/Volumes/TOSHIBA EXT'
+          python3 scripts/qa-endlume-1014-vyron-routing-physical.py "$EXE" "$FFMPEG" "$FFPROBE" "$ROOT/vyron.json" | tee "$ROOT/vyron.log"
+          python3 - "$ROOT/vyron.json" <<'PY'
+          import json,sys
+          d=json.load(open(sys.argv[1])); assert d['status']=='GREEN',d; assert d['crossWrite'] is False,d
+          assert d['channelA']['outputPath'].startswith(d['destinationA']+'/'),d
+          assert d['channelB']['outputPath'].startswith(d['destinationB']+'/'),d
+          print('VYRON_REGRESSION=PASS')
+          PY
+
+      - name: Final non-release gate
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ROOT="$RUNNER_TEMP/endlume-1015-equalizer-acceptance"
+          test -s "$ROOT/acceptance.json" -a -s "$ROOT/vyron.json"
+          echo 'PREVIOUS_CANDIDATE=c5534ce47123777b698117a46473238381e37729'
+          echo 'CANDIDATE_COMMIT=eaa6eb0a022f184f533338e9ff778328cfe29717'
+          echo 'PUBLISH=NOT_RUN'
+          echo 'RELEASE=NOT_RUN'
+          echo 'PHYSICAL_GATE=PASS'
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ENDLUME-10.0.15-EQUALIZER-PHYSICAL-ACCEPTANCE
+          path: |
+            ${{ runner.temp }}/endlume-1015-equalizer-acceptance/**
+          if-no-files-found: warn
+          retention-days: 14

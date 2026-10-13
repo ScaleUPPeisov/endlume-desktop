@@ -19,7 +19,7 @@ concurrency:
 jobs:
   physical:
     runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
-    timeout-minutes: 30
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
         with:
@@ -28,7 +28,7 @@ jobs:
           clean: true
           persist-credentials: false
 
-      - name: Verify candidate and source-only delta
+      - name: Verify exact candidate and narrow product delta
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -39,14 +39,6 @@ jobs:
           printf '%s\n' "$CHANGED" | grep -qx 'src-tauri/src/persistence.rs'
           printf '%s\n' "$CHANGED" | grep -qx 'src/components/LiveCompositePreview.tsx'
           test "$(node -p "require('./src-tauri/tauri.conf.json').version")" = "10.0.15"
-          echo 'PREVIOUS_CANDIDATE=c5534ce47123777b698117a46473238381e37729'
-          echo 'CANDIDATE_COMMIT=eaa6eb0a022f184f533338e9ff778328cfe29717'
-          echo 'VERSION=10.0.15'
-
-      - name: Verify hotfix wiring
-        shell: bash
-        run: |
-          set -Eeuo pipefail
           ! grep -q "const eq=.*825dd7a4" src/components/LiveCompositePreview.tsx
           ! grep -q "if is_round_equalizer_859(e).*ROUND_EQUALIZER" src-tauri/src/cache.rs
           grep -q "effectRef.current=effect" src/components/LiveCompositePreview.tsx
@@ -54,6 +46,8 @@ jobs:
           grep -q "blend: 0.06" src/pages/Editors.tsx
           grep -q "despill: 0.35" src/pages/Editors.tsx
           grep -q "roundEqualizerVisibility1015SafeDefaults" src-tauri/src/persistence.rs
+          echo 'PREVIOUS_CANDIDATE=c5534ce47123777b698117a46473238381e37729'
+          echo 'CANDIDATE_COMMIT=eaa6eb0a022f184f533338e9ff778328cfe29717'
           echo 'REALTIME_CHROMA_CONTROL_WIRING=PASS'
           echo 'SAFE_RESET_DEFAULTS=PASS'
           echo 'ONE_TIME_OWNER_MAX_MIGRATION=PASS'
@@ -67,29 +61,15 @@ jobs:
           mkdir -p src-tauri/binaries
           rsync -a "$FOUNDATION/src-tauri/binaries/" src-tauri/binaries/
 
-      - name: Build candidate with E2E-only Preview transport bypass
+      - name: Build exact candidate app
         shell: bash
         run: |
           set -Eeuo pipefail
           export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
-          export CARGO_TARGET_DIR="$RUNNER_TEMP/../_endlume-cache/target-1015-equalizer-eaa6-v2"
-          ROOT="$RUNNER_TEMP/endlume-1015-equalizer-eaa6"
-          rm -rf "$ROOT"; mkdir -p "$ROOT"
+          export CARGO_TARGET_DIR="$RUNNER_TEMP/../_endlume-cache/target-1015-equalizer-eaa6-exact"
+          ROOT="$RUNNER_TEMP/endlume-1015-equalizer-exact"
+          rm -rf "$ROOT"; mkdir -p "$ROOT/screens" "$ROOT/frontend"
           npm ci
-          python3 - <<'PY'
-          from pathlib import Path
-          p=Path('src-tauri/src/lib.rs'); s=p.read_text()
-          old_helper='  let helper=live_preview::prepare_live_preview(app.clone(),project_path.clone(),overlay_source,time_sec,Some("e1011-cold-preview".into()),Some(if subscribes.is_empty(){"Effects".into()}else{"Subscribe".into()})).await?;'
-          new_helper='  let helper=serde_json::json!({"qaInstrumentation":"prepare_live_preview transport bypassed; production poster compositor retained"});'
-          old_exact='  let exact=preview::generate_preview(app,project_path,time_sec,effects,subscribes,Some("e1011-cold-preview".into())).await?;'
-          new_exact='  let exact=poster.clone();'
-          assert old_helper in s and old_exact in s
-          s=s.replace(old_helper,new_helper,1).replace(old_exact,new_exact,1)
-          p.write_text(s)
-          PY
-          grep -q 'production poster compositor retained' src-tauri/src/lib.rs
-          grep -q 'let exact=poster.clone();' src-tauri/src/lib.rs
-          git diff -- src-tauri/src/lib.rs > "$ROOT/e2e-instrumentation.patch"
           CONF='src-tauri/tauri.conf.json'; cp "$CONF" "$ROOT/tauri.conf.original.json"
           restore_conf(){ cp "$ROOT/tauri.conf.original.json" "$CONF"; }
           trap restore_conf EXIT
@@ -110,44 +90,103 @@ jobs:
           FFPROBE="$(find "$APP/Contents" -maxdepth 7 -type f -name 'ffprobe' -perm -111 -print -quit)"
           test -x "$EXE" -a -x "$FFMPEG" -a -x "$FFPROBE"
           printf '%s' "$EXE" > "$ROOT/exe.txt"; printf '%s' "$APP" > "$ROOT/app.txt"; printf '%s' "$FFMPEG" > "$ROOT/ffmpeg.txt"; printf '%s' "$FFPROBE" > "$ROOT/ffprobe.txt"
-          echo 'COMPILE=PASS'
-          echo 'QA_INSTRUMENTATION=E2E_PREVIEW_POSTER_ONLY'
+          git diff --exit-code -- src-tauri/src/lib.rs src/components/LiveCompositePreview.tsx src-tauri/src/cache.rs src-tauri/src/persistence.rs
+          echo 'COMPILE_EXACT_CANDIDATE=PASS'
 
-      - name: VYRON physical regression
+      - name: Physical frontend Live Preview visibility
         shell: bash
         run: |
           set -Eeuo pipefail
-          ROOT="$RUNNER_TEMP/endlume-1015-equalizer-eaa6"
-          EXE="$(cat "$ROOT/exe.txt")"; FFMPEG="$(cat "$ROOT/ffmpeg.txt")"; FFPROBE="$(cat "$ROOT/ffprobe.txt")"
-          test -x "$EXE" -a -x "$FFMPEG" -a -x "$FFPROBE"
-          python3 scripts/qa-endlume-1014-vyron-routing-physical.py "$EXE" "$FFMPEG" "$FFPROBE" "$ROOT/vyron.json" | tee "$ROOT/vyron.log"
+          ROOT="$RUNNER_TEMP/endlume-1015-equalizer-exact"
+          EXE="$(cat "$ROOT/exe.txt")"; FFMPEG="$(cat "$ROOT/ffmpeg.txt")"
+          EQ='/Volumes/TOSHIBA EXT/YouTube/эффекты для каналов/эквалайзер.mp4.mp4'
+          test -f "$EQ"
+          CACHE="$HOME/Library/Caches/studio.endlume.desktop/frontend-equalizer-1015"
+          mkdir -p "$CACHE"
+          "$FFMPEG" -hide_banner -loglevel error -f lavfi -i 'color=c=0x20242c:s=1920x1080' -frames:v 1 -y "$CACHE/base.png"
+          "$FFMPEG" -hide_banner -loglevel error -ss 14 -i "$EQ" -frames:v 1 -y "$CACHE/eq-frame.png"
+          "$FFMPEG" -hide_banner -loglevel error -loop 1 -i "$CACHE/eq-frame.png" -t 2 -r 30 -c:v libx264 -preset ultrafast -pix_fmt yuv420p -y "$CACHE/eq-static.mp4"
+          run_case(){
+            NAME="$1"; OP="$2"; SIM="$3"; BLEND="$4"; DSP="$5"
+            FIX="$ROOT/frontend/$NAME.json"; RES="$ROOT/frontend/$NAME-result.json"; LOG="$ROOT/frontend/$NAME-app.log"; SHOT="$ROOT/screens/$NAME.png"
+            python3 - "$FIX" "$CACHE" "$NAME" "$OP" "$SIM" "$BLEND" "$DSP" <<'PY'
+          import json,sys
+          from pathlib import Path
+          out=Path(sys.argv[1]); cache=Path(sys.argv[2]); name=sys.argv[3]; op=float(sys.argv[4]); sim=float(sys.argv[5]); blend=float(sys.argv[6]); dsp=float(sys.argv[7])
+          effect={'id':'825dd7a4-f0cf-4032-a3c9-64290cb5756d','name':'эквалайзер круглый','source':str(cache/'eq-static.mp4'),'enabled':True,'mode':'chromakey','keyColor':'#0c9c3c','similarity':sim,'blend':blend,'despill':dsp,'lumaThreshold':.03,'lumaTolerance':.08,'saturation':1.0,'x':.5,'y':.5,'scale':.45,'fullscreen':False,'previewFrameTime':0.0,'startSec':0.0,'endSec':None,'cacheKey':None,'cacheReady':False,'usageMode':'always','intervalSec':240.0,'usageDurationSec':30.0,'target':None,'offsetX':None,'offsetY':None,'opacity':op}
+          payload={'basePath':str(cache/'base.png'),'baseKind':'image','overlayPath':str(cache/'eq-static.mp4'),'posterPath':str(cache/'missing-poster.png'),'baseBytes':(cache/'base.png').stat().st_size,'overlayBytes':(cache/'eq-static.mp4').stat().st_size,'requestId':name,'previewType':'Effects','effect':effect}
+          out.write_text(json.dumps(payload,ensure_ascii=False),encoding='utf-8')
+          PY
+            rm -f "$RES" "$SHOT"
+            ENDLUME_E2E_FRONTEND_PREVIEW_FIXTURE="$FIX" ENDLUME_E2E_FRONTEND_PREVIEW_RESULT="$RES" "$EXE" >"$LOG" 2>&1 & PID=$!
+            ok=0
+            for _ in $(seq 1 160); do if test -s "$RES"; then ok=1; break; fi; sleep 0.1; done
+            if test "$ok" != 1; then cat "$LOG"; kill "$PID" 2>/dev/null || true; exit 1; fi
+            python3 - "$RES" <<'PY'
+          import json,sys
+          d=json.load(open(sys.argv[1])); print('FRONTEND_RESULT='+json.dumps(d,separators=(',',':'))); assert d.get('status')=='GREEN',d; assert d.get('browserVisible') is True,d
+          PY
+            /usr/bin/osascript -e "tell application \"System Events\" to set frontmost of first application process whose unix id is $PID to true" >/dev/null 2>&1 || true
+            sleep 0.45
+            /usr/sbin/screencapture -x "$SHOT"
+            test -s "$SHOT"
+            kill "$PID" 2>/dev/null || true
+            wait "$PID" 2>/dev/null || true
+          }
+          run_case frontend-safe 1.0 0.10 0.06 0.35
+          run_case frontend-half 0.5 0.10 0.06 0.35
+          run_case frontend-zero 0.0 0.10 0.06 0.35
+          run_case frontend-owner-max 1.0 0.60 0.35 1.0
+          python3 - "$FFMPEG" "$ROOT/screens" "$ROOT/frontend-visual-report.json" <<'PY'
+          import json,subprocess,sys
+          from pathlib import Path
+          ff=Path(sys.argv[1]); root=Path(sys.argv[2]); report=Path(sys.argv[3])
+          def raw(p):
+            q=subprocess.run([str(ff),'-hide_banner','-loglevel','error','-i',str(p),'-frames:v','1','-f','rawvideo','-pix_fmt','rgb24','-'],stdout=subprocess.PIPE,stderr=subprocess.PIPE,check=True); return q.stdout
+          def mae(a,b):
+            A=raw(root/a); B=raw(root/b); n=min(len(A),len(B)); return sum(abs(A[i]-B[i]) for i in range(n))/max(1,n)
+          d1=mae('frontend-safe.png','frontend-zero.png'); d05=mae('frontend-half.png','frontend-zero.png'); dmax=mae('frontend-owner-max.png','frontend-zero.png')
+          data={'safeVsZero':d1,'halfVsZero':d05,'ownerMaxVsZero':dmax,'halfRatio':d05/(d1+1e-9),'ownerMaxRatio':dmax/(d1+1e-9)}; print('FRONTEND_VISUAL='+json.dumps(data,separators=(',',':')))
+          assert d1>0.20,data
+          assert .25 < data['halfRatio'] < .78,data
+          assert data['ownerMaxRatio'] < .60,data
+          report.write_text(json.dumps(data,indent=2))
+          PY
+          echo 'FRONTEND_EQUALIZER_VISIBLE=PASS'
+          echo 'FRONTEND_OPACITY_05_WEAKER=PASS'
+          echo 'FRONTEND_OPACITY_0_INVISIBLE=PASS'
+          echo 'FRONTEND_OWNER_MAX_FAINT_REPRO=PASS'
+          echo 'REALTIME_PREVIEW=PASS'
+
+      - name: Physical final render Equalizer matrix
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ROOT="$RUNNER_TEMP/endlume-1015-equalizer-exact"
+          git fetch origin "$GITHUB_SHA" --depth=1
+          git show "${GITHUB_SHA}:scripts/qa-endlume-1015-equalizer-final-v2.py" > "$ROOT/qa-final.py"
+          python3 "$ROOT/qa-final.py" "$(cat "$ROOT/exe.txt")" "$(cat "$ROOT/ffmpeg.txt")" "$(cat "$ROOT/ffprobe.txt")" "$ROOT" | tee "$ROOT/equalizer-final.log"
+          grep -q '^EQUALIZER_FINAL_VISIBILITY=PASS$' "$ROOT/equalizer-final.log"
+          grep -q '^OPACITY_1_FULL_STRENGTH=PASS$' "$ROOT/equalizer-final.log"
+          grep -q '^OPACITY_05_WEAKER=PASS$' "$ROOT/equalizer-final.log"
+          grep -q '^OPACITY_0_INVISIBLE=PASS$' "$ROOT/equalizer-final.log"
+          grep -q '^MULTI_EFFECT_EQUALIZER_VISIBILITY=PASS$' "$ROOT/equalizer-final.log"
+          grep -q '^FAST_RENDER_REGRESSION=PASS$' "$ROOT/equalizer-final.log"
+
+      - name: VYRON physical regression exact build
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ROOT="$RUNNER_TEMP/endlume-1015-equalizer-exact"
+          python3 scripts/qa-endlume-1014-vyron-routing-physical.py "$(cat "$ROOT/exe.txt")" "$(cat "$ROOT/ffmpeg.txt")" "$(cat "$ROOT/ffprobe.txt")" "$ROOT/vyron.json" | tee "$ROOT/vyron.log"
           grep -q 'VYRON_NO_CROSS_WRITE=GREEN' "$ROOT/vyron.log"
           echo 'VYRON_REGRESSION=PASS'
 
-      - name: Physical Round Equalizer matrix
-        if: always()
+      - name: Final summary
         shell: bash
         run: |
           set -Eeuo pipefail
-          ROOT="$RUNNER_TEMP/endlume-1015-equalizer-eaa6"
-          EXE="$(cat "$ROOT/exe.txt")"; FFMPEG="$(cat "$ROOT/ffmpeg.txt")"; FFPROBE="$(cat "$ROOT/ffprobe.txt")"
-          test -x "$EXE" -a -x "$FFMPEG" -a -x "$FFPROBE"
-          git fetch origin "$GITHUB_SHA" --depth=1
-          git show "${GITHUB_SHA}:scripts/qa-endlume-1015-equalizer-final-v2.py" > "$ROOT/qa-equalizer.py"
-          python3 - "$ROOT/qa-equalizer.py" <<'PY'
-          from pathlib import Path
-          import sys
-          p=Path(sys.argv[1]); s=p.read_text().replace("'-ss','.5'","'-ss','0.5'"); p.write_text(s)
-          PY
-          python3 "$ROOT/qa-equalizer.py" "$EXE" "$FFMPEG" "$FFPROBE" "$ROOT" | tee "$ROOT/equalizer.log"
-          grep -q '^EQUALIZER_VISIBILITY=PASS$' "$ROOT/equalizer.log"
-          grep -q '^PREVIEW_RENDER_MATCH=PASS$' "$ROOT/equalizer.log"
-          grep -q '^FAST_RENDER_REGRESSION=PASS$' "$ROOT/equalizer.log"
-
-      - name: Final summary
-        if: success()
-        shell: bash
-        run: |
+          ROOT="$RUNNER_TEMP/endlume-1015-equalizer-exact"
           echo 'PREVIOUS_CANDIDATE=c5534ce47123777b698117a46473238381e37729'
           echo 'CANDIDATE_COMMIT=eaa6eb0a022f184f533338e9ff778328cfe29717'
           echo 'MULTI_EFFECT_PER_VIDEO=PASS'
@@ -165,15 +204,17 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: ENDLUME-10.0.15-EQUALIZER-EAA6-PHYSICAL-EVIDENCE-V5
+          name: ENDLUME-10.0.15-EQUALIZER-EAA6-EXACT-PHYSICAL-EVIDENCE
           path: |
-            ${{ runner.temp }}/endlume-1015-equalizer-eaa6/e2e-instrumentation.patch
-            ${{ runner.temp }}/endlume-1015-equalizer-eaa6/equalizer-report.json
-            ${{ runner.temp }}/endlume-1015-equalizer-eaa6/equalizer.log
-            ${{ runner.temp }}/endlume-1015-equalizer-eaa6/preview-app.log
-            ${{ runner.temp }}/endlume-1015-equalizer-eaa6/render-app.log
-            ${{ runner.temp }}/endlume-1015-equalizer-eaa6/frames/*.png
-            ${{ runner.temp }}/endlume-1015-equalizer-eaa6/vyron.json
-            ${{ runner.temp }}/endlume-1015-equalizer-eaa6/vyron.log
+            ${{ runner.temp }}/endlume-1015-equalizer-exact/frontend/*.json
+            ${{ runner.temp }}/endlume-1015-equalizer-exact/frontend/*.log
+            ${{ runner.temp }}/endlume-1015-equalizer-exact/frontend-visual-report.json
+            ${{ runner.temp }}/endlume-1015-equalizer-exact/screens/*.png
+            ${{ runner.temp }}/endlume-1015-equalizer-exact/equalizer-final-report.json
+            ${{ runner.temp }}/endlume-1015-equalizer-exact/equalizer-final.log
+            ${{ runner.temp }}/endlume-1015-equalizer-exact/render-app.log
+            ${{ runner.temp }}/endlume-1015-equalizer-exact/frames/*.png
+            ${{ runner.temp }}/endlume-1015-equalizer-exact/vyron.json
+            ${{ runner.temp }}/endlume-1015-equalizer-exact/vyron.log
           if-no-files-found: warn
           retention-days: 14

@@ -1,0 +1,111 @@
+name: VYRON 6.1.11 Physical Inventory Loop Gate
+
+on:
+  push:
+    branches:
+      - hotfix/endlume-10.0.15-render-destination-routing
+    paths:
+      - 'scripts/inject-vyron-6111-physical-inventory-loop-test.py'
+      - '.github/workflows/vyron-6111-physical-inventory-loop.yml'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vyron-6111-physical-inventory-loop
+  cancel-in-progress: true
+
+jobs:
+  physical:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 25
+    steps:
+      - name: Checkout QA bridge
+        uses: actions/checkout@v4
+        with:
+          ref: hotfix/endlume-10.0.15-render-destination-routing
+          fetch-depth: 0
+          clean: true
+
+      - name: Checkout VYRON 6.1.11 candidate
+        uses: actions/checkout@v4
+        with:
+          repository: ScaleUPPeisov/scaleup-dashboards
+          ref: hotfix/vyron-6.1.11-metadata-inventory-correctness
+          path: vyron-product
+          fetch-depth: 0
+
+      - name: Discover actual external VYRON workspace
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          found=[]
+          for volume in Path('/Volumes').iterdir():
+              if not volume.is_dir():
+                  continue
+              candidates=[volume]
+              try:
+                  candidates += [p for p in volume.iterdir() if p.is_dir()]
+              except PermissionError:
+                  continue
+              for root in candidates:
+                  if (root/'ProductionManager'/'Batches').is_dir() and (root/'Render').is_dir():
+                      found.append(root.resolve())
+          unique=[]
+          for p in found:
+              if p not in unique:
+                  unique.append(p)
+          if len(unique)!=1:
+              raise SystemExit(f'Expected exactly one physical VYRON workspace, found {unique}')
+          root=unique[0]
+          with open(os.environ['GITHUB_ENV'],'a',encoding='utf-8') as f:
+              f.write(f'VYRON_PHYSICAL_ROOT={root}\n')
+          print(f'VYRON ROOT={root}')
+          print('EXTERNAL_WORKSPACE_DISCOVERY=PASS')
+          PY
+          echo "VYRON_6111_HEAD=$(git -C vyron-product rev-parse HEAD)"
+
+      - name: Native inventory regression on physical Mac
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+          cd vyron-product
+          cargo test --manifest-path src-tauri/Cargo.toml inventory_watch::tests -- --nocapture
+          echo 'INVENTORY_NATIVE_REGRESSION=PASS'
+
+      - name: Inject physical read feedback-loop probe
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/inject-vyron-6111-physical-inventory-loop-test.py
+          grep -n 'physical_external_read_does_not_retrigger_inventory_6111' vyron-product/src-tauri/src/inventory_watch.rs
+
+      - name: Physical FSEvents read-loop gate on actual external Render
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+          cd vyron-product
+          VYRON_PHYSICAL_ROOT_FOR_TEST="$VYRON_PHYSICAL_ROOT" cargo test --manifest-path src-tauri/Cargo.toml physical_external_read_does_not_retrigger_inventory_6111 -- --nocapture
+          git checkout -- src-tauri/src/inventory_watch.rs
+          echo 'EXTERNAL_INVENTORY_EVENT_GATE=PASS'
+          echo 'INVENTORY_READ_FEEDBACK_LOOP=PASS'
+
+      - name: Verify QA cleanup and release lock
+        if: always()
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git -C vyron-product checkout -- src-tauri/src/inventory_watch.rs || true
+          leftovers=$(find "$VYRON_PHYSICAL_ROOT/Render" -maxdepth 2 -type f -name '.VYRON-6111-INVENTORY-LOOP-QA-*.mov' -print 2>/dev/null || true)
+          if [ -n "$leftovers" ]; then
+            printf '%s\n' "$leftovers" | while IFS= read -r f; do rm -f "$f"; done
+          fi
+          echo 'PHYSICAL_QA_CLEANUP=PASS'
+          echo 'RELEASE=BLOCKED'
+          echo 'WAITING_FOR_OWNER_APPROVAL'

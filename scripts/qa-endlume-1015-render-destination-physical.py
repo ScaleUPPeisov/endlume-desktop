@@ -93,7 +93,7 @@ def create_vyron_job(channel,idx):
     }
 
 
-def invoke(jobs,label):
+def invoke(jobs,label,require_vyron_diagnostics=True):
     fixture=run_root/f'{label}-jobs.json'
     result=run_root/f'{label}-result.json'
     fixture.write_text(json.dumps({'jobs':jobs},ensure_ascii=False,indent=2),encoding='utf-8')
@@ -104,8 +104,9 @@ def invoke(jobs,label):
     assert p.returncode==0,(label,p.returncode,p.stderr[-12000:])
     data=json.loads(result.read_text(encoding='utf-8'));assert data.get('status')=='passed',data
     stderr=p.stderr or ''
-    for token in ('VYRON ROOT=','CHANNEL=','PROJECT DIRECTORY=','BATCH DIRECTORY=','FINAL RENDER DIRECTORY=','FINAL OUTPUT FILE='):
-        assert token in stderr,(label,token,stderr[-12000:])
+    if require_vyron_diagnostics:
+        for token in ('VYRON ROOT=','CHANNEL=','PROJECT DIRECTORY=','BATCH DIRECTORY=','FINAL RENDER DIRECTORY=','FINAL OUTPUT FILE='):
+            assert token in stderr,(label,token,stderr[-12000:])
     return data,wall,stderr
 
 
@@ -153,7 +154,7 @@ standalone_job={
   'project':{'id':'qa-standalone','name':'ENDLUME Routing QA Standalone','path':str(project_dir),'media':[str(cover)],'audio':[str(audio)],'valid':True,'error':None,'anchors':None,'selectedEffectId':'__none__','selectedEffectIds':['__none__'],'outputDir':None,'outputSource':None,'vyronManifestPath':None,'vyronChannelName':None},
   'settings':settings(output_dir),'effects':[],'subscribes':[],'ambient':None,'ambientSettings':{'volumePct':18.0,'bassDb':0.0,'midDb':0.0,'trebleDb':0.0}
 }
-standalone,standalone_wall,_=invoke([standalone_job],'standalone')
+standalone,standalone_wall,_=invoke([standalone_job],'standalone',require_vyron_diagnostics=False)
 standalone_output=Path(standalone['results'][0]['outputPath']).resolve();assert standalone_output.parent==output_dir.resolve(),standalone_output
 
 batch_media_final=media_files(BATCHES)

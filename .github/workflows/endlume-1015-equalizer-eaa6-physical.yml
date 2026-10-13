@@ -67,7 +67,7 @@ jobs:
           mkdir -p src-tauri/binaries
           rsync -a "$FOUNDATION/src-tauri/binaries/" src-tauri/binaries/
 
-      - name: Build candidate with E2E-only Preview helper bypass
+      - name: Build candidate with E2E-only Preview transport bypass
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -79,12 +79,16 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
           p=Path('src-tauri/src/lib.rs'); s=p.read_text()
-          old='  let helper=live_preview::prepare_live_preview(app.clone(),project_path.clone(),overlay_source,time_sec,Some("e1011-cold-preview".into()),Some(if subscribes.is_empty(){"Effects".into()}else{"Subscribe".into()})).await?;'
-          new='  let helper=serde_json::json!({"qaInstrumentation":"prepare_live_preview transport bypassed; generate_preview remains production code"});'
-          assert old in s
-          p.write_text(s.replace(old,new,1))
+          old_helper='  let helper=live_preview::prepare_live_preview(app.clone(),project_path.clone(),overlay_source,time_sec,Some("e1011-cold-preview".into()),Some(if subscribes.is_empty(){"Effects".into()}else{"Subscribe".into()})).await?;'
+          new_helper='  let helper=serde_json::json!({"qaInstrumentation":"prepare_live_preview transport bypassed; production poster compositor retained"});'
+          old_exact='  let exact=preview::generate_preview(app,project_path,time_sec,effects,subscribes,Some("e1011-cold-preview".into())).await?;'
+          new_exact='  let exact=poster.clone();'
+          assert old_helper in s and old_exact in s
+          s=s.replace(old_helper,new_helper,1).replace(old_exact,new_exact,1)
+          p.write_text(s)
           PY
-          grep -q 'qaInstrumentation.*prepare_live_preview transport bypassed' src-tauri/src/lib.rs
+          grep -q 'production poster compositor retained' src-tauri/src/lib.rs
+          grep -q 'let exact=poster.clone();' src-tauri/src/lib.rs
           git diff -- src-tauri/src/lib.rs > "$ROOT/e2e-instrumentation.patch"
           CONF='src-tauri/tauri.conf.json'; cp "$CONF" "$ROOT/tauri.conf.original.json"
           restore_conf(){ cp "$ROOT/tauri.conf.original.json" "$CONF"; }
@@ -105,38 +109,40 @@ jobs:
           FFMPEG="$(find "$APP/Contents" -maxdepth 7 -type f -name 'ffmpeg' -perm -111 -print -quit)"
           FFPROBE="$(find "$APP/Contents" -maxdepth 7 -type f -name 'ffprobe' -perm -111 -print -quit)"
           test -x "$EXE" -a -x "$FFMPEG" -a -x "$FFPROBE"
-          printf '%s' "$EXE" > "$ROOT/exe.txt"; printf '%s' "$FFMPEG" > "$ROOT/ffmpeg.txt"; printf '%s' "$FFPROBE" > "$ROOT/ffprobe.txt"
+          printf '%s' "$EXE" > "$ROOT/exe.txt"; printf '%s' "$APP" > "$ROOT/app.txt"; printf '%s' "$FFMPEG" > "$ROOT/ffmpeg.txt"; printf '%s' "$FFPROBE" > "$ROOT/ffprobe.txt"
           echo 'COMPILE=PASS'
-          echo 'QA_INSTRUMENTATION=E2E_PREPARE_LIVE_PREVIEW_HELPER_ONLY'
+          echo 'QA_INSTRUMENTATION=E2E_PREVIEW_POSTER_ONLY'
 
-      - name: Physical Round Equalizer matrix
+      - name: VYRON physical regression
         shell: bash
         run: |
           set -Eeuo pipefail
           ROOT="$RUNNER_TEMP/endlume-1015-equalizer-eaa6"
           EXE="$(cat "$ROOT/exe.txt")"; FFMPEG="$(cat "$ROOT/ffmpeg.txt")"; FFPROBE="$(cat "$ROOT/ffprobe.txt")"
-          git fetch origin "$GITHUB_SHA" --depth=1
-          git show "${GITHUB_SHA}:scripts/qa-endlume-1015-equalizer-final-v2.py" > "$ROOT/qa-equalizer.py"
-          python3 - "$ROOT/qa-equalizer.py" <<'PY'
-          from pathlib import Path
-          import sys
-          p=Path(sys.argv[1]); s=p.read_text(); s=s.replace("'-ss','.5'","'-ss','0.5'"); p.write_text(s)
-          PY
-          python3 "$ROOT/qa-equalizer.py" "$EXE" "$FFMPEG" "$FFPROBE" "$ROOT" | tee "$ROOT/equalizer.log"
-          grep -q '^EQUALIZER_VISIBILITY=PASS$' "$ROOT/equalizer.log"
-          grep -q '^PREVIEW_RENDER_MATCH=PASS$' "$ROOT/equalizer.log"
-          grep -q '^FAST_RENDER_REGRESSION=PASS$' "$ROOT/equalizer.log"
+          test -x "$EXE" -a -x "$FFMPEG" -a -x "$FFPROBE"
+          python3 scripts/qa-endlume-1014-vyron-routing-physical.py "$EXE" "$FFMPEG" "$FFPROBE" "$ROOT/vyron.json" | tee "$ROOT/vyron.log"
+          grep -q 'VYRON_NO_CROSS_WRITE=GREEN' "$ROOT/vyron.log"
+          echo 'VYRON_REGRESSION=PASS'
 
-      - name: VYRON physical regression
+      - name: Physical Round Equalizer matrix
         if: always()
         shell: bash
         run: |
           set -Eeuo pipefail
           ROOT="$RUNNER_TEMP/endlume-1015-equalizer-eaa6"
-          test -s "$ROOT/exe.txt" -a -s "$ROOT/ffmpeg.txt" -a -s "$ROOT/ffprobe.txt"
-          python3 scripts/qa-endlume-1014-vyron-routing-physical.py "$(cat "$ROOT/exe.txt")" "$(cat "$ROOT/ffmpeg.txt")" "$(cat "$ROOT/ffprobe.txt")" "$ROOT/vyron.json" | tee "$ROOT/vyron.log"
-          grep -q 'VYRON_NO_CROSS_WRITE=GREEN' "$ROOT/vyron.log"
-          echo 'VYRON_REGRESSION=PASS'
+          EXE="$(cat "$ROOT/exe.txt")"; FFMPEG="$(cat "$ROOT/ffmpeg.txt")"; FFPROBE="$(cat "$ROOT/ffprobe.txt")"
+          test -x "$EXE" -a -x "$FFMPEG" -a -x "$FFPROBE"
+          git fetch origin "$GITHUB_SHA" --depth=1
+          git show "${GITHUB_SHA}:scripts/qa-endlume-1015-equalizer-final-v2.py" > "$ROOT/qa-equalizer.py"
+          python3 - "$ROOT/qa-equalizer.py" <<'PY'
+          from pathlib import Path
+          import sys
+          p=Path(sys.argv[1]); s=p.read_text().replace("'-ss','.5'","'-ss','0.5'"); p.write_text(s)
+          PY
+          python3 "$ROOT/qa-equalizer.py" "$EXE" "$FFMPEG" "$FFPROBE" "$ROOT" | tee "$ROOT/equalizer.log"
+          grep -q '^EQUALIZER_VISIBILITY=PASS$' "$ROOT/equalizer.log"
+          grep -q '^PREVIEW_RENDER_MATCH=PASS$' "$ROOT/equalizer.log"
+          grep -q '^FAST_RENDER_REGRESSION=PASS$' "$ROOT/equalizer.log"
 
       - name: Final summary
         if: success()
@@ -159,7 +165,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: ENDLUME-10.0.15-EQUALIZER-EAA6-PHYSICAL-EVIDENCE-V4
+          name: ENDLUME-10.0.15-EQUALIZER-EAA6-PHYSICAL-EVIDENCE-V5
           path: |
             ${{ runner.temp }}/endlume-1015-equalizer-eaa6/e2e-instrumentation.patch
             ${{ runner.temp }}/endlume-1015-equalizer-eaa6/equalizer-report.json

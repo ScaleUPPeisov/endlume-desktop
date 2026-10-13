@@ -1,0 +1,215 @@
+name: ENDLUME 10.0.15 Owner Build
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-owner-macos-arm64:
+    name: Build clean ENDLUME 10.0.15
+    runs-on: [self-hosted, macOS, ARM64]
+
+    env:
+      PRODUCT_COMMIT: eaa6eb0a022f184f533338e9ff778328cfe29717
+      CARGO_TARGET_DIR: ${{ runner.temp }}/endlume-10.0.15-owner-clean-target
+
+    steps:
+      - name: Checkout exact product candidate
+        uses: actions/checkout@v4
+        with:
+          ref: eaa6eb0a022f184f533338e9ff778328cfe29717
+          fetch-depth: 1
+          clean: true
+
+      - name: Verify exact commit
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ACTUAL="$(git rev-parse HEAD)"
+          echo "EXPECTED=${PRODUCT_COMMIT}"
+          echo "ACTUAL=${ACTUAL}"
+
+          if [ "$ACTUAL" != "$PRODUCT_COMMIT" ]; then
+            echo "ERROR: wrong product commit"
+            exit 1
+          fi
+
+          echo "CANDIDATE_COMMIT=$ACTUAL"
+
+      - name: Prepare completely isolated build
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf "$CARGO_TARGET_DIR"
+          mkdir -p "$CARGO_TARGET_DIR"
+
+          rm -rf node_modules
+          rm -rf dist
+          rm -rf build
+
+          echo "CARGO_TARGET_DIR=$CARGO_TARGET_DIR"
+
+      - name: Install frontend dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -f pnpm-lock.yaml ]; then
+            corepack enable
+            pnpm install --frozen-lockfile
+          elif [ -f yarn.lock ]; then
+            corepack enable
+            yarn install --frozen-lockfile
+          elif [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+
+      - name: Build clean macOS ARM64 app
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          export CARGO_TARGET_DIR="${CARGO_TARGET_DIR}"
+
+          if [ -f pnpm-lock.yaml ]; then
+            pnpm tauri build --target aarch64-apple-darwin
+          elif [ -f yarn.lock ]; then
+            yarn tauri build --target aarch64-apple-darwin
+          else
+            if npm run | grep -q "tauri"; then
+              npm run tauri -- build --target aarch64-apple-darwin
+            else
+              npx tauri build --target aarch64-apple-darwin
+            fi
+          fi
+
+      - name: Locate app
+        id: app
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APP="$(find "$CARGO_TARGET_DIR/aarch64-apple-darwin/release/bundle/macos" \
+            -maxdepth 1 \
+            -type d \
+            -name "*.app" \
+            -print \
+            -quit)"
+
+          if [ -z "$APP" ]; then
+            echo "ERROR: .app not found"
+            exit 1
+          fi
+
+          echo "APP=$APP"
+          echo "app_path=$APP" >> "$GITHUB_OUTPUT"
+
+      - name: Verify ENDLUME version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APP="${{ steps.app.outputs.app_path }}"
+
+          VERSION="$(/usr/libexec/PlistBuddy \
+            -c 'Print :CFBundleShortVersionString' \
+            "$APP/Contents/Info.plist")"
+
+          echo "VERSION=$VERSION"
+
+          if [ "$VERSION" != "10.0.15" ]; then
+            echo "ERROR: expected 10.0.15"
+            exit 1
+          fi
+
+          echo "VERSION_10_0_15=PASS"
+
+      - name: Check no QA instrumentation leaked into bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APP="${{ steps.app.outputs.app_path }}"
+
+          QA_MARKERS='FRONTEND_PAYLOAD_BYTES|PIXEL_READBACK|PREVIEW_APPLIED|BROWSER_VISIBLE|paintedNonBlack'
+
+          if grep -RIE "$QA_MARKERS" "$APP/Contents/Resources" >/tmp/endlume-qa-markers.txt 2>/dev/null; then
+            echo "ERROR: QA instrumentation marker detected"
+            cat /tmp/endlume-qa-markers.txt
+            exit 1
+          fi
+
+          echo "QA_INSTRUMENTATION=ABSENT"
+
+      - name: Verify or apply local code signature
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APP="${{ steps.app.outputs.app_path }}"
+
+          if codesign --verify --deep --strict "$APP"; then
+            echo "Existing signature valid"
+          else
+            echo "Applying local ad-hoc signature for owner testing"
+            codesign \
+              --force \
+              --deep \
+              --sign - \
+              "$APP"
+
+            codesign --verify --deep --strict "$APP"
+          fi
+
+          echo "CODESIGN=PASS"
+
+      - name: Package owner test build
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APP="${{ steps.app.outputs.app_path }}"
+          OUT="$RUNNER_TEMP/ENDLUME-10.0.15-OWNER-TEST-ARM64.zip"
+
+          rm -f "$OUT"
+
+          ditto \
+            -c \
+            -k \
+            --sequesterRsrc \
+            --keepParent \
+            "$APP" \
+            "$OUT"
+
+          ls -lh "$OUT"
+
+          echo "PACKAGE=$OUT"
+
+      - name: Final verification
+        shell: bash
+        run: |
+          echo "=========================================="
+          echo "ENDLUME 10.0.15 OWNER BUILD"
+          echo "=========================================="
+          echo "CANDIDATE_COMMIT=eaa6eb0a022f184f533338e9ff778328cfe29717"
+          echo "VERSION=10.0.15"
+          echo "CLEAN_ISOLATED_BUILD=PASS"
+          echo "QA_INSTRUMENTATION=ABSENT"
+          echo "PUBLISH=NOT_RUN"
+          echo "RELEASE=NOT_RUN"
+          echo "OWNER_BUILD=READY"
+          echo "=========================================="
+
+      - name: Upload ENDLUME 10.0.15
+        uses: actions/upload-artifact@v4
+        with:
+          name: ENDLUME-10.0.15-OWNER-TEST-ARM64
+          path: ${{ runner.temp }}/ENDLUME-10.0.15-OWNER-TEST-ARM64.zip
+          if-no-files-found: error
+          retention-days: 7

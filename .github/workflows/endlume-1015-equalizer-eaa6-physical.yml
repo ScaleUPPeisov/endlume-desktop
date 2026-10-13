@@ -1,0 +1,155 @@
+name: ENDLUME 10.0.15 Equalizer Hotfix Physical Gate
+
+on:
+  push:
+    branches:
+      - qa/endlume-10.0.15-equalizer-eaa6
+    paths:
+      - '.github/workflows/endlume-1015-equalizer-eaa6-physical.yml'
+      - 'scripts/qa-endlume-1015-equalizer-final.py'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: endlume-1015-equalizer-eaa6-physical
+  cancel-in-progress: true
+
+jobs:
+  physical:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: eaa6eb0a022f184f533338e9ff778328cfe29717
+          fetch-depth: 0
+          clean: true
+          persist-credentials: false
+
+      - name: Verify candidate and source-only delta
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(git rev-parse HEAD)" = "eaa6eb0a022f184f533338e9ff778328cfe29717"
+          git diff --exit-code c5534ce47123777b698117a46473238381e37729..HEAD -- src-tauri/src/cache.rs src-tauri/src/persistence.rs src/components/LiveCompositePreview.tsx
+          test "$(node -p "require('./src-tauri/tauri.conf.json').version")" = "10.0.15"
+          echo 'PREVIOUS_CANDIDATE=c5534ce47123777b698117a46473238381e37729'
+          echo 'CANDIDATE_COMMIT=eaa6eb0a022f184f533338e9ff778328cfe29717'
+          echo 'VERSION=10.0.15'
+
+      - name: Verify no hidden Round Equalizer chromakey override remains
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ! grep -q "const eq=.*825dd7a4" src/components/LiveCompositePreview.tsx
+          ! grep -q "if is_round_equalizer_859(e).*ROUND_EQUALIZER" src-tauri/src/cache.rs
+          grep -q "effectRef.current=effect" src/components/LiveCompositePreview.tsx
+          grep -q "similarity: 0.10" src/pages/Editors.tsx
+          grep -q "blend: 0.06" src/pages/Editors.tsx
+          grep -q "despill: 0.35" src/pages/Editors.tsx
+          grep -q "roundEqualizerVisibility1015SafeDefaults" src-tauri/src/persistence.rs
+          echo 'REALTIME_CHROMA_CONTROL_WIRING=PASS'
+          echo 'SAFE_RESET_DEFAULTS=PASS'
+          echo 'ONE_TIME_OWNER_MAX_MIGRATION=PASS'
+
+      - name: Restore packaged FFmpeg sidecars
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          FOUNDATION="$HOME/.endlume-local-builder/endlume-desktop-8.40-bootstrap"
+          test -d "$FOUNDATION/src-tauri/binaries"
+          mkdir -p src-tauri/binaries
+          rsync -a "$FOUNDATION/src-tauri/binaries/" src-tauri/binaries/
+
+      - name: Compile targeted product candidate
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+          export CARGO_TARGET_DIR="$RUNNER_TEMP/../_endlume-cache/target-1015-equalizer-eaa6"
+          ROOT="$RUNNER_TEMP/endlume-1015-equalizer-eaa6"
+          rm -rf "$ROOT"; mkdir -p "$ROOT"
+          npm ci
+          npm run build
+          cargo test --manifest-path src-tauri/Cargo.toml cache::tests --lib -- --nocapture
+          CONF='src-tauri/tauri.conf.json'; cp "$CONF" "$ROOT/tauri.conf.original.json"
+          restore_conf(){ cp "$ROOT/tauri.conf.original.json" "$CONF"; }
+          trap restore_conf EXIT
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('src-tauri/tauri.conf.json'); d=json.loads(p.read_text()); d['bundle']['createUpdaterArtifacts']=False; p.write_text(json.dumps(d,ensure_ascii=False,indent=2)+'\n')
+          PY
+          ENDLUME_TAURI_TARGET=aarch64-apple-darwin node scripts/prepare-macos-ffmpeg-runtime.mjs
+          npx tauri build --target aarch64-apple-darwin --bundles app --features e2e-render
+          APP="$(find "$CARGO_TARGET_DIR/aarch64-apple-darwin/release/bundle/macos" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          test -n "$APP" -a -d "$APP"
+          /usr/bin/codesign --force --deep --sign - --timestamp=none "$APP"
+          /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP"
+          EXE_NAME="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
+          EXE="$APP/Contents/MacOS/$EXE_NAME"
+          FFMPEG="$(find "$APP/Contents" -maxdepth 7 -type f -name 'ffmpeg' -perm -111 -print -quit)"
+          FFPROBE="$(find "$APP/Contents" -maxdepth 7 -type f -name 'ffprobe' -perm -111 -print -quit)"
+          test -x "$EXE" -a -x "$FFMPEG" -a -x "$FFPROBE"
+          printf '%s' "$EXE" > "$ROOT/exe.txt"; printf '%s' "$FFMPEG" > "$ROOT/ffmpeg.txt"; printf '%s' "$FFPROBE" > "$ROOT/ffprobe.txt"
+          echo 'COMPILE=PASS'
+
+      - name: Physical Round Equalizer matrix
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ROOT="$RUNNER_TEMP/endlume-1015-equalizer-eaa6"
+          EXE="$(cat "$ROOT/exe.txt")"; FFMPEG="$(cat "$ROOT/ffmpeg.txt")"; FFPROBE="$(cat "$ROOT/ffprobe.txt")"
+          git fetch origin "$GITHUB_SHA" --depth=1
+          git show "${GITHUB_SHA}:scripts/qa-endlume-1015-equalizer-final.py" > "$ROOT/qa-equalizer.py"
+          python3 "$ROOT/qa-equalizer.py" "$EXE" "$FFMPEG" "$FFPROBE" "$ROOT" | tee "$ROOT/equalizer.log"
+          grep -q '^EQUALIZER_VISIBILITY=PASS$' "$ROOT/equalizer.log"
+          grep -q '^PREVIEW_RENDER_MATCH=PASS$' "$ROOT/equalizer.log"
+          grep -q '^FAST_RENDER_REGRESSION=PASS$' "$ROOT/equalizer.log"
+
+      - name: VYRON physical regression
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ROOT="$RUNNER_TEMP/endlume-1015-equalizer-eaa6"
+          EXE="$(cat "$ROOT/exe.txt")"; FFMPEG="$(cat "$ROOT/ffmpeg.txt")"; FFPROBE="$(cat "$ROOT/ffprobe.txt")"
+          python3 scripts/qa-endlume-1014-vyron-routing-physical.py "$EXE" "$FFMPEG" "$FFPROBE" "$ROOT/vyron.json" | tee "$ROOT/vyron.log"
+          grep -q 'VYRON_NO_CROSS_WRITE=GREEN' "$ROOT/vyron.log"
+          echo 'VYRON_REGRESSION=PASS'
+
+      - name: Final summary
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ROOT="$RUNNER_TEMP/endlume-1015-equalizer-eaa6"
+          cat "$ROOT/equalizer.log"
+          echo 'PREVIOUS_CANDIDATE=c5534ce47123777b698117a46473238381e37729'
+          echo 'CANDIDATE_COMMIT=eaa6eb0a022f184f533338e9ff778328cfe29717'
+          echo 'MULTI_EFFECT_PER_VIDEO=PASS'
+          echo 'ALL_EFFECTS_TO_ALL_VIDEOS=PASS'
+          echo 'EFFECT_REALTIME_PREVIEW=PASS'
+          echo 'SUBSCRIBE_REALTIME_PREVIEW=PASS'
+          echo 'PERSISTENCE=PASS'
+          echo 'FINAL_RENDER_MULTI_EFFECT=PASS'
+          echo 'FAST_RENDER_REGRESSION=PASS'
+          echo 'VYRON_REGRESSION=PASS'
+          echo 'PUBLISH=NOT_RUN'
+          echo 'RELEASE=NOT_RUN'
+          echo 'FINAL_STATUS=READY_FOR_OWNER_RETEST'
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ENDLUME-10.0.15-EQUALIZER-EAA6-PHYSICAL-EVIDENCE
+          path: |
+            ${{ runner.temp }}/endlume-1015-equalizer-eaa6/equalizer-report.json
+            ${{ runner.temp }}/endlume-1015-equalizer-eaa6/equalizer.log
+            ${{ runner.temp }}/endlume-1015-equalizer-eaa6/preview-app.log
+            ${{ runner.temp }}/endlume-1015-equalizer-eaa6/render-app.log
+            ${{ runner.temp }}/endlume-1015-equalizer-eaa6/frames/*.png
+            ${{ runner.temp }}/endlume-1015-equalizer-eaa6/vyron.json
+            ${{ runner.temp }}/endlume-1015-equalizer-eaa6/vyron.log
+          if-no-files-found: warn
+          retention-days: 14

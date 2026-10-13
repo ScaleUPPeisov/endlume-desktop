@@ -1,0 +1,70 @@
+name: ENDLUME 10.0.15 Fast Render Final Gate
+
+on:
+  push:
+    branches: [qa/endlume-10.0.15-equalizer-eaa6]
+    paths: ['.github/workflows/endlume-1015-fast-regression-final.yml']
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  fast-regression:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: eaa6eb0a022f184f533338e9ff778328cfe29717
+          fetch-depth: 0
+          clean: true
+          persist-credentials: false
+
+      - name: Physical 10-second fast render
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ROOT="$RUNNER_TEMP/endlume-1015-fast-final"; rm -rf "$ROOT"; mkdir -p "$ROOT/project" "$ROOT/out"
+          TARGET="$RUNNER_TEMP/../_endlume-cache/target-1015-equalizer-eaa6-exact/aarch64-apple-darwin/release/bundle/macos"
+          APP="$(find "$TARGET" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          test -n "$APP" -a -d "$APP"
+          EXE_NAME="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
+          EXE="$APP/Contents/MacOS/$EXE_NAME"
+          FFMPEG="$(find "$APP/Contents" -maxdepth 7 -type f -name ffmpeg -perm -111 -print -quit)"
+          test -x "$EXE" -a -x "$FFMPEG"
+          "$FFMPEG" -hide_banner -loglevel error -f lavfi -i 'color=c=0x20242c:s=640x360' -frames:v 1 -y "$ROOT/project/cover.png"
+          "$FFMPEG" -hide_banner -loglevel error -f lavfi -i 'sine=frequency=440:sample_rate=48000:duration=10.0' -c:a libmp3lame -b:a 320k -ar 48000 -ac 2 -y "$ROOT/project/track.mp3"
+          python3 - "$ROOT/job.json" "$ROOT/project" "$ROOT/out" <<'PY'
+          import json,sys
+          from pathlib import Path
+          f=Path(sys.argv[1]); p=Path(sys.argv[2]); out=Path(sys.argv[3])
+          job={'project':{'id':'fast-regression-1015-final','name':'fast-regression-1015-final','path':str(p),'media':[str(p/'cover.png')],'audio':[str(p/'track.mp3')],'valid':True,'error':None,'anchors':None,'selectedEffectId':None,'selectedEffectIds':[],'outputDir':str(out),'outputSource':'manual','vyronManifestPath':None,'vyronChannelName':None},'settings':{'width':640,'height':360,'fps':60,'codec':'h265','bitrateMbps':8.0,'durationHours':10/3600,'durationMode':'whole-track','loopMode':'image','crossfadeSec':0.0,'normalizeLufs':False,'outputDir':str(out),'preset':'fast','encoderPreference':'auto'},'effects':[],'subscribes':[],'ambient':None,'ambientSettings':{'volumePct':18.0,'bassDb':0.0,'midDb':0.0,'trebleDb':0.0}}
+          f.write_text(json.dumps({'jobs':[job]}))
+          PY
+          RES="$ROOT/result.json"; LOG="$ROOT/app.log"
+          ENDLUME_E2E_RESULT="$RES" ENDLUME_E2E_RENDER_JOB="$ROOT/job.json" "$EXE" >"$LOG" 2>&1
+          tail -n 80 "$LOG"
+          python3 - "$RES" <<'PY'
+          import json,sys
+          d=json.load(open(sys.argv[1])); print('FAST_RESULT='+json.dumps(d,separators=(',',':')))
+          assert d.get('status')=='passed',d
+          r=d['results'][0]
+          assert r.get('status')=='passed',r
+          assert r.get('fastPath') is True,r
+          assert r.get('videoCodec')=='hevc',r
+          assert float(r.get('wallSeconds') or 999)<15,r
+          PY
+          echo 'FAST_RENDER_REGRESSION=PASS'
+          echo 'PUBLISH=NOT_RUN'
+          echo 'RELEASE=NOT_RUN'
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ENDLUME-10.0.15-FAST-REGRESSION-FINAL
+          path: |
+            ${{ runner.temp }}/endlume-1015-fast-final/result.json
+            ${{ runner.temp }}/endlume-1015-fast-final/app.log
+          if-no-files-found: warn
+          retention-days: 14

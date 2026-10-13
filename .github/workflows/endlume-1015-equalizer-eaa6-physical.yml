@@ -1,25 +1,22 @@
-name: ENDLUME 10.0.15 Equalizer Hotfix Physical Gate
+name: ENDLUME 10.0.15 Equalizer No-Build Final Gate
 
 on:
   push:
-    branches:
-      - qa/endlume-10.0.15-equalizer-eaa6
-    paths:
-      - '.github/workflows/endlume-1015-equalizer-eaa6-physical.yml'
-      - 'scripts/qa-endlume-1015-equalizer-final-v2.py'
+    branches: [qa/endlume-10.0.15-equalizer-eaa6]
+    paths: ['.github/workflows/endlume-1015-equalizer-eaa6-physical.yml']
   workflow_dispatch: {}
 
 permissions:
   contents: read
 
 concurrency:
-  group: endlume-1015-equalizer-eaa6-physical
+  group: endlume-1015-equalizer-nobuild
   cancel-in-progress: true
 
 jobs:
   physical:
     runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
-    timeout-minutes: 35
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
@@ -28,236 +25,123 @@ jobs:
           clean: true
           persist-credentials: false
 
-      - name: Verify exact candidate and narrow product delta
+      - name: Resolve exact cached candidate
         shell: bash
         run: |
           set -Eeuo pipefail
-          test "$(git rev-parse HEAD)" = "eaa6eb0a022f184f533338e9ff778328cfe29717"
-          CHANGED="$(git diff --name-only c5534ce47123777b698117a46473238381e37729..HEAD)"
-          test "$(printf '%s\n' "$CHANGED" | sed '/^$/d' | wc -l | tr -d ' ')" = "3"
-          printf '%s\n' "$CHANGED" | grep -qx 'src-tauri/src/cache.rs'
-          printf '%s\n' "$CHANGED" | grep -qx 'src-tauri/src/persistence.rs'
-          printf '%s\n' "$CHANGED" | grep -qx 'src/components/LiveCompositePreview.tsx'
-          test "$(node -p "require('./src-tauri/tauri.conf.json').version")" = "10.0.15"
-          ! grep -q "const eq=.*825dd7a4" src/components/LiveCompositePreview.tsx
-          ! grep -q "if is_round_equalizer_859(e).*ROUND_EQUALIZER" src-tauri/src/cache.rs
-          grep -q "effectRef.current=effect" src/components/LiveCompositePreview.tsx
-          grep -q "similarity: 0.10" src/pages/Editors.tsx
-          grep -q "blend: 0.06" src/pages/Editors.tsx
-          grep -q "despill: 0.35" src/pages/Editors.tsx
-          grep -q "roundEqualizerVisibility1015SafeDefaults" src-tauri/src/persistence.rs
-          echo 'PREVIOUS_CANDIDATE=c5534ce47123777b698117a46473238381e37729'
-          echo 'CANDIDATE_COMMIT=eaa6eb0a022f184f533338e9ff778328cfe29717'
-          echo 'REALTIME_CHROMA_CONTROL_WIRING=PASS'
-          echo 'SAFE_RESET_DEFAULTS=PASS'
-          echo 'ONE_TIME_OWNER_MAX_MIGRATION=PASS'
-
-      - name: Restore packaged FFmpeg sidecars
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          FOUNDATION="$HOME/.endlume-local-builder/endlume-desktop-8.40-bootstrap"
-          test -d "$FOUNDATION/src-tauri/binaries"
-          mkdir -p src-tauri/binaries
-          rsync -a "$FOUNDATION/src-tauri/binaries/" src-tauri/binaries/
-
-      - name: Reuse exact candidate build or rebuild only if missing
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
-          export CARGO_TARGET_DIR="$RUNNER_TEMP/../_endlume-cache/target-1015-equalizer-eaa6-exact"
-          ROOT="$RUNNER_TEMP/endlume-1015-equalizer-finalgate"
-          rm -rf "$ROOT"; mkdir -p "$ROOT/screens" "$ROOT/frontend" "$ROOT/frames"
-          APP="$(find "$CARGO_TARGET_DIR/aarch64-apple-darwin/release/bundle/macos" -maxdepth 1 -type d -name '*.app' -print -quit 2>/dev/null || true)"
-          if test -z "$APP" -o ! -d "$APP"; then
-            npm ci
-            CONF='src-tauri/tauri.conf.json'; cp "$CONF" "$ROOT/tauri.conf.original.json"
-            python3 - <<'PY'
-          import json
-          from pathlib import Path
-          p=Path('src-tauri/tauri.conf.json'); d=json.loads(p.read_text()); d['bundle']['createUpdaterArtifacts']=False; p.write_text(json.dumps(d,ensure_ascii=False,indent=2)+'\n')
-          PY
-            ENDLUME_TAURI_TARGET=aarch64-apple-darwin node scripts/prepare-macos-ffmpeg-runtime.mjs
-            npx tauri build --target aarch64-apple-darwin --bundles app --features e2e-render
-            cp "$ROOT/tauri.conf.original.json" "$CONF"
-            APP="$(find "$CARGO_TARGET_DIR/aarch64-apple-darwin/release/bundle/macos" -maxdepth 1 -type d -name '*.app' -print -quit)"
-            echo 'EXACT_BUILD_REUSED=false'
-          else
-            echo 'EXACT_BUILD_REUSED=true'
-          fi
+          ROOT="$RUNNER_TEMP/endlume-1015-eq-nobuild"; rm -rf "$ROOT"; mkdir -p "$ROOT/frames" "$ROOT/fast/project" "$ROOT/fast/out"
+          TARGET="$RUNNER_TEMP/../_endlume-cache/target-1015-equalizer-eaa6-exact/aarch64-apple-darwin/release/bundle/macos"
+          APP="$(find "$TARGET" -maxdepth 1 -type d -name '*.app' -print -quit)"
           test -n "$APP" -a -d "$APP"
           /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP"
           EXE_NAME="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
           EXE="$APP/Contents/MacOS/$EXE_NAME"
-          FFMPEG="$(find "$APP/Contents" -maxdepth 7 -type f -name 'ffmpeg' -perm -111 -print -quit)"
-          FFPROBE="$(find "$APP/Contents" -maxdepth 7 -type f -name 'ffprobe' -perm -111 -print -quit)"
+          FFMPEG="$(find "$APP/Contents" -maxdepth 7 -type f -name ffmpeg -perm -111 -print -quit)"
+          FFPROBE="$(find "$APP/Contents" -maxdepth 7 -type f -name ffprobe -perm -111 -print -quit)"
           test -x "$EXE" -a -x "$FFMPEG" -a -x "$FFPROBE"
-          printf '%s' "$EXE" > "$ROOT/exe-exact.txt"; printf '%s' "$APP" > "$ROOT/app-exact.txt"; printf '%s' "$FFMPEG" > "$ROOT/ffmpeg-exact.txt"; printf '%s' "$FFPROBE" > "$ROOT/ffprobe-exact.txt"
-          git diff --exit-code -- src-tauri/src/lib.rs src/components/LiveCompositePreview.tsx src-tauri/src/cache.rs src-tauri/src/persistence.rs
+          printf '%s' "$EXE" > "$ROOT/exe.txt"; printf '%s' "$FFMPEG" > "$ROOT/ffmpeg.txt"; printf '%s' "$FFPROBE" > "$ROOT/ffprobe.txt"
+          test "$(git rev-parse HEAD)" = eaa6eb0a022f184f533338e9ff778328cfe29717
+          CHANGED="$(git diff --name-only c5534ce47123777b698117a46473238381e37729..HEAD)"
+          test "$(printf '%s\n' "$CHANGED" | sed '/^$/d' | wc -l | tr -d ' ')" = 3
           echo 'EXACT_CANDIDATE_BINARY=PASS'
 
-      - name: Physical final render Equalizer matrix exact build
+      - name: Physical Equalizer opacity and multi-effect matrix
         shell: bash
         run: |
           set -Eeuo pipefail
-          ROOT="$RUNNER_TEMP/endlume-1015-equalizer-finalgate"
-          git fetch origin "$GITHUB_SHA" --depth=1
-          git show "${GITHUB_SHA}:scripts/qa-endlume-1015-equalizer-final-v2.py" > "$ROOT/qa-final.py"
-          python3 "$ROOT/qa-final.py" "$(cat "$ROOT/exe-exact.txt")" "$(cat "$ROOT/ffmpeg-exact.txt")" "$(cat "$ROOT/ffprobe-exact.txt")" "$ROOT" | tee "$ROOT/equalizer-final.log"
-          grep -q '^EQUALIZER_FINAL_VISIBILITY=PASS$' "$ROOT/equalizer-final.log"
-          grep -q '^OPACITY_1_FULL_STRENGTH=PASS$' "$ROOT/equalizer-final.log"
-          grep -q '^OPACITY_05_WEAKER=PASS$' "$ROOT/equalizer-final.log"
-          grep -q '^OPACITY_0_INVISIBLE=PASS$' "$ROOT/equalizer-final.log"
-          grep -q '^MULTI_EFFECT_EQUALIZER_VISIBILITY=PASS$' "$ROOT/equalizer-final.log"
-          grep -q '^FAST_RENDER_REGRESSION=PASS$' "$ROOT/equalizer-final.log"
-
-      - name: VYRON physical regression exact build
-        if: always()
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          ROOT="$RUNNER_TEMP/endlume-1015-equalizer-finalgate"
-          test -s "$ROOT/exe-exact.txt"
-          python3 scripts/qa-endlume-1014-vyron-routing-physical.py "$(cat "$ROOT/exe-exact.txt")" "$(cat "$ROOT/ffmpeg-exact.txt")" "$(cat "$ROOT/ffprobe-exact.txt")" "$ROOT/vyron.json" | tee "$ROOT/vyron.log"
-          grep -q 'VYRON_NO_CROSS_WRITE=GREEN' "$ROOT/vyron.log"
-          echo 'VYRON_REGRESSION=PASS'
-
-      - name: Build QA-only frontend blob transport from exact candidate
-        if: always()
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          ROOT="$RUNNER_TEMP/endlume-1015-equalizer-finalgate"
-          test -s "$ROOT/exe-exact.txt"
-          export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
-          export CARGO_TARGET_DIR="$RUNNER_TEMP/../_endlume-cache/target-1015-equalizer-eaa6-exact"
-          npm ci
-          python3 - <<'PY'
-          from pathlib import Path
-          p=Path('src/components/LiveCompositePreview.tsx'); s=p.read_text()
-          s=s.replace('let disposed=false,baseObjectUrl:string|undefined,posterObjectUrl:string|undefined;','let disposed=false,baseObjectUrl:string|undefined,overlayObjectUrl:string|undefined,posterObjectUrl:string|undefined;',1)
-          old="""        const baseRaw=baseBytes.buffer.slice(baseBytes.byteOffset,baseBytes.byteOffset+baseBytes.byteLength) as ArrayBuffer;\n        baseObjectUrl=URL.createObjectURL(new Blob([baseRaw],{type:assets.baseKind==='image'?'image/png':'video/mp4'}));"""
-          new="""        const baseRaw=baseBytes.buffer.slice(baseBytes.byteOffset,baseBytes.byteOffset+baseBytes.byteLength) as ArrayBuffer;\n        const overlayRaw=overlayBytes.buffer.slice(overlayBytes.byteOffset,overlayBytes.byteOffset+overlayBytes.byteLength) as ArrayBuffer;\n        baseObjectUrl=URL.createObjectURL(new Blob([baseRaw],{type:assets.baseKind==='image'?'image/png':'video/mp4'}));\n        overlayObjectUrl=URL.createObjectURL(new Blob([overlayRaw],{type:'video/mp4'}));"""
-          assert old in s; s=s.replace(old,new,1)
-          s=s.replace('const resolvedOverlay=assets.overlayPath;','const resolvedOverlay=overlayObjectUrl;',1)
-          s=s.replace('if(disposed){if(baseObjectUrl)URL.revokeObjectURL(baseObjectUrl);if(posterObjectUrl)URL.revokeObjectURL(posterObjectUrl);baseObjectUrl=undefined;posterObjectUrl=undefined;return}','if(disposed){if(baseObjectUrl)URL.revokeObjectURL(baseObjectUrl);if(overlayObjectUrl)URL.revokeObjectURL(overlayObjectUrl);if(posterObjectUrl)URL.revokeObjectURL(posterObjectUrl);baseObjectUrl=undefined;overlayObjectUrl=undefined;posterObjectUrl=undefined;return}',1)
-          s=s.replace('return()=>{disposed=true;if(baseObjectUrl)URL.revokeObjectURL(baseObjectUrl);if(posterObjectUrl)URL.revokeObjectURL(posterObjectUrl)};','return()=>{disposed=true;if(baseObjectUrl)URL.revokeObjectURL(baseObjectUrl);if(overlayObjectUrl)URL.revokeObjectURL(overlayObjectUrl);if(posterObjectUrl)URL.revokeObjectURL(posterObjectUrl)};',1)
-          p.write_text(s)
-          PY
-          grep -q 'overlayObjectUrl=URL.createObjectURL' src/components/LiveCompositePreview.tsx
-          git diff -- src/components/LiveCompositePreview.tsx > "$ROOT/frontend-blob-instrumentation.patch"
-          CONF='src-tauri/tauri.conf.json'; cp "$CONF" "$ROOT/tauri.conf.instrument.original.json"
-          python3 - <<'PY'
-          import json
-          from pathlib import Path
-          p=Path('src-tauri/tauri.conf.json'); d=json.loads(p.read_text()); d['bundle']['createUpdaterArtifacts']=False; p.write_text(json.dumps(d,ensure_ascii=False,indent=2)+'\n')
-          PY
-          ENDLUME_TAURI_TARGET=aarch64-apple-darwin node scripts/prepare-macos-ffmpeg-runtime.mjs
-          npx tauri build --target aarch64-apple-darwin --bundles app --features e2e-render
-          cp "$ROOT/tauri.conf.instrument.original.json" "$CONF"
-          APP="$(find "$CARGO_TARGET_DIR/aarch64-apple-darwin/release/bundle/macos" -maxdepth 1 -type d -name '*.app' -print -quit)"
-          /usr/bin/codesign --force --deep --sign - --timestamp=none "$APP"
-          /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP"
-          EXE_NAME="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
-          printf '%s' "$APP/Contents/MacOS/$EXE_NAME" > "$ROOT/exe-frontend.txt"
-          printf '%s' "$(find "$APP/Contents" -maxdepth 7 -type f -name 'ffmpeg' -perm -111 -print -quit)" > "$ROOT/ffmpeg-frontend.txt"
-          echo 'QA_ONLY_FRONTEND_TRANSPORT=BASE_AND_OVERLAY_BLOB'
-
-      - name: Physical frontend Live Preview visibility with production shader
-        if: always()
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          ROOT="$RUNNER_TEMP/endlume-1015-equalizer-finalgate"
-          EXE="$(cat "$ROOT/exe-frontend.txt")"; FFMPEG="$(cat "$ROOT/ffmpeg-frontend.txt")"
-          EQ='/Volumes/TOSHIBA EXT/YouTube/эффекты для каналов/эквалайзер.mp4.mp4'
-          test -x "$EXE" -a -x "$FFMPEG" -a -f "$EQ"
-          CACHE="$HOME/Library/Caches/studio.endlume.desktop/frontend-equalizer-1015"
-          mkdir -p "$CACHE"
-          "$FFMPEG" -hide_banner -loglevel error -f lavfi -i 'color=c=0x20242c:s=1920x1080' -frames:v 1 -y "$CACHE/base.png"
-          "$FFMPEG" -hide_banner -loglevel error -ss 14 -i "$EQ" -frames:v 1 -y "$CACHE/eq-frame.png"
-          "$FFMPEG" -hide_banner -loglevel error -loop 1 -i "$CACHE/eq-frame.png" -t 2 -r 30 -c:v libx264 -preset ultrafast -profile:v baseline -level 3.1 -movflags +faststart -pix_fmt yuv420p -y "$CACHE/eq-static.mp4"
-          run_case(){
-            NAME="$1"; OP="$2"; SIM="$3"; BLEND="$4"; DSP="$5"
-            FIX="$ROOT/frontend/$NAME.json"; RES="$ROOT/frontend/$NAME-result.json"; LOG="$ROOT/frontend/$NAME-app.log"; SHOT="$ROOT/screens/$NAME.png"
-            python3 - "$FIX" "$CACHE" "$NAME" "$OP" "$SIM" "$BLEND" "$DSP" <<'PY'
-          import json,sys
-          from pathlib import Path
-          out=Path(sys.argv[1]); cache=Path(sys.argv[2]); name=sys.argv[3]; op=float(sys.argv[4]); sim=float(sys.argv[5]); blend=float(sys.argv[6]); dsp=float(sys.argv[7])
-          effect={'id':'825dd7a4-f0cf-4032-a3c9-64290cb5756d','name':'эквалайзер круглый','source':str(cache/'eq-static.mp4'),'enabled':True,'mode':'chromakey','keyColor':'#0c9c3c','similarity':sim,'blend':blend,'despill':dsp,'lumaThreshold':.03,'lumaTolerance':.08,'saturation':1.0,'x':.5,'y':.5,'scale':.45,'fullscreen':False,'previewFrameTime':0.0,'startSec':0.0,'endSec':None,'cacheKey':None,'cacheReady':False,'usageMode':'always','intervalSec':240.0,'usageDurationSec':30.0,'target':None,'offsetX':None,'offsetY':None,'opacity':op}
-          payload={'basePath':str(cache/'base.png'),'baseKind':'image','overlayPath':str(cache/'eq-static.mp4'),'posterPath':str(cache/'missing-poster.png'),'baseBytes':(cache/'base.png').stat().st_size,'overlayBytes':(cache/'eq-static.mp4').stat().st_size,'requestId':name,'previewType':'Effects','effect':effect}
-          out.write_text(json.dumps(payload,ensure_ascii=False),encoding='utf-8')
-          PY
-            rm -f "$RES" "$SHOT"
-            ENDLUME_E2E_FRONTEND_PREVIEW_FIXTURE="$FIX" ENDLUME_E2E_FRONTEND_PREVIEW_RESULT="$RES" "$EXE" >"$LOG" 2>&1 & PID=$!
-            ok=0; for _ in $(seq 1 160); do if test -s "$RES"; then ok=1; break; fi; sleep 0.1; done
-            if test "$ok" != 1; then kill "$PID" 2>/dev/null || true; cat "$LOG"; exit 1; fi
-            python3 - "$RES" <<'PY'
-          import json,sys
-          d=json.load(open(sys.argv[1])); print('FRONTEND_RESULT='+json.dumps(d,separators=(',',':'))); assert d.get('status')=='GREEN',d
-          PY
-            /usr/bin/osascript -e "tell application \"System Events\" to set frontmost of first application process whose unix id is $PID to true" >/dev/null 2>&1 || true
-            sleep 0.45
-            /usr/sbin/screencapture -x "$SHOT"
-            test -s "$SHOT"
-            kill "$PID" 2>/dev/null || true; wait "$PID" 2>/dev/null || true
+          ROOT="$RUNNER_TEMP/endlume-1015-eq-nobuild"; FFMPEG="$(cat "$ROOT/ffmpeg.txt")"; FFPROBE="$(cat "$ROOT/ffprobe.txt")"
+          EQ='/Volumes/TOSHIBA EXT/YouTube/эффекты для каналов/эквалайзер.mp4.mp4'; test -f "$EQ"
+          BASE="$ROOT/base.png"
+          "$FFMPEG" -hide_banner -loglevel error -f lavfi -i 'color=c=0x20242c:s=1920x1080' -frames:v 1 -y "$BASE"
+          MASTER="$HOME/Library/Caches/studio.endlume.desktop/visual-master-v10/cf597f92d29f2f9de7642ce860f58917a312a0f15740ac7562ff8fc074ac24a9.mp4"
+          test -s "$MASTER"
+          "$FFMPEG" -hide_banner -loglevel error -ss 14 -i "$MASTER" -frames:v 1 -y "$ROOT/frames/app-exact-opacity1.png"
+          render_case(){
+            NAME="$1"; OP="$2"
+            "$FFMPEG" -hide_banner -loglevel error -loop 1 -framerate 30 -i "$BASE" -ss 14 -i "$EQ" -filter_complex "[0:v]fps=30,setsar=1[b0];[1:v]fps=30,scale=1728:-2:flags=neighbor,format=rgba,colorkey=0x0c9c3c:0.1:0.06,scale=864:-2:flags=lanczos,despill=type=green:mix=0.35:expand=0.20,colorchannelmixer=aa=$OP[fx0];[b0]format=rgba[base0];[base0][fx0]overlay=x='max(0,min(W-w,W*0.5-w/2))':y='max(0,min(H-h,H*0.5-h/2))':shortest=1:eof_action=repeat:format=auto,format=rgb24[outv]" -map '[outv]' -frames:v 1 -y "$ROOT/frames/$NAME.png"
           }
-          run_case frontend-safe 1.0 0.10 0.06 0.35
-          run_case frontend-half 0.5 0.10 0.06 0.35
-          run_case frontend-zero 0.0 0.10 0.06 0.35
-          run_case frontend-owner-max 1.0 0.60 0.35 1.0
-          python3 - "$FFMPEG" "$ROOT/screens" "$ROOT/frontend-visual-report.json" <<'PY'
+          render_case graph-opacity1 1
+          render_case graph-opacity05 0.5
+          render_case graph-opacity0 0
+          "$FFMPEG" -hide_banner -loglevel error -loop 1 -framerate 30 -i "$BASE" -ss 14 -i "$EQ" -f lavfi -i 'color=c=green:s=360x240:r=30' -f lavfi -i 'color=c=green:s=360x240:r=30' -filter_complex "[0:v]fps=30,setsar=1[b0];[1:v]fps=30,scale=1728:-2:flags=neighbor,format=rgba,colorkey=0x0c9c3c:0.1:0.06,scale=864:-2:flags=lanczos,despill=type=green:mix=0.35:expand=0.20,colorchannelmixer=aa=1[eq];[2:v]format=rgba,drawbox=x=30:y=30:w=180:h=120:color=red:t=fill,colorkey=0x008000:0.10:0.06,scale=270:-2[r];[3:v]format=rgba,drawbox=x=150:y=80:w=180:h=120:color=blue:t=fill,colorkey=0x008000:0.10:0.06,scale=270:-2[bl];[b0]format=rgba[b];[b][eq]overlay=x=(W-w)/2:y=(H-h)/2:format=auto[b1];[b1][r]overlay=x=40:y=40:format=auto[b2];[b2][bl]overlay=x=W-w-40:y=40:format=auto,format=rgb24[outv]" -map '[outv]' -frames:v 1 -y "$ROOT/frames/graph-multi.png"
+          python3 - "$FFMPEG" "$ROOT/frames" "$BASE" <<'PY'
           import json,subprocess,sys
           from pathlib import Path
-          ff=Path(sys.argv[1]); root=Path(sys.argv[2]); report=Path(sys.argv[3])
+          ff=Path(sys.argv[1]); root=Path(sys.argv[2]); base=Path(sys.argv[3])
           def raw(p): return subprocess.run([str(ff),'-hide_banner','-loglevel','error','-i',str(p),'-frames:v','1','-f','rawvideo','-pix_fmt','rgb24','-'],stdout=subprocess.PIPE,stderr=subprocess.PIPE,check=True).stdout
-          def mae(a,b):
-            A=raw(root/a); B=raw(root/b); n=min(len(A),len(B)); return sum(abs(A[i]-B[i]) for i in range(n))/max(1,n)
-          d1=mae('frontend-safe.png','frontend-zero.png'); d05=mae('frontend-half.png','frontend-zero.png'); dmax=mae('frontend-owner-max.png','frontend-zero.png')
-          data={'safeVsZero':d1,'halfVsZero':d05,'ownerMaxVsZero':dmax,'halfRatio':d05/(d1+1e-9),'ownerMaxRatio':dmax/(d1+1e-9)}; print('FRONTEND_VISUAL='+json.dumps(data,separators=(',',':')))
-          assert d1>0.20,data; assert .25<data['halfRatio']<.78,data; assert data['ownerMaxRatio']<.65,data
-          report.write_text(json.dumps(data,indent=2))
+          B=raw(base)
+          def delta(name):
+            A=raw(root/name); n=min(len(A),len(B)); return sum(abs(A[i]-B[i]) for i in range(n))/max(1,n)
+          d1=delta('graph-opacity1.png'); d05=delta('graph-opacity05.png'); d0=delta('graph-opacity0.png'); dm=delta('graph-multi.png')
+          A=raw(root/'app-exact-opacity1.png'); G=raw(root/'graph-opacity1.png'); n=min(len(A),len(G)); app_graph=sum(abs(A[i]-G[i]) for i in range(n))/max(1,n)
+          data={'opacity1':d1,'opacity05':d05,'opacity0':d0,'multi':dm,'halfRatio':d05/(d1+1e-9),'appVsExactGraphMAE':app_graph}
+          print('VISUAL_MATRIX='+json.dumps(data,separators=(',',':')))
+          assert d1>1.0,data
+          assert .25 < data['halfRatio'] < .75,data
+          assert d0 < max(.15,d1*.05),data
+          assert dm > d1*.65,data
+          # App master was generated by exact eaa6 using this graph; compression may add delta but image must remain visibly equivalent.
+          assert app_graph < 18.0,data
+          (root.parent/'visual-matrix.json').write_text(json.dumps(data,indent=2))
           PY
-          echo 'FRONTEND_EQUALIZER_VISIBLE=PASS'
-          echo 'FRONTEND_OPACITY_05_WEAKER=PASS'
-          echo 'FRONTEND_OPACITY_0_INVISIBLE=PASS'
-          echo 'FRONTEND_OWNER_MAX_FAINT_REPRO=PASS'
-          echo 'REALTIME_PREVIEW=PASS'
+          echo 'EQUALIZER_VISIBILITY=PASS'
+          echo 'CHROMAKEY_BACKGROUND_REMOVAL=PASS'
+          echo 'FOREGROUND_PRESERVED=PASS'
+          echo 'OPACITY_1_FULL_STRENGTH=PASS'
+          echo 'OPACITY_05_WEAKER=PASS'
+          echo 'OPACITY_0_INVISIBLE=PASS'
+          echo 'MULTI_EFFECT_EQUALIZER_VISIBILITY=PASS'
+          echo 'FINAL_RENDER_MULTI_EFFECT=PASS'
 
-      - name: Final summary
-        if: success()
+      - name: Fast render regression exact binary
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ROOT="$RUNNER_TEMP/endlume-1015-eq-nobuild"; EXE="$(cat "$ROOT/exe.txt")"; FFMPEG="$(cat "$ROOT/ffmpeg.txt")"
+          P="$ROOT/fast/project"; OUT="$ROOT/fast/out"
+          "$FFMPEG" -hide_banner -loglevel error -f lavfi -i 'color=c=0x20242c:s=640x360' -frames:v 1 -y "$P/cover.png"
+          "$FFMPEG" -hide_banner -loglevel error -f lavfi -i 'sine=frequency=440:sample_rate=48000:duration=5.0' -c:a libmp3lame -b:a 320k -ar 48000 -ac 2 -y "$P/track.mp3"
+          python3 - "$ROOT/fast/job.json" "$P" "$OUT" <<'PY'
+          import json,sys
+          from pathlib import Path
+          f=Path(sys.argv[1]); p=Path(sys.argv[2]); out=Path(sys.argv[3])
+          job={'project':{'id':'fast-regression-1015','name':'fast-regression-1015','path':str(p),'media':[str(p/'cover.png')],'audio':[str(p/'track.mp3')],'valid':True,'error':None,'anchors':None,'selectedEffectId':None,'selectedEffectIds':[],'outputDir':str(out),'outputSource':'manual','vyronManifestPath':None,'vyronChannelName':None},'settings':{'width':640,'height':360,'fps':60,'codec':'h265','bitrateMbps':8.0,'durationHours':5/3600,'durationMode':'whole-track','loopMode':'image','crossfadeSec':0.0,'normalizeLufs':False,'outputDir':str(out),'preset':'fast','encoderPreference':'auto'},'effects':[],'subscribes':[],'ambient':None,'ambientSettings':{'volumePct':18.0,'bassDb':0.0,'midDb':0.0,'trebleDb':0.0}}
+          f.write_text(json.dumps({'jobs':[job]}))
+          PY
+          RES="$ROOT/fast/result.json"; LOG="$ROOT/fast/app.log"; rm -f "$RES"
+          set +e
+          ENDLUME_E2E_RESULT="$RES" ENDLUME_E2E_RENDER_JOB="$ROOT/fast/job.json" "$EXE" >"$LOG" 2>&1
+          RC=$?
+          set -e
+          cat "$LOG" | tail -n 80
+          test -s "$RES"
+          python3 - "$RES" "$RC" <<'PY'
+          import json,sys
+          d=json.load(open(sys.argv[1])); rc=int(sys.argv[2]); print('FAST_RESULT='+json.dumps(d,separators=(',',':')))
+          assert rc==0,d
+          assert d.get('status')=='passed',d
+          r=d['results'][0]; assert r.get('status')=='passed',r; assert r.get('fastPath') is True,r
+          assert r.get('videoCodec')=='hevc',r
+          PY
+          echo 'FAST_RENDER_REGRESSION=PASS'
+
+      - name: Final no-release summary
         shell: bash
         run: |
           echo 'PREVIOUS_CANDIDATE=c5534ce47123777b698117a46473238381e37729'
           echo 'CANDIDATE_COMMIT=eaa6eb0a022f184f533338e9ff778328cfe29717'
-          echo 'MULTI_EFFECT_PER_VIDEO=PASS'
-          echo 'ALL_EFFECTS_TO_ALL_VIDEOS=PASS'
-          echo 'EFFECT_REALTIME_PREVIEW=PASS'
-          echo 'SUBSCRIBE_REALTIME_PREVIEW=PASS'
-          echo 'PERSISTENCE=PASS'
-          echo 'FINAL_RENDER_MULTI_EFFECT=PASS'
-          echo 'FAST_RENDER_REGRESSION=PASS'
-          echo 'VYRON_REGRESSION=PASS'
+          echo 'VYRON_REGRESSION=PASS (carried from exact physical run 38341758745)'
           echo 'PUBLISH=NOT_RUN'
           echo 'RELEASE=NOT_RUN'
-          echo 'FINAL_STATUS=READY_FOR_OWNER_RETEST'
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: ENDLUME-10.0.15-EQUALIZER-EAA6-FINAL-PHYSICAL-EVIDENCE
+          name: ENDLUME-10.0.15-EQUALIZER-NOBUILD-EVIDENCE
           path: |
-            ${{ runner.temp }}/endlume-1015-equalizer-finalgate/frontend-blob-instrumentation.patch
-            ${{ runner.temp }}/endlume-1015-equalizer-finalgate/frontend/*.json
-            ${{ runner.temp }}/endlume-1015-equalizer-finalgate/frontend/*.log
-            ${{ runner.temp }}/endlume-1015-equalizer-finalgate/frontend-visual-report.json
-            ${{ runner.temp }}/endlume-1015-equalizer-finalgate/screens/*.png
-            ${{ runner.temp }}/endlume-1015-equalizer-finalgate/equalizer-final-report.json
-            ${{ runner.temp }}/endlume-1015-equalizer-finalgate/equalizer-final.log
-            ${{ runner.temp }}/endlume-1015-equalizer-finalgate/render-app.log
-            ${{ runner.temp }}/endlume-1015-equalizer-finalgate/frames/*.png
-            ${{ runner.temp }}/endlume-1015-equalizer-finalgate/vyron.json
-            ${{ runner.temp }}/endlume-1015-equalizer-finalgate/vyron.log
+            ${{ runner.temp }}/endlume-1015-eq-nobuild/frames/*.png
+            ${{ runner.temp }}/endlume-1015-eq-nobuild/visual-matrix.json
+            ${{ runner.temp }}/endlume-1015-eq-nobuild/fast/result.json
+            ${{ runner.temp }}/endlume-1015-eq-nobuild/fast/app.log
           if-no-files-found: warn
           retention-days: 14

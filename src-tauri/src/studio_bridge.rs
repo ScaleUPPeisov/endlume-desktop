@@ -82,6 +82,17 @@ pub(crate) fn start(app:AppHandle){
             let root=workspace();
             if let Ok(root)=root{
                 if let Ok((inbox,_,_,_))=dirs(&root){
+                    // Persistent 3-second heartbeat proves the actual ENDLUME
+                    // bridge process is alive, not just that the inbox exists.
+                    let heartbeat=root.join("Bridge").join("endlume-heartbeat.json");
+                    let heartbeat_tmp=root.join("Bridge").join("endlume-heartbeat.tmp");
+                    let heartbeat_data=json!({"engine":"ENDLUME","bridge_version":1,
+                        "updated_at_ms":chrono::Utc::now().timestamp_millis()});
+                    if let Ok(bytes)=serde_json::to_vec(&heartbeat_data){
+                        if fs::write(&heartbeat_tmp,bytes).is_ok(){
+                            let _=fs::rename(&heartbeat_tmp,&heartbeat);
+                        }
+                    }
                     let mut files=fs::read_dir(inbox.clone()).ok().into_iter()
                         .flatten().filter_map(Result::ok).map(|x|x.path())
                         .filter(|p|p.extension().and_then(|s|s.to_str())==Some("json"))

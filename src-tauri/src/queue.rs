@@ -77,12 +77,24 @@ fn start_worker_if_needed(app:AppHandle,runtime:Arc<QueueRuntime>){
       *runtime.active_cancel.lock()=Some(cancel.clone());
       let outcome=render::render_job(&app,&job,cancel).await;
       *runtime.active_cancel.lock()=None;
-      if runtime.cancelled.lock().remove(&id){
+      let cancelled=runtime.cancelled.lock().remove(&id);
+      if cancelled{
         let _=app.emit("render-error",json!({"id":id,"status":"error","progress":100.0,"stage":"Остановлено пользователем"}));
-      }else if let Err(error)=outcome{
-        save_error_log(&job,&error);
-        let friendly=friendly_error(&error);
+      }else if let Err(ref error)=outcome{
+        save_error_log(&job,error);
+        let friendly=friendly_error(error);
         let _=app.emit("render-error",json!({"id":id,"status":"error","progress":100.0,"stage":format!("Ошибка: {friendly}"),"error":friendly}));
+      }
+      if let Some(uid)=id.strip_prefix("studio-"){
+        let receipt=if cancelled{
+          json!({"status":"error","job_id":uid,"error":"Отменено пользователем","engine":"ENDLUME"})
+        }else{
+          match outcome{
+            Ok(path)=>json!({"status":"completed","job_id":uid,"path":path,"engine":"ENDLUME","verified":true}),
+            Err(error)=>json!({"status":"error","job_id":uid,"error":friendly_error(&error),"engine":"ENDLUME"})
+          }
+        };
+        let _=crate::studio_bridge::write_receipt(uid,receipt);
       }
       *runtime.active.lock()=None;
       runtime.persist(&app);
@@ -152,5 +164,18 @@ pub fn resume_recovery(app:AppHandle,runtime:State<'_,Arc<QueueRuntime>>)->Resul
   let _=persistence::write_value(&app,"recovery.json",&json!({"interrupted":false}));
   runtime.persist(&app);
   start_worker_if_needed(app,runtime.inner().clone());
+  Ok(())
+}
+
+pub(crate) fn enqueue_bridge(app:AppHandle,runtime:Arc<QueueRuntime>,job:QueueJob)->Result<(),String>{
+  if !job.project.valid || job.project.media.is_empty() || job.project.audio.is_empty(){
+    return Err("Входной проект не содержит аудио или медиа".into())
+  }
+  if !job.project.id.starts_with("studio-"){return Err("Неверный ID Studio job".into());}
+  if job.settings.output_dir.trim().is_empty(){return Err("Не указана папка результата".into());}
+  runtime.pending.lock().push_back(job);
+  runtime.persist(&app);
+  let _=app.emit("queue-changed",queue_snapshot_value(runtime.as_ref()));
+  start_worker_if_needed(app,runtime);
   Ok(())
 }

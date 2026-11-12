@@ -9,6 +9,7 @@ const IMAGE_EXT:&[&str]=&["jpg","jpeg","png","webp","bmp","tif","tiff","heic","a
 const CANCELLED:&str="__ENDLUME_CANCELLED__";
 static ENCODER_CACHE:OnceLock<parking_lot::Mutex<HashMap<String,String>>>=OnceLock::new();
 static AUDIO_ENCODER_CACHE:OnceLock<String>=OnceLock::new();
+static STUDIO_RECEIPT_TICKS:OnceLock<parking_lot::Mutex<HashMap<String,Instant>>>=OnceLock::new();
 
 #[derive(Clone)]
 struct SubEvent{start:f64,end:f64,sub:SubscribePreset,event_start:f64}
@@ -154,6 +155,23 @@ fn emit_progress(app:&AppHandle,job:&QueueJob,started:i64,timer:&Instant,progres
   let elapsed=timer.elapsed().as_secs_f64();let eta=if progress>1.0{Some(elapsed*(100.0-progress)/progress)}else{None};
   let (cpu,ram,total,available)=metrics.unwrap_or((0.0,0,0,0));
   let _=app.emit("render-progress",Progress{id:job.project.id.clone(),status:"rendering".into(),progress:progress.clamp(0.0,99.9),stage:stage.into(),started_at:Some(started),elapsed_sec:elapsed,eta_sec:eta,result_path:None,result_bytes:None,actual_video_bitrate:None,cpu_pct:metrics.map(|_|cpu),ram_bytes:metrics.map(|_|ram),ram_total_bytes:metrics.map(|_|total),ram_available_bytes:metrics.map(|_|available),gpu_pct:None,encoder:Some(encoder.into()),attempt:Some(attempt)});
+  if let Some(job_id)=job.project.id.strip_prefix("studio-"){
+    // Throttle disk receipts independently of high-frequency Tauri events.
+    let ticks=STUDIO_RECEIPT_TICKS.get_or_init(||parking_lot::Mutex::new(HashMap::new()));
+    let write={
+      let mut map=ticks.lock();
+      let should=map.get(job_id).map(|at|at.elapsed()>=Duration::from_secs(5)).unwrap_or(true);
+      if should{map.insert(job_id.to_string(),Instant::now());}
+      should
+    };
+    if write{
+      let _=crate::studio_bridge::write_receipt(job_id,json!({
+        "status":"running","job_id":job_id,"engine":"ENDLUME",
+        "progress":progress.clamp(0.0,99.9),"stage":stage,
+        "elapsed_sec":elapsed,"updated_at":chrono::Utc::now().to_rfc3339()
+      }));
+    }
+  }
 }
 
 async fn run_ffmpeg(app:&AppHandle,job:&QueueJob,started:i64,timer:&Instant,args:Vec<String>,stage:&str,base:f64,span:f64,expected_sec:f64,encoder:&str,attempt:u32,cancel:&AtomicBool)->Result<(),String>{
@@ -346,7 +364,7 @@ fn write_side_files(job:&QueueJob,output_dir:&Path,durations:&[f64],final_durati
 
 async fn verify_result(app:&AppHandle,out:&Path,expected:f64,s:&RenderSettings)->Result<(),String>{let d=probe_duration(app,out.to_string_lossy().as_ref()).await?;if (d-expected).abs()>4.0{return Err(format!("Финальный файл имеет неверную длительность: {:0.1} сек вместо {:0.1}",d,expected))}if !probe_has_audio(app,out).await{return Err("В финальном файле отсутствует аудиодорожка".into())}let args=vec!["-v","error","-select_streams","v:0","-show_entries","stream=width,height","-of","csv=p=0:s=x",out.to_string_lossy().as_ref()].into_iter().map(String::from).collect();let (stdout,_)=output(app,"ffprobe",args).await?;let got=String::from_utf8_lossy(&stdout);if !got.trim().starts_with(&format!("{}x{}",s.width,s.height)){return Err(format!("Неверное разрешение результата: {}",got.trim()))}Ok(())}
 
-pub async fn render_job(app:&AppHandle,job:&QueueJob,cancel:Arc<AtomicBool>)->Result<(),String>{
+pub async fn render_job(app:&AppHandle,job:&QueueJob,cancel:Arc<AtomicBool>)->Result<String,String>{
   for p in &job.project.media{if !Path::new(p).is_file(){return Err(format!("Не найден файл изображения/видео: {}",Path::new(p).file_name().and_then(|x|x.to_str()).unwrap_or(p)));}}
   for p in &job.project.audio{if !Path::new(p).is_file(){return Err(format!("Не найден аудиофайл: {}",Path::new(p).file_name().and_then(|x|x.to_str()).unwrap_or(p)));}}
   if let Some(p)=job.ambient.as_ref().filter(|x|!x.trim().is_empty()){if !Path::new(p).is_file(){return Err(format!("Не найден ambient-файл: {}",Path::new(p).file_name().and_then(|x|x.to_str()).unwrap_or(p)));}}
@@ -358,7 +376,7 @@ pub async fn render_job(app:&AppHandle,job:&QueueJob,cancel:Arc<AtomicBool>)->Re
       let visual=assemble_visual(app,job,&source_master,master_duration,&fx,&subs,final_duration,&work,&encoder,attempt,&cancel,started,&timer).await?;let mux_mark=Instant::now();let mut args:Vec<String>=vec!["-hide_banner","-loglevel","error"].into_iter().map(String::from).collect();match visual{VisualSource::Loop(p)=>args.extend(vec!["-stream_loop","-1","-i",p.to_string_lossy().as_ref()].into_iter().map(String::from)),VisualSource::Long(p)=>args.extend(vec!["-i",p.to_string_lossy().as_ref()].into_iter().map(String::from))}match audio{AudioSource::Loop(p)=>args.extend(vec!["-stream_loop","-1","-i",p.to_string_lossy().as_ref()].into_iter().map(String::from)),AudioSource::Long(p)=>args.extend(vec!["-i",p.to_string_lossy().as_ref()].into_iter().map(String::from))}args.extend(vec!["-t",&final_duration.to_string(),"-map","0:v:0","-map","1:a:0","-c:v","copy","-c:a","copy","-progress","pipe:1","-y",out.to_string_lossy().as_ref()].into_iter().map(String::from));run_ffmpeg(app,job,started,&timer,args,"Собираю итоговое видео",90.0,6.0,final_duration,&encoder,attempt,&cancel).await?;emit_timing(app,&job.project.id,"final-mux",mux_mark.elapsed().as_secs_f64());emit_progress(app,job,started,&timer,97.0,"Финальная проверка FFprobe",&encoder,attempt,None);verify_result(app,&out,final_duration,&job.settings).await?;let result_stem=out.file_stem().and_then(|x|x.to_str()).unwrap_or(&job.project.name);write_side_files(job,&out_dir,&durations,final_duration,result_stem)?;Ok((durations,final_duration))
     }.await;
     match result{
-      Ok((_durations,_fd))=>{let bytes=std::fs::metadata(&out).ok().map(|m|m.len());let bitrate=probe_video_bitrate(app,&out).await;let _=app.emit("render-done",Progress{id:job.project.id.clone(),status:"done".into(),progress:100.0,stage:"Готово".into(),started_at:Some(started),elapsed_sec:timer.elapsed().as_secs_f64(),eta_sec:Some(0.0),result_path:Some(out.to_string_lossy().into_owned()),result_bytes:bytes,actual_video_bitrate:bitrate,cpu_pct:None,ram_bytes:None,ram_total_bytes:None,ram_available_bytes:None,gpu_pct:None,encoder:Some(encoder),attempt:Some(attempt)});let _=std::fs::remove_dir_all(&work);return Ok(())},
+      Ok((_durations,_fd))=>{let bytes=std::fs::metadata(&out).ok().map(|m|m.len());let bitrate=probe_video_bitrate(app,&out).await;let _=app.emit("render-done",Progress{id:job.project.id.clone(),status:"done".into(),progress:100.0,stage:"Готово".into(),started_at:Some(started),elapsed_sec:timer.elapsed().as_secs_f64(),eta_sec:Some(0.0),result_path:Some(out.to_string_lossy().into_owned()),result_bytes:bytes,actual_video_bitrate:bitrate,cpu_pct:None,ram_bytes:None,ram_total_bytes:None,ram_available_bytes:None,gpu_pct:None,encoder:Some(encoder),attempt:Some(attempt)});let _=std::fs::remove_dir_all(&work);return Ok(out.to_string_lossy().into_owned())},
       Err(e)=>{last_error=e;let _=std::fs::remove_dir_all(&work);let _=std::fs::remove_file(&out);if last_error==CANCELLED{return Err(last_error)}if attempt<2{emit_progress(app,job,started,&timer,2.0,"Проверка не пройдена — автоматический повтор",&encoder,attempt+1,None);}}
     }
   }

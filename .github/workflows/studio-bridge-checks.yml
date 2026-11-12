@@ -1,0 +1,39 @@
+name: Studio Bridge — safe macOS checks
+on:
+  push:
+    branches: ["feature/studio-cloud-inbox-bridge"]
+  pull_request:
+    paths:
+      - "src-tauri/src/studio_bridge.rs"
+      - "src-tauri/src/queue.rs"
+      - "src-tauri/src/render.rs"
+      - "src-tauri/src/lib.rs"
+      - ".github/workflows/studio-bridge-checks.yml"
+permissions:
+  contents: read
+jobs:
+  macos-build:
+    runs-on: macos-15
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Rust toolchain
+        run: rustup show
+      - name: Create test-only FFmpeg sidecar placeholders for tauri-build
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p src-tauri/binaries
+          for bin in ffmpeg ffprobe; do
+            if [[ ! -f "src-tauri/binaries/${bin}-aarch64-apple-darwin" ]]; then
+              : > "src-tauri/binaries/${bin}-aarch64-apple-darwin"
+              chmod +x "src-tauri/binaries/${bin}-aarch64-apple-darwin"
+            fi
+          done
+          # Cargo CHECK only; these empty placeholders are never shipped or rendered.
+      - name: Rust compile check (no updater signing)
+        run: cargo check --manifest-path src-tauri/Cargo.toml
+      - name: Studio bridge unit tests (no OAuth or external network)
+        run: cargo test --manifest-path src-tauri/Cargo.toml studio_bridge::tests

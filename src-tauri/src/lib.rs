@@ -6,6 +6,7 @@ mod preview;
 mod license;
 mod benchmark;
 mod queue;
+mod studio_bridge;
 mod cache;
 mod system;
 
@@ -34,6 +35,7 @@ pub fn run(){
     ])
     .setup(|app|{
       persistence::mark_session_open(&app.handle().clone())?;
+      studio_bridge::start(app.handle().clone());
       Ok(())
     })
     .on_window_event(|window,event|{

@@ -6,7 +6,7 @@
   "platform": "macos-arm64",
   "ui_contract_checks": 1000,
   "bundle_id": "ai.channelart.factory",
-  "run_id": "43265806786",
-  "source_sha": "2770782932d4aad9f80389c79cca5321dea9e92f",
-  "checked_at": "2026-11-12T17:06:13.549191Z"
+  "run_id": "43265823867",
+  "source_sha": "0a1e4a23aff6995dae75faf8a5c85d3f7751bc2d",
+  "checked_at": "2026-11-12T17:11:33.171282Z"
 }

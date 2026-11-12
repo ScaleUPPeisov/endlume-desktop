@@ -1,0 +1,2 @@
+===== source_parts =====
+CHANNELART_DIAGNOSTIC_FAIL step=source_checksum code=41

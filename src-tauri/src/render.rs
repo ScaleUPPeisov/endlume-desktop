@@ -9,6 +9,7 @@ const IMAGE_EXT:&[&str]=&["jpg","jpeg","png","webp","bmp","tif","tiff","heic","a
 const CANCELLED:&str="__ENDLUME_CANCELLED__";
 static ENCODER_CACHE:OnceLock<parking_lot::Mutex<HashMap<String,String>>>=OnceLock::new();
 static AUDIO_ENCODER_CACHE:OnceLock<String>=OnceLock::new();
+static STUDIO_RECEIPT_TICKS:OnceLock<parking_lot::Mutex<HashMap<String,Instant>>>=OnceLock::new();
 
 #[derive(Clone)]
 struct SubEvent{start:f64,end:f64,sub:SubscribePreset,event_start:f64}
@@ -154,6 +155,23 @@ fn emit_progress(app:&AppHandle,job:&QueueJob,started:i64,timer:&Instant,progres
   let elapsed=timer.elapsed().as_secs_f64();let eta=if progress>1.0{Some(elapsed*(100.0-progress)/progress)}else{None};
   let (cpu,ram,total,available)=metrics.unwrap_or((0.0,0,0,0));
   let _=app.emit("render-progress",Progress{id:job.project.id.clone(),status:"rendering".into(),progress:progress.clamp(0.0,99.9),stage:stage.into(),started_at:Some(started),elapsed_sec:elapsed,eta_sec:eta,result_path:None,result_bytes:None,actual_video_bitrate:None,cpu_pct:metrics.map(|_|cpu),ram_bytes:metrics.map(|_|ram),ram_total_bytes:metrics.map(|_|total),ram_available_bytes:metrics.map(|_|available),gpu_pct:None,encoder:Some(encoder.into()),attempt:Some(attempt)});
+  if let Some(job_id)=job.project.id.strip_prefix("studio-"){
+    // Throttle disk receipts independently of high-frequency Tauri events.
+    let ticks=STUDIO_RECEIPT_TICKS.get_or_init(||parking_lot::Mutex::new(HashMap::new()));
+    let write={
+      let mut map=ticks.lock();
+      let should=map.get(job_id).map(|at|at.elapsed()>=Duration::from_secs(5)).unwrap_or(true);
+      if should{map.insert(job_id.to_string(),Instant::now());}
+      should
+    };
+    if write{
+      let _=crate::studio_bridge::write_receipt(job_id,json!({
+        "status":"running","job_id":job_id,"engine":"ENDLUME",
+        "progress":progress.clamp(0.0,99.9),"stage":stage,
+        "elapsed_sec":elapsed,"updated_at":chrono::Utc::now().to_rfc3339()
+      }));
+    }
+  }
 }
 
 async fn run_ffmpeg(app:&AppHandle,job:&QueueJob,started:i64,timer:&Instant,args:Vec<String>,stage:&str,base:f64,span:f64,expected_sec:f64,encoder:&str,attempt:u32,cancel:&AtomicBool)->Result<(),String>{

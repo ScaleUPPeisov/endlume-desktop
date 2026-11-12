@@ -21,6 +21,18 @@ jobs:
           persist-credentials: false
       - name: Rust toolchain
         run: rustup show
+      - name: Create test-only FFmpeg sidecar placeholders for tauri-build
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p src-tauri/binaries
+          for bin in ffmpeg ffprobe; do
+            if [[ ! -f "src-tauri/binaries/${bin}-aarch64-apple-darwin" ]]; then
+              : > "src-tauri/binaries/${bin}-aarch64-apple-darwin"
+              chmod +x "src-tauri/binaries/${bin}-aarch64-apple-darwin"
+            fi
+          done
+          # Cargo CHECK only; these empty placeholders are never shipped or rendered.
       - name: Rust compile check (no updater signing)
         run: cargo check --manifest-path src-tauri/Cargo.toml
       - name: Studio bridge unit tests (no OAuth or external network)

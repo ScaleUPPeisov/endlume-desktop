@@ -249,3 +249,50 @@ jobs:
               print("QUEUE_DIAG_TARGET_ERROR_"+code+"="+str(count))
           print("QUEUE_DIAG_LOCAL_STATE_READ_ONLY=PASS")
           PY
+      - name: Report installed VYRON 6.1.18 executable provenance without secrets
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          /usr/bin/python3 - <<'PY'
+          import plistlib,hashlib,subprocess,re
+          from pathlib import Path
+          paths=[Path("/Applications/VYRON.app"),Path.home()/"Applications"/"VYRON.app"]
+          app=next((x for x in paths if (x/"Contents"/"Info.plist").is_file()),None)
+          if app is None:
+              print("INSTALLED_VYRON_APP_FOUND=NO")
+              raise SystemExit(0)
+          with (app/"Contents"/"Info.plist").open("rb") as f: meta=plistlib.load(f)
+          print("INSTALLED_VYRON_APP_FOUND=YES")
+          for src,dst in [
+            ("CFBundleShortVersionString","PRODUCT_VERSION"),
+            ("CFBundleVersion","BUNDLE_VERSION"),
+            ("CFBundleIdentifier","BUNDLE_ID")]:
+              v=str(meta.get(src,"unknown"))
+              if re.fullmatch(r"[A-Za-z0-9._-]{1,100}",v):
+                  print("INSTALLED_VYRON_"+dst+"="+v)
+          name=str(meta.get("CFBundleExecutable",""))
+          exe=app/"Contents"/"MacOS"/name
+          if exe.is_file() and exe.stat().st_size<150_000_000:
+              digest=hashlib.sha256()
+              with exe.open("rb") as h:
+                  while (block:=h.read(1024*1024)):
+                      digest.update(block)
+              print("INSTALLED_VYRON_EXECUTABLE_SHA256="+digest.hexdigest())
+              print("INSTALLED_VYRON_EXECUTABLE_BYTES="+str(exe.stat().st_size))
+              # Do not expose embedded secrets or raw strings: only check
+              # whether the current feature HEAD appears inside binary.
+              candidate=b"478b1d77a221810857e671cc57afa05f6fd93ced"
+              with exe.open("rb") as h:
+                  binary=h.read()
+              print("INSTALLED_VYRON_FEATURE_SHA_EMBEDDED="+("YES" if candidate in binary else "NO"))
+          else:
+              print("INSTALLED_VYRON_EXECUTABLE_FOUND=NO")
+          p=subprocess.run(["/usr/bin/codesign","--verify","--deep","--strict",str(app)],capture_output=True,text=True)
+          print("INSTALLED_VYRON_CODESIGN_VERIFY="+("PASS" if p.returncode==0 else "FAIL"))
+          p=subprocess.run(["/usr/bin/codesign","-dv","--verbose=4",str(app)],capture_output=True,text=True)
+          merged=p.stdout+"\n"+p.stderr
+          team=re.search(r"(?m)^TeamIdentifier=([A-Za-z0-9]+)$",merged)
+          team_label="PRESENT" if team and team.group(1)!="not set" else "NOT_SET"
+          print("INSTALLED_VYRON_TEAM_ID="+team_label)
+          print("INSTALLED_VYRON_PROVENANCE_READ_ONLY=PASS")
+          PY

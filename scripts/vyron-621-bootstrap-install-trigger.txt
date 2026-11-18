@@ -1,0 +1,1 @@
+Run guarded local 6.1.21 bootstrap install only after M1 build run 44355043835 succeeded. Source commit 08bef81a3683b788de5ff734612a9e9f6d94f920; approved public SHA 1c97657fd2a7ba4c2a0ce5b5361518eeacf76da274521b1977d57a55b8dbcec9; preserve all owner state, Keychain, upload queues and Stable-feed.

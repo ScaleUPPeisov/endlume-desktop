@@ -1,0 +1,91 @@
+name: VYRON 6.1.21 owner M1 postinstall runtime and 33-channel truth
+
+on:
+  push:
+    branches:
+      - diagnostics/vyron-m1-connection-20261118
+    paths:
+      - scripts/vyron-621-bootstrap-postinstall-trigger.txt
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 5
+    steps:
+      - name: Independent post-runner 6.1.21 trust and owner state verification
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          APP=/Applications/VYRON.app
+          test "$(uname -m)" = arm64
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")" = 6.1.21
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Contents/Info.plist")" = studio.channelflow.desktop
+          /usr/bin/codesign --verify --deep --strict "$APP" >/dev/null 2>&1
+          EXENAME="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")"
+          STAGES=()
+          while IFS= read -r p; do STAGES+=("$p"); done < <(find "$HOME/.vyron-owner-rollback" -mindepth 1 -maxdepth 1 -type d -name 'staged-621-local-bootstrap-*' -print)
+          test "${#STAGES[@]}" = 1
+          STAGE="${STAGES[0]}"
+          expected="$(sed -n 's/^executable_sha256=//p' "$STAGE/VERIFIED")"
+          test "$expected" = "$(shasum -a 256 "$APP/Contents/MacOS/$EXENAME" | awk '{print $1}')"
+          echo 'VYRON_621_POSTINSTALL_BUNDLE_AND_CODESIGN=PASS'
+          if /usr/bin/pgrep -x channelflow >/dev/null 2>&1; then echo 'VYRON_621_AFTER_RUNNER_PROCESS=RUNNING'; else echo 'VYRON_621_AFTER_RUNNER_PROCESS=NOT_RUNNING'; fi
+          /usr/bin/python3 - <<'PY'
+          from pathlib import Path
+          from urllib.parse import quote
+          from collections import Counter
+          import re,base64,hashlib,json,sqlite3,subprocess
+          h=Path.home()
+          app=Path('/Applications/VYRON.app')
+          exename=subprocess.check_output(['/usr/libexec/PlistBuddy','-c','Print :CFBundleExecutable',str(app/'Contents/Info.plist')],text=True).strip()
+          data=(app/'Contents'/'MacOS'/exename).read_bytes()
+          approved='1c97657fd2a7ba4c2a0ce5b5361518eeacf76da274521b1977d57a55b8dbcec9'
+          valid=0
+          for m in re.finditer(rb'dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWdu[0-9A-Za-z+/=]{35,300}',data):
+            s=m.group().decode()
+            for end in range(70,len(s)+1):
+              try:t=base64.b64decode(s[:end],validate=True).decode()
+              except Exception:continue
+              lines=t.strip().splitlines()
+              if len(lines)!=2 or not lines[0].startswith('untrusted comment: minisign public key: '):continue
+              try:raw=base64.b64decode(lines[1],validate=True)
+              except Exception:continue
+              if len(raw)!=42 or raw[:2]!=b'Ed':continue
+              keyid=lines[0].rsplit(' ',1)[-1]
+              if keyid.upper().zfill(16)==raw[2:10][::-1].hex().upper() and hashlib.sha256(raw).hexdigest()==approved:
+                valid+=1
+              break
+          assert valid==1 and data.count(approved.encode())>=1
+          print('VYRON_621_UPDATER_TRUST_KEYID_AND_PIN=PASS')
+          state=json.loads((h/'Library'/'Application Support'/'studio.channelflow.desktop'/'state.json').read_text())
+          channels=state.get('channels',[])
+          assert isinstance(channels,list) and len(channels)==33
+          print('VYRON_621_POSTINSTALL_CHANNELS=33')
+          root=h/'Library'/'WebKit'/'studio.channelflow.desktop'
+          statuses={}
+          for p in root.rglob('*'):
+            if not p.is_file() or p.suffix.lower() not in ('.db','.sqlite3') or p.stat().st_size>50_000_000:continue
+            try:
+              db=sqlite3.connect('file:'+quote(str(p))+'?mode=ro',uri=True,timeout=2)
+              try:
+                if not db.execute("SELECT name FROM sqlite_master WHERE name='ItemTable'").fetchone():continue
+                for key,value in db.execute("SELECT key,value FROM ItemTable WHERE key='vyron:channel-runway:v1'"):
+                  for s in ([value.decode('utf-16le','ignore'),value.decode('utf-8','ignore')] if isinstance(value,bytes) else [str(value)]):
+                    try:v=json.loads(s)
+                    except (ValueError,TypeError):continue
+                    if isinstance(v,dict) and isinstance(v.get('channels'),dict):
+                      statuses={k:str(row.get('dataState','UNKNOWN')) for k,row in v['channels'].items() if isinstance(row,dict)}
+                      break
+              finally:db.close()
+            except (OSError,ValueError,sqlite3.Error):pass
+          assert len(statuses)==33
+          print('VYRON_621_RUNWAY_STORAGE_RECORDS=33')
+          counts=Counter(statuses.values())
+          for key in ('CONFIRMED_SCHEDULE','CONFIRMED_EMPTY','PARTIAL_DATA','API_FAILED','AUTH_REQUIRED'):
+            print('VYRON_621_'+key+'='+str(counts[key]))
+          print('VYRON_621_LIVE_YOUTUBE_VERIFICATION=NOT_PERFORMED')
+          print('VYRON_621_OAUTH_AND_USER_DATA=READ_ONLY')
+          PY

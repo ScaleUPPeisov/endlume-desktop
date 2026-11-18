@@ -1,0 +1,39 @@
+name: VYRON updater storage diagnostic safe metadata
+
+on:
+  push:
+    branches:
+      - diagnostics/vyron-m1-connection-20261118
+    paths:
+      - '.github/workflows/vyron-619-updater-storage-locations.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 2
+    steps:
+      - name: Count WebKit DB file formats without touching content
+        shell: bash
+        run: |
+          /usr/bin/python3 - <<'PY'
+          from collections import Counter
+          from pathlib import Path
+          home=Path.home()
+          for name,root in [
+           ('WEBKIT',home/'Library'/'WebKit'/'studio.channelflow.desktop'),
+           ('APPDATA',home/'Library'/'Application Support'/'studio.channelflow.desktop'),
+           ('WEBDATA',home/'Library'/'WebKit'/'studio.channelflow.desktop'/'WebsiteData')
+          ]:
+              if not root.is_dir():
+                  print(name+'_PRESENT=NO');continue
+              p=[x for x in root.rglob('*') if x.is_file()]
+              suffixes=Counter((x.suffix or 'NO_SUFFIX').lower() for x in p)
+              print(name+'_PRESENT=YES')
+              print(name+'_FILECOUNT='+str(len(p)))
+              print(name+'_SQLITE_CANDIDATES='+str(sum(1 for x in p if x.suffix.lower() in ('.sqlite3','.db','.sqlite','.localstorage'))))
+              print(name+'_KNOWN_EXTENSIONS='+','.join(sorted(k for k in suffixes if k in ('.sqlite3','.db','.sqlite','.localstorage','.log','.json','.ldb'))))
+          print('PRIVATE_WEBKIT_FILE_PATHS_NOT_PRINTED=PASS')
+          PY

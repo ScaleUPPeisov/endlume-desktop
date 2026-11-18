@@ -90,3 +90,76 @@ jobs:
                   print("INVENTORY_"+k.upper()+"="+str(v))
           print("VYRON_LOCAL_INVENTORY_READ_ONLY=PASS")
           PY
+      - name: Correlate active channel state with cached schedule safely
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          /usr/bin/python3 - <<'PY'
+          import json
+          from pathlib import Path
+          from datetime import datetime,timezone
+          root=Path.home()/"Library"/"Application Support"/"studio.channelflow.desktop"
+          statefile=root/"state.json"
+          cache=root/"youtube-inventory"
+          now=datetime.now(timezone.utc)
+          if not statefile.is_file():
+              print("VYRON_STATE_PRESENT=NO")
+          else:
+              try:
+                  state=json.loads(statefile.read_text(encoding="utf-8"))
+                  channels=state.get("channels",[])
+                  if not isinstance(channels,list):
+                      channels=[]
+                  print("VYRON_STATE_PRESENT=YES")
+                  print("VYRON_STATE_CHANNELS="+str(len(channels)))
+                  all_ids=set()
+                  mapped=0
+                  targets={"Neon Drive FM":"NEON_DRIVE_FM","After Dark Voice":"AFTER_DARK_VOICE"}
+                  for channel in channels:
+                      if not isinstance(channel,dict): continue
+                      cid=channel.get("id")
+                      if not isinstance(cid,str) or not cid or "/" in cid or ".." in cid: continue
+                      all_ids.add(cid)
+                      p=cache/(cid+".json")
+                      if p.is_file(): mapped+=1
+                      if channel.get("name") in targets:
+                          label=targets[channel["name"]]
+                          print(label+"_CHANNEL_IN_STATE=YES")
+                          print(label+"_CACHE_PRESENT="+("YES" if p.is_file() else "NO"))
+                          if p.is_file() and p.stat().st_size < 20_000_000:
+                              try:
+                                  data=json.loads(p.read_text(encoding="utf-8"))
+                                  videos=data.get("videos",[])
+                                  if not isinstance(videos,list):videos=[]
+                                  info=data.get("syncInfo",{})
+                                  if not isinstance(info,dict):info={}
+                                  future=0
+                                  for v in videos:
+                                      if not isinstance(v,dict) or str(v.get("privacyStatus","")).lower()!="private":
+                                          continue
+                                      ts=v.get("publishAt")
+                                      if not isinstance(ts,str): continue
+                                      try:
+                                          if datetime.fromisoformat(ts.replace("Z","+00:00"))>now:
+                                              future+=1
+                                      except ValueError:
+                                          pass
+                                  print(label+"_CACHED_VIDEOS="+str(len(videos)))
+                                  print(label+"_FUTURE_PRIVATE_PUBLISH_AT="+str(future))
+                                  print(label+"_SCHEDULE_COMPLETE="+str(info.get("scheduleComplete") is True).upper())
+                                  print(label+"_SYNC_COMPLETE="+str(info.get("syncComplete") is True).upper())
+                                  print(label+"_COVERAGE_VERIFIED="+str(info.get("scheduledCoverageVerified") is True).upper())
+                                  print(label+"_LAST_COMPLETE_PRESENT="+str(bool(data.get("lastCompleteAt"))).upper())
+                              except (OSError,ValueError,UnicodeError):
+                                  print(label+"_CACHE_READABLE=NO")
+                  print("VYRON_ACTIVE_CHANNELS_WITH_CACHE="+str(mapped))
+                  if cache.is_dir():
+                      n=sum(1 for p in cache.glob("*.json") if p.stem not in all_ids)
+                      print("VYRON_UNMATCHED_CACHE_FILES="+str(n))
+                  for name,label in targets.items():
+                      if not any(isinstance(c,dict) and c.get("name")==name for c in channels):
+                          print(label+"_CHANNEL_IN_STATE=NO")
+              except (OSError,ValueError,UnicodeError):
+                  print("VYRON_STATE_PARSE=FAILED")
+          print("VYRON_TARGET_SCHEDULE_AUDIT_READ_ONLY=PASS")
+          PY

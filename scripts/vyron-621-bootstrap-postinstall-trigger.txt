@@ -1,0 +1,1 @@
+Verify installed VYRON 6.1.21 independently AFTER GitHub install runner cleanup. Confirm exact pinned source/binary SHA, approved Ed25519 public-key trust, 33 persisted channels and runway records, running process and unchanged Stable feed. Do not call YouTube API.

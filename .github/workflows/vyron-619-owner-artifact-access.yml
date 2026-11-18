@@ -1,0 +1,47 @@
+name: VYRON owner Mac authenticated artifact read preflight
+
+on:
+  push:
+    branches:
+      - diagnostics/vyron-m1-connection-20261118
+    paths:
+      - '.github/workflows/vyron-619-owner-artifact-access.yml'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  preflight:
+    name: Check owner Mac can retrieve verified release artifact, no download
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 3
+    steps:
+      - name: Check GitHub artifact access without exposing credentials
+        shell: bash
+        env:
+          RUNNER_REPO_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          if command -v gh >/dev/null 2>&1; then
+            echo 'OWNER_MAC_GH_CLI=YES'
+          else
+            echo 'OWNER_MAC_GH_CLI=NO'
+            exit 0
+          fi
+          if env -u GITHUB_TOKEN -u GH_TOKEN gh auth status >/dev/null 2>&1; then
+            echo 'OWNER_MAC_PERSONAL_GH_AUTH=YES'
+            if env -u GITHUB_TOKEN -u GH_TOKEN gh api 'repos/ScaleUPPeisov/scaleup-dashboards/actions/runs/44310077600/artifacts' >/dev/null 2>&1; then
+              echo 'OWNER_MAC_PERSONAL_ARTIFACT_READ=YES'
+            else
+              echo 'OWNER_MAC_PERSONAL_ARTIFACT_READ=NO'
+            fi
+          else
+            echo 'OWNER_MAC_PERSONAL_GH_AUTH=NO'
+          fi
+          if GH_TOKEN="$RUNNER_REPO_TOKEN" gh api 'repos/ScaleUPPeisov/scaleup-dashboards/actions/runs/44310077600/artifacts' >/dev/null 2>&1; then
+            echo 'OWNER_MAC_RUNNER_TOKEN_ARTIFACT_READ=YES'
+          else
+            echo 'OWNER_MAC_RUNNER_TOKEN_ARTIFACT_READ=NO'
+          fi
+          echo 'OWNER_MAC_ARTIFACT_PREFLIGHT_READ_ONLY=PASS'

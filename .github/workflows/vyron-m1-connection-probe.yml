@@ -46,3 +46,47 @@ jobs:
             echo "VYRON_PROCESS_RUNNING=NO_OR_DIFFERENT_NAME"
           fi
           echo "VYRON_MAC_READ_ONLY_CONNECTION=PASS"
+      - name: Read-only aggregate of VYRON local inventory (never print video data)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          /usr/bin/python3 - <<'PY'
+          import json
+          from pathlib import Path
+          root=Path.home()/"Library"/"Application Support"/"studio.channelflow.desktop"/"youtube-inventory"
+          print("VYRON_INVENTORY_DIR_PRESENT="+("YES" if root.is_dir() else "NO"))
+          if root.is_dir():
+              files=[x for x in root.iterdir() if x.is_file() and x.suffix==".json"]
+              counts={"files":len(files),"valid":0,"corrupt":0,"schema_mismatch":0,
+                  "schedule_complete_true":0,"schedule_complete_false":0,
+                  "video_entries":0,"entries_with_publishAt":0,"with_last_complete_at":0,
+                  "large_files_skipped":0}
+              for p in files:
+                  try:
+                      if p.stat().st_size>20_000_000:
+                          counts["large_files_skipped"]+=1
+                          continue
+                      d=json.loads(p.read_text(encoding="utf-8"))
+                      if not isinstance(d,dict):
+                          counts["corrupt"]+=1
+                          continue
+                      counts["valid"]+=1
+                      if d.get("schemaVersion")!=2:
+                          counts["schema_mismatch"]+=1
+                      s=d.get("syncInfo")
+                      if isinstance(s,dict) and s.get("scheduleComplete") is True:
+                          counts["schedule_complete_true"]+=1
+                      else:
+                          counts["schedule_complete_false"]+=1
+                      if d.get("lastCompleteAt"):
+                          counts["with_last_complete_at"]+=1
+                      videos=d.get("videos")
+                      if isinstance(videos,list):
+                          counts["video_entries"]+=len(videos)
+                          counts["entries_with_publishAt"]+=sum(1 for v in videos if isinstance(v,dict) and v.get("publishAt"))
+                  except (OSError,ValueError,UnicodeError):
+                      counts["corrupt"]+=1
+              for k,v in counts.items():
+                  print("INVENTORY_"+k.upper()+"="+str(v))
+          print("VYRON_LOCAL_INVENTORY_READ_ONLY=PASS")
+          PY

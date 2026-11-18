@@ -31,7 +31,7 @@ jobs:
               "UPDATER_PLATFORM_NOT_FOUND","UPDATER_PREFLIGHT_UNAVAILABLE"}
           events=[]
           fingerprint=[]
-          for p in (q for q in root.rglob('*') if q.is_file() and q.suffix.lower() in ('.db','.sqlite3') and q.stat().st_size<50_000_000)):
+          for p in (q for q in root.rglob('*') if q.is_file() and q.suffix.lower() in ('.db','.sqlite3') and q.stat().st_size<50_000_000):
               try:
                   db=sqlite3.connect("file:"+quote(str(p))+"?mode=ro",uri=True,timeout=2)
                   try:

@@ -1,0 +1,76 @@
+name: VYRON updater error chronology (codes only)
+
+on:
+  push:
+    branches:
+      - diagnostics/vyron-m1-connection-20261118
+    paths:
+      - '.github/workflows/vyron-619-updater-error-timeline.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 3
+    steps:
+      - name: Print timestamp plus whitelisted error code only
+        shell: bash
+        run: |
+          /usr/bin/python3 - <<'PY'
+          import json,sqlite3,re,datetime
+          from pathlib import Path
+          from urllib.parse import quote
+          root=Path.home()/"Library"/"WebKit"/"studio.channelflow.desktop"
+          keys={"vyron:updater-last-error-fingerprint","vyron:error-history:v1"}
+          whitelist={"UPDATER_MANIFEST_FETCH_FAILED","UPDATER_CONFIGURATION_INVALID",
+              "UPDATER_TRUST_MIGRATION_REQUIRED","UPDATER_KEY_TRUST_NOT_VERIFIED",
+              "UPDATER_SIGNATURE_INVALID","UPDATER_ARTIFACT_HASH_MISMATCH",
+              "UPDATER_MANIFEST_SHA_MISSING","UPDATER_MANIFEST_SHA_INVALID",
+              "UPDATER_PLATFORM_NOT_FOUND","UPDATER_PREFLIGHT_UNAVAILABLE"}
+          events=[]
+          fingerprint=[]
+          for p in (q for q in root.rglob('*') if q.is_file() and q.suffix.lower() in ('.db','.sqlite3') and q.stat().st_size<50_000_000)):
+              try:
+                  db=sqlite3.connect("file:"+quote(str(p))+"?mode=ro",uri=True,timeout=2)
+                  try:
+                      for (t,) in db.execute("SELECT name FROM sqlite_master WHERE type='table' LIMIT 25"):
+                          if t!="ItemTable":continue
+                          cols={x[1] for x in db.execute("PRAGMA table_info('ItemTable')")}
+                          if not {"key","value"}<=cols:continue
+                          rows=db.execute("SELECT key,value FROM ItemTable WHERE key IN (?,?) LIMIT 3",tuple(keys)).fetchall()
+                          for k,v in rows:
+                              dec=[v.decode('utf-8','ignore'),v.decode('utf-16le','ignore')] if isinstance(v,bytes) else [str(v)]
+                              for raw in dec:
+                                  if k=="vyron:updater-last-error-fingerprint":
+                                      fingerprint.extend(code for code in whitelist if code in raw)
+                                  if k!="vyron:error-history:v1":continue
+                                  try:items=json.loads(raw)
+                                  except (ValueError,TypeError):continue
+                                  if not isinstance(items,list):continue
+                                  for item in items:
+                                      if not isinstance(item,dict) or not str(item.get('stage','')).startswith('updater-'):continue
+                                      code=str(item.get('errorCode',''))
+                                      if code not in whitelist:continue
+                                      ts=item.get('createdAt')
+                                      if not isinstance(ts,(int,float)) or ts<0:continue
+                                      dt=datetime.datetime.fromtimestamp(ts/1000,datetime.timezone.utc).strftime('%Y-%m-%dT%H:%MZ')
+                                      version=str(item.get('currentVersion',''))
+                                      if not re.fullmatch(r'\d+\.\d+\.\d+',version):version='unknown'
+                                      events.append((int(ts),dt,code,version))
+                  finally:db.close()
+              except (OSError,ValueError,sqlite3.Error):
+                  pass
+          events.sort(reverse=True)
+          uniq=[]
+          for x in events:
+              if x not in uniq:uniq.append(x)
+          for i,e in enumerate(uniq[:8],1):
+              print(f"UPDATER_EVENT_{i}_UTC={e[1]}")
+              print(f"UPDATER_EVENT_{i}_CODE={e[2]}")
+              print(f"UPDATER_EVENT_{i}_CURRENT_VERSION={e[3]}")
+          print("UPDATER_LATEST_SAVED_ERROR_CODE="+(",".join(sorted(set(fingerprint))) or "NONE"))
+          print("UPDATER_EVENT_HISTORY_CANDIDATES="+str(len(uniq)))
+          print("UPDATER_PRIVATE_VALUES_AND_CONTEXT_NOT_LOGGED=PASS")
+          PY

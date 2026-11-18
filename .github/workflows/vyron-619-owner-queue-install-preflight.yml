@@ -1,0 +1,73 @@
+name: VYRON 6.1.19 M1 upload-idle preinstall audit
+
+on:
+  push:
+    branches:
+      - diagnostics/vyron-m1-connection-20261118
+    paths:
+      - '.github/workflows/vyron-619-owner-queue-install-preflight.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: Check active uploads without reading video bytes or OAuth
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 3
+    steps:
+      - name: Read only aggregate queue states
+        shell: bash
+        run: |
+          /usr/bin/python3 - <<'PY'
+          import json,sqlite3,collections
+          from pathlib import Path
+          from urllib.parse import quote
+          home=Path.home()
+          app=home/"Library"/"Application Support"/"studio.channelflow.desktop"
+          statefile=app/"state.json"
+          if not statefile.is_file():
+              print("VYRON_INSTALL_GUARD_STATE=UNREADABLE")
+              raise SystemExit(1)
+          s=json.loads(statefile.read_text(encoding="utf-8"))
+          jobs=s.get("jobs",[])
+          if not isinstance(jobs,list):raise SystemExit("VYRON_INSTALL_GUARD_JOBS_INVALID")
+          counts=collections.Counter(str(j.get("status","")) for j in jobs if isinstance(j,dict))
+          print("VYRON_JOB_UPLOADING="+str(counts.get("UPLOADING",0)))
+          print("VYRON_JOB_ACTIVE_RENDER="+str(sum(counts.get(x,0) for x in ("RENDERING","PROCESSING","DOWNLOADING"))))
+          root=home/"Library"/"WebKit"/"studio.channelflow.desktop"
+          seen={}
+          keynames=("vyron:youtube-upload-queue:v1","vyron:youtube-upload-queue:v1:staging")
+          dbfiles=[p for p in root.rglob('*') if p.is_file() and p.suffix.lower() in ('.db','.sqlite3') and p.stat().st_size<50_000_000] if root.exists() else []
+          for p in dbfiles:
+              try:
+                  db=sqlite3.connect("file:"+quote(str(p))+"?mode=ro",uri=True,timeout=2)
+                  try:
+                      t=db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='ItemTable'").fetchone()
+                      if not t:continue
+                      for k,v in db.execute("SELECT key,value FROM ItemTable WHERE key IN (?,?) LIMIT 3",keynames):
+                          if isinstance(k,bytes):k=k.decode('utf-8','ignore')
+                          if k not in keynames:continue
+                          if isinstance(v,bytes):
+                              texts=[v.decode('utf-16le','ignore'),v.decode('utf-8','ignore')]
+                          else:texts=[str(v)]
+                          for text in texts:
+                              try:
+                                  parsed=json.loads(text)
+                                  if isinstance(parsed,dict) and isinstance(parsed.get('entries'),list):
+                                      seen[k]=parsed
+                                      break
+                              except (ValueError,TypeError):pass
+                  finally:db.close()
+              except (OSError,sqlite3.Error,ValueError):pass
+          print("VYRON_QUEUE_LOCALSTORAGE_READABLE="+("YES" if seen else "NO"))
+          p=seen.get("vyron:youtube-upload-queue:v1:staging") or seen.get("vyron:youtube-upload-queue:v1")
+          if p:
+              n=collections.Counter(str(x.get("state","")) for x in p["entries"] if isinstance(x,dict))
+              for state in ("RUNNING","QUEUED","PAUSED","FAILED"):
+                  print("VYRON_QUEUE_"+state+"="+str(n.get(state,0)))
+              print("VYRON_QUEUE_ENTRIES_TOTAL="+str(len(p["entries"])))
+          else:
+              print("VYRON_QUEUE_ENTRIES=UNVERIFIED")
+          print("VYRON_INSTALL_GUARD_READ_ONLY=PASS")
+          PY

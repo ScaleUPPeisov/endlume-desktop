@@ -1,0 +1,79 @@
+name: VYRON M1 pre-6.1.19 local-only safety backup
+
+on:
+  push:
+    branches:
+      - diagnostics/vyron-m1-connection-20261118
+    paths:
+      - '.github/workflows/vyron-619-owner-backup.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  guarded-local-backup:
+    name: Backup existing VYRON.app and state on owner's Mac without changing source
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 8
+    steps:
+      - name: Verify exact installed app and copy into private rollback directory
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          APP=/Applications/VYRON.app
+          test -d "$APP"
+          test ! -L "$APP"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Contents/Info.plist")" = studio.channelflow.desktop
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")" = 6.1.18
+          /usr/bin/codesign --verify --deep --strict "$APP" >/dev/null 2>&1
+          EXE="$APP/Contents/MacOS/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")"
+          ACTUAL="$(shasum -a 256 "$EXE" | awk '{print $1}')"
+          EXPECTED=af313fbac5515162edf19144ea4359f1c1319a553e35bedb1dfc50cbfd5daf29
+          test "$ACTUAL" = "$EXPECTED"
+          BASE="$HOME/.vyron-owner-rollback"
+          mkdir -p "$BASE"
+          chmod 700 "$BASE"
+          DATA="$HOME/Library/Application Support/studio.channelflow.desktop"
+          WEBKIT="$HOME/Library/WebKit/studio.channelflow.desktop"
+          APP_KB="$(du -sk "$APP" | awk '{print $1}')"
+          DATA_KB=0
+          WEBKIT_KB=0
+          if test -d "$DATA"; then DATA_KB="$(du -sk "$DATA" | awk '{print $1}')"; fi
+          if test -d "$WEBKIT"; then WEBKIT_KB="$(du -sk "$WEBKIT" | awk '{print $1}')"; fi
+          test "$DATA_KB" -lt 524288
+          test "$WEBKIT_KB" -lt 524288
+          REQUIRED_KB=$(( APP_KB + DATA_KB + WEBKIT_KB + 1048576 ))
+          FREE_KB="$(df -Pk "$HOME" | awk 'END {print $4}')"
+          test "$FREE_KB" -gt "$REQUIRED_KB"
+          DEST="$(mktemp -d "$BASE/owner-pre619-XXXXXX")"
+          trap 'echo "OWNER_ROLLBACK_BACKUP_INCOMPLETE=YES"' ERR
+          /usr/bin/ditto "$APP" "$DEST/VYRON.app"
+          if test -d "$DATA"; then /usr/bin/ditto "$DATA" "$DEST/application-support"; fi
+          if test -d "$WEBKIT"; then /usr/bin/ditto "$WEBKIT" "$DEST/webkit-app-storage"; fi
+          SAVED="$(shasum -a 256 "$DEST/VYRON.app/Contents/MacOS/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")" | awk '{print $1}')"
+          test "$SAVED" = "$EXPECTED"
+          /usr/bin/codesign --verify --deep --strict "$DEST/VYRON.app" >/dev/null 2>&1
+          python3 - "$DATA" "$DEST/sqlite-online" <<'PY'
+          import sys,sqlite3
+          from pathlib import Path
+          src,dst=Path(sys.argv[1]),Path(sys.argv[2])
+          suffixes={'.db','.sqlite','.sqlite3'}
+          databases=[p for p in src.rglob('*') if p.is_file() and p.suffix.lower() in suffixes] if src.is_dir() else []
+          if len(databases)>20: raise SystemExit("SQLITE_BACKUP_TOO_MANY")
+          for p in databases:
+              if p.stat().st_size>512*1024*1024: raise SystemExit("SQLITE_BACKUP_TOO_LARGE")
+              out=dst/p.relative_to(src)
+              out.parent.mkdir(parents=True,exist_ok=True)
+              read=sqlite3.connect('file:'+str(p)+'?mode=ro',uri=True,timeout=10)
+              write=sqlite3.connect(str(out),timeout=10)
+              try: read.backup(write,pages=200,sleep=0.2)
+              finally: write.close();read.close()
+          print("OWNER_SQLITE_ONLINE_BACKUPS="+str(len(databases)))
+          PY
+          echo "OWNER_618_APP_SHA_AND_CODESIGN_BACKUP=PASS"
+          echo "OWNER_APP_STATE_BACKUP_PRESENT=$([ -d "$DEST/application-support" ] && echo YES || echo NO)"
+          echo "OWNER_WEBKIT_BACKUP_PRESENT=$([ -d "$DEST/webkit-app-storage" ] && echo YES || echo NO)"
+          echo "OWNER_ROLLBACK_BACKUP_COMPLETE=YES"
+          echo "OWNER_BACKUP_BASENAME=$(basename "$DEST")"
+          echo "OWNER_APP_STATE_NOT_MODIFIED=PASS"

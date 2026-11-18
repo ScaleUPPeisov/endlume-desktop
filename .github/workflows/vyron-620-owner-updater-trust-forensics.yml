@@ -1,0 +1,47 @@
+name: VYRON 6.1.20 owner updater trust read-only forensics
+
+on:
+  push:
+    branches:
+      - diagnostics/vyron-m1-connection-20261118
+    paths:
+      - .github/workflows/vyron-620-owner-updater-trust-forensics.yml
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 4
+    steps:
+      - name: Inspect installed binary trust anchor without secrets or state changes
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          APP=/Applications/VYRON.app
+          INFO="$APP/Contents/Info.plist"
+          test -d "$APP" && test ! -L "$APP"
+          VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$INFO")
+          ID=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$INFO")
+          EXENAME=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$INFO")
+          BIN="$APP/Contents/MacOS/$EXENAME"
+          test -f "$BIN"
+          /usr/bin/codesign --verify --deep --strict "$APP" >/dev/null 2>&1
+          echo "UPDATER_FORENSIC_VERSION=$VERSION"
+          echo "UPDATER_FORENSIC_IDENTIFIER=$ID"
+          echo "UPDATER_FORENSIC_EXE_SHA256=$(shasum -a 256 "$BIN" | awk '{print $1}')"
+          echo "UPDATER_FORENSIC_RUNNING=$(/usr/bin/pgrep -x channelflow >/dev/null 2>&1 && echo YES || echo NO)"
+          python3 - "$BIN" <<'PY'
+          from pathlib import Path
+          import sys
+          b=Path(sys.argv[1]).read_bytes()
+          legacy=b'aa6fb45ab082ef39279e841dc40b0f85e5b33f23746f77557b6f93e3e72c2c06'
+          rotated=b'1c97657fd2a7ba4c2a0ce5b5361518eeacf76da274521b1977d57a55b8dbcec9'
+          print('UPDATER_FORENSIC_ROTATED_PIN_PRESENT_IN_BINARY='+str(rotated in b))
+          print('UPDATER_FORENSIC_LITERAL_UNVERIFIED_PRESENT_IN_BINARY='+str(b'unverified' in b))
+          print('UPDATER_FORENSIC_LEGACY_REFERENCE_PRESENT_IN_BINARY='+str(legacy in b))
+          print('UPDATER_FORENSIC_SIGNED_BUNDLE_UNTOUCHED=YES')
+          PY
+          echo "UPDATER_FORENSIC_NO_YOUTUBE_API_CALLS=YES"
+          echo "UPDATER_FORENSIC_NO_KEYCHAIN_ACCESS=YES"

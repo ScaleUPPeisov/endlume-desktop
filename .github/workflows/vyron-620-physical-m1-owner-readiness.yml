@@ -1,0 +1,79 @@
+name: VYRON 6.1.20 owner M1 read-only readiness (no change)
+
+on:
+  push:
+    branches:
+      - diagnostics/vyron-m1-connection-20261118
+    paths:
+      - '.github/workflows/vyron-620-physical-m1-owner-readiness.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 3
+    steps:
+      - name: Verify installed version and saved schedule-state counts only
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          APP=/Applications/VYRON.app
+          test -d "$APP"
+          /usr/bin/codesign --verify --deep --strict "$APP" >/dev/null 2>&1
+          VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")"
+          test "$VERSION" = 6.1.19
+          echo "VYRON_620_READINESS_INSTALLED=6.1.19"
+          if /usr/bin/pgrep -x channelflow >/dev/null 2>&1; then
+            echo "VYRON_620_READINESS_PROCESS=RUNNING"
+          else
+            echo "VYRON_620_READINESS_PROCESS=NOT_RUNNING"
+          fi
+          /usr/bin/python3 - <<'PY'
+          import json,sqlite3
+          from pathlib import Path
+          from urllib.parse import quote
+          from collections import Counter
+          home=Path.home()
+          root=home/'Library'/'Application Support'/'studio.channelflow.desktop'
+          state=json.loads((root/'state.json').read_text(encoding='utf-8'))
+          channels=state.get('channels',[])
+          jobs=state.get('jobs',[])
+          if not isinstance(channels,list) or len(channels)!=33: raise SystemExit('VYRON_OWNER_EXPECTED_33_CHANNELS_MISSING')
+          print('VYRON_OWNER_CHANNELS='+str(len(channels)))
+          print('VYRON_OWNER_ACTIVE_UPLOADS='+str(sum(j.get('status')=='UPLOADING' for j in jobs if isinstance(j,dict))))
+          known={str(c.get('id')) for c in channels if isinstance(c,dict)}
+          web=home/'Library'/'WebKit'/'studio.channelflow.desktop'
+          found={}
+          if web.is_dir():
+            for p in web.rglob('*'):
+              if not p.is_file() or p.suffix.lower() not in ('.sqlite3','.db') or p.stat().st_size>50_000_000: continue
+              try:
+                db=sqlite3.connect('file:'+quote(str(p))+'?mode=ro',uri=True,timeout=2)
+                try:
+                  if not db.execute("SELECT name FROM sqlite_master WHERE name='ItemTable'").fetchone(): continue
+                  for k,v in db.execute("SELECT key,value FROM ItemTable WHERE key IN (?,?) LIMIT 3",('vyron:channel-runway:v1','vyron:youtube-upload-queue:v1')):
+                    if isinstance(k,bytes): k=k.decode('utf-8','ignore')
+                    candidates=[v.decode('utf-16le','ignore'),v.decode('utf-8','ignore')] if isinstance(v,bytes) else [str(v)]
+                    for s in candidates:
+                      try: payload=json.loads(s)
+                      except (ValueError,TypeError):continue
+                      if isinstance(payload,dict):
+                        found[k]=payload
+                        break
+                finally: db.close()
+              except (OSError,ValueError,sqlite3.Error):pass
+          rw=found.get('vyron:channel-runway:v1',{})
+          records=rw.get('channels',{}) if isinstance(rw.get('channels'),dict) else {}
+          valid=[records[k] for k in known if k in records and isinstance(records[k],dict)]
+          status=Counter(str(x.get('dataState','UNKNOWN')) for x in valid)
+          print('VYRON_RUNWAY_RECORDS='+str(len(valid)))
+          for k in ('CONFIRMED_SCHEDULE','CONFIRMED_EMPTY','PARTIAL_DATA','STALE_CACHE','API_FAILED','AUTH_REQUIRED','UNKNOWN'):
+            print('VYRON_RUNWAY_'+k+'='+str(status[k]))
+          queue=found.get('vyron:youtube-upload-queue:v1')
+          if isinstance(queue,dict) and isinstance(queue.get('entries'),list):
+            print('VYRON_QUEUE_ACTIVE='+str(sum(1 for x in queue['entries'] if isinstance(x,dict) and x.get('state') in ('QUEUED','RUNNING'))))
+          else:print('VYRON_QUEUE_ACTIVE=UNVERIFIED')
+          print('VYRON_MAC_PRIVATE_DATA_AND_TOKENS_NOT_LOGGED=PASS')
+          PY

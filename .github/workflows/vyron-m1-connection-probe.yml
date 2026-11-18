@@ -211,3 +211,41 @@ jobs:
               print(label+"_SYNCINFO_KEYS="+str(len(info)))
           print("VYRON_AFFECTED_CHANNELS_CACHE_READ_ONLY=PASS")
           PY
+      - name: Audit VIDEO 041-043 collision evidence from installed VYRON (metadata only)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          /usr/bin/python3 - <<'PY'
+          import json, collections
+          from pathlib import Path
+          p=Path.home()/"Library"/"Application Support"/"studio.channelflow.desktop"/"state.json"
+          state=json.loads(p.read_text(encoding="utf-8"))
+          jobs=[j for j in state.get("jobs",[]) if isinstance(j,dict)]
+          hist=[h for h in state.get("uploadHistory",[]) if isinstance(h,dict)]
+          target=[j for j in jobs if j.get("number") in (41,42,43)]
+          print("QUEUE_DIAG_JOBS_ALL="+str(len(jobs)))
+          print("QUEUE_DIAG_HISTORY_ALL="+str(len(hist)))
+          print("QUEUE_DIAG_TARGET_041_043="+str(len(target)))
+          print("QUEUE_DIAG_TARGET_CHANNELS="+str(len(set(str(j.get("channelId","")) for j in target))))
+          print("QUEUE_DIAG_TARGET_JOB_ID_UNIQUE="+str(len(set(str(j.get("id","")) for j in target))))
+          print("QUEUE_DIAG_TARGET_REMOTE_VIDEO_ID_COUNT="+str(sum(bool(j.get("youtubeVideoId")) for j in target)))
+          valid_states={"READY_UPLOAD","UPLOADING","SCHEDULED","ERROR","NEED_IMAGE","PENDING","READY"}
+          states=collections.Counter(str(j.get("status","UNKNOWN")) for j in target)
+          for key in sorted(valid_states):
+              if states[key]: print("QUEUE_DIAG_TARGET_STATUS_"+key+"="+str(states[key]))
+          print("QUEUE_DIAG_TARGET_STATUS_OTHER="+str(sum(v for k,v in states.items() if k not in valid_states)))
+          for kind, field in (("CURRENT", "currentSourceFingerprint"),("UPLOADED","uploadFingerprint")):
+              values=[(str(j.get("channelId","")),str(j.get(field,"")).lower()) for j in target if j.get(field)]
+              counts=collections.Counter(values)
+              print("QUEUE_DIAG_TARGET_"+kind+"_FINGERPRINTS_PRESENT="+str(len(values)))
+              print("QUEUE_DIAG_TARGET_"+kind+"_SAME_CHANNEL_FINGERPRINT_COLLISIONS="+str(sum(v-1 for v in counts.values() if v>1)))
+          ids=set(str(j.get("id","")) for j in target)
+          target_hist=[h for h in hist if str(h.get("jobId","")) in ids]
+          print("QUEUE_DIAG_TARGET_HISTORY_RECORDS="+str(len(target_hist)))
+          print("QUEUE_DIAG_TARGET_HISTORY_WITH_YOUTUBE_ID="+str(sum(bool(h.get("youtubeVideoId")) for h in target_hist)))
+          error_codes={"UPLOAD_QUEUE_DUPLICATE","UPLOAD_QUEUE_DUPLICATE_VERIFIED","UPLOAD_ALREADY_HAS_VIDEO_ID","UPLOAD_QUEUE_PERSIST_FAILED"}
+          for code in sorted(error_codes):
+              count=sum(code in str(j.get("error","")) for j in target)
+              print("QUEUE_DIAG_TARGET_ERROR_"+code+"="+str(count))
+          print("QUEUE_DIAG_LOCAL_STATE_READ_ONLY=PASS")
+          PY

@@ -1,0 +1,37 @@
+name: VYRON 6.1.19 detached from GitHub Runner process cleanup
+
+on:
+  push:
+    branches:
+      - diagnostics/vyron-m1-connection-20261118
+    paths:
+      - '.github/workflows/vyron-619-detached-macos-launch.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  launch:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 3
+    steps:
+      - name: Launch approved installed app without Actions tracking identity
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          APP=/Applications/VYRON.app
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")" = 6.1.19
+          /usr/bin/codesign --verify --deep --strict "$APP" >/dev/null 2>&1
+          if /usr/bin/pgrep -x channelflow >/dev/null 2>&1; then
+            echo 'VYRON_619_DETACHED_LAUNCH_ALREADY_RUNNING=YES'
+            exit 0
+          fi
+          if env | /usr/bin/grep -q '^RUNNER_TRACKING_ID='; then
+            echo 'VYRON_619_ACTIONS_PROCESS_TRACKING_PRESENT=YES'
+          else
+            echo 'VYRON_619_ACTIONS_PROCESS_TRACKING_PRESENT=NO'
+          fi
+          /usr/bin/env -u RUNNER_TRACKING_ID /usr/bin/open -a "$APP"
+          sleep 14
+          /usr/bin/pgrep -x channelflow >/dev/null
+          echo 'VYRON_619_DETACHED_GUI_LAUNCH_STARTED=PASS'

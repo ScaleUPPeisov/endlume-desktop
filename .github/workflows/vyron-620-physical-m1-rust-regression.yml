@@ -1,0 +1,64 @@
+name: VYRON 6.1.20 physical M1 Rust regression (isolated, no install)
+
+on:
+  push:
+    branches:
+      - diagnostics/vyron-m1-connection-20261118
+    paths:
+      - .github/workflows/vyron-620-physical-m1-rust-regression.yml
+
+permissions:
+  contents: read
+
+jobs:
+  mac-rust-regression:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 35
+    steps:
+      - name: Verify host, source and macOS SDK without changing applications
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(uname -m)" = arm64
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' /Applications/VYRON.app/Contents/Info.plist)" = 6.1.19
+          /usr/bin/codesign --verify --deep --strict /Applications/VYRON.app >/dev/null 2>&1
+          SDK="$(xcrun --sdk macosx --show-sdk-path)"
+          test -d "$SDK"
+          xcrun --find clang >/dev/null
+          echo "VYRON_620_MACOS_SDK=PASS"
+          FREE_KB="$(df -Pk "$RUNNER_TEMP" | awk 'NR==2 {print $4}')"
+          test "$FREE_KB" -gt 18874368
+          echo "VYRON_620_DISK_MINIMUM=PASS"
+      - name: Fetch exact approved 6.1.20 source (public repo; no credentials persisted)
+        uses: actions/checkout@v4
+        with:
+          repository: ScaleUPPeisov/scaleup-dashboards
+          ref: c60e53c9f12e4dad730c77479a8d000a53422021
+          persist-credentials: false
+          clean: true
+      - name: Perform isolated offline Rust unit regression
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(git rev-parse HEAD)" = c60e53c9f12e4dad730c77479a8d000a53422021
+          node -e "const c=require('./src-tauri/tauri.conf.json'); if(c.version!=='6.1.15'||c.identifier!=='studio.channelflow.desktop') process.exit(1)"
+          ORIGINAL_HOME="$HOME"
+          TEST_HOME="$(mktemp -d "$RUNNER_TEMP/vyron620-testhome.XXXXXX")"
+          TARGET="$(mktemp -d "$RUNNER_TEMP/vyron620-cargotarget.XXXXXX")"
+          cleanup() {
+            case "$TEST_HOME" in "$RUNNER_TEMP"/vyron620-testhome.*) rm -rf "$TEST_HOME" ;; esac
+            case "$TARGET" in "$RUNNER_TEMP"/vyron620-cargotarget.*) rm -rf "$TARGET" ;; esac
+          }
+          trap cleanup EXIT
+          export HOME="$TEST_HOME"
+          export CARGO_HOME="$ORIGINAL_HOME/.cargo"
+          export RUSTUP_HOME="$ORIGINAL_HOME/.rustup"
+          export CARGO_TARGET_DIR="$TARGET"
+          export CARGO_INCREMENTAL=0
+          export CARGO_BUILD_JOBS=2
+          export CARGO_PROFILE_TEST_DEBUG=0
+          echo "VYRON_620_TEST_HOME=ISOLATED"
+          echo "VYRON_620_OWNER_APPLICATION=UNTOUCHED"
+          cargo test --locked --manifest-path src-tauri/Cargo.toml --lib
+          echo "VYRON_620_NATIVE_RUST_TESTS=PASS"
+          echo "VYRON_620_INSTALLED_VERSION=6.1.19_PRESERVED"

@@ -1,0 +1,79 @@
+name: VYRON 6.1.20 owner 33-channel evidence-only diagnostic
+
+on:
+  push:
+    branches:
+      - diagnostics/vyron-m1-connection-20261118
+    paths:
+      - .github/workflows/vyron-620-owner-runway-evidence-audit.yml
+
+permissions:
+  contents: read
+
+jobs:
+  evidence:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 4
+    steps:
+      - name: Read saved runway states and known failure reasons without API calls or token access
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' /Applications/VYRON.app/Contents/Info.plist)" = 6.1.20
+          /usr/bin/python3 - <<'PY'
+          from pathlib import Path
+          from urllib.parse import quote
+          from collections import Counter
+          import sqlite3,json,re,datetime
+          h=Path.home()
+          state=json.loads((h/'Library'/'Application Support'/'studio.channelflow.desktop'/'state.json').read_text())
+          channels=state.get('channels',[])
+          if not isinstance(channels,list) or len(channels)!=33: raise SystemExit('INVALID_CHANNEL_COUNT')
+          names={str(c.get('id')):str(c.get('name','?')) for c in channels if isinstance(c,dict)}
+          root=h/'Library'/'WebKit'/'studio.channelflow.desktop'
+          records={}
+          ledger={}
+          quota={}
+          seen=set()
+          for p in root.rglob('*'):
+            if not p.is_file() or p.suffix.lower() not in ('.db','.sqlite3') or p.stat().st_size>50_000_000: continue
+            try:
+              db=sqlite3.connect('file:'+quote(str(p))+'?mode=ro',uri=True,timeout=2)
+              try:
+                if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='ItemTable'").fetchone():continue
+                keys=('vyron:channel-runway:v1','vyron:youtube-quota-ledger:v3','vyron:youtube-operation-ledger:v1')
+                for key,val in db.execute("SELECT key,value FROM ItemTable WHERE key IN (?,?,?)", keys):
+                  if isinstance(key,bytes):key=key.decode('utf-8','ignore')
+                  if key in seen:continue
+                  strings=[val.decode('utf-16le','ignore'),val.decode('utf-8','ignore')] if isinstance(val,bytes) else [str(val)]
+                  payload=None
+                  for s in strings:
+                    try:payload=json.loads(s);break
+                    except(ValueError,TypeError):pass
+                  if not isinstance(payload,dict):continue
+                  seen.add(key)
+                  if key==keys[0]:records=payload.get('channels',{})
+                  elif key==keys[1]:quota=payload
+                  else:ledger=payload
+              finally:db.close()
+            except (OSError,ValueError,sqlite3.Error): pass
+          if not isinstance(records,dict): raise SystemExit('RUNWAY_CORRUPT')
+          print('VYRON_EVIDENCE_CHANNELS='+str(len(names)))
+          print('VYRON_EVIDENCE_RUNWAY_RECORDS='+str(len(records)))
+          print('VYRON_EVIDENCE_STATUS_TOTALS='+json.dumps(dict(Counter(str(v.get('dataState','UNKNOWN')) for v in records.values() if isinstance(v,dict))),sort_keys=True))
+          safe_codes={'AUTHORITATIVE_INVENTORY_INCOMPLETE','AUTHORITATIVE_CHANNEL_ID_MISMATCH','AUTHORITATIVE_VIDEO_CHANNEL_MISMATCH','OWNER_SEARCH_FAILED','OWNER_SEARCH_NOT_EXHAUSTED','OWNER_SEARCH_PAGE_LIMIT','PLAYLIST_TOTAL_METADATA_MISMATCH','UPLOADS_PLAYLIST_SCHEDULE_COVERAGE_MISMATCH','SCHEDULE_EMPTY_NOT_INDEPENDENTLY_VERIFIED','HYDRATION_BATCH_FAILED','QUOTA_STOPPED','PARTIAL_DATA'}
+          def code_only(s):
+            s=str(s or '')
+            return ','.join(sorted({code for code in safe_codes if code in s})) or ('NO_REASON' if not s else 'OTHER_ERROR')
+          for cid,name in sorted(names.items(),key=lambda p:p[1].casefold()):
+            rec=records.get(cid)
+            if not isinstance(rec,dict):
+              print('CHANNEL '+json.dumps({'name':name,'state':'MISSING'},ensure_ascii=False));continue
+            state=str(rec.get('dataState','UNKNOWN'))
+            print('CHANNEL '+json.dumps({'name':name,'state':state,'scheduledCount':rec.get('scheduledVideoCount'),'scheduledUntil':rec.get('scheduledUntil'),'attemptAt':rec.get('lastRefreshAttemptAt'),'lastSyncAt':rec.get('lastScheduleSync'),'errorCodes':code_only(rec.get('lastRefreshError'))},ensure_ascii=False))
+          if quota:
+            b=quota.get('buckets',{})
+            print('QUOTA '+json.dumps({'ptDate':quota.get('ptDate'),'general':b.get('general'),'search':b.get('search')},ensure_ascii=False))
+          print('EVIDENCE_API_CALLS=0')
+          print('EVIDENCE_OAUTH_AND_SECRETS=UNREAD')
+          PY

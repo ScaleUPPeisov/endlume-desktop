@@ -1,0 +1,48 @@
+name: VYRON physical Mac read-only connection probe
+
+on:
+  push:
+    branches:
+      - diagnostics/vyron-m1-connection-20261118
+    paths:
+      - .github/workflows/vyron-m1-connection-probe.yml
+
+permissions:
+  contents: read
+
+jobs:
+  probe-physical-vyron-mac:
+    name: Physical VYRON M1 connection (read-only)
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 5
+    steps:
+      - name: Verify Mac and VYRON without accessing user data
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          echo "PROBE_MODE=READ_ONLY"
+          if [ "$(uname -m)" = "arm64" ]; then
+            echo "PHYSICAL_MAC_ARM64=PASS"
+          else
+            echo "PHYSICAL_MAC_ARM64=FAIL"
+            exit 1
+          fi
+          installed=no
+          for bundle in "/Applications/VYRON.app" "$HOME/Applications/VYRON.app"; do
+            if [ -f "$bundle/Contents/Info.plist" ]; then
+              installed=yes
+              version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$bundle/Contents/Info.plist" 2>/dev/null || printf 'unknown')
+              case "$version" in
+                *[!0-9A-Za-z._-]*) version=redacted ;;
+              esac
+              echo "VYRON_APP_VERSION=$version"
+              break
+            fi
+          done
+          echo "VYRON_INSTALLED_STANDARD_LOCATION=$installed"
+          if /usr/bin/pgrep -x channelflow >/dev/null 2>&1; then
+            echo "VYRON_PROCESS_RUNNING=YES"
+          else
+            echo "VYRON_PROCESS_RUNNING=NO_OR_DIFFERENT_NAME"
+          fi
+          echo "VYRON_MAC_READ_ONLY_CONNECTION=PASS"

@@ -1,0 +1,93 @@
+name: VYRON 6.1.19 authenticated M1 staging (never install)
+
+on:
+  push:
+    branches:
+      - diagnostics/vyron-m1-connection-20261118
+    paths:
+      - '.github/workflows/vyron-619-owner-stage-verified.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  stage:
+    name: Verify signed candidate on physical Mac without touching VYRON.app
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 12
+    steps:
+      - name: Read-only production, authenticated archive download and code-sign validation
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          BASE="$HOME/.vyron-owner-rollback"
+          test -d "$BASE/owner-pre619-ODbRDC/VYRON.app"
+          test "$(uname -m)" = arm64
+          command -v gh >/dev/null
+          STAGE="$(mktemp -d "$BASE/staged-619-XXXXXX")"
+          mkdir -p "$STAGE/artifact" "$STAGE/mount"
+          echo "VYRON_619_STAGE_NAME=$(basename "$STAGE")"
+          gh run download 44313022600 -R ScaleUPPeisov/scaleup-dashboards \
+            -n VYRON-6.1.19-M1-PERSONAL-LOCAL-NOT-NOTARIZED \
+            -D "$STAGE/artifact"
+          EVIDENCE="$STAGE/artifact/evidence"
+          DMG="$STAGE/artifact/VYRON-6.1.19-M1-personal-local.dmg"
+          ARCHIVE="$STAGE/artifact/VYRON.app.tar.gz"
+          SIGNATURE="$STAGE/artifact/VYRON.app.tar.gz.sig"
+          for p in "$EVIDENCE/status.txt" "$EVIDENCE/executable-sha256.txt" \
+            "$EVIDENCE/dmg-sha256.txt" "$EVIDENCE/updater-archive-sha256.txt" \
+            "$EVIDENCE/updater-signature-sha256.txt" "$DMG" "$ARCHIVE" "$SIGNATURE"; do
+            test -f "$p" && test ! -L "$p" && test -s "$p"
+          done
+          grep -Fxq 'source=1493ee42a54bf19f2dc1e180e92158a0c775e03e' "$EVIDENCE/status.txt"
+          grep -Fxq 'version=6.1.19' "$EVIDENCE/status.txt"
+          grep -Fxq 'bundle_id=studio.channelflow.desktop' "$EVIDENCE/status.txt"
+          grep -Fxq 'architecture=arm64' "$EVIDENCE/status.txt"
+          grep -Fxq 'stable_feed=UNCHANGED' "$EVIDENCE/status.txt"
+          check_digest() {
+            EXPECTED="$(awk 'NR==1{print $1}' "$1")"
+            ACTUAL="$(shasum -a 256 "$2" | awk '{print $1}')"
+            test "$EXPECTED" = "$ACTUAL"
+          }
+          check_digest "$EVIDENCE/dmg-sha256.txt" "$DMG"
+          check_digest "$EVIDENCE/updater-archive-sha256.txt" "$ARCHIVE"
+          check_digest "$EVIDENCE/updater-signature-sha256.txt" "$SIGNATURE"
+          hdiutil verify "$DMG" >/dev/null
+          MOUNT="$STAGE/mount"
+          attached=0
+          cleanup() {
+            if [ "$attached" -eq 1 ]; then hdiutil detach "$MOUNT" -quiet || true; fi
+          }
+          trap cleanup EXIT
+          hdiutil attach -readonly -nobrowse -mountpoint "$MOUNT" "$DMG" >/dev/null
+          attached=1
+          APP="$MOUNT/VYRON.app"
+          test -d "$APP" && test ! -L "$APP"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Contents/Info.plist")" = studio.channelflow.desktop
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")" = 6.1.19
+          EXENAME="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")"
+          test -f "$APP/Contents/MacOS/$EXENAME"
+          lipo -archs "$APP/Contents/MacOS/$EXENAME" | tr ' ' '\n' | grep -Fxq arm64
+          EXPECTED_EXE="$(awk 'NR==1 {print $1}' "$EVIDENCE/executable-sha256.txt")"
+          test "$(shasum -a 256 "$APP/Contents/MacOS/$EXENAME" | awk '{print $1}')" = "$EXPECTED_EXE"
+          /usr/bin/codesign --verify --deep --strict "$APP" >/dev/null 2>&1
+          /usr/bin/ditto "$APP" "$STAGE/VYRON.app"
+          /usr/bin/codesign --verify --deep --strict "$STAGE/VYRON.app" >/dev/null 2>&1
+          test "$(shasum -a 256 "$STAGE/VYRON.app/Contents/MacOS/$EXENAME" | awk '{print $1}')" = "$EXPECTED_EXE"
+          hdiutil detach "$MOUNT" -quiet
+          attached=0
+          test -d "/Applications/VYRON.app"
+          INSTALLED="$(shasum -a 256 "/Applications/VYRON.app/Contents/MacOS/$EXENAME" | awk '{print $1}')"
+          test "$INSTALLED" = af313fbac5515162edf19144ea4359f1c1319a553e35bedb1dfc50cbfd5daf29
+          echo "VYRON_619_AUTHENTICATED_DOWNLOAD=PASS"
+          echo "VYRON_619_DMG_AND_ARCHIVE_SHA256=PASS"
+          echo "VYRON_619_CODESIGN_AND_ARM64=PASS"
+          echo "VYRON_619_EXECUTABLE_SHA256=PASS"
+          echo "VYRON_619_BACKUP_PRESENT=PASS"
+          echo "VYRON_618_INSTALLED_ORIGINAL_UNMODIFIED=PASS"
+          if test -w "/Applications" && test -w "/Applications/VYRON.app"; then echo "VYRON_OWNER_INSTALL_WRITE_ACCESS=YES"; else echo "VYRON_OWNER_INSTALL_WRITE_ACCESS=NO"; fi
+          if /usr/bin/pgrep -x channelflow >/dev/null 2>&1; then echo "VYRON_APP_PROCESS_RUNNING=YES"; else echo "VYRON_APP_PROCESS_RUNNING=NO"; fi
+          echo "VYRON_619_STAGE_READY=PASS"

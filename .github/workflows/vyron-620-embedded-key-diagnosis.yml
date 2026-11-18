@@ -1,0 +1,57 @@
+name: VYRON 6.1.20 embedded updater key structure diagnosis (read-only)
+
+on:
+  push:
+    branches: [diagnostics/vyron-m1-connection-20261118]
+    paths:
+      - .github/workflows/vyron-620-embedded-key-diagnosis.yml
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 5
+    steps:
+      - name: Inspect key and trust strings in actual installed Mach-O, no secrets
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' /Applications/VYRON.app/Contents/Info.plist)" = 6.1.20
+          python3 - <<'PY'
+          import pathlib,re,base64,hashlib,collections
+          bundle=pathlib.Path('/Applications/VYRON.app')
+          name=__import__('subprocess').check_output(['/usr/libexec/PlistBuddy','-c','Print :CFBundleExecutable',str(bundle/'Contents/Info.plist')],text=True).strip()
+          b=(bundle/'Contents'/'MacOS'/name).read_bytes()
+          approved='1c97657fd2a7ba4c2a0ce5b5361518eeacf76da274521b1977d57a55b8dbcec9'
+          compromised='aa6fb45ab082ef39279e841dc40b0f85e5b33f23746f77557b6f93e3e72c2c06'
+          print('EMBEDDED_APPROVED_HASH_OCCURRENCES='+str(b.count(approved.encode())))
+          print('EMBEDDED_UNVERIFIED_OCCURRENCES='+str(b.count(b'unverified')))
+          print('EMBEDDED_COMPROMISED_HASH_OCCURRENCES='+str(b.count(compromised.encode())))
+          pattern=rb'dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWdu[0-9A-Za-z+/=]{35,300}'
+          found=[]
+          for m in re.finditer(pattern,b):
+            s=m.group().decode('ascii')
+            for end in range(70,len(s)+1):
+              frag=s[:end]
+              try: decoded=base64.b64decode(frag,validate=True).decode('utf-8')
+              except Exception:continue
+              lines=decoded.strip().splitlines()
+              if len(lines)!=2 or not lines[0].startswith('untrusted comment: minisign public key: '):continue
+              try: raw=base64.b64decode(lines[1],validate=True)
+              except Exception:continue
+              if len(raw)!=42 or raw[:2]!=b'Ed':continue
+              fingerprint=hashlib.sha256(raw).hexdigest()
+              keyid=lines[0].rsplit(' ',1)[-1]
+              expected=raw[2:10][::-1].hex().upper()
+              rec={'header_id_chars':len(keyid),'embedded_key_id_matches':keyid.upper().zfill(16)==expected,'fingerprint_matches_approved':fingerprint==approved,'fingerprint_matches_compromised':fingerprint==compromised,'rust_header_requires_16_chars':len(keyid)==16}
+              if rec not in found:found.append(rec)
+              break
+          print('EMBEDDED_PUBKEY_MATCH_CANDIDATES='+str(len(found)))
+          for x in found[:6]:
+            print('EMBEDDED_PUBKEY_FACTS='+str(x))
+          if not found:print('EMBEDDED_PUBKEY_DISCOVERY=NO_MATCH_WITH_SAFE_HEURISTIC')
+          print('OWNER_STATE=UNMODIFIED')
+          print('YOUTUBE_API_CALLS=0')
+          PY

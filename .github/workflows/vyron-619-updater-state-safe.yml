@@ -1,0 +1,59 @@
+name: VYRON 6.1.18 updater error code from WebKit DB (read-only)
+
+on:
+  push:
+    branches:
+      - diagnostics/vyron-m1-connection-20261118
+    paths:
+      - '.github/workflows/vyron-619-updater-state-safe.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  safe-updater-code:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 3
+    steps:
+      - name: Only selected updater codes, never values or private data
+        shell: bash
+        run: |
+          /usr/bin/python3 - <<'PY'
+          import json,sqlite3,re
+          from pathlib import Path
+          from urllib.parse import quote
+          root=Path.home()/"Library"/"WebKit"/"studio.channelflow.desktop"
+          keys={"vyron:updater-last-error-fingerprint","vyron:error-history:v1"}
+          patterns={"UPDATER_MANIFEST_FETCH_FAILED","UPDATER_CONFIGURATION_INVALID",
+              "UPDATER_TRUST_MIGRATION_REQUIRED","UPDATER_KEY_TRUST_NOT_VERIFIED",
+              "UPDATER_SIGNATURE_INVALID","UPDATER_ARTIFACT_HASH_MISMATCH",
+              "UPDATER_MANIFEST_SHA_MISSING","UPDATER_MANIFEST_SHA_INVALID",
+              "UPDATER_PLATFORM_NOT_FOUND","UPDATER_PREFLIGHT_UNAVAILABLE"}
+          files=[p for p in root.rglob('*') if p.is_file() and p.suffix.lower() in ('.db','.sqlite3') and p.stat().st_size<50_000_000] if root.is_dir() else []
+          hits=0;codes=set();tables_examined=0
+          for p in files[:16]:
+              try:
+                  db=sqlite3.connect("file:"+quote(str(p))+"?mode=ro",uri=True,timeout=2)
+                  try:
+                      for (t,) in db.execute("SELECT name FROM sqlite_master WHERE type='table' LIMIT 25").fetchall():
+                          if t not in ("ItemTable","LocalStorage","Storage"):continue
+                          cols={x[1] for x in db.execute("PRAGMA table_info('"+t+"')")}
+                          if not {"key","value"}<=cols:continue
+                          tables_examined+=1
+                          for k,v in db.execute("SELECT key,value FROM '"+t+"' WHERE key IN (?,?) LIMIT 3",tuple(keys)):
+                              if isinstance(k,bytes):k=k.decode('utf-8','ignore')
+                              if k not in keys:continue
+                              hits+=1
+                              vals=[v.decode('utf-8','ignore'),v.decode('utf-16le','ignore')] if isinstance(v,bytes) else [str(v)]
+                              for x in vals:
+                                  for code in patterns:
+                                      if code in x:codes.add(code)
+                  finally:db.close()
+              except (OSError,sqlite3.Error,ValueError):
+                  pass
+          print("UPDATER_STORAGE_SQLITE_FILES="+str(len(files)))
+          print("UPDATER_STORAGE_KV_TABLES="+str(tables_examined))
+          print("UPDATER_STORAGE_MATCHING_KEYS="+str(hits))
+          print("UPDATER_ERROR_CODES="+(",".join(sorted(codes)) or "NONE_DISCOVERED"))
+          print("UPDATER_PRIVATE_VALUES_AND_PATHS_NOT_LOGGED=PASS")
+          PY

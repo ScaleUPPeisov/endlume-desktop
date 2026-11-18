@@ -1,0 +1,68 @@
+name: VYRON 6.1.19 physical Mac post-install health
+
+on:
+  push:
+    branches:
+      - diagnostics/vyron-m1-connection-20261118
+    paths:
+      - '.github/workflows/vyron-619-owner-postinstall-health.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify installed app and 33 channels without changing data
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 5
+    steps:
+      - name: Check executable provenance, running state and local database integrity
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          APP=/Applications/VYRON.app
+          EVIDENCE="$HOME/.vyron-owner-rollback/staged-619-oZRHQm/artifact/evidence"
+          test -d "$APP"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Contents/Info.plist")" = studio.channelflow.desktop
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")" = 6.1.19
+          EXENAME="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")"
+          test "$(shasum -a 256 "$APP/Contents/MacOS/$EXENAME" | awk '{print $1}')" = "$(awk 'NR==1 {print $1}' "$EVIDENCE/executable-sha256.txt")"
+          /usr/bin/codesign --verify --deep --strict "$APP" >/dev/null 2>&1
+          /usr/bin/pgrep -x channelflow >/dev/null
+          echo "VYRON_619_INSTALLED_BINARY_INTACT=PASS"
+          echo "VYRON_619_MAC_APP_PROCESS_RUNNING=PASS"
+          /usr/bin/python3 - <<'PY'
+          import json,sqlite3
+          from pathlib import Path
+          from urllib.parse import quote
+          root=Path.home()/"Library"/"Application Support"/"studio.channelflow.desktop"
+          state=json.loads((root/"state.json").read_text(encoding="utf-8"))
+          channels=state.get("channels",[])
+          jobs=state.get("jobs",[])
+          hist=state.get("uploadHistory",[])
+          assert isinstance(channels,list) and len(channels)==33,"CHANNEL_COUNT_FAILED"
+          assert isinstance(jobs,list) and len(jobs)>=1000,"JOBS_COUNT_FAILED"
+          assert isinstance(hist,list) and len(hist)>=1000,"UPLOAD_HISTORY_COUNT_FAILED"
+          print("VYRON_619_CHANNELS="+str(len(channels)))
+          print("VYRON_619_PROJECT_JOBS="+str(len(jobs)))
+          print("VYRON_619_UPLOAD_HISTORY="+str(len(hist)))
+          print("VYRON_619_ACTIVE_UPLOADS="+str(sum(j.get("status")=="UPLOADING" for j in jobs if isinstance(j,dict))))
+          inventory=root/"youtube-inventory"
+          activeids={str(c.get("id")) for c in channels if isinstance(c,dict)}
+          verified=sum((inventory/(cid+".json")).is_file() for cid in activeids if cid and "/" not in cid and ".." not in cid)
+          print("VYRON_619_CHANNELS_WITH_INVENTORY="+str(verified))
+          assert verified==33,"INVENTORY_MISSING"
+          dbs=[p for p in root.rglob('*.sqlite3') if p.is_file()]
+          print("VYRON_619_SQLITE_FILES="+str(len(dbs)))
+          assert dbs,"SQLITE_MISSING"
+          for p in dbs:
+              if p.stat().st_size>512_000_000:raise SystemExit("SQLITE_TOO_BIG_FOR_READ_ONLY_PROBE")
+              db=sqlite3.connect("file:"+quote(str(p))+"?mode=ro",uri=True,timeout=3)
+              try:
+                  check=db.execute("PRAGMA quick_check").fetchone()
+                  assert check and check[0]=="ok","SQLITE_QUICK_CHECK_FAILED"
+              finally:db.close()
+          print("VYRON_619_SQLITE_QUICK_CHECK=PASS")
+          print("VYRON_619_CHANNEL_AND_HISTORY_PRESERVATION=PASS")
+          PY
+          echo "VYRON_619_POSTINSTALL_HEALTH=PASS"

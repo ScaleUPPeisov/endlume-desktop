@@ -1,0 +1,51 @@
+name: VYRON 6.1.21 native Rust regression on owner M1 (isolated)
+
+on:
+  push:
+    branches:
+      - diagnostics/vyron-m1-connection-20261118
+    paths:
+      - .github/workflows/vyron-621-owner-m1-native-regression.yml
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 30
+    steps:
+      - name: Confirm user app unchanged and macOS build environment
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(uname -m)" = arm64
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' /Applications/VYRON.app/Contents/Info.plist)" = 6.1.20
+          /usr/bin/codesign --verify --deep --strict /Applications/VYRON.app >/dev/null 2>&1
+          xcrun --find clang >/dev/null
+          test "$(df -Pk "$HOME" | awk 'NR==2 {print $4}')" -gt 10485760
+          echo "VYRON_621_M1_APP=6.1.20_UNTOUCHED"
+      - uses: actions/checkout@v4
+        with:
+          repository: ScaleUPPeisov/scaleup-dashboards
+          ref: d37276bbf0d657913f775cfed46d2af04d588a5c
+          persist-credentials: false
+      - name: Run all headless-safe native Rust tests in isolated test home
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(git rev-parse HEAD)" = d37276bbf0d657913f775cfed46d2af04d588a5c
+          REAL_HOME="$HOME"
+          TEST_HOME="$(mktemp -d "$RUNNER_TEMP/vyron621-test-home.XXXXXX")"
+          TEST_TARGET="$(mktemp -d "$RUNNER_TEMP/vyron621-rust-target.XXXXXX")"
+          cleanup(){ rm -rf "$TEST_HOME" "$TEST_TARGET"; }
+          trap cleanup EXIT
+          export HOME="$TEST_HOME"
+          export CARGO_HOME="$REAL_HOME/.cargo" RUSTUP_HOME="$REAL_HOME/.rustup"
+          export CARGO_TARGET_DIR="$TEST_TARGET" CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=2 CARGO_PROFILE_TEST_DEBUG=0
+          cargo test --locked --manifest-path src-tauri/Cargo.toml --lib -- \
+            --skip security::native_enumeration_tests::native_secitemcopymatching_lists_service_accounts \
+            --skip security::tests::keychain_roundtrip \
+            --skip production_manager::production_manager_tests::v603_manual_batch_delete_does_not_require_youtube_upload_proof
+          echo "VYRON_621_M1_HEADLESS_NATIVE_TESTS=PASS"
+          echo "VYRON_621_GUI_DEPENDENT_TESTS=THREE_NOT_RUN"

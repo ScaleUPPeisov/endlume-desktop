@@ -1,0 +1,28 @@
+name: VYRON 6.1.19 after-runner cleanup process probe
+
+on:
+  push:
+    branches:
+      - diagnostics/vyron-m1-connection-20261118
+    paths:
+      - '.github/workflows/vyron-619-after-runner-cleanup.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 2
+    steps:
+      - name: Check GUI process after previous workflow ended
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' /Applications/VYRON.app/Contents/Info.plist)" = 6.1.19
+          if /usr/bin/pgrep -x channelflow >/dev/null 2>&1; then
+            echo 'VYRON_AFTER_RUNNER_CLEANUP_PROCESS=RUNNING'
+          else
+            echo 'VYRON_AFTER_RUNNER_CLEANUP_PROCESS=NOT_RUNNING'
+          fi
+          echo 'VYRON_AFTER_RUNNER_CLEANUP_FILE_VERSION=6.1.19'

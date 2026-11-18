@@ -1,0 +1,43 @@
+name: VYRON 6.1.19 guarded relaunch survival check
+
+on:
+  push:
+    branches:
+      - diagnostics/vyron-m1-connection-20261118
+    paths:
+      - '.github/workflows/vyron-619-relaunch-survival.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  relaunch:
+    name: Launch installed VYRON and observe process survival, no file edits
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 3
+    steps:
+      - name: Launch signed 6.1.19 app, sample process after 10, 30 and 60 seconds
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          APP=/Applications/VYRON.app
+          test -d "$APP"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")" = 6.1.19
+          /usr/bin/codesign --verify --deep --strict "$APP" >/dev/null 2>&1
+          if /usr/bin/pgrep -x channelflow >/dev/null 2>&1; then
+            echo "VYRON_619_RELAUNCH_PREEXISTING_PROCESS=YES"
+            exit 0
+          fi
+          echo "VYRON_619_RELAUNCH_PREEXISTING_PROCESS=NO"
+          /usr/bin/open -a "$APP"
+          for seconds in 10 20 30; do
+            sleep "$seconds"
+            if /usr/bin/pgrep -x channelflow >/dev/null 2>&1; then
+              echo "VYRON_619_PROCESS_AFTER_${seconds}S_INTERVAL=RUNNING"
+            else
+              echo "VYRON_619_PROCESS_AFTER_${seconds}S_INTERVAL=NOT_RUNNING"
+              echo "VYRON_619_RELAUNCH_PERSISTENCE=UNCONFIRMED"
+              exit 1
+            fi
+          done
+          echo "VYRON_619_PROCESS_SURVIVED_TOTAL_60S=PASS"

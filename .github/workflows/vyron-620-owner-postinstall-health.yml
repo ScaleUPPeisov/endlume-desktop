@@ -1,0 +1,72 @@
+name: VYRON 6.1.20 physical M1 after-runner health (read only)
+
+on:
+  push:
+    branches:
+      - diagnostics/vyron-m1-connection-20261118
+    paths:
+      - .github/workflows/vyron-620-owner-postinstall-health.yml
+
+permissions:
+  contents: read
+
+jobs:
+  health:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 4
+    steps:
+      - name: Confirm 6.1.20 survives runner cleanup and all owner channel records exist
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          APP=/Applications/VYRON.app
+          STAGE="$HOME/.vyron-owner-rollback/staged-620-vfUXPD"
+          test -d "$APP" && test "$(uname -m)" = arm64
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")" = 6.1.20
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Contents/Info.plist")" = studio.channelflow.desktop
+          /usr/bin/codesign --verify --deep --strict "$APP" >/dev/null 2>&1
+          EXENAME="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")"
+          EXPECTED="$(awk 'NR==1 {print $1}' "$STAGE/artifact/evidence/executable-sha256.txt")"
+          test "$(shasum -a 256 "$APP/Contents/MacOS/$EXENAME" | awk '{print $1}')" = "$EXPECTED"
+          echo 'VYRON_620_POSTINSTALL_SOURCE_AND_CODESIGN=PASS'
+          if /usr/bin/pgrep -x channelflow >/dev/null 2>&1; then
+            echo 'VYRON_620_POSTINSTALL_AFTER_ACTIONS_PROCESS=RUNNING'
+          else
+            echo 'VYRON_620_POSTINSTALL_AFTER_ACTIONS_PROCESS=NOT_RUNNING'
+          fi
+          /usr/bin/python3 - <<'PY'
+          import json,sqlite3
+          from pathlib import Path
+          from urllib.parse import quote
+          from collections import Counter
+          h=Path.home()
+          s=json.loads((h/'Library'/'Application Support'/'studio.channelflow.desktop'/'state.json').read_text())
+          c=s.get('channels')
+          if not isinstance(c,list) or len(c)!=33: raise SystemExit('VYRON_620_POSTINSTALL_CHANNELS_INVALID')
+          print('VYRON_620_POSTINSTALL_CHANNELS=33')
+          root=h/'Library'/'WebKit'/'studio.channelflow.desktop'
+          statuses={}
+          for p in root.rglob('*'):
+            if not p.is_file() or p.suffix.lower() not in ('.sqlite3','.db') or p.stat().st_size>50_000_000: continue
+            try:
+              db=sqlite3.connect('file:'+quote(str(p))+'?mode=ro',uri=True,timeout=2)
+              try:
+                if not db.execute("SELECT name FROM sqlite_master WHERE name='ItemTable'").fetchone(): continue
+                for key,value in db.execute("SELECT key,value FROM ItemTable WHERE key='vyron:channel-runway:v1'"):
+                  for z in ([value.decode('utf-16le','ignore'),value.decode('utf-8','ignore')] if isinstance(value,bytes) else [str(value)]):
+                    try: v=json.loads(z)
+                    except (ValueError,TypeError): continue
+                    if isinstance(v,dict) and isinstance(v.get('channels'),dict):
+                      statuses={k:str(row.get('dataState','UNKNOWN')) for k,row in v['channels'].items() if isinstance(row,dict)}
+                      break
+              finally: db.close()
+            except (OSError,ValueError,sqlite3.Error): pass
+          if len(statuses)!=33: raise SystemExit('VYRON_620_POSTINSTALL_RUNWAY_STORAGE_INCOMPLETE')
+          x=Counter(statuses.values())
+          print('VYRON_620_POSTINSTALL_RUNWAY_RECORDS='+str(len(statuses)))
+          print('VYRON_620_POSTINSTALL_CONFIRMED='+str(x['CONFIRMED_SCHEDULE']+x['CONFIRMED_EMPTY']))
+          print('VYRON_620_POSTINSTALL_PARTIAL='+str(x['PARTIAL_DATA']))
+          print('VYRON_620_POSTINSTALL_AUTH_REQUIRED='+str(x['AUTH_REQUIRED']))
+          print('VYRON_620_POSTINSTALL_API_FAILED='+str(x['API_FAILED']))
+          print('VYRON_620_POSTINSTALL_USER_DATA=READ_ONLY')
+          PY

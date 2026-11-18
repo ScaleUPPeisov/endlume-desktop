@@ -1,0 +1,96 @@
+name: VYRON 6.1.19 postinstall process investigation (read-only)
+
+on:
+  push:
+    branches:
+      - diagnostics/vyron-m1-connection-20261118
+    paths:
+      - '.github/workflows/vyron-619-postinstall-investigate.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    name: Determine whether installed VYRON exited or crashed
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 4
+    steps:
+      - name: Read only signed bundle, process, state and crash-report indicators
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          APP="/Applications/VYRON.app"
+          EVIDENCE="$HOME/.vyron-owner-rollback/staged-619-oZRHQm/artifact/evidence"
+          if test -d "$APP"; then
+            VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist" 2>/dev/null || echo unknown)"
+            echo "VYRON_DIAG_INSTALLED_VERSION=$VERSION"
+            EXENAME="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist" 2>/dev/null || echo unknown)"
+            if test "$EXENAME" != unknown; then
+              CURRENT="$(shasum -a 256 "$APP/Contents/MacOS/$EXENAME" | awk '{print $1}')"
+              EXPECTED="$(awk 'NR==1{print $1}' "$EVIDENCE/executable-sha256.txt")"
+              if test "$CURRENT" = "$EXPECTED"; then echo "VYRON_DIAG_BINARY_INTACT=YES"; else echo "VYRON_DIAG_BINARY_INTACT=NO"; fi
+            fi
+            if /usr/bin/codesign --verify --deep --strict "$APP" >/dev/null 2>&1; then
+              echo "VYRON_DIAG_CODESIGN=PASS"
+            else
+              echo "VYRON_DIAG_CODESIGN=FAIL"
+            fi
+          else echo "VYRON_DIAG_INSTALLED_APP=ABSENT"; fi
+          if /usr/bin/pgrep -x channelflow >/dev/null 2>&1; then
+            echo "VYRON_DIAG_PROCESS_CHANNElFLOW=RUNNING"
+          else
+            echo "VYRON_DIAG_PROCESS_CHANNElFLOW=NOT_RUNNING"
+          fi
+          if /usr/bin/pgrep -f "/Applications/VYRON.app/Contents/MacOS/" >/dev/null 2>&1; then
+            echo "VYRON_DIAG_PROCESS_APP_PATH=RUNNING"
+          else
+            echo "VYRON_DIAG_PROCESS_APP_PATH=NOT_RUNNING"
+          fi
+          /usr/bin/python3 - <<'PY'
+          import json,sqlite3,time,re
+          from pathlib import Path
+          from urllib.parse import quote
+          home=Path.home()
+          root=home/"Library"/"Application Support"/"studio.channelflow.desktop"
+          state=root/"state.json"
+          if state.is_file():
+              try:
+                  d=json.loads(state.read_text(encoding="utf-8"))
+                  print("VYRON_DIAG_CHANNELS="+str(len(d.get("channels",[]))))
+                  print("VYRON_DIAG_JOBS="+str(len(d.get("jobs",[]))))
+                  print("VYRON_DIAG_UPLOAD_HISTORY="+str(len(d.get("uploadHistory",[]))))
+              except (OSError,ValueError,TypeError):
+                  print("VYRON_DIAG_STATE_JSON=INVALID")
+          checked=0;fail=0
+          for p in root.rglob('*.sqlite3'):
+              if not p.is_file() or p.stat().st_size>512_000_000: continue
+              try:
+                  db=sqlite3.connect("file:"+quote(str(p))+"?mode=ro",uri=True,timeout=3)
+                  try:
+                      checked+=1
+                      if db.execute("PRAGMA quick_check").fetchone()[0]!="ok":fail+=1
+                  finally:db.close()
+              except (OSError,ValueError,sqlite3.Error):
+                  fail+=1
+          print("VYRON_DIAG_SQLITE_CHECKED="+str(checked))
+          print("VYRON_DIAG_SQLITE_FAILURES="+str(fail))
+          reports=home/"Library"/"Logs"/"DiagnosticReports"
+          recent=[]
+          if reports.is_dir():
+              recent=[p for p in reports.iterdir() if p.is_file() and
+                any(x in p.name.lower() for x in ("channelflow","vyron")) and
+                p.stat().st_mtime>time.time()-3600]
+          print("VYRON_DIAG_CRASH_REPORTS_1H="+str(len(recent)))
+          types=set()
+          for p in recent[:5]:
+              try:
+                  first=p.read_text(encoding="utf-8",errors="replace")[:20000]
+                  if "EXC_BAD_ACCESS" in first:types.add("EXC_BAD_ACCESS")
+                  if "SIGABRT" in first:types.add("SIGABRT")
+                  if "EXC_CRASH" in first:types.add("EXC_CRASH")
+                  if "CODESIGNING" in first:types.add("CODESIGNING")
+              except OSError:pass
+          print("VYRON_DIAG_CRASH_TYPES="+(",".join(sorted(types)) or "NONE"))
+          print("VYRON_DIAG_PRIVATE_REPORT_DETAILS_SUPPRESSED=PASS")
+          PY

@@ -1,0 +1,52 @@
+name: VYRON 6.1.20 physical M1 guarded-install readiness (read only)
+
+on:
+  push:
+    branches:
+      - diagnostics/vyron-m1-connection-20261118
+    paths:
+      - .github/workflows/vyron-620-physical-m1-install-readiness.yml
+
+permissions:
+  contents: read
+
+jobs:
+  readiness:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 4
+    steps:
+      - name: Check app identity, backup capacity, GitHub artifact access (no installation)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          test "$(uname -m)" = arm64
+          APP=/Applications/VYRON.app
+          test -d "$APP" && test ! -L "$APP"
+          /usr/bin/codesign --verify --deep --strict "$APP" >/dev/null 2>&1
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")" = 6.1.19
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Contents/Info.plist")" = studio.channelflow.desktop
+          echo "VYRON_620_READINESS_INSTALLED=6.1.19"
+          if /usr/bin/pgrep -x channelflow >/dev/null 2>&1; then echo "VYRON_620_READINESS_APP=RUNNING"; else echo "VYRON_620_READINESS_APP=NOT_RUNNING"; fi
+          test -w /Applications && test -w "$APP"
+          echo "VYRON_620_READINESS_APPLICATIONS_WRITE=PASS"
+          test -d "$HOME/Library/Application Support/studio.channelflow.desktop"
+          test -d "$HOME/Library/WebKit/studio.channelflow.desktop"
+          echo "VYRON_620_READINESS_USER_DATA_PATHS=PRESENT"
+          BASE="$HOME/.vyron-owner-rollback"
+          if test -d "$BASE"; then
+            COUNT="$(find "$BASE" -mindepth 2 -maxdepth 2 -name VYRON.app -type d -print | wc -l | tr -d ' ')"
+            echo "VYRON_620_READINESS_EXISTING_BUNDLE_BACKUPS=$COUNT"
+          else
+            echo "VYRON_620_READINESS_EXISTING_BUNDLE_BACKUPS=0"
+          fi
+          FREE_KB="$(df -Pk /Applications | awk 'NR==2 {print $4}')"
+          echo "VYRON_620_READINESS_FREE_GIB=$((FREE_KB / 1024 / 1024))"
+          test "$FREE_KB" -gt 8388608
+          command -v gh >/dev/null
+          gh run view 44337807229 -R ScaleUPPeisov/scaleup-dashboards --json databaseId,status,conclusion --jq '.databaseId' | grep -Fxq 44337807229
+          echo "VYRON_620_READINESS_CROSS_REPO_ARTIFACT_ACCESS=PASS"
+          echo "VYRON_620_READINESS_USER_DATA=UNMODIFIED"
+          echo "VYRON_620_READINESS_STABLE_FEED=UNMODIFIED"
+          echo "VYRON_620_READINESS_SIGNED_ARTIFACT=NOT_YET_INSTALLED"

@@ -1,0 +1,63 @@
+name: VYRON 6.1.18 local updater error read-only audit
+
+on:
+  push:
+    branches:
+      - diagnostics/vyron-m1-connection-20261118
+    paths:
+      - '.github/workflows/vyron-619-updater-error-readonly.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: Read only sanitized last updater error state on physical Mac
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 4
+    steps:
+      - name: Read sanitized updater errors without copying private data
+        shell: bash
+        run: |
+          /usr/bin/python3 - <<'PY'
+          import os,sqlite3
+          from pathlib import Path
+          from urllib.parse import quote
+          root=Path.home()/"Library"/"WebKit"/"studio.channelflow.desktop"
+          known=[
+           "UPDATER_TRUST_MIGRATION_REQUIRED","UPDATER_KEY_TRUST_NOT_VERIFIED",
+           "UPDATER_CONFIGURATION_INVALID","UPDATER_MANIFEST_FETCH_FAILED",
+           "UPDATER_MANIFEST_SHA_INVALID","UPDATER_MANIFEST_SHA_MISSING",
+           "UPDATER_SIGNATURE_INVALID","UPDATER_PLATFORM_NOT_FOUND",
+           "UPDATE_NOT_AVAILABLE","UPDATER_ARTIFACT_HASH_MISMATCH",
+           "UPDATER_PREFLIGHT_UNAVAILABLE","UPDATER_STABLE_DOWNLOAD_FAILED",
+           "UPDATER_INSTALL_FAILED","UPDATER_KEY_FINGERPRINT_MISMATCH",
+           "UPDATER_ENDPOINT_CHANGED","UPDATER_NETWORK_ERROR",
+           "API_FAILED"
+          ]
+          print("UPDATER_WEBKIT_CONTAINER_EXISTS="+str(root.is_dir()).upper())
+          found=set()
+          count=0
+          if root.is_dir():
+              for p in root.rglob("*.localstorage"):
+                  if count>=30:break
+                  count+=1
+                  try:
+                      if p.stat().st_size>40_000_000: continue
+                      db=sqlite3.connect("file:"+quote(str(p))+"?mode=ro",uri=True,timeout=2)
+                      try:
+                          table=db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='ItemTable'").fetchone()
+                          if not table:continue
+                          rows=db.execute("SELECT key,value FROM ItemTable WHERE key='vyron:updater-last-error-fingerprint' LIMIT 1").fetchall()
+                          for _key,value in rows:
+                              if isinstance(value,bytes): text=value.decode('utf-16le','ignore')+" "+value.decode('utf-8','ignore')
+                              else: text=str(value)
+                              for code in known:
+                                  if code in text: found.add(code)
+                      finally:db.close()
+                  except (OSError,sqlite3.Error,ValueError):
+                      pass
+          print("UPDATER_WEBKIT_DB_CANDIDATES="+str(count))
+          print("UPDATER_KNOWN_ERROR_CODES="+(",".join(sorted(found)) or "NONE_FOUND"))
+          print("UPDATER_DIAGNOSTIC_PRIVATE_DATA_NOT_PRINTED=PASS")
+          PY

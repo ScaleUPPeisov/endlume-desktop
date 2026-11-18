@@ -1,0 +1,195 @@
+name: VYRON 6.1.19 M1 guarded app installation (rollback retained)
+
+on:
+  push:
+    branches:
+      - diagnostics/vyron-m1-connection-20261118
+    paths:
+      - '.github/workflows/vyron-619-owner-guarded-install.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vyron-physical-m1-exclusive-install
+  cancel-in-progress: false
+
+jobs:
+  install:
+    name: Upgrade only if no upload is running and app exits gracefully
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 12
+    steps:
+      - name: Exact-source and idle checks, graceful quit, fresh backup, atomic bundle swap
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          BASE="$HOME/.vyron-owner-rollback"
+          STAGE="$BASE/staged-619-oZRHQm"
+          SRC="$STAGE/VYRON.app"
+          EVIDENCE="$STAGE/artifact/evidence"
+          APP=/Applications/VYRON.app
+          OLD_SHA=af313fbac5515162edf19144ea4359f1c1319a553e35bedb1dfc50cbfd5daf29
+          test "$(uname -m)" = arm64
+          test -d "$BASE/owner-pre619-ODbRDC/VYRON.app"
+          test -d "$SRC" && test ! -L "$SRC"
+          test -d "$APP" && test ! -L "$APP"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")" = 6.1.18
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$SRC/Contents/Info.plist")" = 6.1.19
+          for path in "$APP" "$SRC"; do
+            test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$path/Contents/Info.plist")" = studio.channelflow.desktop
+            /usr/bin/codesign --verify --deep --strict "$path" >/dev/null 2>&1
+          done
+          EXENAME="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$SRC/Contents/Info.plist")"
+          test "$EXENAME" = "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")"
+          NEW_SHA="$(awk 'NR==1{print $1}' "$EVIDENCE/executable-sha256.txt")"
+          test "$NEW_SHA" != "$OLD_SHA"
+          test "$(shasum -a 256 "$SRC/Contents/MacOS/$EXENAME" | awk '{print $1}')" = "$NEW_SHA"
+          test "$(shasum -a 256 "$APP/Contents/MacOS/$EXENAME" | awk '{print $1}')" = "$OLD_SHA"
+          grep -Fxq 'source=1493ee42a54bf19f2dc1e180e92158a0c775e03e' "$EVIDENCE/status.txt"
+          grep -Fxq 'version=6.1.19' "$EVIDENCE/status.txt"
+          test -w /Applications && test -w "$APP"
+          if /usr/bin/xattr -p com.apple.quarantine "$SRC" >/dev/null 2>&1; then
+            echo "VYRON_619_QUARANTINED_STAGING_APP=BLOCK_INSTALL"
+            exit 1
+          fi
+          queue_guard() {
+            /usr/bin/python3 - <<'PY'
+          import json,sqlite3,collections
+          from pathlib import Path
+          from urllib.parse import quote
+          home=Path.home()
+          state_path=home/"Library"/"Application Support"/"studio.channelflow.desktop"/"state.json"
+          s=json.loads(state_path.read_text(encoding="utf-8"))
+          jobs=s.get("jobs",[])
+          if not isinstance(jobs,list):raise SystemExit("VYRON_QUEUE_GUARD_INVALID_STATE")
+          active=sum(1 for j in jobs if isinstance(j,dict) and str(j.get("status")) in ("UPLOADING","RENDERING","PROCESSING","DOWNLOADING"))
+          root=home/"Library"/"WebKit"/"studio.channelflow.desktop"
+          activeq=0
+          found=0
+          for p in [p for p in root.rglob('*') if p.is_file() and p.suffix.lower() in ('.db','.sqlite3') and p.stat().st_size<50_000_000]:
+              try:
+                  db=sqlite3.connect("file:"+quote(str(p))+"?mode=ro",uri=True,timeout=2)
+                  try:
+                      if not db.execute("SELECT name FROM sqlite_master WHERE name='ItemTable'").fetchone():continue
+                      for k,v in db.execute("SELECT key,value FROM ItemTable WHERE key IN (?,?) LIMIT 3",("vyron:youtube-upload-queue:v1","vyron:youtube-upload-queue:v1:staging")):
+                          if isinstance(k,bytes):k=k.decode('utf-8','ignore')
+                          if k not in ("vyron:youtube-upload-queue:v1","vyron:youtube-upload-queue:v1:staging"):continue
+                          texts=[v.decode('utf-16le','ignore'),v.decode('utf-8','ignore')] if isinstance(v,bytes) else [str(v)]
+                          for text in texts:
+                              try:d=json.loads(text)
+                              except (ValueError,TypeError):continue
+                              if isinstance(d,dict) and isinstance(d.get('entries'),list):
+                                  found+=1
+                                  activeq+=sum(1 for item in d['entries'] if isinstance(item,dict) and item.get("state") in ("RUNNING","QUEUED"))
+                                  break
+                  finally:db.close()
+              except (OSError,sqlite3.Error,ValueError):pass
+          print("VYRON_INSTALL_ACTIVE_JOB_COUNT="+str(active))
+          print("VYRON_INSTALL_ACTIVE_QUEUE_COUNT="+str(activeq))
+          print("VYRON_INSTALL_QUEUE_SNAPSHOTS_READABLE="+str(found))
+          if found==0 or active or activeq:raise SystemExit("VYRON_INSTALL_BLOCKED_ACTIVE_OR_UNKNOWN_QUEUE")
+          print("VYRON_INSTALL_IDLE=PASS")
+          PY
+          }
+          queue_guard
+          if /usr/bin/pgrep -x channelflow >/dev/null 2>&1; then
+            echo "VYRON_INSTALL_REQUEST_GRACEFUL_QUIT=YES"
+            if ! /usr/bin/osascript \
+              -e 'with timeout of 12 seconds' \
+              -e 'tell application id "studio.channelflow.desktop" to quit' \
+              -e 'end timeout' >/dev/null 2>&1; then
+              echo "VYRON_INSTALL_GRACEFUL_QUIT_REFUSED=BLOCK_INSTALL"
+              exit 1
+            fi
+            for _ in $(seq 1 30); do
+              if ! /usr/bin/pgrep -x channelflow >/dev/null 2>&1; then break; fi
+              sleep 1
+            done
+          fi
+          if /usr/bin/pgrep -x channelflow >/dev/null 2>&1; then
+            echo "VYRON_INSTALL_APP_STILL_RUNNING=BLOCK_INSTALL"
+            exit 1
+          fi
+          echo "VYRON_INSTALL_APP_GRACEFULLY_CLOSED=PASS"
+          queue_guard
+          test "$(shasum -a 256 "$APP/Contents/MacOS/$EXENAME" | awk '{print $1}')" = "$OLD_SHA"
+          DATA="$HOME/Library/Application Support/studio.channelflow.desktop"
+          WEBKIT="$HOME/Library/WebKit/studio.channelflow.desktop"
+          APP_KB="$(du -sk "$APP" | awk '{print $1}')"
+          NEW_KB="$(du -sk "$SRC" | awk '{print $1}')"
+          DATA_KB=0
+          WEBKIT_KB=0
+          if test -d "$DATA"; then DATA_KB="$(du -sk "$DATA" | awk '{print $1}')"; fi
+          if test -d "$WEBKIT"; then WEBKIT_KB="$(du -sk "$WEBKIT" | awk '{print $1}')"; fi
+          test "$DATA_KB" -lt 524288 && test "$WEBKIT_KB" -lt 524288
+          NEED_KB=$(( 2 * APP_KB + NEW_KB + DATA_KB + WEBKIT_KB + 1048576 ))
+          FREE_KB="$(df -Pk /Applications | awk 'END {print $4}')"
+          test "$FREE_KB" -gt "$NEED_KB"
+          BACKUP="$(mktemp -d "$BASE/owner-pre619-live-XXXXXX")"
+          /usr/bin/ditto "$APP" "$BACKUP/VYRON.app"
+          if test -d "$DATA"; then /usr/bin/ditto "$DATA" "$BACKUP/application-support"; fi
+          if test -d "$WEBKIT"; then /usr/bin/ditto "$WEBKIT" "$BACKUP/webkit"; fi
+          test "$(shasum -a 256 "$BACKUP/VYRON.app/Contents/MacOS/$EXENAME" | awk '{print $1}')" = "$OLD_SHA"
+          /usr/bin/codesign --verify --deep --strict "$BACKUP/VYRON.app" >/dev/null 2>&1
+          echo "VYRON_INSTALL_LIVE_BACKUP_COMPLETE=PASS"
+          TEMP="$(mktemp -d /Applications/.vyron-619-install-XXXXXX)"
+          /usr/bin/ditto "$SRC" "$TEMP/VYRON.app"
+          /usr/bin/codesign --verify --deep --strict "$TEMP/VYRON.app" >/dev/null 2>&1
+          test "$(shasum -a 256 "$TEMP/VYRON.app/Contents/MacOS/$EXENAME" | awk '{print $1}')" = "$NEW_SHA"
+          SWAPPED=0
+          rollback() {
+            if [ "$SWAPPED" != "1" ]; then return; fi
+            echo "VYRON_619_POST_SWAP_ERROR_ROLLBACK_ATTEMPTED=YES"
+            if /usr/bin/pgrep -x channelflow >/dev/null 2>&1; then
+              /usr/bin/osascript -e 'with timeout of 8 seconds' -e 'tell application id "studio.channelflow.desktop" to quit' -e 'end timeout' >/dev/null 2>&1 || true
+              sleep 3
+            fi
+            if /usr/bin/pgrep -x channelflow >/dev/null 2>&1; then
+              echo "VYRON_619_ROLLBACK_BLOCKED_RUNNING_APP=YES"
+              return
+            fi
+            if test -d "$APP" && test ! -L "$APP"; then
+              mv "$APP" "$TEMP/failed-619.app" || true
+            fi
+            if test -d "$TEMP/VYRON-6.1.18.app"; then
+              mv "$TEMP/VYRON-6.1.18.app" "$APP" || true
+            fi
+            if test -d "$APP"; then
+              test "$(shasum -a 256 "$APP/Contents/MacOS/$EXENAME" | awk '{print $1}')" = "$OLD_SHA" || true
+              /usr/bin/open -a "$APP" || true
+            fi
+          }
+          trap rollback ERR
+          test ! -e "$TEMP/VYRON-6.1.18.app"
+          mv "$APP" "$TEMP/VYRON-6.1.18.app"
+          SWAPPED=1
+          mv "$TEMP/VYRON.app" "$APP"
+          /usr/bin/codesign --verify --deep --strict "$APP" >/dev/null 2>&1
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")" = 6.1.19
+          test "$(shasum -a 256 "$APP/Contents/MacOS/$EXENAME" | awk '{print $1}')" = "$NEW_SHA"
+          echo "VYRON_619_BUNDLE_INSTALLED_AND_VERIFIED=PASS"
+          /usr/bin/open -a "$APP"
+          sleep 10
+          if ! /usr/bin/pgrep -x channelflow >/dev/null 2>&1; then
+            echo "VYRON_619_POST_INSTALL_PROCESS_NOT_RUNNING=ROLLBACK"
+            false
+          fi
+          /usr/bin/python3 - <<'PY'
+          import json
+          from pathlib import Path
+          state=Path.home()/"Library"/"Application Support"/"studio.channelflow.desktop"/"state.json"
+          data=json.loads(state.read_text(encoding="utf-8"))
+          channels=data.get("channels",[])
+          print("VYRON_POST_INSTALL_CHANNEL_COUNT="+str(len(channels)))
+          if not isinstance(channels,list) or len(channels)!=33:raise SystemExit("VYRON_POST_INSTALL_CHANNEL_COUNT_MISMATCH")
+          print("VYRON_POST_INSTALL_CHANNEL_STATE=PASS")
+          PY
+          SWAPPED=0
+          trap - ERR
+          echo "VYRON_619_INSTALLED=YES"
+          echo "VYRON_619_APP_RUNNING=YES"
+          echo "VYRON_619_ROLLBACK_APP_RETAINED=YES"
+          echo "VYRON_619_LIVE_DATA_BACKUP_RETAINED=YES"
+          echo "VYRON_619_STABLE_FEED_UNCHANGED=YES"

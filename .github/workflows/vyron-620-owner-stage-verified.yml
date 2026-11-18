@@ -1,0 +1,97 @@
+name: VYRON 6.1.20 signed artifact staging on physical M1 (never install)
+
+on:
+  push:
+    branches:
+      - diagnostics/vyron-m1-connection-20261118
+    paths:
+      - .github/workflows/vyron-620-owner-stage-verified.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vyron-620-physical-m1-stage
+  cancel-in-progress: false
+
+jobs:
+  stage:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 12
+    steps:
+      - name: Download and verify exact 6.1.20 owner-only update, preserving installed 6.1.19
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          test "$(uname -m)" = arm64
+          APP=/Applications/VYRON.app
+          test -d "$APP" && test ! -L "$APP"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")" = 6.1.19
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Contents/Info.plist")" = studio.channelflow.desktop
+          /usr/bin/codesign --verify --deep --strict "$APP" >/dev/null 2>&1
+          BASE="$HOME/.vyron-owner-rollback"
+          test -d "$BASE"
+          STAGE="$(mktemp -d "$BASE/staged-620-XXXXXX")"
+          MOUNT="$STAGE/mount"
+          mkdir -p "$STAGE/artifact" "$MOUNT"
+          mounted=0
+          success=0
+          cleanup() {
+            if [ "$mounted" -eq 1 ]; then /usr/bin/hdiutil detach "$MOUNT" -quiet || true; fi
+            if [ "$success" -eq 0 ]; then rm -rf "$STAGE"; fi
+          }
+          trap cleanup EXIT
+          echo "VYRON_620_STAGE_FOLDER=$(basename "$STAGE")"
+          gh run download 44337807229 -R ScaleUPPeisov/scaleup-dashboards -n VYRON-6.1.20-M1-PERSONAL-LOCAL-NOT-NOTARIZED -D "$STAGE/artifact"
+          E="$STAGE/artifact/evidence"
+          DMG="$STAGE/artifact/VYRON-6.1.20-M1-personal-local.dmg"
+          ARCHIVE="$STAGE/artifact/VYRON.app.tar.gz"
+          SIG="$ARCHIVE.sig"
+          for f in "$E/status.txt" "$E/executable-sha256.txt" "$E/updater-archive-sha256.txt" "$E/updater-signature-sha256.txt" "$E/dmg-sha256.txt" "$DMG" "$ARCHIVE" "$SIG"; do
+            test -f "$f" && test ! -L "$f" && test -s "$f"
+          done
+          grep -Fxq "source=c60e53c9f12e4dad730c77479a8d000a53422021" "$E/status.txt"
+          grep -Fxq "version=6.1.20" "$E/status.txt"
+          grep -Fxq "bundle_id=studio.channelflow.desktop" "$E/status.txt"
+          grep -Fxq "architecture=arm64" "$E/status.txt"
+          grep -Fxq "stable_feed=UNCHANGED" "$E/status.txt"
+          grep -Fxq "codesign=LOCAL_ADHOC_VERIFIED" "$E/status.txt"
+          grep -Fxq "synthetic_app_data_sentinel=PRESERVED" "$E/status.txt"
+          verify_sha() {
+            expected="$(awk 'NR==1{print $1}' "$1")"
+            actual="$(shasum -a 256 "$2" | awk '{print $1}')"
+            test -n "$expected" && test "$expected" = "$actual"
+          }
+          verify_sha "$E/dmg-sha256.txt" "$DMG"
+          verify_sha "$E/updater-archive-sha256.txt" "$ARCHIVE"
+          verify_sha "$E/updater-signature-sha256.txt" "$SIG"
+          /usr/bin/hdiutil verify "$DMG" >/dev/null
+          /usr/bin/hdiutil attach -readonly -nobrowse -mountpoint "$MOUNT" "$DMG" >/dev/null
+          mounted=1
+          SRC="$MOUNT/VYRON.app"
+          test -d "$SRC" && test ! -L "$SRC"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$SRC/Contents/Info.plist")" = 6.1.20
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$SRC/Contents/Info.plist")" = studio.channelflow.desktop
+          EXENAME="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$SRC/Contents/Info.plist")"
+          test -n "$EXENAME"
+          /usr/bin/lipo -archs "$SRC/Contents/MacOS/$EXENAME" | tr ' ' '\n' | grep -Fxq arm64
+          /usr/bin/codesign --verify --deep --strict "$SRC" >/dev/null 2>&1
+          verify_sha "$E/executable-sha256.txt" "$SRC/Contents/MacOS/$EXENAME"
+          /usr/bin/ditto "$SRC" "$STAGE/VYRON.app"
+          /usr/bin/hdiutil detach "$MOUNT" -quiet
+          mounted=0
+          /usr/bin/codesign --verify --deep --strict "$STAGE/VYRON.app" >/dev/null 2>&1
+          verify_sha "$E/executable-sha256.txt" "$STAGE/VYRON.app/Contents/MacOS/$EXENAME"
+          test ! -e "$STAGE/VERIFIED" 
+          printf 'source=c60e53c9f12e4dad730c77479a8d000a53422021\nversion=6.1.20\nrun=44337807229\n' > "$STAGE/VERIFIED"
+          chmod 600 "$STAGE/VERIFIED"
+          success=1
+          echo "VYRON_620_VERIFIED_DOWNLOAD=PASS"
+          echo "VYRON_620_DMG_ARCHIVE_SIGNATURE_SHA256=PASS"
+          echo "VYRON_620_ARM64_CODESIGN_IDENTITY=PASS"
+          echo "VYRON_620_LOCAL_STAGE=READY"
+          echo "VYRON_619_INSTALLED=UNCHANGED"
+          echo "VYRON_STABLE_FEED=UNCHANGED"

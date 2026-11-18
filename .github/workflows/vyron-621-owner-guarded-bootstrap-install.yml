@@ -1,0 +1,30 @@
+name: VYRON 6.1.21 guarded owner M1 bootstrap install (manual trigger commit)
+
+on:
+  push:
+    branches:
+      - diagnostics/vyron-m1-connection-20261118
+    paths:
+      - scripts/vyron-621-bootstrap-install-trigger.txt
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vyron-physical-m1-exclusive-install
+  cancel-in-progress: false
+
+jobs:
+  owner-bootstrap-install:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Syntax-check and run fail-closed 6.1.20 to 6.1.21 bootstrap
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          bash -n scripts/vyron-621-guarded-bootstrap-install.sh
+          bash scripts/vyron-621-guarded-bootstrap-install.sh

@@ -1,0 +1,44 @@
+name: VYRON 6.1.21 latest frontend safety on physical M1 (isolated)
+
+on:
+  push:
+    branches:
+      - diagnostics/vyron-m1-connection-20261118
+    paths:
+      - .github/workflows/vyron-621-m1-frontend-regression.yml
+
+permissions:
+  contents: read
+
+jobs:
+  frontend:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 15
+    steps:
+      - name: Guard live VYRON 6.1.20 and free disk
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(uname -m)" = arm64
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' /Applications/VYRON.app/Contents/Info.plist)" = 6.1.20
+          /usr/bin/codesign --verify --deep --strict /Applications/VYRON.app >/dev/null 2>&1
+          FREE="$(df -Pk "$HOME" | awk 'NR==2 {print $4}')"
+          test "$FREE" -gt 9437184
+          echo 'M1_OWNER_620=PROTECTED'
+      - uses: actions/checkout@v4
+        with:
+          repository: ScaleUPPeisov/scaleup-dashboards
+          ref: 1404930adf0e889e83a6297684b3c44e2dc710b0
+          persist-credentials: false
+      - name: Run targeted, full regression and production UI build using repository workspace
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(git rev-parse HEAD)" = 1404930adf0e889e83a6297684b3c44e2dc710b0
+          npm ci --no-audit --no-fund
+          npx vitest run src/v610ChannelRunwayFleetRefresh.test.ts src/channelRunway.test.ts src/vyron620FleetRunwayVisualSafety.test.ts src/v611ChannelRunwayInventoryHotfix.test.ts
+          npx vitest run
+          npm run build
+          echo 'VYRON_621_M1_FRONTEND_FULL_REGRESSION=PASS'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' /Applications/VYRON.app/Contents/Info.plist)" = 6.1.20
+          echo 'VYRON_620_INSTALLED=UNMODIFIED'

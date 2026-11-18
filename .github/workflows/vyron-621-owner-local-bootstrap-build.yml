@@ -1,0 +1,138 @@
+name: VYRON 6.1.21 guarded local bootstrap build on owner M1 (NO INSTALL)
+
+on:
+  push:
+    branches:
+      - diagnostics/vyron-m1-connection-20261118
+    paths:
+      - .github/workflows/vyron-621-owner-local-bootstrap-build.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vyron-621-owner-m1-bootstrap
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 65
+    steps:
+      - name: Preflight physical M1 owner 6.1.20 and >=18 GiB free
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(uname -m)" = arm64
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' /Applications/VYRON.app/Contents/Info.plist)" = 6.1.20
+          /usr/bin/codesign --verify --deep --strict /Applications/VYRON.app >/dev/null 2>&1
+          FREE="$(df -Pk "$HOME" | awk 'NR==2 {print $4}')"
+          echo "BOOTSTRAP_FREE_GIB=$((FREE / 1048576))"
+          test "$FREE" -gt 18874368
+          test -w "$HOME/.vyron-owner-rollback"
+          command -v node >/dev/null && command -v cargo >/dev/null && command -v xcrun >/dev/null
+          echo 'BOOTSTRAP_OWNER_620=PRESERVED'
+      - uses: actions/checkout@v4
+        with:
+          repository: ScaleUPPeisov/scaleup-dashboards
+          ref: 08bef81a3683b788de5ff734612a9e9f6d94f920
+          persist-credentials: false
+      - name: Construct verified temporary Tauri overlay from installed approved public key only
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          test "$(git rev-parse HEAD)" = 08bef81a3683b788de5ff734612a9e9f6d94f920
+          OVERLAY="$RUNNER_TEMP/vyron621-bootstrap-overlay.json"
+          PUBLIC="$RUNNER_TEMP/vyron621-approved-public-key.b64"
+          /usr/bin/python3 - "$PUBLIC" <<'PY'
+          import sys,subprocess,base64,re,hashlib
+          from pathlib import Path
+          bundle=Path('/Applications/VYRON.app')
+          exe=subprocess.check_output(['/usr/libexec/PlistBuddy','-c','Print :CFBundleExecutable',str(bundle/'Contents/Info.plist')],text=True).strip()
+          b=(bundle/'Contents'/'MacOS'/exe).read_bytes()
+          approved='1c97657fd2a7ba4c2a0ce5b5361518eeacf76da274521b1977d57a55b8dbcec9'
+          found=[]
+          for m in re.finditer(rb'dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWdu[0-9A-Za-z+/=]{35,300}',b):
+            s=m.group().decode()
+            for end in range(70,len(s)+1):
+              try:t=base64.b64decode(s[:end],validate=True).decode()
+              except Exception:continue
+              lines=t.strip().splitlines()
+              if len(lines)!=2 or not lines[0].startswith('untrusted comment: minisign public key: '):continue
+              try:raw=base64.b64decode(lines[1],validate=True)
+              except Exception:continue
+              if len(raw)!=42 or raw[:2]!=b'Ed':continue
+              keyid=lines[0].rsplit(' ',1)[-1]
+              if keyid.upper().zfill(16)!=raw[2:10][::-1].hex().upper():continue
+              if hashlib.sha256(raw).hexdigest()==approved:
+                found.append((s[:end],len(keyid)))
+              break
+          assert len(found)==1, 'APPROVED_PUBLIC_KEY_NOT_UNIQUE'
+          assert found[0][1]==14, 'OWNER_KNOWN_MINISIGN_KEY_ID_NOT_14'
+          Path(sys.argv[1]).write_text(found[0][0]+'\n')
+          print('BOOTSTRAP_INSTALLED_APPROVED_PUBKEY=VERIFIED')
+          print('BOOTSTRAP_MINISIGN_ID_14_DIGITS=VERIFIED')
+          PY
+          node scripts/macos/prepare-vyron-rotated-updater.mjs --public-key-file "$PUBLIC" --output "$OVERLAY" --version 6.1.21 > "$RUNNER_TEMP/vyron621-key-facts.txt"
+          grep -Fxq 'PUBLIC_KEY_SHA256=1c97657fd2a7ba4c2a0ce5b5361518eeacf76da274521b1977d57a55b8dbcec9' "$RUNNER_TEMP/vyron621-key-facts.txt"
+          grep -Fxq 'STABLE_FEED_PINNED=PASS' "$RUNNER_TEMP/vyron621-key-facts.txt"
+          /usr/bin/python3 - "$OVERLAY" <<'PY'
+          import json,sys
+          from pathlib import Path
+          p=Path(sys.argv[1])
+          data=json.loads(p.read_text())
+          assert data['version']=='6.1.21'
+          assert data['identifier']=='studio.channelflow.desktop'
+          assert data['plugins']['updater']['endpoints']==['https://raw.githubusercontent.com/ScaleUPPeisov/vyron-releases/main/updates/latest.json']
+          # Local bootstrap has no private signing key, but retains a trusted
+          # updater public key for all future signed release verification.
+          data['bundle']['createUpdaterArtifacts']=False
+          p.write_text(json.dumps(data,indent=2)+'\n')
+          PY
+          echo "VYRON_621_PUBLIC_KEY_ONLY_BOOTSTRAP=PASS"
+      - name: Compile exact 6.1.21 native app without updater artifact publishing
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          TARGET="$(mktemp -d "$RUNNER_TEMP/vyron621-local-target.XXXXXX")"
+          trap 'rm -rf "$TARGET"' EXIT
+          export CARGO_TARGET_DIR="$TARGET"
+          export CARGO_BUILD_JOBS=2 CARGO_INCREMENTAL=0
+          export VYRON_TRUSTED_UPDATER_PUBLIC_KEY_SHA256=1c97657fd2a7ba4c2a0ce5b5361518eeacf76da274521b1977d57a55b8dbcec9
+          export VYRON_COMMIT_SHA=08bef81a3683b788de5ff734612a9e9f6d94f920
+          export VYRON_UPDATE_CHANNEL=stable
+          export TAURI_CONFIG="$(cat "$RUNNER_TEMP/vyron621-bootstrap-overlay.json")"
+          npm ci --no-audit --no-fund
+          npx vitest run src/v610ChannelRunwayFleetRefresh.test.ts src/vyron620FleetRunwayVisualSafety.test.ts
+          npm run build
+          cargo test --locked --manifest-path src-tauri/Cargo.toml --lib updater_key_diagnostic_tests
+          npx tauri build --target aarch64-apple-darwin --bundles app --config "$RUNNER_TEMP/vyron621-bootstrap-overlay.json"
+          APP="$(find "$TARGET" src-tauri/target -path '*/bundle/macos/VYRON.app' -type d -print -quit 2>/dev/null)"
+          test -n "$APP" && test -d "$APP" && test ! -L "$APP"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")" = 6.1.21
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Contents/Info.plist")" = studio.channelflow.desktop
+          EXENAME="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")"
+          test -f "$APP/Contents/MacOS/$EXENAME"
+          /usr/bin/lipo -archs "$APP/Contents/MacOS/$EXENAME" | tr ' ' '\n' | grep -Fxq arm64
+          /usr/bin/codesign --force --deep --sign - "$APP"
+          /usr/bin/codesign --verify --deep --strict "$APP" >/dev/null 2>&1
+          test "$(strings "$APP/Contents/MacOS/$EXENAME" | grep -Fc '1c97657fd2a7ba4c2a0ce5b5361518eeacf76da274521b1977d57a55b8dbcec9')" -ge 1
+          BASE="$HOME/.vyron-owner-rollback"
+          STAGE="$(mktemp -d "$BASE/staged-621-local-bootstrap-XXXXXX")"
+          /usr/bin/ditto "$APP" "$STAGE/VYRON.app"
+          /usr/bin/codesign --verify --deep --strict "$STAGE/VYRON.app" >/dev/null 2>&1
+          SHA="$(shasum -a 256 "$STAGE/VYRON.app/Contents/MacOS/$EXENAME" | awk '{print $1}')"
+          printf 'source=08bef81a3683b788de5ff734612a9e9f6d94f920\nversion=6.1.21\nidentity=studio.channelflow.desktop\napproved_pubkey_sha256=1c97657fd2a7ba4c2a0ce5b5361518eeacf76da274521b1977d57a55b8dbcec9\nbootstrap_ad_hoc=YES\nupdater_archive=NOT_SIGNED_NOT_DISTRIBUTABLE\nexecutable_sha256=%s\n' "$SHA" > "$STAGE/VERIFIED"
+          chmod 600 "$STAGE/VERIFIED"
+          echo "VYRON_621_LOCAL_BOOTSTRAP_STAGE=$(basename "$STAGE")"
+          echo "VYRON_621_LOCAL_BOOTSTRAP_APP=VERIFIED"
+          echo "VYRON_621_LOCAL_BOOTSTRAP_UPDATER_ARCHIVE=NOT_DISTRIBUTABLE"
+          echo "VYRON_620_INSTALLED_APP=UNCHANGED"
+          echo "VYRON_STABLE_FEED=UNCHANGED"
+      - name: Remove transient public key and overlay copies
+        if: always()
+        shell: bash
+        run: |
+          rm -f "$RUNNER_TEMP/vyron621-approved-public-key.b64" "$RUNNER_TEMP/vyron621-bootstrap-overlay.json" "$RUNNER_TEMP/vyron621-key-facts.txt"

@@ -163,3 +163,51 @@ jobs:
                   print("VYRON_STATE_PARSE=FAILED")
           print("VYRON_TARGET_SCHEDULE_AUDIT_READ_ONLY=PASS")
           PY
+      - name: Inspect affected owner inventory statuses (read-only, aggregate only)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          /usr/bin/python3 - <<'PY'
+          import json
+          from pathlib import Path
+          root=Path.home()/"Library"/"Application Support"/"studio.channelflow.desktop"
+          state=json.loads((root/"state.json").read_text(encoding="utf-8"))
+          targets={"Neon Drive FM":"NEON","After Dark Voice":"AFTER_DARK","Midnight Noir Lounge":"MIDNIGHT_NOIR"}
+          channels=state.get("channels",[])
+          for name,label in targets.items():
+              channel=next((x for x in channels if isinstance(x,dict) and x.get("name")==name),None)
+              if not channel:
+                  print(label+"_FOUND=NO")
+                  continue
+              p=root/"youtube-inventory"/(channel["id"]+".json")
+              if not p.is_file():
+                  print(label+"_CACHE_PRESENT=NO")
+                  continue
+              d=json.loads(p.read_text(encoding="utf-8"))
+              rows=d.get("videos")
+              if not isinstance(rows,list):rows=[]
+              counts={"public":0,"private":0,"unlisted":0,"unknown":0,
+                      "private_with_publish_at":0,"other_with_publish_at":0}
+              for row in rows:
+                  if not isinstance(row,dict):continue
+                  privacy=str(row.get("privacyStatus") or "unknown").lower()
+                  key=privacy if privacy in ("public","private","unlisted") else "unknown"
+                  counts[key]+=1
+                  if row.get("publishAt"):
+                      counts["private_with_publish_at" if key=="private" else "other_with_publish_at"]+=1
+              for key,value in counts.items():print(label+"_"+key.upper()+"="+str(value))
+              info=d.get("syncInfo") or {}
+              if not isinstance(info,dict):info={}
+              reasons=info.get("incompleteReasons") or []
+              if not isinstance(reasons,list):reasons=[]
+              allowed={"SCHEDULE_EMPTY_NOT_INDEPENDENTLY_VERIFIED",
+                  "OWNER_SEARCH_PAGE_LIMIT","OWNER_SEARCH_NOT_EXHAUSTED",
+                  "OWNER_SEARCH_FAILED","UPLOADS_PLAYLIST_SCHEDULE_COVERAGE_MISMATCH",
+                  "MISSING_VIDEO_HYDRATION","PLAYLIST_TOTAL_METADATA_MISMATCH",
+                  "PLAYLIST_NOT_EXHAUSTED","SCHEDULE_DATA_INCOMPLETE"}
+              codes=sorted(set(str(x) for x in reasons if str(x) in allowed))
+              print(label+"_INCOMPLETE_REASON_COUNT="+str(len(reasons)))
+              print(label+"_ALLOWED_REASON_CODES="+(",".join(codes) or "NONE"))
+              print(label+"_SYNCINFO_KEYS="+str(len(info)))
+          print("VYRON_AFFECTED_CHANNELS_CACHE_READ_ONLY=PASS")
+          PY

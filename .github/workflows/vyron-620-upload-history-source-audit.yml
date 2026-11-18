@@ -1,0 +1,57 @@
+name: VYRON 6.1.20 read-only upload history source audit
+
+on:
+  push:
+    branches:
+      - diagnostics/vyron-m1-connection-20261118
+    paths:
+      - .github/workflows/vyron-620-upload-history-source-audit.yml
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 3
+    steps:
+      - name: Count existing upload history evidence by channel and status without exposing video IDs or OAuth
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          /usr/bin/python3 - <<'PY'
+          import json,datetime,re
+          from pathlib import Path
+          from collections import Counter,defaultdict
+          p=Path.home()/'Library'/'Application Support'/'studio.channelflow.desktop'/'state.json'
+          data=json.loads(p.read_text(encoding='utf-8'))
+          channels=data.get('channels',[])
+          history=data.get('uploadHistory',[])
+          print('HISTORY_ROWS='+str(len(history) if isinstance(history,list) else -1))
+          if not isinstance(history,list):raise SystemExit('HISTORY_NOT_ARRAY')
+          names={str(c.get('id')):str(c.get('name','')) for c in channels if isinstance(c,dict)}
+          stats=defaultdict(lambda:Counter())
+          now=datetime.datetime.now(datetime.timezone.utc)
+          for row in history:
+            if not isinstance(row,dict):continue
+            id=str(row.get('channelId',''))
+            status=str(row.get('status','?'))
+            yt=str(row.get('youtubeVideoId',''))
+            tm=str(row.get('publishAt',''))
+            valid=bool(re.fullmatch(r'[A-Za-z0-9_-]{11}',yt))
+            future=False
+            if tm:
+              try: future=datetime.datetime.fromisoformat(tm.replace('Z','+00:00'))>now
+              except (ValueError,TypeError):pass
+            stats[id]['total']+=1
+            stats[id]['status_'+status[:32]]+=1
+            if valid:stats[id]['validYoutubeId']+=1
+            if future:stats[id]['futurePublishAt']+=1
+            if valid and future:stats[id]['futureWithYouTubeId']+=1
+            if valid and future and status=='UPLOADED':stats[id]['eligibleByCurrentFilter']+=1
+            if valid and future and row.get('youtubeChannelId'):stats[id]['ownerChannelIdPresent']+=1
+          for cid,name in sorted(names.items(),key=lambda x:x[1].casefold()):
+            print('UPLOAD_HISTORY '+json.dumps({'name':name,'counts':dict(stats[cid])},ensure_ascii=False))
+          print('HISTORY_DIAGNOSTIC_API_REQUESTS=0')
+          print('HISTORY_IDS_AND_SECRETS_NOT_LOGGED=PASS')
+          PY

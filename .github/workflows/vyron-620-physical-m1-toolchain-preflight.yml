@@ -1,0 +1,52 @@
+name: VYRON 6.1.20 physical M1 toolchain preflight (read only)
+
+on:
+  push:
+    branches:
+      - diagnostics/vyron-m1-connection-20261118
+    paths:
+      - .github/workflows/vyron-620-physical-m1-toolchain-preflight.yml
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 5
+    steps:
+      - name: Check M1 identity, existing VYRON, disk and build tools without touching owner state
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(uname -m)" = arm64
+          echo "VYRON_PREFLIGHT_ARM64=PASS"
+          test -d /Applications/VYRON.app
+          INSTALLED="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' /Applications/VYRON.app/Contents/Info.plist)"
+          echo "VYRON_PREFLIGHT_INSTALLED=$INSTALLED"
+          test "$INSTALLED" = 6.1.19
+          /usr/bin/codesign --verify --deep --strict /Applications/VYRON.app >/dev/null 2>&1
+          echo "VYRON_PREFLIGHT_INSTALLED_CODESIGN=PASS"
+          if /usr/bin/pgrep -x channelflow >/dev/null 2>&1; then
+            echo "VYRON_PREFLIGHT_RUNNING_APP=PRESERVED"
+          else
+            echo "VYRON_PREFLIGHT_RUNNING_APP=NOT_RUNNING"
+          fi
+          for bin in git node npm npx rustc cargo python3 xcodebuild codesign hdiutil; do
+            if command -v "$bin" >/dev/null 2>&1; then
+              echo "VYRON_TOOL_${bin}=AVAILABLE"
+            else
+              echo "VYRON_TOOL_${bin}=MISSING"
+            fi
+          done
+          echo "VYRON_PREFLIGHT_NODE_VERSION=$(node --version 2>/dev/null || echo MISSING)"
+          echo "VYRON_PREFLIGHT_RUSTC_VERSION=$(rustc --version 2>/dev/null || echo MISSING)"
+          echo "VYRON_PREFLIGHT_CARGO_VERSION=$(cargo --version 2>/dev/null || echo MISSING)"
+          echo "VYRON_PREFLIGHT_XCODE_VERSION=$(xcodebuild -version 2>/dev/null | head -1 || echo MISSING)"
+          FREE_KB="$(df -Pk "$HOME" | awk 'NR==2 {print $4}')"
+          echo "VYRON_PREFLIGHT_HOME_FREE_GIB=$((FREE_KB / 1024 / 1024))"
+          test "$FREE_KB" -gt 10485760
+          git -c credential.helper= ls-remote --exit-code https://github.com/ScaleUPPeisov/scaleup-dashboards.git refs/heads/feature/vyron-macos-ultimate | grep -Fq c60e53c9f12e4dad730c77479a8d000a53422021
+          echo "VYRON_PREFLIGHT_SOURCE_SHA_PINNED=PASS"
+          echo "VYRON_PREFLIGHT_OWNER_DATA=UNREAD_UNCHANGED"
+          echo "VYRON_PREFLIGHT_RELEASE_STATUS=NOT_INSTALLED"

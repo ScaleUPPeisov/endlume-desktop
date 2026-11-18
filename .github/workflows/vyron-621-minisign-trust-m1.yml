@@ -1,0 +1,46 @@
+name: VYRON 6.1.21 Minisign key-ID trust regression on physical Mac M1
+
+on:
+  push:
+    branches: [diagnostics/vyron-m1-connection-20261118]
+    paths:
+      - .github/workflows/vyron-621-minisign-trust-m1.yml
+
+permissions:
+  contents: read
+
+jobs:
+  test-trust:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 20
+    steps:
+      - name: Protect installed owner 6.1.20 and check resources
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(uname -m)" = arm64
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' /Applications/VYRON.app/Contents/Info.plist)" = 6.1.20
+          /usr/bin/codesign --verify --deep --strict /Applications/VYRON.app >/dev/null 2>&1
+          test "$(df -Pk "$HOME" | awk 'NR==2 {print $4}')" -gt 10485760
+          echo "VYRON_621_OWNER_INSTALLED=6.1.20_UNMODIFIED"
+      - uses: actions/checkout@v4
+        with:
+          repository: ScaleUPPeisov/scaleup-dashboards
+          ref: 0194729e6566e0bf25071e0295574c67e415d9d2
+          persist-credentials: false
+      - name: Execute native trust regressions in isolated home, with Keychain/Finder never invoked
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(git rev-parse HEAD)" = 0194729e6566e0bf25071e0295574c67e415d9d2
+          ORIGINAL_HOME="$HOME"
+          TEST_HOME="$(mktemp -d "$RUNNER_TEMP/vyron621-trust-home.XXXXXX")"
+          TARGET="$(mktemp -d "$RUNNER_TEMP/vyron621-trust-target.XXXXXX")"
+          cleanup(){ rm -rf "$TEST_HOME" "$TARGET"; }
+          trap cleanup EXIT
+          export HOME="$TEST_HOME"
+          export CARGO_HOME="$ORIGINAL_HOME/.cargo" RUSTUP_HOME="$ORIGINAL_HOME/.rustup" CARGO_TARGET_DIR="$TARGET"
+          export CARGO_BUILD_JOBS=2 CARGO_INCREMENTAL=0 CARGO_PROFILE_TEST_DEBUG=0
+          cargo test --locked --manifest-path src-tauri/Cargo.toml --lib updater_key_diagnostic_tests -- --nocapture
+          echo "VYRON_621_MINISIGN_SHORT_ID_REGRESSION=PASS"
+          echo "VYRON_621_OWNER_STATE=UNTOUCHED"

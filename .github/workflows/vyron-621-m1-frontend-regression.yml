@@ -28,13 +28,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: ScaleUPPeisov/scaleup-dashboards
-          ref: 1404930adf0e889e83a6297684b3c44e2dc710b0
+          ref: d37276bbf0d657913f775cfed46d2af04d588a5c
           persist-credentials: false
       - name: Run targeted, full regression and production UI build using repository workspace
         shell: bash
         run: |
           set -Eeuo pipefail
-          test "$(git rev-parse HEAD)" = 1404930adf0e889e83a6297684b3c44e2dc710b0
+          test "$(git rev-parse HEAD)" = d37276bbf0d657913f775cfed46d2af04d588a5c
           npm ci --no-audit --no-fund
           npx vitest run src/v610ChannelRunwayFleetRefresh.test.ts src/channelRunway.test.ts src/vyron620FleetRunwayVisualSafety.test.ts src/v611ChannelRunwayInventoryHotfix.test.ts
           npx vitest run

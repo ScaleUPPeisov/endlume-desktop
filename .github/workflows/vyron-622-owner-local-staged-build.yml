@@ -5,7 +5,7 @@ on:
     branches:
       - diagnostics/vyron-m1-connection-20261118
     paths:
-      - .github/workflows/vyron-622-owner-local-bootstrap-build.yml
+      - .github/workflows/vyron-622-owner-local-staged-build.yml
 
 permissions:
   contents: read

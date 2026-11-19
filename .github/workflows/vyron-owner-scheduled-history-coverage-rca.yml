@@ -1,0 +1,70 @@
+name: VYRON Scheduled ID recovery coverage from owner upload history (zero API)
+
+on:
+  push:
+    branches:
+      - diagnostics/vyron-m1-connection-20261118
+    paths:
+      - .github/workflows/vyron-owner-scheduled-history-coverage-rca.yml
+
+permissions:
+  contents: read
+
+jobs:
+  read:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 6
+    steps:
+      - name: Analyze only counts of owner upload history not found in last native inventory
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          /usr/bin/python3 - <<'PY'
+          import json,re,datetime
+          from pathlib import Path
+          from collections import Counter
+          base=Path.home()/'Library'/'Application Support'/'studio.channelflow.desktop'
+          state=json.loads((base/'state.json').read_text())
+          channels=state.get('channels',[])
+          history=state.get('uploadHistory',[])
+          assert isinstance(channels,list) and len(channels)==33
+          assert isinstance(history,list)
+          root=base/'youtube-inventory'
+          now=datetime.datetime.now(datetime.timezone.utc)
+          def valid(x):return bool(re.fullmatch('[A-Za-z0-9_-]{11}',str(x or '')))
+          def future(x):
+            try:return datetime.datetime.fromisoformat(str(x).replace('Z','+00:00'))>now
+            except (ValueError,TypeError):return False
+          totals=Counter()
+          for ch in channels:
+            name=str(ch.get('name',''))[:80].replace('\n',' ')
+            matches=[]
+            for i,v in enumerate(history):
+              if not isinstance(v,dict) or v.get('channelId')!=ch.get('id') or v.get('status')!='UPLOADED':continue
+              if v.get('youtubeChannelId') and v.get('youtubeChannelId')!=ch.get('youtubeChannelId'):continue
+              if v.get('profileId') and v.get('profileId')!=ch.get('youtubeProfileId'):continue
+              if valid(v.get('youtubeVideoId')):matches.append((i,v))
+            positives=sorted((t for t in matches if future(t[1].get('publishAt'))),key=lambda t:str(t[1].get('publishAt')),reverse=True)
+            recent=sorted((t for t in matches if not future(t[1].get('publishAt'))),key=lambda t:t[0],reverse=True)
+            selected=[]
+            for _,r in positives+recent:
+              vid=r.get('youtubeVideoId')
+              if vid not in selected:selected.append(vid)
+              if len(selected)>=50:break
+            p=root/(str(ch.get('id'))+'.json')
+            inv=json.loads(p.read_text()) if p.is_file() else {}
+            native={str(v.get('id')) for v in inv.get('videos',[]) if isinstance(v,dict) and valid(v.get('id'))}
+            missing=[v for v in selected if v not in native]
+            missing_without_date=sum(1 for vid in missing if any(r.get('youtubeVideoId')==vid and not future(r.get('publishAt')) for _,r in matches))
+            counts={'name':name,'historyUploadedIds':len(set(r['youtubeVideoId'] for _,r in matches)),
+                'candidateIds':len(selected),'candidateNotInNative':len(missing),
+                'candidateMissingFutureDate':missing_without_date,
+                'nativeVideoCount':len(native)}
+            for k in ('historyUploadedIds','candidateIds','candidateNotInNative','candidateMissingFutureDate'):totals[k]+=counts[k]
+            print('HISTORY_RCA_CHANNEL '+json.dumps(counts,ensure_ascii=False,sort_keys=True))
+          print('HISTORY_RCA_TOTAL '+json.dumps(dict(totals),sort_keys=True))
+          print('HISTORY_RCA_VIDEO_IDENTIFIERS_EXPOSED=0')
+          print('HISTORY_RCA_OAUTH_OR_KEYCHAIN_READS=0')
+          print('HISTORY_RCA_USER_DATA_MUTATIONS=0')
+          print('HISTORY_RCA_YOUTUBE_API_REQUESTS=0')
+          PY

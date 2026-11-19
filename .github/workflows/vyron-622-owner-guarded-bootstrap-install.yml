@@ -1,0 +1,30 @@
+name: VYRON 6.1.22 owner canary guarded install (only explicit trigger)
+
+on:
+  push:
+    branches:
+      - diagnostics/vyron-m1-connection-20261118
+    paths:
+      - scripts/vyron-622-bootstrap-install-trigger.txt
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vyron-physical-m1-exclusive-install
+  cancel-in-progress: false
+
+jobs:
+  guarded-install:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify script syntax then guarded install
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          bash -n scripts/vyron-622-guarded-bootstrap-install.sh
+          bash scripts/vyron-622-guarded-bootstrap-install.sh

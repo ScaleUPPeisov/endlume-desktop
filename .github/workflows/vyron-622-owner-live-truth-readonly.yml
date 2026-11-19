@@ -1,0 +1,71 @@
+name: VYRON 6.1.22 owner Scheduled live truth (read-only, after manual refresh)
+
+on:
+  push:
+    branches:
+      - diagnostics/vyron-m1-connection-20261118
+    paths:
+      - scripts/vyron-622-postinstall-truth-trigger.txt
+
+permissions:
+  contents: read
+
+jobs:
+  truth:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 6
+    steps:
+      - name: Inspect latest per-channel authoritative Scheduled evidence without API calls
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          /usr/bin/python3 - <<'PY'
+          import json,re,sqlite3,datetime
+          from pathlib import Path
+          from urllib.parse import quote
+          from collections import Counter
+          installed=Path('/Applications/VYRON.app/Contents/Info.plist')
+          import subprocess
+          version=subprocess.check_output(['/usr/libexec/PlistBuddy','-c','Print :CFBundleShortVersionString',str(installed)],text=True).strip()
+          print('LIVE622_INSTALLED_VERSION='+version)
+          assert version=='6.1.22'
+          h=Path.home()
+          base=h/'Library'/'Application Support'/'studio.channelflow.desktop'
+          s=json.loads((base/'state.json').read_text())
+          chans=s.get('channels',[])
+          assert isinstance(chans,list) and len(chans)==33
+          records={}
+          for p in (h/'Library'/'WebKit'/'studio.channelflow.desktop').rglob('*'):
+            if not p.is_file() or p.suffix.lower() not in ('.sqlite3','.db') or p.stat().st_size>50000000:continue
+            try:
+              db=sqlite3.connect('file:'+quote(str(p))+'?mode=ro',uri=True,timeout=2)
+              try:
+                if not db.execute("SELECT 1 FROM sqlite_master WHERE name='ItemTable'").fetchone():continue
+                for key,v in db.execute("SELECT key,value FROM ItemTable WHERE key='vyron:channel-runway:v1'"):
+                  strings=[v.decode('utf-16le','ignore'),v.decode('utf-8','ignore')] if isinstance(v,bytes) else [str(v)]
+                  for text in strings:
+                    try:d=json.loads(text)
+                    except (ValueError,TypeError):continue
+                    if isinstance(d,dict) and isinstance(d.get('channels'),dict):records=d['channels'];break
+              finally:db.close()
+            except (OSError,ValueError,sqlite3.Error):pass
+          assert len(records)==33
+          statuses=Counter()
+          for ch in chans:
+            if not isinstance(ch,dict):continue
+            rec=records.get(ch.get('id'),{})
+            state=str(rec.get('dataState','UNKNOWN'))
+            statuses[state]+=1
+            error=str(rec.get('lastRefreshError') or '')
+            codes=sorted(set(re.findall('OWNER_SEARCH_HTTP_[0-9]{3}_[A-Z_]+|OWNER_SEARCH_NETWORK_ERROR|OWNER_SEARCH_FAILED|PLAYLIST_TOTAL_METADATA_MISMATCH|MISSING_VIDEO_HYDRATION|SCHEDULE_DATA_INCOMPLETE|OWNER_SEARCH_NOT_EXHAUSTED|OWNER_SEARCH_PAGE_LIMIT',error)))
+            out={'name':str(ch.get('name',''))[:85].replace('\n',' '),'state':state,
+              'lastAttemptAt':rec.get('lastRefreshAttemptAt'),'lastObservedAt':rec.get('lastObservedAt'),
+              'observedScheduled':rec.get('lastObservedScheduledCount'),
+              'historicalScheduled':rec.get('scheduledVideoCount'),
+              'historicalThrough':rec.get('scheduledUntil'),'reasonCodes':codes}
+            print('LIVE622_CHANNEL '+json.dumps(out,ensure_ascii=False,sort_keys=True))
+          print('LIVE622_TOTALS '+json.dumps(dict(statuses),sort_keys=True))
+          print('LIVE622_API_REQUESTS=0')
+          print('LIVE622_SECRET_VALUES_OR_VIDEO_IDS_EXPOSED=0')
+          print('LIVE622_USER_DATA_MUTATIONS=0')
+          PY

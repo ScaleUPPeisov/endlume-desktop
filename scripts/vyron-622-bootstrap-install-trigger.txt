@@ -1,0 +1,7 @@
+VYRON owner 6.1.22 private canary install trigger
+Approved source: f4fb6f4bbfd5cc49039a4d50b70c35766d71d67a
+Verified staging job: https://github.com/ScaleUPPeisov/endlume-desktop/actions/runs/44570300306
+Staged artifact: staged-622-local-bootstrap-Zceyt4
+Guard: strict 33 channels and all queues idle; version 6.1.21 -> 6.1.22 only
+Safety: preserve app/WebKit/Application Support backups and rollback
+Stable release feed must remain unchanged.

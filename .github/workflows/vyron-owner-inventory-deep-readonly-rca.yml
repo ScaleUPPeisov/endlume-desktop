@@ -1,0 +1,96 @@
+name: VYRON owner inventory RCA - immutable forensic read (zero API)
+
+on:
+  push:
+    branches:
+      - diagnostics/vyron-m1-connection-20261118
+    paths:
+      - .github/workflows/vyron-owner-inventory-deep-readonly-rca.yml
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 5
+    steps:
+      - name: Inspect native cache vs 33 channel runway, no OAuth, no API, no writes
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          /usr/bin/python3 - <<'PY'
+          import json,re,sqlite3,datetime
+          from pathlib import Path
+          from collections import Counter
+          from urllib.parse import quote
+          base=Path.home()/'Library'/'Application Support'/'studio.channelflow.desktop'
+          state=json.loads((base/'state.json').read_text())
+          channels=state.get('channels',[])
+          assert isinstance(channels,list) and len(channels)==33
+          allowed={'PLAYLIST_TOTAL_METADATA_MISMATCH','OWNER_SEARCH_FAILED','MISSING_VIDEO_HYDRATION','SCHEDULE_DATA_INCOMPLETE','SCHEDULE_EMPTY_NOT_INDEPENDENTLY_VERIFIED','OWNER_SEARCH_NOT_EXHAUSTED','OWNER_SEARCH_PAGE_LIMIT','UPLOADS_PLAYLIST_SCHEDULE_COVERAGE_MISMATCH','PLAYLIST_ITEM_WITHOUT_VIDEO_ID','OWNER_SUPPLEMENT_HYDRATION_MISSING','LIMIT_TRUNCATED','HYDRATION_BATCH_FAILED'}
+          records={}
+          for p in (Path.home()/'Library'/'WebKit'/'studio.channelflow.desktop').rglob('*'):
+            if not p.is_file() or p.suffix.lower() not in ('.sqlite3','.db') or p.stat().st_size>50_000_000:continue
+            try:
+              db=sqlite3.connect('file:'+quote(str(p))+'?mode=ro',uri=True,timeout=2)
+              try:
+                if not db.execute("SELECT 1 FROM sqlite_master WHERE name='ItemTable'").fetchone():continue
+                for key,val in db.execute("SELECT key,value FROM ItemTable WHERE key='vyron:channel-runway:v1'"):
+                  strings=[val.decode('utf-16le','ignore'),val.decode('utf-8','ignore')] if isinstance(val,bytes) else [str(val)]
+                  for s in strings:
+                    try:d=json.loads(s)
+                    except (ValueError,TypeError):continue
+                    if isinstance(d,dict) and isinstance(d.get('channels'),dict):records=d['channels'];break
+              finally:db.close()
+            except (OSError,ValueError,sqlite3.Error):pass
+          assert len(records)==33
+          root=base/'youtube-inventory'
+          print('RCA_NATIVE_CACHE_ROOT_EXISTS='+str(root.exists()))
+          print('RCA_NATIVE_CACHE_FILES='+str(len(list(root.glob('*.json'))) if root.exists() else 0))
+          totals=Counter()
+          def safe(v):
+            return sorted({x for x in allowed if x in str(v or '')})
+          for ch in channels:
+            if not isinstance(ch,dict):continue
+            cid=str(ch.get('id','')); name=str(ch.get('name','')).replace('\n',' ')[:90]
+            rec=records.get(cid,{})
+            rstate=str(rec.get('dataState','UNKNOWN'))
+            p=root/(cid+'.json')
+            row={'name':name,'state':rstate,'reasonCodes':safe(rec.get('lastRefreshError')),'attempt':rec.get('lastRefreshAttemptAt'),'observedAt':rec.get('lastObservedAt'),'observedScheduled':rec.get('lastObservedScheduledCount'),'historicalScheduled':rec.get('scheduledVideoCount'),'nativeExists':p.exists()}
+            if p.is_file() and not p.is_symlink():
+              try:
+                inv=json.loads(p.read_text())
+                info=inv.get('syncInfo') or {}
+                row['nativeSchema']=inv.get('schemaVersion')
+                row['nativeSavedAt']=inv.get('updatedAt')
+                row['nativeLastCompleteAt']=inv.get('lastCompleteAt')
+                row['nativeVideos']=len(inv.get('videos',[]))
+                row['nativeSyncComplete']=info.get('syncComplete')
+                row['nativeScheduleComplete']=info.get('scheduleComplete')
+                row['nativeReasons']=safe(info.get('incompleteReasons'))
+                row['nativePlaylistReported']=info.get('playlistReportedTotal')
+                row['nativeUniqueIds']=info.get('uniqueVideoIds')
+                row['nativeHydrated']=info.get('videosHydrated')
+                row['nativeMissingHydration']=info.get('missingHydrationCount')
+                row['nativeScheduleIncomplete']=info.get('scheduleDataIncompleteCount')
+                row['nativePageMismatch']=info.get('pageInfoTotalMismatch')
+                row['nativeSearchUsed']=info.get('searchUsed')
+                row['nativeSearchErrorCategory']=('PRESENT' if info.get('searchError') else 'NONE')
+                row['nativeSearchPages']=info.get('searchPagesFetched')
+                row['nativeSearchExhausted']=info.get('searchExhausted')
+                row['nativeKnownIdsChecked']=info.get('knownScheduledIdsChecked')
+                row['nativeSearchSupplement']=info.get('searchSupplementCount')
+                row['nativeSupplementMissing']=info.get('supplementalMissingCount')
+                totals['native']+=1
+              except (ValueError,OSError):row['nativeError']='INVALID_JSON'
+            if rstate=='PARTIAL_DATA':totals['partial']+=1
+            if 'OWNER_SEARCH_FAILED' in row['reasonCodes']:totals['search_failed']+=1
+            if 'PLAYLIST_TOTAL_METADATA_MISMATCH' in row['reasonCodes']:totals['playlist_mismatch']+=1
+            if 'MISSING_VIDEO_HYDRATION' in row['reasonCodes']:totals['missing_hydration']+=1
+            print('RCA_CHANNEL '+json.dumps(row,ensure_ascii=False,sort_keys=True))
+          print('RCA_TOTALS '+json.dumps(dict(totals),sort_keys=True))
+          print('RCA_USER_DATA_MUTATIONS=0')
+          print('RCA_API_REQUESTS=0')
+          print('RCA_OAUTH_OR_VIDEO_IDS_EXPOSED=0')
+          PY

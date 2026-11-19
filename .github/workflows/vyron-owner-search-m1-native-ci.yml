@@ -1,0 +1,52 @@
+name: VYRON owner Search fix native Rust and privacy gate on owner M1 (NO INSTALL)
+
+on:
+  push:
+    branches:
+      - diagnostics/vyron-m1-connection-20261118
+    paths:
+      - .github/workflows/vyron-owner-search-m1-native-ci.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vyron-owner-search-m1-native-ci
+  cancel-in-progress: false
+
+jobs:
+  native:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 75
+    steps:
+      - name: Owner M1 preflight, never disturb running app
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(uname -m)" = arm64
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' /Applications/VYRON.app/Contents/Info.plist)" = '6.1.21'
+          FREE="$(df -Pk "$HOME" | awk 'NR==2 {print $4}')"
+          echo "RCA_FREE_GIB=$((FREE / 1048576))"
+          test "$FREE" -gt 15728640
+          command -v cargo
+          command -v rustc
+          echo "RCA_OWNER_APP_UNMODIFIED=PASS"
+      - uses: actions/checkout@v4
+        with:
+          repository: ScaleUPPeisov/scaleup-dashboards
+          ref: e81735956fac93938241837469c74b02a50fd155
+          persist-credentials: false
+      - name: Rust offline owner search classification and native security regression
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(git rev-parse HEAD)" = e81735956fac93938241837469c74b02a50fd155
+          export CARGO_BUILD_JOBS=2 CARGO_INCREMENTAL=0
+          TARGET="$(mktemp -d "$RUNNER_TEMP/vyron-owner-rca-cargo.XXXXXX")"
+          trap 'rm -rf "$TARGET"' EXIT
+          export CARGO_TARGET_DIR="$TARGET"
+          cargo test --locked --manifest-path src-tauri/Cargo.toml --lib false_zero_owner_search_regression_tests
+          cargo test --locked --manifest-path src-tauri/Cargo.toml --lib
+          echo "RCA_NATIVE_RUST_TESTS=PASS"
+          echo "RCA_NO_APP_INSTALL=PASS"
+          echo "RCA_YOUTUBE_API_CALLS=0"

@@ -1,0 +1,3 @@
+Read-only owner runtime Scheduled cache truth check.
+Target: installed VYRON 6.1.22 and 33 channels on physical M1.
+Purpose: verify current cached status before scoped owner live diagnostic; no YouTube API calls, no app install, no mutations.

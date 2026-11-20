@@ -1,3 +1,3 @@
-Read-only owner runtime Scheduled cache truth check.
-Target: installed VYRON 6.1.22 and 33 channels on physical M1.
-Purpose: verify current cached status before scoped owner live diagnostic; no YouTube API calls, no app install, no mutations.
+Read-only post-refresh owner cache truth check 2026-11-20T16:41Z.
+Inspect channel statuses after manual VYRON refresh (Neon Drive FM, Lumiere de Minuit, Afterglow Highway).
+No Google API calls, no OAuth, no installed app changes, no data mutations.

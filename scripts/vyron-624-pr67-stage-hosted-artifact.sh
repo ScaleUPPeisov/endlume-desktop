@@ -7,7 +7,7 @@ test "$RUNNER_NAME" = kirill-mac-endlume
 test "$(uname -m)" = arm64
 test -n "$GH_TOKEN"
 SOURCE=6b3a21438bcdfecab69a73366dc56dc6b4f5b6c0
-BUILD_SHA=a6b8678f69a06e4765283072a9358bd5d00214c1
+BUILD_SHA=38eef010efcdd3eab8a61bf99e70695695cdaacc
 PIN=1c97657fd2a7ba4c2a0ce5b5361518eeacf76da274521b1977d57a55b8dbcec9
 ART="$RUNNER_TEMP/pr67-624-download"
 ARCHIVE="$ART/VYRON-PR67-6.1.24-UNSIGNED-NOT-INSTALLABLE.tar.gz"
@@ -21,11 +21,11 @@ RUN_STATUS="$RUNNER_TEMP/pr67-624-build-status.json"
 /usr/bin/curl --silent --show-error --fail --retry 2 --max-time 30 \
  -H 'Accept: application/vnd.github+json' \
  -H "Authorization: Bearer $GH_TOKEN" \
- "https://api.github.com/repos/ScaleUPPeisov/endlume-desktop/actions/runs/44902039121" > "$RUN_STATUS"
+ "https://api.github.com/repos/ScaleUPPeisov/endlume-desktop/actions/runs/44902136898" > "$RUN_STATUS"
 /usr/bin/python3 - "$RUN_STATUS" "$BUILD_SHA" <<'PY'
 import json,sys
 o=json.load(open(sys.argv[1]))
-assert o['id']==44902039121 and o['status']=='completed' and o['conclusion']=='success'
+assert o['id']==44902136898 and o['status']=='completed' and o['conclusion']=='success'
 assert o['head_sha']==sys.argv[2] and o['repository']['full_name']=='ScaleUPPeisov/endlume-desktop'
 assert o['path']=='.github/workflows/vyron-pr67-624-pinned-arm64-build.yml'
 print('PINNED_HOSTED_BUILD_PROVENANCE=PASS')

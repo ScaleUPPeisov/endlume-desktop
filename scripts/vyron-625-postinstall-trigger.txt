@@ -1,0 +1,4 @@
+VYRON 6.1.25 physical M1 readback following verified guarded install run 44906052540
+Expected installed source 39f96b86bbc141ab315960afc456aef045a855e0
+Installed executable 5a0bb108011a0e080a7c8286bf6f69a5c46c92c98e5c0e5710af33ffe71ad072
+Read only / no additional Google API requests from workflow.

@@ -1,0 +1,105 @@
+# Read-only recovery of historical Scheduled Video IDs from existing LOCAL rollback archives.
+name: VYRON PR67 earlier backup scheduled ID recovery (read-only)
+on:
+  push:
+    branches: [diagnostics/vyron-m1-connection-20261118]
+    paths: [.github/workflows/vyron-pr67-historical-backups-scheduled-id-recovery.yml]
+permissions:
+  contents: read
+concurrency:
+  group: vyron-physical-m1-owner-readonly
+  cancel-in-progress: false
+jobs:
+  recover-history:
+    if: github.repository == 'ScaleUPPeisov/endlume-desktop' && github.ref == 'refs/heads/diagnostics/vyron-m1-connection-20261118'
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 10
+    steps:
+      - name: Recover snapshot provenance from all locally retained VYRON backups
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$RUNNER_NAME" = kirill-mac-endlume
+          test "$(uname -m)" = arm64
+          umask 077
+          /usr/bin/python3 - <<'PY'
+          import json,os,datetime
+          from pathlib import Path
+          home=Path.home()
+          rollback=home/'.vyron-owner-rollback'
+          data=home/'Library'/'Application Support'/'studio.channelflow.desktop'
+          current_state=json.loads((data/'state.json').read_text())
+          assert len(current_state.get('channels',[]))==33
+          names=('Glass City Lovers','Midnight Noir Lounge','Neon Drive FM','Mafia 1947 Lounge','Afterglow Highway','Rain & Roast Jazz','珈琲小路','After Dark Voice')
+          ids={x['name']:x['id'] for x in current_state['channels'] if isinstance(x,dict) and x.get('name') in names}
+          assert len(ids)==8
+          def date(x):
+              try:
+                  y=datetime.datetime.fromisoformat(str(x).replace('Z','+00:00'))
+                  if y.tzinfo is None:y=y.replace(tzinfo=datetime.timezone.utc)
+                  return y.astimezone(datetime.timezone.utc)
+              except (ValueError,TypeError):return None
+          def is_sched(row,at):
+              if not isinstance(row,dict) or row.get('privacyStatus')!='private':return False
+              dt=date(row.get('publishAt'))
+              return bool(dt and dt>at)
+          current={}
+          for name,cid in ids.items():
+              path=data/'youtube-inventory'/(cid+'.json')
+              raw=json.loads(path.read_text()) if path.is_file() and not path.is_symlink() else {}
+              current[name]={r['id']:r for r in raw.get('videos',[]) if isinstance(r,dict) and isinstance(r.get('id'),str)}
+          roots=[]
+          if rollback.is_dir() and not rollback.is_symlink():
+              roots=[x for x in rollback.iterdir() if x.is_dir() and not x.is_symlink()][:120]
+          found=[]
+          matches={}
+          for root in roots:
+              for origin in (root/'application-support'/'youtube-inventory',root/'youtube-inventory'):
+                  if not origin.is_dir() or origin.is_symlink():continue
+                  for name,cid in ids.items():
+                      p=origin/(cid+'.json')
+                      if not p.is_file() or p.is_symlink() or p.stat().st_size>30*1024*1024:continue
+                      try:payload=json.loads(p.read_text())
+                      except (ValueError,OSError):continue
+                      if payload.get('schemaVersion')!=2:continue
+                      anchor=date(payload.get('lastCompleteAt') or payload.get('updatedAt'))
+                      if not anchor:continue
+                      videos={r['id']:r for r in payload.get('videos',[]) if isinstance(r,dict) and isinstance(r.get('id'),str)}
+                      schedule={vid for vid,row in videos.items() if is_sched(row,anchor)}
+                      matches.setdefault(name,[]).append({'archive':root.name,'snapshotAt':payload.get('updatedAt'),
+                           'scheduledCount':len(schedule),'scheduledIds':sorted(schedule),'videoIds':len(videos)})
+                      found.append((name,root.name))
+          now=datetime.datetime.now(datetime.timezone.utc)
+          private={}
+          for name in names:
+              records=matches.get(name,[])
+              union=set().union(*(set(x['scheduledIds']) for x in records)) if records else set()
+              current_ids=current[name]
+              missing=union-set(current_ids)
+              future={i for i in union if i in current_ids and is_sched(current_ids[i],now)}
+              public={i for i in union if i in current_ids and current_ids[i].get('privacyStatus')=='public'}
+              other=union-missing-future-public
+              private[name]={'archives':records,'historicalUnionIds':sorted(union),
+                  'absentFromCurrent':sorted(missing),'futureInCurrentCache':sorted(future),
+                  'publicInCurrentCache':sorted(public),'otherInCurrentCache':sorted(other)}
+              print('HISTORICAL_BACKUP_EVIDENCE '+json.dumps({
+                'channel':name,'archiveSnapshots':len(records),
+                'largestSingleArchiveScheduled':max((x['scheduledCount'] for x in records),default=None),
+                'historicalScheduledUnionIds':len(union),'notInCurrentNative':len(missing),
+                'stillFutureInCurrentCachedRows':len(future),
+                'nowPublicInCurrentCachedRows':len(public),
+                'otherCachedState':len(other),
+                'source':'LOCAL_BACKUP_PROVENANCE_NOT_OWNER_LIVE'
+              },ensure_ascii=False,sort_keys=True))
+          destination=home/'Library'/'Application Support'/'VYRON-P0-Local-Evidence'
+          destination.mkdir(mode=0o700,parents=True,exist_ok=True);os.chmod(destination,0o700)
+          p=destination/('backup-provenance-'+now.strftime('%Y%m%dT%H%M%SZ')+'.json')
+          with p.open('x') as f:json.dump({'createdAt':now.isoformat(),'filesScanned':len(found),'channels':private},f,ensure_ascii=False,indent=2)
+          os.chmod(p,0o600)
+          print('ROLLBACK_DIRECTORIES_CHECKED='+str(len(roots)))
+          print('SNAPSHOTS_FOUND='+str(len(found)))
+          print('PRIVATE_IDS_IN_LOGS=NO')
+          print('GOOGLE_API_CALLS=0')
+          print('OAUTH_READS=0')
+          print('APP_DATA_WRITES=0')
+          PY

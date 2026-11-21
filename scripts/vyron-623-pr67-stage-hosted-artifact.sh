@@ -41,14 +41,24 @@ grep -Fxq 'install=FORBIDDEN' "$META"
 grep -Fxq 'stable_feed=UNCHANGED' "$META"
 BASE="$HOME/.vyron-owner-rollback"
 test -d "$BASE" && test -d "$BASE/pr67-preinstall-pPJL4w"
-# Safe retry after an extraction failure: only remove an EMPTY, unverified staging directory.
+# Reuse only an exact, unverified, previously extracted bundle; remove only empty stages.
+STAGE=""
 while IFS= read -r old; do
   test -d "$old" && test ! -L "$old" && test ! -e "$old/VERIFIED"
-  test -z "$(find "$old" -mindepth 1 -maxdepth 1 -print -quit)"
-  rmdir "$old"
+  FIRST="$(find "$old" -mindepth 1 -maxdepth 1 -print -quit)"
+  if [ -z "$FIRST" ]; then
+    rmdir "$old"
+  else
+    test -z "$STAGE"
+    test "$FIRST" = "$old/VYRON.app"
+    test "$(find "$old" -mindepth 1 -maxdepth 1 -print | wc -l | tr -d ' ')" = 1
+    test -d "$old/VYRON.app" && test ! -L "$old/VYRON.app"
+    STAGE="$old"
+  fi
 done < <(find "$BASE" -mindepth 1 -maxdepth 1 -type d -name 'staged-623-pr67-hosted-*' -print)
-STAGE="$(mktemp -d "$BASE/staged-623-pr67-hosted-XXXXXX")"
-chmod 700 "$STAGE"
+if [ -z "$STAGE" ]; then
+  STAGE="$(mktemp -d "$BASE/staged-623-pr67-hosted-XXXXXX")"
+  chmod 700 "$STAGE"
 # Strictly bounded, path-validated extraction: never let archive escape staging.
 export PR67_STAGE="$STAGE"
 /usr/bin/python3 - "$ARCHIVE" "$STAGE" <<'PY'
@@ -75,6 +85,9 @@ with tarfile.open(archive,'r:gz') as tf:
 assert (bundle/'Contents'/'Info.plist').is_file()
 print('ARCHIVE_PATH_BOUNDS=PASS')
 PY
+else
+  echo 'UNSIGNED_EXTRACTED_STAGE=REUSED_WITH_BINARY_SHA256_RECHECK'
+fi
 SRC="$STAGE/VYRON.app"
 test -d "$SRC" && test ! -L "$SRC"
 plist(){ /usr/libexec/PlistBuddy -c "Print :$2" "$1/Contents/Info.plist"; }
@@ -101,7 +114,8 @@ for m in re.finditer(rb'dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWdu[0-9A-Za-z+/=]{35,30
     if len(lines)!=2 or not lines[0].startswith('untrusted comment: minisign public key: '): continue
     try: pub=base64.b64decode(lines[1],validate=True)
     except ValueError: continue
-    if len(pub)==42 and pub[:2]==b'Ed' and hashlib.sha256(pub).hexdigest()==pin: hits.add(pin)
+    if len(pub)!=42 or pub[:2]!=b'Ed': continue
+    if hashlib.sha256(pub).hexdigest()==pin: hits.add(pin)
     break
 assert hits=={pin},'ROTATED_TAURI_UPDATER_PUBLIC_KEY_NOT_FOUND'
 print('ROTATED_UPDATER_PIN=PASS')

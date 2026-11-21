@@ -1,0 +1,124 @@
+# Recover ID-level historical evidence from the already verified pre-6.1.24 backup.
+# Read-only for app, snapshots and SQLite; no OAuth, API, checkout or secrets.
+name: VYRON PR67 saved pre624 backup ID transitions (read-only)
+on:
+  push:
+    branches: [diagnostics/vyron-m1-connection-20261118]
+    paths: [.github/workflows/vyron-pr67-624-623-backup-schedule-diff.yml]
+permissions:
+  contents: read
+concurrency:
+  group: vyron-physical-m1-owner-readonly
+  cancel-in-progress: false
+jobs:
+  historical-compare:
+    if: github.repository == 'ScaleUPPeisov/endlume-desktop' && github.ref == 'refs/heads/diagnostics/vyron-m1-connection-20261118'
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 10
+    steps:
+      - name: Compare verified backup snapshots and current VYRON without API calls
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$RUNNER_NAME" = kirill-mac-endlume
+          test "$(uname -m)" = arm64
+          umask 077
+          /usr/bin/python3 - <<'PY'
+          import json,datetime,os,sqlite3
+          from pathlib import Path
+          from urllib.parse import quote
+          home=Path.home()
+          root=home/'Library'/'Application Support'/'studio.channelflow.desktop'
+          base=home/'.vyron-owner-rollback'
+          backups=list(base.glob('pr67-pre624-from623-*'))
+          backups=[p for p in backups if p.is_dir() and not p.is_symlink() and (p/'BACKUP-STATUS.txt').is_file()]
+          assert len(backups)==1,'EXPECTED_ONE_VERIFIED_PRE624_BACKUP'
+          bk=backups[0]
+          assert 'source=VYRON 6.1.23' in (bk/'BACKUP-STATUS.txt').read_text()
+          old=bk/'application-support'
+          current=json.loads((root/'state.json').read_text())
+          prior=json.loads((old/'state.json').read_text())
+          assert len(current.get('channels',[]))==len(prior.get('channels',[]))==33,'CHANNELS_MISMATCH'
+          targets=('Glass City Lovers','Midnight Noir Lounge','Neon Drive FM','Mafia 1947 Lounge','Afterglow Highway','Rain & Roast Jazz','珈琲小路','After Dark Voice')
+          channels={x['name']:x['id'] for x in current['channels'] if isinstance(x,dict) and x.get('name') in targets}
+          assert len(channels)==8,'TARGET_NOT_8'
+          now=datetime.datetime.now(datetime.timezone.utc)
+          def dt(x):
+              try:
+                  y=datetime.datetime.fromisoformat(str(x).replace('Z','+00:00'))
+                  return y.replace(tzinfo=datetime.timezone.utc) if y.tzinfo is None else y.astimezone(datetime.timezone.utc)
+              except (ValueError,TypeError):return None
+          def future(r,t):
+              return bool(isinstance(r,dict) and r.get('privacyStatus')=='private' and dt(r.get('publishAt')) and dt(r.get('publishAt'))>t)
+          def inventory(directory,cid):
+              p=directory/'youtube-inventory'/(cid+'.json')
+              if not p.is_file() or p.is_symlink(): return {}
+              x=json.loads(p.read_text())
+              assert x.get('schemaVersion')==2,'UNEXPECTED_SCHEMA'
+              return x
+          def runway_from_sqlite(bk):
+              roots=[bk/'sqlite-online'/'webkit',bk/'webkit-auxiliary']
+              result={}
+              for root in roots:
+                  if not root.exists():continue
+                  for p in root.rglob('*'):
+                      if p.is_symlink() or not p.is_file() or p.suffix not in ('.db','.sqlite','.sqlite3'):continue
+                      try:
+                          con=sqlite3.connect('file:'+quote(str(p))+'?mode=ro',uri=True,timeout=2)
+                          try:
+                              if not con.execute("SELECT name FROM sqlite_master WHERE name='ItemTable'").fetchone():continue
+                              for (value,) in con.execute("SELECT value FROM ItemTable WHERE key='vyron:channel-runway:v1'"):
+                                  vals=[value.decode('utf-16le','ignore'),value.decode('utf-8','ignore')] if isinstance(value,bytes) else [str(value)]
+                                  for s in vals:
+                                      try:z=json.loads(s)
+                                      except (ValueError,TypeError):continue
+                                      cs=z.get('channels') if isinstance(z,dict) else None
+                                      if isinstance(cs,dict) and len(cs)>len(result):result=cs
+                          finally:con.close()
+                      except (sqlite3.Error,OSError):pass
+              return result
+          old_runway=runway_from_sqlite(bk)
+          evidence={}
+          for name,cid in channels.items():
+              a=inventory(old,cid);b=inventory(root,cid)
+              prev={x['id']:x for x in a.get('videos',[]) if isinstance(x,dict) and isinstance(x.get('id'),str)}
+              new={x['id']:x for x in b.get('videos',[]) if isinstance(x,dict) and isinstance(x.get('id'),str)}
+              old_stamp=dt(a.get('lastCompleteAt') or a.get('updatedAt')) or now
+              old_future={i for i,x in prev.items() if future(x,old_stamp)}
+              now_future={i for i,x in new.items() if future(x,now)}
+              transitions={}
+              details={}
+              for vid in old_future:
+                  oldrow=prev[vid];newrow=new.get(vid)
+                  if newrow is None: classification='NOT_RETURNED'
+                  elif future(newrow,now):classification='STILL_SCHEDULED'
+                  elif newrow.get('privacyStatus')=='public':classification='NOW_PUBLIC_IN_SAVED_CACHE'
+                  elif newrow.get('privacyStatus')=='unlisted':classification='NOW_UNLISTED_IN_SAVED_CACHE'
+                  else:classification='OTHER_STATUS_IN_SAVED_CACHE'
+                  transitions[classification]=transitions.get(classification,0)+1
+                  details[vid]={'prior':{'privacyStatus':oldrow.get('privacyStatus'),'publishAt':oldrow.get('publishAt')},
+                                'current':{'privacyStatus':newrow.get('privacyStatus'),'publishAt':newrow.get('publishAt')} if newrow else None,
+                                'classification':classification}
+              oldrun=old_runway.get(cid,{})
+              evidence[name]={
+                'pre624NativeIds':len(prev),'post624NativeIds':len(new),
+                'pre624SavedRunwayCount':oldrun.get('scheduledVideoCount'),
+                'pre624SavedRunwayUntil':oldrun.get('scheduledUntil'),
+                'pre624ScheduledAsOfNativeSnapshot':len(old_future),
+                'post624CachedScheduledAsOfNow':len(now_future),
+                'transitions':transitions,
+                'pre624SnapshotAt':a.get('updatedAt'),'post624SnapshotAt':b.get('updatedAt'),
+                'PRIVATE_VIDEO_ID_DETAIL':details
+              }
+              public={k:v for k,v in evidence[name].items() if k!='PRIVATE_VIDEO_ID_DETAIL'}
+              print('PRE624_BACKUP_COMPARISON '+json.dumps({'channel':name,**public},ensure_ascii=False,sort_keys=True))
+          dest=home/'Library'/'Application Support'/'VYRON-P0-Local-Evidence'
+          dest.mkdir(mode=0o700,parents=True,exist_ok=True);os.chmod(dest,0o700)
+          path=dest/('pre624-diff-'+now.strftime('%Y%m%dT%H%M%SZ')+'.json')
+          with path.open('x') as f:json.dump({'source':'LOCAL_CACHE_COMPARISON_NOT_LIVE_API','at':now.isoformat(),'channels':evidence},f,ensure_ascii=False,indent=2)
+          os.chmod(path,0o600)
+          print('PRE624_SNAPSHOT_LOCAL_REPORT=PASS')
+          print('PRIVATE_VIDEO_IDS_EXPORTED=NO')
+          print('GOOGLE_API_CALLS=0')
+          print('APP_DATA_WRITES=0')
+          PY

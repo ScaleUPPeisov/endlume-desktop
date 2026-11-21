@@ -97,7 +97,13 @@ NEED=$((2*APP_KB + NEW_KB + DATA_KB + WEBKIT_KB + 1048576))
 FREE="$(df -Pk /Applications | awk 'END {print $4}')"
 test "$FREE" -gt "$NEED"
 BACKUPS=()
-while IFS= read -r p; do BACKUPS+=("$p"); done < <(find "$BASE" -mindepth 1 -maxdepth 1 -type d -name 'pr67-pre625-from624-*' -print)
+while IFS= read -r p; do
+  if [ -f "$p/BACKUP-STATUS.txt" ] && [ ! -L "$p/BACKUP-STATUS.txt" ] &&
+     grep -Fxq 'source=VYRON 6.1.24' "$p/BACKUP-STATUS.txt" &&
+     grep -Fxq 'sqlite_online=VERIFIED' "$p/BACKUP-STATUS.txt"; then
+    BACKUPS+=("$p")
+  fi
+done < <(find "$BASE" -mindepth 1 -maxdepth 1 -type d -name 'pr67-pre625-from624-*' -print)
 if [ "${#BACKUPS[@]}" -ne 1 ]; then echo 'VYRON_625_BACKUP_NOT_UNIQUE'; exit 1; fi
 BACKUP="${BACKUPS[0]}"
 test ! -L "$BACKUP"

@@ -6,7 +6,7 @@ BASE="$HOME/.vyron-owner-rollback"
 DATA="$HOME/Library/Application Support/studio.channelflow.desktop"
 WEBKIT="$HOME/Library/WebKit/studio.channelflow.desktop"
 APPID=studio.channelflow.desktop
-SOURCE=a6ffb411d41b1cd8836a8639b31d69adf4f97354
+SOURCE=05a4155a0bfa43ae28a045f397442f20c36f4837
 PIN=1c97657fd2a7ba4c2a0ce5b5361518eeacf76da274521b1977d57a55b8dbcec9
 if [ "$(uname -m)" != arm64 ]; then echo "INSTALL_WRONG_ARCH"; exit 1; fi
 if [ ! -d "$BASE" ] || [ ! -d "$DATA" ] || [ ! -d "$WEBKIT" ]; then echo "INSTALL_REQUIRED_DATA_MISSING"; exit 1; fi

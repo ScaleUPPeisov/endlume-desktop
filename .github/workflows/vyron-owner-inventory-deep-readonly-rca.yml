@@ -109,7 +109,7 @@ jobs:
                    'INSUFFICIENT_PERMISSIONS','BACKEND_ERROR','FORBIDDEN','UNAUTHORIZED','CHANNEL_NOT_FOUND']
             reason=next((v for v in codes if v in upper),'UNKNOWN')
             # HTTP digits only when adjacent to a well-known HTTP/status marker.
-            hm=re.search(r'(?:\\bHTTP[_\\s:=]*|\\bSTATUS\\s*(?:CODE)?[_\\s:=]*|\\bERROR\\s+)\\b?(400|401|403|404|409|429|500|502|503|504)\\b',upper)
+            hm=re.search(r'(?:\\bHTTP[_\\s:=]*|\\bSTATUS\\s*(?:CODE)?[_\\s:=]*|\\bERROR\\s+)\(400|401|403|404|409|429|500|502|503|504)\\b',upper)
             status=int(hm.group(1)) if hm else None
             net='NETWORK_ERROR' in upper or bool(re.search(r'NETWORK|TIMED?\\s*OUT|ECONN|ENOTFOUND',upper))
             has_error=bool(raw.strip())

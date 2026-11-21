@@ -1,0 +1,105 @@
+# Read-only offline reconciliation across VYRON jobs, activities, local history and
+# native caches. No owner credentials, Google API, or printing private IDs.
+name: VYRON PR67 offline alternative owner Video ID source audit
+on:
+  push:
+    branches: [diagnostics/vyron-m1-connection-20261118]
+    paths: [.github/workflows/vyron-pr67-625-alternative-known-ids-audit.yml]
+permissions:
+  contents: read
+concurrency:
+  group: vyron-physical-m1-owner-readonly
+  cancel-in-progress: false
+jobs:
+  check:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 8
+    steps:
+      - name: Read only historical and alternate Video ID sources for eight P0 channels
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$RUNNER_NAME" = kirill-mac-endlume
+          test "$(uname -m)" = arm64
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' /Applications/VYRON.app/Contents/Info.plist)" = 6.1.25
+          /usr/bin/python3 - <<'PY'
+          import json,os,re,datetime,sqlite3
+          from pathlib import Path
+          from urllib.parse import quote
+          h=Path.home();base=h/'Library'/'Application Support'/'studio.channelflow.desktop'
+          web=h/'Library'/'WebKit'/'studio.channelflow.desktop'
+          state=json.loads((base/'state.json').read_text())
+          chans=state.get('channels',[])
+          assert len(chans)==33
+          names=('Neon Drive FM','Glass City Lovers','Midnight Noir Lounge','Mafia 1947 Lounge','Afterglow Highway','Rain & Roast Jazz','珈琲小路','After Dark Voice')
+          byname={str(c.get('name')):str(c.get('id')) for c in chans if isinstance(c,dict)}
+          assert all(name in byname for name in names)
+          jobs=state.get('jobs',[])
+          events=state.get('activityJournal',[])
+          uploads=state.get('uploadHistory',[])
+          lifecycle=state.get('projectLifecycle',{})
+          def vid(s):return isinstance(s,str) and re.fullmatch(r'[A-Za-z0-9_-]{11}',s) is not None
+          def future(t):
+            try:
+              x=datetime.datetime.fromisoformat(str(t).replace('Z','+00:00'))
+              if x.tzinfo is None:x=x.replace(tzinfo=datetime.timezone.utc)
+              return x>datetime.datetime.now(datetime.timezone.utc)
+            except (ValueError,TypeError):return False
+          proof={}
+          for p in web.rglob('*'):
+            if p.is_symlink() or not p.is_file() or p.suffix.lower() not in ('.db','.sqlite','.sqlite3') or p.stat().st_size>50_000_000:continue
+            try:
+              db=sqlite3.connect('file:'+quote(str(p))+'?mode=ro',uri=True,timeout=2)
+              try:
+                if not db.execute("SELECT name FROM sqlite_master WHERE name='ItemTable'").fetchone():continue
+                for k,v in db.execute("SELECT key,value FROM ItemTable WHERE key LIKE 'vyron:p0-owner-evidence:625:%'"):
+                  val=[v.decode('utf-16le','ignore'),v.decode('utf-8','ignore')] if isinstance(v,bytes) else [str(v)]
+                  for s in val:
+                    try:d=json.loads(s)
+                    except (ValueError,TypeError):continue
+                    if isinstance(d,dict) and isinstance(d.get('result'),dict):
+                      proof[str(k).split(':')[-1]]=d['result'];break
+              finally:db.close()
+            except (OSError,sqlite3.Error):pass
+          detail={}
+          for name in names:
+            cid=byname[name]
+            p=base/'youtube-inventory'/(cid+'.json')
+            native=json.loads(p.read_text()) if p.is_file() else {}
+            cache={x['id'] for x in native.get('videos',[]) if isinstance(x,dict) and vid(x.get('id'))}
+            src={}
+            src['jobs']=[x for x in jobs if isinstance(x,dict) and str(x.get('channelId'))==cid]
+            src['uploadHistory']=[x for x in uploads if isinstance(x,dict) and str(x.get('channelId'))==cid]
+            src['activityJournal']=[x for x in events if isinstance(x,dict) and str(x.get('channelId'))==cid]
+            src['projectLifecycle']=[x for x in (lifecycle.values() if isinstance(lifecycle,dict) else []) if isinstance(x,dict) and str(x.get('channelId'))==cid]
+            summaries={}
+            combined=set()
+            for source,rows in src.items():
+              ids={str(x.get('youtubeVideoId')) for x in rows if vid(x.get('youtubeVideoId'))}
+              absent=ids-cache
+              combined.update(ids)
+              summaries[source]={'rows':len(rows),'uniqueVideoIds':len(ids),'idsAbsentFromNative':len(absent),
+                'futureRowsWithIdAbsentFromNative':sum(1 for x in rows if x.get('youtubeVideoId') in absent and future(x.get('publishAt'))),
+                'scheduledRowsWithIdAbsentFromNative':sum(1 for x in rows if x.get('youtubeVideoId') in absent and str(x.get('status','')).upper()=='SCHEDULED')}
+            owner=proof.get(cid,{})
+            missing={x['videoId'] for x in owner.get('transitions',[]) if isinstance(x,dict) and x.get('transition')=='NOT_RETURNED' and vid(x.get('videoId'))}
+            missingRows=[{'videoId':id,'historyRows':sum(1 for x in src['uploadHistory'] if x.get('youtubeVideoId')==id),
+              'futureHistory':any(x.get('youtubeVideoId')==id and future(x.get('publishAt')) for x in src['uploadHistory']),
+              'jobsRows':sum(1 for x in src['jobs'] if x.get('youtubeVideoId')==id),
+              'activityRows':sum(1 for x in src['activityJournal'] if x.get('youtubeVideoId')==id)} for id in sorted(missing)]
+            report={'channel':name,'nativeKnownIds':len(cache),'crossSourceKnownIds':len(combined),
+              'additionalIdsAbsentFromNative':len(combined-cache),'notReturnedFromOwner':len(missing),
+              'notReturnedOriginallyFuture':sum(x['futureHistory'] for x in missingRows),
+              'sources':summaries,'LOCAL_ONLY':{'additionalVideoIds':sorted(combined-cache),'missingRows':missingRows}}
+            detail[name]=report
+            print('OFFLINE_ID_SOURCES '+json.dumps({k:v for k,v in report.items() if k!='LOCAL_ONLY'},ensure_ascii=False,sort_keys=True))
+          dest=h/'Library'/'Application Support'/'VYRON-P0-Local-Evidence'
+          dest.mkdir(mode=0o700,parents=True,exist_ok=True);os.chmod(dest,0o700)
+          out=dest/('alternative-known-ids-'+datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%SZ')+'.json')
+          with out.open('x') as f:json.dump({'channels':detail},f,ensure_ascii=False,indent=2)
+          os.chmod(out,0o600)
+          print('PRIVATE_ID_DETAILS_LOCAL_ONLY=PASS')
+          print('GOOGLE_API_CALLS=0')
+          print('KEYCHAIN_OAUTH_READS=0')
+          print('APP_STATE_WRITES=0')
+          PY

@@ -32,11 +32,11 @@ jobs:
           test "$STAGE_COUNT" = 1
           MARK="$(find "$BASE" -mindepth 2 -maxdepth 2 -type f -path '*/staged-626-pr67-hosted-*/VERIFIED' -print -quit)"
           test -f "$MARK"
-          grep -Fxq 'source=a05bfde77769fe9f4f1f016abc088a6b0d054962' "$MARK"
+          grep -Fxq 'source=a6ffb411d41b1cd8836a8639b31d69adf4f97354' "$MARK"
           grep -Fxq 'version=6.1.26' "$MARK"
           grep -Fxq "executable_sha256=$INSTALLED" "$MARK"
           echo 'INSTALLED_VERSION=6.1.26'
-          echo 'INSTALLED_SOURCE_SHA=a05bfde77769fe9f4f1f016abc088a6b0d054962'
+          echo 'INSTALLED_SOURCE_SHA=a6ffb411d41b1cd8836a8639b31d69adf4f97354'
           echo "INSTALLED_EXECUTABLE_SHA256=$INSTALLED"
           # Native inventory hydrates asynchronously; verify persisted v3 proof after initialization.
           sleep 35

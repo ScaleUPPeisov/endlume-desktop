@@ -1,0 +1,45 @@
+name: VYRON PR67 M1 UI refresh capability (read-only)
+on:
+  push:
+    branches: [diagnostics/vyron-m1-connection-20261118]
+    paths: [.github/workflows/vyron-pr67-624-ui-capability.yml]
+permissions:
+  contents: read
+concurrency:
+  group: vyron-physical-m1-ui-refresh
+  cancel-in-progress: false
+jobs:
+  read-only-ui:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 5
+    steps:
+      - name: Verify Accessibility access without reading secrets or clicking anything
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$RUNNER_NAME" = kirill-mac-endlume
+          test "$(uname -m)" = arm64
+          /usr/bin/pgrep -x channelflow >/dev/null || { echo 'APP_PROCESS=ABSENT'; exit 0; }
+          OUTPUT=$(/usr/bin/osascript <<'OSA'
+          tell application "System Events"
+            try
+              if not (exists process "channelflow") then return "NO_PROCESS"
+              set p to process "channelflow"
+              set winCount to count of windows of p
+              if winCount < 1 then return "NO_WINDOW"
+              set w to window 1 of p
+              set elementCount to count of UI elements of w
+              return "AX_AVAILABLE windows=" & winCount & " directElements=" & elementCount
+            on error errText number errNum
+              return "AX_UNAVAILABLE code=" & errNum
+            end try
+          end tell
+          OSA
+          )
+          case "$OUTPUT" in
+            AX_AVAILABLE*) echo "$OUTPUT" ;;
+            *) echo "$OUTPUT" ;;
+          esac
+          echo 'APP_UI_MUTATIONS=0'
+          echo 'YOUTUBE_API_CALLS=0'
+          echo 'SECRETS_READ=0'

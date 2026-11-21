@@ -89,6 +89,37 @@ jobs:
             if 'PLAYLIST_TOTAL_METADATA_MISMATCH' in row['reasonCodes']:totals['playlist_mismatch']+=1
             if 'MISSING_VIDEO_HYDRATION' in row['reasonCodes']:totals['missing_hydration']+=1
             print('RCA_CHANNEL '+json.dumps(row,ensure_ascii=False,sort_keys=True))
+
+          # Sanitize an existing persisted error IN MEMORY. Do not print its raw
+          # Google body, OAuth details, endpoint, video IDs or credentials.
+          target=next((c for c in channels if isinstance(c,dict) and c.get('name')=='Afterglow Highway'),None)
+          if target:
+            rec=records.get(str(target.get('id','')),{})
+            raw=str(rec.get('lastRefreshError') or '')
+            upper=raw.upper()
+            exact_methods={'CHANNELS_LIST':r'(?:CHANNELS\\.LIST|YOUTUBE CHANNEL|OWNER_INVENTORY_CHANNELS_LIST)',
+                           'PLAYLIST_ITEMS_LIST':r'(?:PLAYLISTITEMS\\.LIST|YOUTUBE UPLOADS PAGE|OWNER_INVENTORY_PLAYLIST_ITEMS_LIST)',
+                           'VIDEOS_LIST':r'(?:VIDEOS\\.LIST|AUTHORITATIVE VIDEOS|OWNER_INVENTORY_VIDEOS_LIST)',
+                           'SEARCH_LIST':r'(?:SEARCH\\.LIST|OWNER_SEARCH_)'}
+            method=next((key for key,pat in exact_methods.items() if re.search(pat,upper)),'UNKNOWN')
+            codes=['OAUTH_INVALID_GRANT','OAUTH_CLIENT_MISMATCH','REFRESH_TOKEN_MISSING','KEYCHAIN_BLOCKED',
+                   'KEYCHAIN_ERROR','OWNER_CHANNEL_MISMATCH','OWNER_CHANNEL_MISSING','OWNER_UPLOADS_MISSING',
+                   'EXPECTED_CHANNEL_MISSING','OWNER_INVENTORY_UNCLASSIFIED_ERROR','AUTHORITATIVE_CHANNEL_ID_MISMATCH',
+                   'NETWORK_ERROR','QUOTA_EXCEEDED','DAILY_LIMIT_EXCEEDED','RATE_LIMIT_EXCEEDED','INVALID_SEARCH_FILTER',
+                   'INSUFFICIENT_PERMISSIONS','BACKEND_ERROR','FORBIDDEN','UNAUTHORIZED','CHANNEL_NOT_FOUND']
+            reason=next((v for v in codes if v in upper),'UNKNOWN')
+            # HTTP digits only when adjacent to a well-known HTTP/status marker.
+            hm=re.search(r'(?:\\bHTTP[_\\s:=]*|\\bSTATUS\\s*(?:CODE)?[_\\s:=]*|\\bERROR\\s+)\\b?(400|401|403|404|409|429|500|502|503|504)\\b',upper)
+            status=int(hm.group(1)) if hm else None
+            net='NETWORK_ERROR' in upper or bool(re.search(r'NETWORK|TIMED?\\s*OUT|ECONN|ENOTFOUND',upper))
+            has_error=bool(raw.strip())
+            out={'channel':'Afterglow Highway','errorPresent':has_error,'method':method,
+                 'httpStatus':status,'allowlistedReason':reason,'networkSuspected':net,
+                 'lastAttemptAt':rec.get('lastRefreshAttemptAt'),
+                 'lastObservedAt':rec.get('lastObservedAt'),'historicalScheduled':rec.get('scheduledVideoCount'),
+                 'state':rec.get('dataState')}
+            print('RCA_AFTERGLOW_SAFE_ERROR '+json.dumps(out,sort_keys=True))
+          # This action makes no requests and touches no app/SQLite data.
           print('RCA_TOTALS '+json.dumps(dict(totals),sort_keys=True))
           print('RCA_USER_DATA_MUTATIONS=0')
           print('RCA_API_REQUESTS=0')

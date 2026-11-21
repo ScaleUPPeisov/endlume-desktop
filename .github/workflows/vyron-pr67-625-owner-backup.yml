@@ -1,0 +1,125 @@
+# Self-hosted owner safety gate. No checkout, PR execution, Google API, secrets or install.
+name: VYRON PR67 6.1.25 preinstall backup of installed 6.1.24
+on:
+  push:
+    branches: [diagnostics/vyron-m1-connection-20261118]
+    paths: [scripts/vyron-625-preinstall-backup-trigger.txt]
+permissions:
+  contents: read
+concurrency:
+  group: vyron-physical-m1-exclusive-install
+  cancel-in-progress: false
+jobs:
+  backup:
+    if: github.repository == 'ScaleUPPeisov/endlume-desktop'
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 20
+    steps:
+      - name: Guard queue, snapshot VYRON 6.1.24 and verify online SQLite backups
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          test "$RUNNER_NAME" = kirill-mac-endlume
+          test "$(uname -m)" = arm64
+          APP=/Applications/VYRON.app
+          DATA="$HOME/Library/Application Support/studio.channelflow.desktop"
+          WEB="$HOME/Library/WebKit/studio.channelflow.desktop"
+          test -d "$APP" && test -d "$DATA" && test -d "$WEB"
+          test ! -L "$APP" && test ! -L "$DATA" && test ! -L "$WEB"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Contents/Info.plist")" = studio.channelflow.desktop
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")" = 6.1.24
+          /usr/bin/codesign --verify --deep --strict "$APP" >/dev/null 2>&1
+          EXE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")
+          test "$(shasum -a 256 "$APP/Contents/MacOS/$EXE" | awk '{print $1}')" = 1cec2be0edad6c8e47093c1c42fc7e555c1ecab4814e21d346d9652386f43b65
+          /usr/bin/python3 - <<'PY'
+          import json,sqlite3
+          from pathlib import Path
+          from urllib.parse import quote
+          h=Path.home()
+          state=json.loads((h/'Library'/'Application Support'/'studio.channelflow.desktop'/'state.json').read_text())
+          assert isinstance(state.get('channels'),list) and len(state['channels'])==33,'CHANNELS_NOT_33'
+          jobs=state.get('jobs')
+          assert isinstance(jobs,list),'JOBS_NOT_AVAILABLE'
+          active={'RUNNING','UPLOADING','RENDERING','PROCESSING','DOWNLOADING','PUBLISHING','SENDING'}
+          busy=sum(str(j.get('status','')).upper() in active for j in jobs if isinstance(j,dict))
+          qfound=False; qbusy=0
+          for p in (h/'Library'/'WebKit'/'studio.channelflow.desktop').rglob('*'):
+            if p.is_symlink() or not p.is_file() or p.suffix.lower() not in ('.db','.sqlite','.sqlite3') or p.stat().st_size>50000000:continue
+            try:
+              db=sqlite3.connect('file:'+quote(str(p))+'?mode=ro',uri=True,timeout=3)
+              try:
+                if not db.execute("SELECT name FROM sqlite_master WHERE name='ItemTable'").fetchone():continue
+                for k,v in db.execute("SELECT key,value FROM ItemTable WHERE key IN ('vyron:youtube-upload-queue:v1','vyron:youtube-upload-queue:v1:staging')"):
+                  vals=[v.decode('utf-16le','ignore'),v.decode('utf-8','ignore')] if isinstance(v,bytes) else [str(v)]
+                  for s in vals:
+                    try: o=json.loads(s)
+                    except (TypeError,ValueError):continue
+                    if isinstance(o,dict) and isinstance(o.get('entries'),list):
+                      qfound=True
+                      qbusy+=sum(str(x.get('state','')).upper() in active for x in o['entries'] if isinstance(x,dict))
+                      break
+              finally:db.close()
+            except (sqlite3.Error,OSError):pass
+          print('CHANNELS=33')
+          print('ACTIVE_JOBS='+str(busy))
+          print('ACTIVE_UPLOAD_QUEUE='+str(qbusy))
+          print('QUEUE_PRESENT='+str(qfound))
+          if busy or qbusy or not qfound:raise SystemExit('BACKUP_BLOCKED_ACTIVE_OR_UNKNOWN_QUEUE')
+          print('QUEUE_GUARD=PASS')
+          PY
+          BASE="$HOME/.vyron-owner-rollback"
+          mkdir -p "$BASE"
+          chmod 700 "$BASE"
+          AK="$(du -sk "$APP" | awk '{print $1}')"
+          DK="$(du -sk "$DATA" | awk '{print $1}')"
+          WK="$(du -sk "$WEB" | awk '{print $1}')"
+          test "$DK" -lt 1048576 && test "$WK" -lt 1048576
+          FREE="$(df -Pk "$HOME" | awk 'NR==2 {print $4}')"
+          test "$FREE" -gt "$((AK+DK+WK+1048576))"
+          DEST="$(mktemp -d "$BASE/pr67-pre625-from624-XXXXXX")"
+          chmod 700 "$DEST"
+          /usr/bin/ditto "$APP" "$DEST/VYRON.app"
+          /usr/bin/ditto "$DATA" "$DEST/application-support"
+          /usr/bin/ditto "$WEB" "$DEST/webkit-auxiliary"
+          /usr/bin/codesign --verify --deep --strict "$DEST/VYRON.app" >/dev/null 2>&1
+          EXE="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")"
+          test "$(shasum -a 256 "$APP/Contents/MacOS/$EXE" | awk '{print $1}')" = "$(shasum -a 256 "$DEST/VYRON.app/Contents/MacOS/$EXE" | awk '{print $1}')"
+          /usr/bin/python3 - "$DATA" "$WEB" "$DEST" <<'PY'
+          import sqlite3,sys,json
+          from pathlib import Path
+          from urllib.parse import quote
+          data,web,dest=map(Path,sys.argv[1:])
+          copy=json.loads((dest/'application-support'/'state.json').read_text())
+          assert len(copy['channels'])==33
+          dbs=[]
+          for root,prefix in [(data,'application-support'),(web,'webkit')]:
+            for p in root.rglob('*'):
+              if p.is_symlink() or not p.is_file() or p.suffix.lower() not in ('.db','.sqlite','.sqlite3'):continue
+              if p.stat().st_size>512*1024*1024:raise SystemExit('DATABASE_TOO_LARGE')
+              dbs.append((p,Path(prefix)/p.relative_to(root)))
+          if len(dbs)>100:raise SystemExit('DATABASE_COUNT_TOO_HIGH')
+          for src,rel in dbs:
+            target=dest/'sqlite-online'/rel
+            target.parent.mkdir(parents=True,exist_ok=True)
+            s=sqlite3.connect('file:'+quote(str(src))+'?mode=ro',uri=True,timeout=10)
+            t=sqlite3.connect(str(target),timeout=10)
+            try:
+              s.backup(t,pages=200,sleep=0.1)
+              assert t.execute('PRAGMA quick_check').fetchone()[0]=='ok'
+            finally:t.close();s.close()
+            check=sqlite3.connect(str(target))
+            try:assert check.execute('PRAGMA quick_check').fetchone()[0]=='ok'
+            finally:check.close()
+          assert dbs,'NO_SQLITE_BACKUPS'
+          (dest/'BACKUP-STATUS.txt').write_text('source=VYRON 6.1.24\nchannels=33\napp=VERIFIED\nsqlite_online=VERIFIED\nwebkit_copy=LIVE_AUXILIARY\ninstall=DISABLED\n')
+          print('APP_BACKUP=PASS')
+          print('STATE_BACKUP_33=PASS')
+          print('SQLITE_ONLINE_BACKUPS_VERIFIED='+str(len(dbs)))
+          print('WEBKIT_COPY=AUXILIARY_LIVE')
+          print('KEYCHAIN_READ=NO')
+          print('USER_QUEUE_MODIFIED=NO')
+          PY
+          echo "BACKUP_PRIVATE_FOLDER=$(basename "$DEST")"
+          echo 'BACKUP_LOCAL_ONLY=YES'
+          echo 'INSTALL=NOT_ATTEMPTED'

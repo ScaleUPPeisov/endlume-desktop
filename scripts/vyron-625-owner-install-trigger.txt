@@ -1,0 +1,6 @@
+VYRON P0 private 6.1.25 physical M1 guarded install
+source=39f96b86bbc141ab315960afc456aef045a855e0
+hosted_build_run=44905334184
+verified_preinstall_backup_run=44905992694
+expected_old_executable_sha256=1cec2be0edad6c8e47093c1c42fc7e555c1ecab4814e21d346d9652386f43b65
+NO_STABLE_FEED_CHANGE

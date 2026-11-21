@@ -1,2 +1,4 @@
 Read-only pre625 backup of 6.1.24, guarded by idle upload queue, exact exe SHA and SQLite quick_check.
 No PR checkout, no Keychain, no API, no installation.
+
+Retry pre625 backup with safe SQLite open diagnostics; previous incomplete snapshot retained, no install.

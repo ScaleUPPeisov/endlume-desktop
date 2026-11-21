@@ -142,7 +142,8 @@ jobs:
               immutable_snapshot_count+=1
               print('SQLITE_IMMUTABLE_SNAPSHOT_HASH_STABLE=PASS fileHash='+digest,flush=True)
             print('SQLITE_BACKUP_VERIFIED fileHash='+digest,flush=True)
-          assert immutable_snapshot_count==1,'ANALYTICS_IMMUTABLE_BACKUP_COUNT_MISMATCH'
+          analytics_sources=sum(1 for src,_ in dbs if src.name=='analytics-v1.sqlite3')
+          assert analytics_sources>0 and immutable_snapshot_count==analytics_sources,'ANALYTICS_SNAPSHOT_COVERAGE_MISMATCH'
           assert dbs,'NO_SQLITE_BACKUPS'
           (dest/'BACKUP-STATUS.txt').write_text('source=VYRON 6.1.24\nchannels=33\napp=VERIFIED\nsqlite_online=VERIFIED\nwebkit_copy=LIVE_AUXILIARY\ninstall=DISABLED\n')
           print('APP_BACKUP=PASS')

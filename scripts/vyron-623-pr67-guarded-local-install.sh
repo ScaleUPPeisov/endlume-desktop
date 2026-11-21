@@ -180,6 +180,39 @@ sleep 12
 test "$(plist "$APP" CFBundleShortVersionString)" = 6.1.23
 queue_guard
 echo 'VYRON_623_RESTART=PASS'
+# Read-only display evidence check of persisted WebKit runway; do not modify or refresh YouTube.
+ /usr/bin/python3 - <<'PY'
+import json,sqlite3
+from pathlib import Path
+from urllib.parse import quote
+root=Path.home()/'Library'/'WebKit'/'studio.channelflow.desktop'
+found=None
+for p in root.rglob('*'):
+  if p.is_symlink() or not p.is_file() or p.suffix.lower() not in ('.sqlite','.sqlite3','.db') or p.stat().st_size>50000000:continue
+  try:
+    db=sqlite3.connect('file:'+quote(str(p))+'?mode=ro',uri=True,timeout=2)
+    try:
+      if not db.execute("SELECT name FROM sqlite_master WHERE name='ItemTable'").fetchone():continue
+      for (v,) in db.execute("SELECT value FROM ItemTable WHERE key='vyron:channel-runway:v1'"):
+        candidates=[v.decode('utf-16le','ignore'),v.decode('utf-8','ignore')] if isinstance(v,bytes) else [str(v)]
+        for s in candidates:
+          try: o=json.loads(s)
+          except (TypeError,ValueError):continue
+          if isinstance(o,dict) and isinstance(o.get('channels'),dict):
+            if found is None or len(o['channels'])>len(found['channels']):found=o
+    finally:db.close()
+  except (sqlite3.Error,OSError):pass
+if found is None:
+  print('HISTORICAL_RUNWAY_WEBKIT=NOT_FOUND')
+else:
+  rows=found['channels'];print('HISTORICAL_RUNWAY_RECORDS='+str(len(rows)))
+  for name in ('Neon Drive FM','Afterglow Highway','Lumière de Minuit'):
+    for r in rows.values():
+      if isinstance(r,dict) and r.get('channelName')==name:
+        print('HISTORICAL_CHANNEL='+name+'|state='+str(r.get('dataState','UNKNOWN'))+'|scheduled='+str(r.get('scheduledVideoCount','UNKNOWN'))+'|until='+str(r.get('scheduledUntil','UNKNOWN')))
+        break
+    else:print('HISTORICAL_CHANNEL='+name+'|record=MISSING')
+PY
 SWAPPED=0
 trap - ERR
 echo 'VYRON_623_LOCAL_BOOTSTRAP_INSTALLED=PASS'

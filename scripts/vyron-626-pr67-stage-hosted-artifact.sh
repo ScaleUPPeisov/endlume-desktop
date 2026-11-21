@@ -6,7 +6,7 @@ umask 077
 test "$RUNNER_NAME" = kirill-mac-endlume
 test "$(uname -m)" = arm64
 test -n "$GH_TOKEN"
-SOURCE=05a4155a0bfa43ae28a045f397442f20c36f4837
+SOURCE=9acd278cbdb284ba0b66330d0091d14cdd7b4207
 BUILD_SHA=92fc3bcc5a6831d881e3afc0fbcb9a941789cc89
 PIN=1c97657fd2a7ba4c2a0ce5b5361518eeacf76da274521b1977d57a55b8dbcec9
 ART="$RUNNER_TEMP/pr67-626-download"

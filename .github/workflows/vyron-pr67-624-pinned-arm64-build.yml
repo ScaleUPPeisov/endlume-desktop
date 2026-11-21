@@ -68,7 +68,7 @@ jobs:
           print('GOOGLE_API_CALLS=0')
           PY
   hosted-arm64-build:
-    name: Compile exact b11510b4; untrusted source has no Mac access or secrets
+    name: Compile exact 6b3a214; untrusted source has no Mac access or secrets
     needs: owner-public-key-only
     runs-on: macos-15
     timeout-minutes: 110
@@ -80,6 +80,7 @@ jobs:
           repository: ScaleUPPeisov/scaleup-dashboards
           ref: 6b3a21438bcdfecab69a73366dc56dc6b4f5b6c0
           persist-credentials: false
+          fetch-depth: 0
       - name: Exact commit and P0 scope
         shell: bash
         run: |

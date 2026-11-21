@@ -41,7 +41,16 @@ grep -Fxq 'install=FORBIDDEN' "$META"
 grep -Fxq 'stable_feed=UNCHANGED' "$META"
 BASE="$HOME/.vyron-owner-rollback"
 test -d "$BASE"
-BACKUP_COUNT="$(find "$BASE" -mindepth 1 -maxdepth 1 -type d -name "pr67-pre625-from624-*" | wc -l | tr -d " ")"
+# Failed partial backup directories are retained; count only complete,
+# explicitly VERIFIED SQLite backups. Never erase or promote partials.
+BACKUP_COUNT=0
+while IFS= read -r b; do
+  if [ -f "$b/BACKUP-STATUS.txt" ] && [ ! -L "$b/BACKUP-STATUS.txt" ] &&
+     grep -Fxq 'source=VYRON 6.1.24' "$b/BACKUP-STATUS.txt" &&
+     grep -Fxq 'sqlite_online=VERIFIED' "$b/BACKUP-STATUS.txt"; then
+    BACKUP_COUNT=$((BACKUP_COUNT+1))
+  fi
+done < <(find "$BASE" -mindepth 1 -maxdepth 1 -type d -name 'pr67-pre625-from624-*' -print)
 test "$BACKUP_COUNT" = 1
 # Reuse only an exact, unverified, previously extracted bundle; remove only empty stages.
 STAGE=""

@@ -1,5 +1,5 @@
-VYRON PR67 6.1.26 exact hosted unsigned ARM64 candidate
-source=a05bfde77769fe9f4f1f016abc088a6b0d054962
-no-install=true
-no-secret=true
-stable-feed-unchanged=true
+VYRON 6.1.26 final host-only no-secret ARM64 build
+SOURCE_SHA=a6ffb411d41b1cd8836a8639b31d69adf4f97354
+BASELINE_RUN=44907730629 PASS
+PRIVACY_RUN=44907730640 PASS
+No physical installation or Google API

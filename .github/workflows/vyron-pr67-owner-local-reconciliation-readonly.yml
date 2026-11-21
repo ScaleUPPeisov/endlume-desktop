@@ -1,0 +1,125 @@
+# Trusted read-only evidence collection; no checkout of PR code and no OAuth calls.
+name: VYRON PR67 owner local historical reconciliation (read-only)
+on:
+  push:
+    branches: [diagnostics/vyron-m1-connection-20261118]
+    paths:
+      - .github/workflows/vyron-pr67-owner-local-reconciliation-readonly.yml
+permissions:
+  contents: read
+concurrency:
+  group: vyron-physical-m1-owner-readonly
+  cancel-in-progress: false
+jobs:
+  owner-local-evidence:
+    if: github.repository == 'ScaleUPPeisov/endlume-desktop' && github.ref == 'refs/heads/diagnostics/vyron-m1-connection-20261118'
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 10
+    steps:
+      - name: Verify trusted Mac, installed VYRON 6.1.24 and signature
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$RUNNER_NAME" = kirill-mac-endlume
+          test "$(uname -m)" = arm64
+          APP=/Applications/VYRON.app
+          test -d "$APP" && test ! -L "$APP"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Contents/Info.plist")" = studio.channelflow.desktop
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")" = 6.1.24
+          /usr/bin/codesign --verify --deep --strict "$APP"
+          EXE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")
+          ACTUAL=$(shasum -a 256 "$APP/Contents/MacOS/$EXE" | awk '{print $1}')
+          test "$ACTUAL" = 1cec2be0edad6c8e47093c1c42fc7e555c1ecab4814e21d346d9652386f43b65
+          echo 'READ_ONLY_MAC_IDENTITY=PASS'
+      - name: Reconcile native inventory and upload-history IDs without exposing them
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          /usr/bin/python3 - <<'PY'
+          import json,os,datetime,hashlib
+          from pathlib import Path
+          base=Path.home()/'Library'/'Application Support'/'studio.channelflow.desktop'
+          state_path=base/'state.json'
+          assert state_path.is_file() and not state_path.is_symlink(), 'STATE_UNAVAILABLE'
+          state=json.loads(state_path.read_text())
+          channels=state.get('channels')
+          assert isinstance(channels,list) and len(channels)==33,'EXPECTED_33_CHANNELS'
+          targets=('Glass City Lovers','Midnight Noir Lounge','Neon Drive FM','Mafia 1947 Lounge','Afterglow Highway','Rain & Roast Jazz','珈琲小路','After Dark Voice')
+          by_name={c.get('name'):c for c in channels if isinstance(c,dict)}
+          assert all(name in by_name for name in targets),'TARGET_CHANNEL_NAME_MISSING'
+          history=state.get('uploadHistory',[])
+          history_available=isinstance(history,list)
+          if not history_available: history=[]
+          now=datetime.datetime.now(datetime.timezone.utc)
+          def parsed(x):
+              try:
+                  d=datetime.datetime.fromisoformat(str(x).replace('Z','+00:00'))
+                  return d.replace(tzinfo=datetime.timezone.utc) if d.tzinfo is None else d.astimezone(datetime.timezone.utc)
+              except (ValueError,TypeError): return None
+          def future(row,anchor):
+              d=parsed(row.get('publishAt')) if isinstance(row,dict) else None
+              return bool(d and d>anchor and row.get('privacyStatus')=='private')
+          out={}
+          for name in targets:
+              ch=by_name[name];cid=str(ch.get('id') or '')
+              assert cid and '/' not in cid and '\\' not in cid and '..' not in cid,'BAD_CHANNEL_ID'
+              p=base/'youtube-inventory'/(cid+'.json')
+              payload={}
+              if p.exists():
+                  assert p.is_file() and not p.is_symlink(),'INVENTORY_PATH_INVALID'
+                  payload=json.loads(p.read_text())
+              rows=payload.get('videos',[]) if isinstance(payload.get('videos'),list) else []
+              delta=payload.get('baselineDelta',{}) if isinstance(payload.get('baselineDelta'),dict) else {}
+              latest={x['id']:x for x in rows if isinstance(x,dict) and isinstance(x.get('id'),str) and x.get('id')}
+              baseline={**latest,**{k:v for k,v in delta.items() if isinstance(v,dict)}}
+              verified_at=parsed(payload.get('lastCompleteAt') or payload.get('updatedAt')) or now
+              prev_sched={k for k,v in baseline.items() if future(v,verified_at)}
+              current_future={k for k,v in latest.items() if future(v,now)}
+              linked_history=[h for h in history if isinstance(h,dict) and str(h.get('channelId'))==cid and h.get('status')=='UPLOADED']
+              history_ids={str(h.get('youtubeVideoId')) for h in linked_history if isinstance(h.get('youtubeVideoId'),str) and len(h['youtubeVideoId'])==11}
+              history_future={str(h.get('youtubeVideoId')) for h in linked_history if parsed(h.get('publishAt')) and parsed(h.get('publishAt'))>now and isinstance(h.get('youtubeVideoId'),str)}
+              sync=payload.get('syncInfo') or {}
+              if not isinstance(sync,dict):sync={}
+              missing_prior=sorted(prev_sched-set(latest))
+              missing_history=sorted(history_ids-set(latest))
+              missing_future_history=sorted(history_future-set(latest))
+              old_changed={k:{'baseline':baseline[k],'current':latest.get(k)} for k in prev_sched if k in latest and (baseline[k].get('privacyStatus'),baseline[k].get('publishAt'))!=(latest[k].get('privacyStatus'),latest[k].get('publishAt'))}
+              out[name]={
+                  'channelId':cid,'snapshotAt':payload.get('updatedAt'),'lastCompleteAt':payload.get('lastCompleteAt'),
+                  'source':'LOCAL_CACHE_NOT_FRESH_OWNER_API','payloadPresent':bool(payload),'schemaVersion':payload.get('schemaVersion'),
+                  'nativeUniqueIds':len(latest),'baselineUniqueIds':len(baseline),
+                  'lastCompleteScheduledAsOfVerification':len(prev_sched),
+                  'currentlyFutureInCacheNotLive':len(current_future),
+                  'uploadHistoryAvailable':history_available,'uploadHistoryIds':len(history_ids),
+                  'historyIdsAbsentFromNative':len(missing_history),
+                  'futureHistoryIdsAbsentFromNative':len(missing_future_history),
+                  'priorScheduledIdsAbsentFromNative':len(missing_prior),
+                  'priorScheduledStatusChangedInLocalCache':len(old_changed),
+                  'searchExhausted':sync.get('searchExhausted'),
+                  'incompleteReasons':sync.get('incompleteReasons',[]),
+                  'LOCAL_ONLY_VIDEO_IDS':{
+                    'priorScheduledMissing':missing_prior,
+                    'historyMissing':missing_history,
+                    'futureHistoryMissing':missing_future_history,
+                    'statusChangedCached':old_changed,
+                    'priorScheduled':sorted(prev_sched),
+                    'currentFutureCached':sorted(current_future)
+                  }
+              }
+              log={k:v for k,v in out[name].items() if k not in ('LOCAL_ONLY_VIDEO_IDS','channelId')}
+              print('LOCAL_OWNER_EVIDENCE '+json.dumps({'channel':name,**log},ensure_ascii=False,sort_keys=True))
+          destination=Path.home()/'Library'/'Application Support'/'VYRON-P0-Local-Evidence'
+          destination.mkdir(mode=0o700,parents=True,exist_ok=True)
+          os.chmod(destination,0o700)
+          stamp=now.strftime('%Y%m%dT%H%M%SZ')
+          dest=destination/('reconcile-'+stamp+'.json')
+          with dest.open('x') as f: json.dump({'createdAt':now.isoformat(),'source':'read-only-local-cache','channels':out},f,ensure_ascii=False,indent=2)
+          os.chmod(dest,0o600)
+          print('PRIVATE_LOCAL_REPORT_SAVED=YES')
+          print('PRIVATE_LOCAL_REPORT_VIDEO_IDS_IN_PUBLIC_LOG=NO')
+          print('TOTAL_CHANNELS_UNCHANGED=33')
+          print('OAUTH_OR_KEYCHAIN_READS=0')
+          print('GOOGLE_API_CALLS=0')
+          print('VYRON_APP_STATE_WRITES=0')
+          PY

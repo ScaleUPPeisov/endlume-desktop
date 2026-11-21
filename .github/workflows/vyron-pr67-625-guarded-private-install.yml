@@ -1,0 +1,41 @@
+# One-shot trusted owner installation, triggered only by the explicit marker commit.
+# The PR67 source is NEVER checked out, built, or executed as a build script on the M1.
+# Private local RC ad-hoc signing does not alter Gatekeeper, SIP or stable Tauri feed.
+name: VYRON PR67 6.1.25 guarded PRIVATE owner install
+on:
+  push:
+    branches: [diagnostics/vyron-m1-connection-20261118]
+    paths: [scripts/vyron-625-owner-install-trigger.txt]
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: vyron-physical-m1-exclusive-install
+  cancel-in-progress: false
+jobs:
+  private-guarded-install:
+    if: github.repository == 'ScaleUPPeisov/endlume-desktop'
+    name: Verify GitHub artifact, locally ad-hoc sign, backup guard, swap, restart
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          repository: ScaleUPPeisov/endlume-desktop
+          run-id: 44905334184
+          name: VYRON-PR67-6.1.25-UNSIGNED-NOT-INSTALLABLE
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/pr67-625-download
+      - name: Local stage, verify backup, guarded app installation and restart
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          bash -n scripts/vyron-625-pr67-stage-hosted-artifact.sh
+          bash -n scripts/vyron-625-pr67-guarded-local-install.sh
+          bash scripts/vyron-625-pr67-stage-hosted-artifact.sh
+          bash scripts/vyron-625-pr67-guarded-local-install.sh

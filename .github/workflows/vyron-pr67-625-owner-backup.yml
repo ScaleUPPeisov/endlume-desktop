@@ -100,10 +100,19 @@ jobs:
               dbs.append((p,Path(prefix)/p.relative_to(root)))
           if len(dbs)>100:raise SystemExit('DATABASE_COUNT_TOO_HIGH')
           for src,rel in dbs:
+            import hashlib
+            digest=hashlib.sha256(str(rel).encode()).hexdigest()[:12]
+            print('SQLITE_BACKUP_ATTEMPT prefix='+rel.parts[0]+' fileHash='+digest+' suffix='+src.suffix+' bytes='+str(src.stat().st_size),flush=True)
             target=dest/'sqlite-online'/rel
             target.parent.mkdir(parents=True,exist_ok=True)
-            s=sqlite3.connect('file:'+quote(str(src))+'?mode=ro',uri=True,timeout=10)
-            t=sqlite3.connect(str(target),timeout=10)
+            try:
+              s=sqlite3.connect('file:'+quote(str(src))+'?mode=ro',uri=True,timeout=10)
+            except sqlite3.Error:
+              print('SQLITE_BACKUP_SOURCE_OPEN_FAILED='+digest,flush=True);raise
+            try:
+              t=sqlite3.connect(str(target),timeout=10)
+            except sqlite3.Error:
+              print('SQLITE_BACKUP_TARGET_OPEN_FAILED='+digest,flush=True);s.close();raise
             try:
               s.backup(t,pages=200,sleep=0.1)
               assert t.execute('PRAGMA quick_check').fetchone()[0]=='ok'

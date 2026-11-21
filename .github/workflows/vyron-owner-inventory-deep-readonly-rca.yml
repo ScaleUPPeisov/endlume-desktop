@@ -97,10 +97,10 @@ jobs:
             rec=records.get(str(target.get('id','')),{})
             raw=str(rec.get('lastRefreshError') or '')
             upper=raw.upper()
-            exact_methods={'CHANNELS_LIST':r'(?:CHANNELS\\.LIST|YOUTUBE CHANNEL|OWNER_INVENTORY_CHANNELS_LIST)',
-                           'PLAYLIST_ITEMS_LIST':r'(?:PLAYLISTITEMS\\.LIST|YOUTUBE UPLOADS PAGE|OWNER_INVENTORY_PLAYLIST_ITEMS_LIST)',
-                           'VIDEOS_LIST':r'(?:VIDEOS\\.LIST|AUTHORITATIVE VIDEOS|OWNER_INVENTORY_VIDEOS_LIST)',
-                           'SEARCH_LIST':r'(?:SEARCH\\.LIST|OWNER_SEARCH_)'}
+            exact_methods={'CHANNELS_LIST':r'(?:CHANNELS\.LIST|YOUTUBE CHANNEL|OWNER_INVENTORY_CHANNELS_LIST)',
+                           'PLAYLIST_ITEMS_LIST':r'(?:PLAYLISTITEMS\.LIST|YOUTUBE UPLOADS PAGE|OWNER_INVENTORY_PLAYLIST_ITEMS_LIST)',
+                           'VIDEOS_LIST':r'(?:VIDEOS\.LIST|AUTHORITATIVE VIDEOS|OWNER_INVENTORY_VIDEOS_LIST)',
+                           'SEARCH_LIST':r'(?:SEARCH\.LIST|OWNER_SEARCH_)'}
             method=next((key for key,pat in exact_methods.items() if re.search(pat,upper)),'UNKNOWN')
             codes=['OAUTH_INVALID_GRANT','OAUTH_CLIENT_MISMATCH','REFRESH_TOKEN_MISSING','KEYCHAIN_BLOCKED',
                    'KEYCHAIN_ERROR','OWNER_CHANNEL_MISMATCH','OWNER_CHANNEL_MISSING','OWNER_UPLOADS_MISSING',
@@ -109,9 +109,9 @@ jobs:
                    'INSUFFICIENT_PERMISSIONS','BACKEND_ERROR','FORBIDDEN','UNAUTHORIZED','CHANNEL_NOT_FOUND']
             reason=next((v for v in codes if v in upper),'UNKNOWN')
             # HTTP digits only when adjacent to a well-known HTTP/status marker.
-            hm=re.search(r'(?:\\bHTTP[_\\s:=]*|\\bSTATUS\\s*(?:CODE)?[_\\s:=]*|\\bERROR\\s+)\(400|401|403|404|409|429|500|502|503|504)\\b',upper)
+            hm=re.search(r'(?:^|[^A-Z0-9])(?:HTTP[_\s:=]*|STATUS\s*(?:CODE)?[_\s:=]*|ERROR\s+)(400|401|403|404|409|429|500|502|503|504)(?:\b|_)',upper)
             status=int(hm.group(1)) if hm else None
-            net='NETWORK_ERROR' in upper or bool(re.search(r'NETWORK|TIMED?\\s*OUT|ECONN|ENOTFOUND',upper))
+            net='NETWORK_ERROR' in upper or bool(re.search(r'NETWORK|TIMED?\s*OUT|ECONN|ENOTFOUND',upper))
             has_error=bool(raw.strip())
             out={'channel':'Afterglow Highway','errorPresent':has_error,'method':method,
                  'httpStatus':status,'allowlistedReason':reason,'networkSuspected':net,

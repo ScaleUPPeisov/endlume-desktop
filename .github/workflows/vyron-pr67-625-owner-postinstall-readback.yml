@@ -101,6 +101,9 @@ jobs:
           print('UPLOAD_QUEUE_MUTATIONS=0')
           print('PRODUCTION_FEED_MODIFICATIONS=0')
           PY
+          # Allow the newly relaunched app's bounded P0 owner videos.list probe
+          # to finish; this workflow only reads persisted evidence, never calls Google.
+          sleep 50
           /usr/bin/python3 - <<'PY'
           import json,sqlite3
           from pathlib import Path

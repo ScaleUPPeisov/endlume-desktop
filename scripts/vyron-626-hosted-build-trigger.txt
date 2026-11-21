@@ -1,0 +1,5 @@
+VYRON PR67 6.1.26 exact hosted unsigned ARM64 candidate
+source=a05bfde77769fe9f4f1f016abc088a6b0d054962
+no-install=true
+no-secret=true
+stable-feed-unchanged=true

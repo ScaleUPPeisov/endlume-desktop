@@ -114,7 +114,18 @@ jobs:
             except sqlite3.Error:
               print('SQLITE_BACKUP_TARGET_OPEN_FAILED='+digest,flush=True);s.close();raise
             try:
-              s.backup(t,pages=200,sleep=0.1)
+              try:
+                source_check=s.execute('PRAGMA quick_check').fetchone()
+                print('SQLITE_SOURCE_QUICK_CHECK '+digest+' '+str(source_check[0] if source_check else 'EMPTY'),flush=True)
+              except sqlite3.Error as e:
+                print('SQLITE_SOURCE_QUICK_CHECK_FAILED '+digest+' '+type(e).__name__+' '+str(e),flush=True)
+                raise
+              try:
+                s.backup(t,pages=200,sleep=0.1)
+                print('SQLITE_BACKUP_COPY_COMPLETED '+digest,flush=True)
+              except sqlite3.Error as e:
+                print('SQLITE_BACKUP_COPY_FAILED '+digest+' '+type(e).__name__+' '+str(e),flush=True)
+                raise
               assert t.execute('PRAGMA quick_check').fetchone()[0]=='ok'
             finally:t.close();s.close()
             check=sqlite3.connect(str(target))

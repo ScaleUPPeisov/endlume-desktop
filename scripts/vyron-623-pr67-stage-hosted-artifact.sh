@@ -41,7 +41,12 @@ grep -Fxq 'install=FORBIDDEN' "$META"
 grep -Fxq 'stable_feed=UNCHANGED' "$META"
 BASE="$HOME/.vyron-owner-rollback"
 test -d "$BASE" && test -d "$BASE/pr67-preinstall-pPJL4w"
-test -z "$(find "$BASE" -mindepth 1 -maxdepth 1 -type d -name 'staged-623-pr67-hosted-*' -print -quit)"
+# Safe retry after an extraction failure: only remove an EMPTY, unverified staging directory.
+while IFS= read -r old; do
+  test -d "$old" && test ! -L "$old" && test ! -e "$old/VERIFIED"
+  test -z "$(find "$old" -mindepth 1 -maxdepth 1 -print -quit)"
+  rmdir "$old"
+done < <(find "$BASE" -mindepth 1 -maxdepth 1 -type d -name 'staged-623-pr67-hosted-*' -print)
 STAGE="$(mktemp -d "$BASE/staged-623-pr67-hosted-XXXXXX")"
 chmod 700 "$STAGE"
 # Strictly bounded, path-validated extraction: never let archive escape staging.
@@ -58,7 +63,7 @@ with tarfile.open(archive,'r:gz') as tf:
   for m in members:
     p=pathlib.PurePosixPath(m.name)
     assert not p.is_absolute() and p.parts and p.parts[0]=='VYRON.app' and '..' not in p.parts
-    assert not (m.isdev() or m.isfifo() or m.isln())
+    assert not (m.isdev() or m.isfifo() or m.islnk())
     assert m.isfile() or m.isdir() or m.issym()
     if m.isfile():
       total+=m.size

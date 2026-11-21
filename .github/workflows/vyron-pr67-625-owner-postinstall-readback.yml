@@ -55,21 +55,42 @@ jobs:
               if p.is_symlink() or not p.is_file() or p.suffix.lower() not in ('.db','.sqlite','.sqlite3') or p.stat().st_size>512*1024*1024:continue
               databases.append(p)
           good=0
+          immutable_checked=0
           records={}
           for p in databases:
+            db=None
+            immutable=False
+            source_hash=None
             try:
               db=sqlite3.connect('file:'+quote(str(p))+'?mode=ro',uri=True,timeout=3)
-              try:
-                if db.execute('PRAGMA quick_check').fetchone()[0]=='ok': good+=1
-                if not db.execute("SELECT name FROM sqlite_master WHERE name='ItemTable'").fetchone():continue
+              assert db.execute('PRAGMA quick_check').fetchone()[0]=='ok'
+            except sqlite3.OperationalError as e:
+              if db:db.close()
+              if p.name!='analytics-v1.sqlite3' or str(e)!='unable to open database file':raise
+              if any(Path(str(p)+ext).exists() for ext in ('-wal','-shm')):
+                raise RuntimeError('POSTINSTALL_ANALYTICS_WAL_NOT_ABSENT')
+              import hashlib
+              source_hash=hashlib.sha256(p.read_bytes()).hexdigest()
+              db=sqlite3.connect('file:'+quote(str(p))+'?mode=ro&immutable=1',uri=True,timeout=3)
+              assert db.execute('PRAGMA quick_check').fetchone()[0]=='ok'
+              immutable=True
+            try:
+              good+=1
+              if db.execute("SELECT name FROM sqlite_master WHERE name='ItemTable'").fetchone():
                 for (value,) in db.execute("SELECT value FROM ItemTable WHERE key='vyron:channel-runway:v1'"):
                   candidates=[value.decode('utf-16le','ignore'),value.decode('utf-8','ignore')] if isinstance(value,bytes) else [str(value)]
-                  for s in candidates:
-                    try:d=json.loads(s)
+                  for item in candidates:
+                    try:d=json.loads(item)
                     except (ValueError,TypeError):continue
-                    if isinstance(d,dict) and isinstance(d.get('channels'),dict) and len(d['channels'])>len(records): records=d['channels']
-              finally:db.close()
-            except (sqlite3.Error,OSError):pass
+                    if isinstance(d,dict) and isinstance(d.get('channels'),dict) and len(d['channels'])>len(records):records=d['channels']
+            finally:db.close()
+            if immutable:
+              if any(Path(str(p)+ext).exists() for ext in ('-wal','-shm')):
+                raise RuntimeError('POSTINSTALL_ANALYTICS_WAL_APPEARED')
+              if hashlib.sha256(p.read_bytes()).hexdigest()!=source_hash:
+                raise RuntimeError('POSTINSTALL_ANALYTICS_CHANGED_DURING_VERIFICATION')
+              immutable_checked+=1
+          print('POSTINSTALL_IMMUTABLE_SQLITE_CHECKED='+str(immutable_checked))
           print('POSTINSTALL_SQLITE_CHECKED='+str(good))
           print('POSTINSTALL_RUNWAY_RECORDS='+str(len(records)))
           assert good>=5,'POSTINSTALL_SQLITE_CHECKED_LT_5'

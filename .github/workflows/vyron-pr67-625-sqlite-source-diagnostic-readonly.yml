@@ -1,0 +1,70 @@
+# Trusted LOCAL read-only diagnostics for the SQLite online-backup blocker.
+name: VYRON PR67 6.1.25 SQLite source unblock (read-only)
+on:
+  push:
+    branches: [diagnostics/vyron-m1-connection-20261118]
+    paths: [.github/workflows/vyron-pr67-625-sqlite-source-diagnostic-readonly.yml]
+permissions:
+  contents: read
+concurrency:
+  group: vyron-physical-m1-owner-readonly
+  cancel-in-progress: false
+jobs:
+  probe:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 10
+    steps:
+      - name: Inspect inaccessible source DB without changing app or private data
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$RUNNER_NAME" = kirill-mac-endlume
+          test "$(uname -m)" = arm64
+          /usr/bin/python3 - <<'PY'
+          import hashlib,sqlite3,os,json,stat
+          from pathlib import Path
+          from urllib.parse import quote
+          data=Path.home()/'Library'/'Application Support'/'studio.channelflow.desktop'
+          assert data.is_dir() and not data.is_symlink()
+          checked=0
+          for p in data.rglob('*'):
+            if p.is_symlink() or not p.is_file() or p.suffix.lower() not in ('.db','.sqlite','.sqlite3'):continue
+            rel=str(Path('application-support')/p.relative_to(data))
+            digest=hashlib.sha256(rel.encode()).hexdigest()[:12]
+            if digest!='6385cb3cac64': continue
+            checked+=1
+            st=p.stat();parent=p.parent
+            # The file name is a program component, never emit the user's parent path.
+            print('SQLITE_SOURCE_COMPONENT='+p.name[:90])
+            print('SQLITE_SOURCE_BYTES='+str(st.st_size))
+            print('SQLITE_SOURCE_MODE='+oct(stat.S_IMODE(st.st_mode)))
+            print('SQLITE_SOURCE_OWNER_MATCHES_RUNNER='+str(st.st_uid==os.getuid()))
+            print('SQLITE_SOURCE_PARENT_WRITABLE='+str(os.access(parent,os.W_OK)))
+            print('SQLITE_SOURCE_DIRECT_READABLE='+str(os.access(p,os.R_OK)))
+            print('SQLITE_SOURCE_HEADER_SQLITE3='+str(p.open('rb').read(16)==b'SQLite format 3\x00'))
+            for ext in ('-wal','-shm'):
+              side=Path(str(p)+ext)
+              print('SQLITE_SOURCE'+ext.upper()+'_EXISTS='+str(side.exists()))
+              if side.exists():
+                z=side.stat()
+                print('SQLITE_SOURCE'+ext.upper()+'_BYTES='+str(z.st_size))
+                print('SQLITE_SOURCE'+ext.upper()+'_READABLE='+str(os.access(side,os.R_OK)))
+            for name,uri in (
+              ('RO','file:'+quote(str(p))+'?mode=ro'),
+              ('RO_NOMUTEX','file:'+quote(str(p))+'?mode=ro&nolock=1'),
+              ('IMMUTABLE_DIAGNOSTIC_ONLY','file:'+quote(str(p))+'?mode=ro&immutable=1')
+            ):
+              try:
+                db=sqlite3.connect(uri,uri=True,timeout=2)
+                try:
+                  print('SQLITE_PROBE_'+name+'_SCHEMA_VERSION='+str(db.execute('PRAGMA schema_version').fetchone()[0]))
+                  print('SQLITE_PROBE_'+name+'_QUICK_CHECK='+str(db.execute('PRAGMA quick_check').fetchone()[0]))
+                  print('SQLITE_PROBE_'+name+'_TABLES='+str(len(db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall())))
+                finally:db.close()
+              except sqlite3.Error as e:
+                print('SQLITE_PROBE_'+name+'_FAIL='+type(e).__name__+' '+str(e))
+          assert checked==1,'EXACT_SQLITE_SOURCE_NOT_FOUND'
+          print('SQLITE_SOURCE_DIAGNOSTICS_COMPLETE=PASS')
+          print('GOOGLE_API_CALLS=0')
+          print('APP_STATE_WRITES=0')
+          PY

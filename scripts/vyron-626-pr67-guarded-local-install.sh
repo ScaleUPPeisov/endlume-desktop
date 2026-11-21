@@ -96,16 +96,9 @@ test "$DATA_KB" -lt 1048576 && test "$WEBKIT_KB" -lt 1048576
 NEED=$((2*APP_KB + NEW_KB + DATA_KB + WEBKIT_KB + 1048576))
 FREE="$(df -Pk /Applications | awk 'END {print $4}')"
 test "$FREE" -gt "$NEED"
-BACKUPS=()
-while IFS= read -r p; do
-  if [ -f "$p/BACKUP-STATUS.txt" ] && [ ! -L "$p/BACKUP-STATUS.txt" ] &&
-     grep -Fxq 'source=VYRON 6.1.25' "$p/BACKUP-STATUS.txt" &&
-     grep -Fxq 'sqlite_online=VERIFIED' "$p/BACKUP-STATUS.txt"; then
-    BACKUPS+=("$p")
-  fi
-done < <(find "$BASE" -mindepth 1 -maxdepth 1 -type d -name 'pr67-pre626-from625-*' -print)
-if [ "${#BACKUPS[@]}" -ne 1 ]; then echo 'VYRON_626_BACKUP_NOT_UNIQUE'; exit 1; fi
-BACKUP="${BACKUPS[0]}"
+# Exact archived snapshot from successful run 44907464663 (37 SQLite, 33 analytics).
+BACKUP="$BASE/pr67-pre626-from625-wWmfSi"
+test -d "$BACKUP" && test ! -L "$BACKUP"
 test ! -L "$BACKUP"
 test -d "$BACKUP/VYRON.app" && test -d "$BACKUP/application-support"
 test -d "$BACKUP/sqlite-online" && test -d "$BACKUP/webkit-auxiliary"

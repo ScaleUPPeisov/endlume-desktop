@@ -1,0 +1,2 @@
+VYRON P0 6.1.26 pre-install backup: installed 6.1.25 exact executable SHA 5a0bb108011a0e080a7c8286bf6f69a5c46c92c98e5c0e5710af33ffe71ad072
+Backup ONLY when queue idle, 33 channels intact and SQLite complete; no install.

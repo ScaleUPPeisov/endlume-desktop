@@ -1,0 +1,104 @@
+name: VYRON PR67 6.1.24 physical M1 postinstall readback
+on:
+  push:
+    branches: [diagnostics/vyron-m1-connection-20261118]
+    paths: [scripts/vyron-624-postinstall-trigger.txt]
+permissions:
+  contents: read
+concurrency:
+  group: vyron-physical-m1-exclusive-install
+  cancel-in-progress: false
+jobs:
+  readback:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 10
+    steps:
+      - name: Verify real installed bundle SHA, 33 channels, SQLite, runway and restart
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$RUNNER_NAME" = kirill-mac-endlume
+          test "$(uname -m)" = arm64
+          APP=/Applications/VYRON.app
+          BASE="$HOME/.vyron-owner-rollback"
+          test -d "$APP" && test ! -L "$APP"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Contents/Info.plist")" = studio.channelflow.desktop
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")" = 6.1.24
+          /usr/bin/codesign --verify --deep --strict "$APP"
+          /usr/bin/pgrep -x channelflow >/dev/null
+          EXE="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")"
+          INSTALLED="$(shasum -a 256 "$APP/Contents/MacOS/$EXE" | awk '{print $1}')"
+          STAGE_COUNT="$(find "$BASE" -mindepth 1 -maxdepth 1 -type d -name 'staged-624-pr67-hosted-*' | wc -l | tr -d ' ')"
+          test "$STAGE_COUNT" = 1
+          MARK="$(find "$BASE" -mindepth 2 -maxdepth 2 -type f -path '*/staged-624-pr67-hosted-*/VERIFIED' -print -quit)"
+          test -f "$MARK"
+          grep -Fxq 'source=6b3a21438bcdfecab69a73366dc56dc6b4f5b6c0' "$MARK"
+          grep -Fxq 'version=6.1.24' "$MARK"
+          grep -Fxq "executable_sha256=$INSTALLED" "$MARK"
+          echo 'INSTALLED_VERSION=6.1.24'
+          echo 'INSTALLED_SOURCE_SHA=6b3a21438bcdfecab69a73366dc56dc6b4f5b6c0'
+          echo "INSTALLED_EXECUTABLE_SHA256=$INSTALLED"
+          /usr/bin/python3 - <<'PY'
+          import json,sqlite3,datetime
+          from pathlib import Path
+          from urllib.parse import quote
+          home=Path.home()
+          data=home/'Library'/'Application Support'/'studio.channelflow.desktop'
+          web=home/'Library'/'WebKit'/'studio.channelflow.desktop'
+          state=json.loads((data/'state.json').read_text())
+          chans=state.get('channels',[])
+          assert isinstance(chans,list) and len(chans)==33,'POSTINSTALL_CHANNELS_NOT_33'
+          print('POSTINSTALL_CHANNELS=33')
+          databases=[]
+          for root in (data,web):
+            for p in root.rglob('*'):
+              if p.is_symlink() or not p.is_file() or p.suffix.lower() not in ('.db','.sqlite','.sqlite3') or p.stat().st_size>512*1024*1024:continue
+              databases.append(p)
+          good=0
+          records={}
+          for p in databases:
+            try:
+              db=sqlite3.connect('file:'+quote(str(p))+'?mode=ro',uri=True,timeout=3)
+              try:
+                if db.execute('PRAGMA quick_check').fetchone()[0]=='ok': good+=1
+                if not db.execute("SELECT name FROM sqlite_master WHERE name='ItemTable'").fetchone():continue
+                for (value,) in db.execute("SELECT value FROM ItemTable WHERE key='vyron:channel-runway:v1'"):
+                  candidates=[value.decode('utf-16le','ignore'),value.decode('utf-8','ignore')] if isinstance(value,bytes) else [str(value)]
+                  for s in candidates:
+                    try:d=json.loads(s)
+                    except (ValueError,TypeError):continue
+                    if isinstance(d,dict) and isinstance(d.get('channels'),dict) and len(d['channels'])>len(records): records=d['channels']
+              finally:db.close()
+            except (sqlite3.Error,OSError):pass
+          print('POSTINSTALL_SQLITE_CHECKED='+str(good))
+          print('POSTINSTALL_RUNWAY_RECORDS='+str(len(records)))
+          assert good>=5,'POSTINSTALL_SQLITE_CHECKED_LT_5'
+          assert len(records)==33,'POSTINSTALL_RUNWAY_RECORDS_NOT_33'
+          inventory=data/'youtube-inventory'
+          today=(datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(hours=7)).date()
+          statuses={}
+          for c in chans:
+            if not isinstance(c,dict):continue
+            cid=str(c.get('id',''))
+            name=str(c.get('name','')).replace('\n',' ')[:100]
+            rec=records.get(cid,{})
+            state_code=str(rec.get('dataState','UNKNOWN'))
+            statuses[state_code]=statuses.get(state_code,0)+1
+            date=str(rec.get('scheduledUntil') or '')
+            try:
+              remaining=max(0,(datetime.date.fromisoformat(date)-today).days)
+            except ValueError:remaining=None
+            native={}
+            p=inventory/(cid+'.json')
+            if p.is_file() and not p.is_symlink():
+              try: native=json.loads(p.read_text()).get('syncInfo') or {}
+              except (ValueError,OSError):native={}
+            info={'channel':name,'savedScheduled':rec.get('scheduledVideoCount'),'savedUntil':date or None,'remainingDaysFromSavedDate':remaining,'lastScheduleSync':rec.get('lastScheduleSync'),'state':state_code,'lastObservedScheduled':rec.get('lastObservedScheduledCount'),'lastObservedAt':rec.get('lastObservedAt'),'source':'LOCAL_POSTINSTALL_SNAPSHOT','playlistReportedTotal':native.get('playlistReportedTotal'),'playlistItemsFetched':native.get('playlistItemsFetched'),'uniqueVideoIds':native.get('uniqueVideoIds'),'playlistDuplicateCount':native.get('playlistDuplicateCount'),'searchExhausted':native.get('searchExhausted')}
+            print('POSTINSTALL_CHANNEL '+json.dumps(info,ensure_ascii=False,sort_keys=True))
+          print('POSTINSTALL_STATES '+json.dumps(statuses,sort_keys=True))
+          print('GOOGLE_API_CALLS=0')
+          print('OAUTH_TOKENS_READ=0')
+          print('UPLOAD_QUEUE_MUTATIONS=0')
+          print('PRODUCTION_FEED_MODIFICATIONS=0')
+          PY
+          echo 'PHYSICAL_M1_POSTINSTALL_READBACK=PASS'

@@ -1,0 +1,3 @@
+Postinstall read-only verification of VYRON 6.1.24 after guarded install run 44902405916.
+Expected source: 6b3a21438bcdfecab69a73366dc56dc6b4f5b6c0
+No Google API, no OAuth token read, no uploads.

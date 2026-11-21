@@ -10,7 +10,7 @@ permissions:
   contents: read
 concurrency:
   group: vyron-pr67-pinned-hosted-build
-  cancel-in-progress: false
+  cancel-in-progress: true
 env:
   SOURCE_SHA: b11510b4de6f6613f1cd82c8c79e1395b439b6ae
   RC_VERSION: '6.1.23'
@@ -70,7 +70,7 @@ jobs:
   hosted-arm64-build:
     name: Compile exact b11510b4; untrusted source has no Mac access or secrets
     needs: owner-public-key-only
-    runs-on: macos-15-arm64
+    runs-on: macos-15
     timeout-minutes: 110
     permissions:
       contents: read
@@ -84,6 +84,7 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
+          test "$(uname -m)" = arm64
           test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
           node - <<'NODE'
           const fs=require('fs');

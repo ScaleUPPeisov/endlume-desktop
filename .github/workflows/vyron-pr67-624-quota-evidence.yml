@@ -1,0 +1,69 @@
+name: VYRON PR67 6.1.24 owner Google API quota evidence (read-only)
+on:
+  push:
+    branches: [diagnostics/vyron-m1-connection-20261118]
+    paths: [.github/workflows/vyron-pr67-624-quota-evidence.yml]
+permissions:
+  contents: read
+jobs:
+  report:
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 5
+    steps:
+      - name: Read numeric API and quota ledger only, no tokens or mutations
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$RUNNER_NAME" = kirill-mac-endlume
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' /Applications/VYRON.app/Contents/Info.plist)" = 6.1.24
+          /usr/bin/python3 - <<'PY'
+          import json,sqlite3
+          from pathlib import Path
+          from urllib.parse import quote
+          root=Path.home()/'Library'/'WebKit'/'studio.channelflow.desktop'
+          ledger_key='vyron:youtube-quota-ledger:v3'
+          ops_key='vyron:youtube-operation-ledger:v1'
+          ledgers=[];traces=[]
+          for p in root.rglob('*'):
+            if p.is_symlink() or not p.is_file() or p.suffix.lower() not in ('.sqlite3','.db','.sqlite') or p.stat().st_size>50_000_000:continue
+            try:
+              con=sqlite3.connect('file:'+quote(str(p))+'?mode=ro',uri=True,timeout=3)
+              try:
+                if not con.execute("SELECT name FROM sqlite_master WHERE name='ItemTable'").fetchone():continue
+                for key,value in con.execute("SELECT key,value FROM ItemTable WHERE key IN (?,?)",(ledger_key,ops_key)):
+                  vals=[value.decode('utf-16le','ignore'),value.decode('utf-8','ignore')] if isinstance(value,bytes) else [str(value)]
+                  for s in vals:
+                    try:d=json.loads(s)
+                    except (ValueError,TypeError):continue
+                    if key==ledger_key and isinstance(d,dict) and d.get('version')==4:ledgers.append(d)
+                    if key==ops_key and isinstance(d,list):traces.append(d)
+              finally:con.close()
+            except (sqlite3.Error,OSError):pass
+          assert ledgers and traces,'OWNER_QUOTA_LEDGER_NOT_AVAILABLE'
+          ledger=max(ledgers,key=lambda d:(str(d.get('ptDate','')),int((d.get('buckets') or {}).get('general',{}).get('calls',0))))
+          ops=max(traces,key=len)
+          recent=[x for x in ops if isinstance(x,dict) and str(x.get('operationId','')).startswith('owner-inventory:manual:') and str(x.get('updatedAt',''))>='2026-11-21T12:09:00Z']
+          methods={}
+          used={'general':0,'search':0,'videoUploads':0}
+          for row in recent:
+            for method,metrics in (row.get('methods') or {}).items():
+              if method not in ('channels.list','playlistItems.list','videos.list','search.list'):continue
+              b=methods.setdefault(method,{'calls':0,'cost':0})
+              b['calls']+=int(metrics.get('calls') or 0)
+              b['cost']+=int(metrics.get('cost') or 0)
+            for bucket in used:used[bucket]+=int((row.get('buckets') or {}).get(bucket) or 0)
+          g=(ledger.get('buckets') or {}).get('general') or {}
+          s=(ledger.get('buckets') or {}).get('search') or {}
+          print('OWNER_QUOTA_LEDGER_DATE='+str(ledger.get('ptDate','')))
+          print('OWNER_QUOTA_GENERAL_CALLS_TODAY='+str(g.get('calls','UNKNOWN')))
+          print('OWNER_QUOTA_GENERAL_USED_TODAY='+str(g.get('used','UNKNOWN')))
+          print('OWNER_QUOTA_SEARCH_CALLS_TODAY='+str(s.get('calls','UNKNOWN')))
+          print('OWNER_QUOTA_SEARCH_USED_TODAY='+str(s.get('used','UNKNOWN')))
+          print('OWNER_624_REFRESH_OPERATIONS='+str(len(recent)))
+          print('OWNER_624_REFRESH_METHODS='+json.dumps(methods,sort_keys=True))
+          print('OWNER_624_REFRESH_BUCKETS='+json.dumps(used,sort_keys=True))
+          print('EXPOSED_CHANNEL_IDS=0')
+          print('EXPOSED_YOUTUBE_VIDEO_IDS=0')
+          print('EXPOSED_OAUTH_TOKENS=0')
+          print('USER_DATA_MUTATIONS=0')
+          PY

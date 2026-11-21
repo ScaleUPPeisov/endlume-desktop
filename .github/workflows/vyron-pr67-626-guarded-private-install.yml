@@ -25,7 +25,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           repository: ScaleUPPeisov/endlume-desktop
-          run-id: 44907859455
+          run-id: 44908188313
           name: VYRON-PR67-6.1.26-UNSIGNED-NOT-INSTALLABLE
           github-token: ${{ github.token }}
           path: ${{ runner.temp }}/pr67-626-download

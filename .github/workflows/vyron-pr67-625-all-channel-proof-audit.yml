@@ -1,0 +1,108 @@
+# Read-only proof audit of already installed VYRON 6.1.25 on owner's M1.
+# Never run PR source or access OAuth, Keychain, or Google API.
+name: VYRON PR67 6.1.25 all-33 schedule proof audit (read-only)
+on:
+  push:
+    branches: [diagnostics/vyron-m1-connection-20261118]
+    paths: [.github/workflows/vyron-pr67-625-all-channel-proof-audit.yml]
+permissions:
+  contents: read
+concurrency:
+  group: vyron-physical-m1-owner-readonly
+  cancel-in-progress: false
+jobs:
+  audit:
+    if: github.repository == 'ScaleUPPeisov/endlume-desktop'
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 8
+    steps:
+      - name: Verify installed VYRON 6.1.25, compare all 33 runway/inventory coverage without secrets
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$RUNNER_NAME" = kirill-mac-endlume
+          test "$(uname -m)" = arm64
+          APP=/Applications/VYRON.app
+          test -d "$APP" && test ! -L "$APP"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Contents/Info.plist")" = studio.channelflow.desktop
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")" = 6.1.25
+          /usr/bin/codesign --verify --deep --strict "$APP"
+          /usr/bin/python3 - <<'PY'
+          import json,sqlite3,datetime,os
+          from pathlib import Path
+          from urllib.parse import quote
+          h=Path.home()
+          base=h/'Library'/'Application Support'/'studio.channelflow.desktop'
+          web=h/'Library'/'WebKit'/'studio.channelflow.desktop'
+          state=json.loads((base/'state.json').read_text())
+          chans=state.get('channels',[])
+          assert isinstance(chans,list) and len(chans)==33
+          history=state.get('uploadHistory',[])
+          if not isinstance(history,list):history=[]
+          runway={}
+          for p in web.rglob('*'):
+            if p.is_symlink() or not p.is_file() or p.suffix.lower() not in ('.sqlite','.sqlite3','.db') or p.stat().st_size>50_000_000:continue
+            try:
+              db=sqlite3.connect('file:'+quote(str(p))+'?mode=ro',uri=True,timeout=3)
+              try:
+                if not db.execute("SELECT name FROM sqlite_master WHERE name='ItemTable'").fetchone():continue
+                for (value,) in db.execute("SELECT value FROM ItemTable WHERE key='vyron:channel-runway:v1'"):
+                  vals=[value.decode('utf-16le','ignore'),value.decode('utf-8','ignore')] if isinstance(value,bytes) else [str(value)]
+                  for s in vals:
+                    try:d=json.loads(s)
+                    except (ValueError,TypeError):continue
+                    if isinstance(d,dict) and isinstance(d.get('channels'),dict) and len(d['channels'])>len(runway):runway=d['channels']
+              finally:db.close()
+            except (OSError,sqlite3.Error):pass
+          assert len(runway)==33,'RUNWAY_NOT_33'
+          now=datetime.datetime.now(datetime.timezone.utc)
+          def date(s):
+            try:
+              d=datetime.datetime.fromisoformat(str(s).replace('Z','+00:00'))
+              return d.replace(tzinfo=datetime.timezone.utc) if d.tzinfo is None else d.astimezone(datetime.timezone.utc)
+            except (ValueError,TypeError):return None
+          def scheduled(rows):
+            return [x for x in rows if isinstance(x,dict) and x.get('privacyStatus')=='private' and date(x.get('publishAt')) and date(x.get('publishAt'))>now]
+          reports=[]
+          for c in chans:
+            cid=str(c.get('id',''))
+            assert cid in runway,'RUNWAY_CHANNEL_MISSING'
+            name=str(c.get('name',''))[:95]
+            p=base/'youtube-inventory'/(cid+'.json')
+            native=json.loads(p.read_text()) if p.is_file() and not p.is_symlink() else {}
+            sync=native.get('syncInfo') if isinstance(native.get('syncInfo'),dict) else {}
+            last= native.get('lastCompleteSyncInfo') if isinstance(native.get('lastCompleteSyncInfo'),dict) else {}
+            vids=native.get('videos') if isinstance(native.get('videos'),list) else []
+            rec=runway[cid]
+            current_pos=scheduled(vids)
+            from_history=[x for x in history if isinstance(x,dict) and str(x.get('channelId'))==cid and x.get('status')=='UPLOADED']
+            future_history=[x for x in from_history if date(x.get('publishAt')) and date(x.get('publishAt'))>now]
+            explicit_search_complete=(sync.get('searchUsed') is True and sync.get('searchExhausted') is True and not sync.get('searchError') and sync.get('supplementalMissingCount',0)==0 and sync.get('knownScheduledIdsTruncated') is not True)
+            explicit_attested=(sync.get('scheduledCoverageVerified') is True)
+            proof=explicit_search_complete or explicit_attested
+            info={'channel':name,'runwayStatus':rec.get('dataState'),'runwaySaved':rec.get('scheduledVideoCount'),
+              'observed':rec.get('lastObservedScheduledCount'),'runwayUntil':rec.get('scheduledUntil'),
+              'nativeSavedFutureAsOfNow':len(current_pos),'nativeRows':len(vids),
+              'nativeUpdatedAt':native.get('updatedAt'),'nativeLastCompleteAt':native.get('lastCompleteAt'),
+              'nativeScheduleComplete':sync.get('scheduleComplete'),'nativeSyncComplete':sync.get('syncComplete'),
+              'nativeSearchUsed':sync.get('searchUsed'),'nativeSearchExhausted':sync.get('searchExhausted'),
+              'nativeSearchPagesFetched':sync.get('searchPagesFetched'),
+              'nativeScheduledCoverageVerified':sync.get('scheduledCoverageVerified'),
+              'nativeIndependentCoverageProven':proof,
+              'nativeIncompleteReasons':sync.get('incompleteReasons',[]),
+              'uploadHistoryCount':len(from_history),'futureHistoryCount':len(future_history),
+              'lastScheduleSync':rec.get('lastScheduleSync'),
+              'hasNative':bool(native)}
+            reports.append(info)
+            print('FLEET_TRUTH '+json.dumps(info,ensure_ascii=False,sort_keys=True))
+          confirmed=[r for r in reports if r['runwayStatus'] in ('CONFIRMED_SCHEDULE','CONFIRMED_EMPTY')]
+          not_independently_proven=[r['channel'] for r in confirmed if not r['nativeIndependentCoverageProven']]
+          print('FLEET_CHANNELS='+str(len(reports)))
+          print('FLEET_CONFIRMED_STATUSES='+str(len(confirmed)))
+          print('FLEET_CONFIRMED_WITHOUT_INDEPENDENT_NATIVE_PROOF='+str(len(not_independently_proven)))
+          print('FLEET_UNPROVEN_CHANNEL_NAMES='+json.dumps(not_independently_proven,ensure_ascii=False))
+          print('GOOGLE_API_CALLS=0')
+          print('VIDEO_IDS_IN_LOGS=0')
+          print('OAUTH_KEYCHAIN_READS=0')
+          print('APP_DATA_WRITES=0')
+          PY

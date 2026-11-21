@@ -43,15 +43,13 @@ BASE="$HOME/.vyron-owner-rollback"
 test -d "$BASE"
 # Failed partial backup directories are retained; count only complete,
 # explicitly VERIFIED SQLite backups. Never erase or promote partials.
-BACKUP_COUNT=0
-while IFS= read -r b; do
-  if [ -f "$b/BACKUP-STATUS.txt" ] && [ ! -L "$b/BACKUP-STATUS.txt" ] &&
-     grep -Fxq 'source=VYRON 6.1.25' "$b/BACKUP-STATUS.txt" &&
-     grep -Fxq 'sqlite_online=VERIFIED' "$b/BACKUP-STATUS.txt"; then
-    BACKUP_COUNT=$((BACKUP_COUNT+1))
-  fi
-done < <(find "$BASE" -mindepth 1 -maxdepth 1 -type d -name 'pr67-pre626-from625-*' -print)
-test "$BACKUP_COUNT" = 1
+# Both snapshot runs succeeded; pin the latest fully validated 37-DB archive
+# instead of assuming exactly one valid backup directory exists.
+BACKUP="$BASE/pr67-pre626-from625-wWmfSi"
+test -d "$BACKUP" && test ! -L "$BACKUP"
+test -f "$BACKUP/BACKUP-STATUS.txt" && test ! -L "$BACKUP/BACKUP-STATUS.txt"
+grep -Fxq 'source=VYRON 6.1.25' "$BACKUP/BACKUP-STATUS.txt"
+grep -Fxq 'sqlite_online=VERIFIED' "$BACKUP/BACKUP-STATUS.txt"
 # Reuse only an exact, unverified, previously extracted bundle; remove only empty stages.
 STAGE=""
 while IFS= read -r old; do

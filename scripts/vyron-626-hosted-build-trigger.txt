@@ -1,5 +1,3 @@
-VYRON 6.1.26 final host-only no-secret ARM64 build
-SOURCE_SHA=05a4155a0bfa43ae28a045f397442f20c36f4837
-BASELINE_RUN=44908061209 PASS
-PRIVACY_RUN=44908061127 PASS
-No physical installation or Google API
+VYRON PR67 6.1.26 FINAL hosted ARM64 candidate
+SOURCE_SHA=9acd278cbdb284ba0b66330d0091d14cdd7b4207
+Gates: hosted build repeats full Vitest and Rust; no install / no secrets / no owner data

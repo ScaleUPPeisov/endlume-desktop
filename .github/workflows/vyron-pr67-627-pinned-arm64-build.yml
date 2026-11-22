@@ -184,3 +184,33 @@ jobs:
         shell: bash
         run: |
           rm -f "$RUNNER_TEMP/pr67-public.pub" "$RUNNER_TEMP/pr67-overlay.json" "$RUNNER_TEMP/keyfacts.txt"
+
+  publish-build-marker:
+    name: Publish non-secret build result marker
+    needs: hosted-arm64-build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Record successful trusted build run id
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY' > "$RUNNER_TEMP/vyron-627-build.json"
+          import json,os
+          print(json.dumps({
+            "status":"SUCCESS",
+            "source":"22ee4e96466ff93576ddf39f65d122f2691c8188",
+            "version":"6.1.27",
+            "runId":int(os.environ["GITHUB_RUN_ID"]),
+            "artifact":"VYRON-PR67-6.1.27-UNSIGNED-NOT-INSTALLABLE",
+            "stableFeed":"UNCHANGED"
+          },sort_keys=True))
+          PY
+          CONTENT="$(base64 < "$RUNNER_TEMP/vyron-627-build.json" | tr -d '\n')"
+          gh api --method PUT repos/ScaleUPPeisov/endlume-desktop/contents/status/vyron-627-build.json \
+            -f message="ci(vyron): record successful 6.1.27 private build" \
+            -f content="$CONTENT" \
+            -f branch="diagnostics/vyron-m1-connection-20261118" >/dev/null

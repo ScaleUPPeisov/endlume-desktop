@@ -4,3 +4,4 @@ Hosted artifact workflow run: 45005751705
 Pre-install backup: 45005929227
 Use only trusted private-RC workflow with verified provenance, local ad-hoc signing, idle/backup guards, rollback, and postinstall readback.
 No production release, no stable updater feed, no YouTube writes.
+attempt=2-correct-build-head-sha

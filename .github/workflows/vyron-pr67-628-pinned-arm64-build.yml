@@ -1,0 +1,215 @@
+# Source code from PR67 runs ONLY on GitHub-hosted macOS, without any secrets.
+# The physical Mac only provides the public (not private) pinned updater key.
+# Output is deliberately UNSIGNED and MUST NOT be installed or published.
+name: VYRON PR67 6.1.28 pinned ARM64 build (NO INSTALL)
+on:
+  push:
+    branches: [diagnostics/vyron-m1-connection-20261118]
+    paths: [scripts/vyron-628-hosted-build-trigger.txt]
+permissions:
+  contents: read
+concurrency:
+  group: vyron-pr67-628-pinned-hosted-build
+  cancel-in-progress: true
+env:
+  SOURCE_SHA: 270f0b66d71b7a4c9f91984f98a48d0d8374e237
+  RC_VERSION: '6.1.28'
+  PUBLIC_PIN: 1c97657fd2a7ba4c2a0ce5b5361518eeacf76da274521b1977d57a55b8dbcec9
+jobs:
+  owner-public-key-only:
+    name: Physical M1 public updater key preflight (no checkout, no OAuth)
+    if: github.repository == 'ScaleUPPeisov/endlume-desktop'
+    runs-on: [self-hosted, macOS, ARM64, endlume, macos-arm64]
+    timeout-minutes: 5
+    outputs:
+      pubkey_b64: ${{ steps.extract.outputs.pubkey_b64 }}
+    steps:
+      - id: extract
+        name: Verify current 6.1.27 and extract approved PUBLIC key
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$RUNNER_NAME" = kirill-mac-endlume
+          test "$(uname -m)" = arm64
+          APP=/Applications/VYRON.app
+          test -d "$APP" && test ! -L "$APP"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Contents/Info.plist")" = studio.channelflow.desktop
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")" = 6.1.27
+          /usr/bin/codesign --verify --deep --strict "$APP" >/dev/null 2>&1
+          /usr/bin/python3 - <<'PY'
+          import os,re,base64,hashlib,subprocess
+          from pathlib import Path
+          app=Path('/Applications/VYRON.app')
+          exe=subprocess.check_output(['/usr/libexec/PlistBuddy','-c','Print :CFBundleExecutable',str(app/'Contents/Info.plist')],text=True).strip()
+          raw=(app/'Contents'/'MacOS'/exe).read_bytes()
+          found=set()
+          for match in re.finditer(rb'dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWdu[0-9A-Za-z+/=]{35,300}',raw):
+            s=match.group().decode()
+            for end in range(70,len(s)+1):
+              try:content=base64.b64decode(s[:end],validate=True).decode()
+              except (ValueError,UnicodeError):continue
+              lines=content.strip().splitlines()
+              if len(lines)!=2 or not lines[0].startswith('untrusted comment: minisign public key: '):continue
+              try:pub=base64.b64decode(lines[1],validate=True)
+              except ValueError:continue
+              if len(pub)!=42 or pub[:2]!=b'Ed':continue
+              kid=lines[0].rsplit(' ',1)[-1]
+              if kid.upper().zfill(16)!=pub[2:10][::-1].hex().upper():continue
+              if hashlib.sha256(pub).hexdigest()==os.environ['PUBLIC_PIN']:
+                found.add(base64.b64encode((content.rstrip()+'\n').encode()).decode())
+              break
+          assert len(found)==1,'APPROVED_PUBLIC_KEY_NOT_FOUND_OR_NOT_UNIQUE'
+          with Path(os.environ['GITHUB_OUTPUT']).open('a') as f:
+            f.write('pubkey_b64='+next(iter(found))+'\n')
+          print('PHYSICAL_MAC=VERIFIED')
+          print('INSTALLED=6.1.27')
+          print('ROTATED_PUBLIC_KEY=PIN_VERIFIED')
+          print('PRIVATE_KEY_ACCESS=NO')
+          print('GOOGLE_API_CALLS=0')
+          PY
+  hosted-arm64-build:
+    name: Compile exact 270f0b6; untrusted source has no Mac access or secrets
+    needs: owner-public-key-only
+    runs-on: macos-15
+    timeout-minutes: 110
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ScaleUPPeisov/scaleup-dashboards
+          ref: 270f0b66d71b7a4c9f91984f98a48d0d8374e237
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Exact commit and P0 scope
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(uname -m)" = arm64
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          git diff --name-only 22ee4e96466ff93576ddf39f65d122f2691c8188..HEAD > "$RUNNER_TEMP/p0-changed-paths.txt"
+          for path in src/channelRunwayCore.ts src/channelRunwayStore.ts src/v611ChannelRunwayInventoryHotfix.test.ts; do
+            grep -Fxq "$path" "$RUNNER_TEMP/p0-changed-paths.txt"
+          done
+          /usr/bin/python3 - "$RUNNER_TEMP/p0-changed-paths.txt" <<'PY'
+          import sys
+          paths=set(open(sys.argv[1]).read().splitlines())
+          allowed={'src/channelRunwayCore.ts','src/channelRunwayStore.ts','src/v611ChannelRunwayInventoryHotfix.test.ts'}
+          assert paths==allowed, 'P0_SOURCE_SCOPE_VIOLATION '+repr(sorted(paths))
+          print('P0_SOURCE_CHANGE_SCOPE=PASS')
+          PY
+          node - <<'NODE'
+          const fs=require('fs');
+          const c=JSON.parse(fs.readFileSync('src-tauri/tauri.conf.json','utf8'));
+          if(c.version!=='6.1.15'||c.identifier!=='studio.channelflow.desktop')throw Error('SOURCE_IDENTITY_CHANGED');
+          const checks=[
+            ['src/channelRunwayCore.ts','independentScheduleEvidenceVersion?:4'],
+            ['src/channelRunwayStore.ts',"raw.independentScheduleEvidenceVersion!==4"],
+            ['src/channelRunwayStore.ts','independentScheduleEvidenceVersion:4'],
+            ['src/v611ChannelRunwayInventoryHotfix.test.ts','independentScheduleEvidenceVersion:3']
+          ];
+          for(const [f,s] of checks)if(!fs.readFileSync(f,'utf8').includes(s))throw Error('MISSING_P0_FIX '+f+' '+s);
+          console.log('EXACT_PR67_P0_FIXES=PASS');
+          NODE
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+      - name: Approved updater PUBLIC key overlay, no signing secret or stable modification
+        shell: bash
+        env:
+          PUBLIC_KEY_B64: ${{ needs.owner-public-key-only.outputs.pubkey_b64 }}
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          printf '%s\n' "$PUBLIC_KEY_B64" > "$RUNNER_TEMP/pr67-public.pub"
+          node scripts/macos/prepare-vyron-rotated-updater.mjs --public-key-file "$RUNNER_TEMP/pr67-public.pub" --output "$RUNNER_TEMP/pr67-overlay.json" --version "$RC_VERSION" > "$RUNNER_TEMP/keyfacts.txt"
+          grep -Fxq "PUBLIC_KEY_SHA256=$PUBLIC_PIN" "$RUNNER_TEMP/keyfacts.txt"
+          grep -Fxq 'STABLE_FEED_PINNED=PASS' "$RUNNER_TEMP/keyfacts.txt"
+          python3 - <<'PY'
+          import json,os
+          from pathlib import Path
+          p=Path(os.environ['RUNNER_TEMP'])/'pr67-overlay.json'
+          d=json.loads(p.read_text())
+          assert d['version']=='6.1.28' and d['identifier']=='studio.channelflow.desktop'
+          assert d['plugins']['updater']['endpoints']==['https://raw.githubusercontent.com/ScaleUPPeisov/vyron-releases/main/updates/latest.json']
+          d['bundle']['createUpdaterArtifacts']=False
+          p.write_text(json.dumps(d))
+          print('STABLE_UPDATER=UNCHANGED')
+          print('RC_UPDATER_ARTIFACTS=DISABLED')
+          PY
+      - name: Build ARM64 without access to owner Mac data
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export VYRON_COMMIT_SHA="$SOURCE_SHA"
+          export VYRON_UPDATE_CHANNEL=stable
+          export VYRON_TRUSTED_UPDATER_PUBLIC_KEY_SHA256="$PUBLIC_PIN"
+          export TAURI_CONFIG="$(cat "$RUNNER_TEMP/pr67-overlay.json")"
+          npm ci --no-audit --no-fund
+          npx vitest run
+          npm run build
+          cargo test --locked --manifest-path src-tauri/Cargo.toml --lib
+          npx tauri build --target aarch64-apple-darwin --bundles app --config "$RUNNER_TEMP/pr67-overlay.json"
+          APP="$(find src-tauri/target/aarch64-apple-darwin/release/bundle/macos -maxdepth 1 -name 'VYRON.app' -print -quit)"
+          test -d "$APP"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")" = "$RC_VERSION"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Contents/Info.plist")" = studio.channelflow.desktop
+          EXE="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")"
+          lipo -archs "$APP/Contents/MacOS/$EXE" | tr ' ' '\n' | grep -Fxq arm64
+          mkdir -p "$RUNNER_TEMP/rc-evidence"
+          shasum -a 256 "$APP/Contents/MacOS/$EXE" > "$RUNNER_TEMP/rc-evidence/executable-sha256.txt"
+          printf 'source=%s\nversion=6.1.28\nidentity=studio.channelflow.desktop\narch=arm64\nsignature=NOT_VERIFIED_FOR_DISTRIBUTION\nnotarization=NOT_PERFORMED\ninstall=FORBIDDEN\nstable_feed=UNCHANGED\n' "$SOURCE_SHA" > "$RUNNER_TEMP/rc-evidence/STATUS.txt"
+          tar -czf "$RUNNER_TEMP/VYRON-PR67-6.1.28-UNSIGNED-NOT-INSTALLABLE.tar.gz" -C "$(dirname "$APP")" VYRON.app
+          echo 'ARM64_BUILD=PASS'
+          echo "SOURCE_COMMIT=$SOURCE_SHA"
+          echo 'INSTALL_GATE=BLOCKED_UNTIL_APPLE_DEVELOPER_ID_SIGNED_AND_NOTARIZED'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VYRON-PR67-6.1.28-UNSIGNED-NOT-INSTALLABLE
+          path: |
+            ${{ runner.temp }}/VYRON-PR67-6.1.28-UNSIGNED-NOT-INSTALLABLE.tar.gz
+            ${{ runner.temp }}/rc-evidence/
+          retention-days: 7
+          if-no-files-found: error
+      - name: Delete transient overlay and public key
+        if: always()
+        shell: bash
+        run: |
+          rm -f "$RUNNER_TEMP/pr67-public.pub" "$RUNNER_TEMP/pr67-overlay.json" "$RUNNER_TEMP/keyfacts.txt"
+
+  publish-build-marker:
+    name: Publish non-secret build result marker
+    needs: hosted-arm64-build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Record successful trusted build run id
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY' > "$RUNNER_TEMP/vyron-628-build.json"
+          import json,os
+          print(json.dumps({
+            "status":"SUCCESS",
+            "source":"270f0b66d71b7a4c9f91984f98a48d0d8374e237",
+            "version":"6.1.28",
+            "runId":int(os.environ["GITHUB_RUN_ID"]),
+            "artifact":"VYRON-PR67-6.1.28-UNSIGNED-NOT-INSTALLABLE",
+            "stableFeed":"UNCHANGED"
+          },sort_keys=True))
+          PY
+          CONTENT="$(base64 < "$RUNNER_TEMP/vyron-628-build.json" | tr -d '\n')"
+          gh api --method PUT repos/ScaleUPPeisov/endlume-desktop/contents/status/vyron-628-build.json \
+            -f message="ci(vyron): record successful 6.1.28 private build" \
+            -f content="$CONTENT" \
+            -f branch="diagnostics/vyron-m1-connection-20261118" >/dev/null

@@ -1,0 +1,7 @@
+VYRON 6.1.28 guarded owner install trigger
+source=270f0b66d71b7a4c9f91984f98a48d0d8374e237
+build_run=45012606476
+artifact_id=14751260188
+artifact_digest=sha256:dfa9235865f7410fc5875484e381ac6a81f0c2ff55ac29119cefc895c146ae14
+rollback=pr67-pre628-from627-LYZ6J3
+stable_feed=UNCHANGED

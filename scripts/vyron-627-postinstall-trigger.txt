@@ -1,0 +1,5 @@
+VYRON PR67 6.1.27 physical postinstall readback
+source=22ee4e96466ff93576ddf39f65d122f2691c8188
+installed_executable_sha256=160e29229a7068270840f9858276ddb8632c3451cc25901aaa1c671f84c03937
+verify=33_channels_sqlite_restart_schedule_evidence
+youtube_writes=FORBIDDEN

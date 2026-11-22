@@ -188,3 +188,23 @@ jobs:
           print('P0_OWNER_VIDEO_IDS_IN_PUBLIC_LOG=NO')
           PY
           echo 'PHYSICAL_M1_POSTINSTALL_READBACK=PASS'
+
+  publish-readback-marker:
+    name: Publish non-secret 6.1.27 readback marker
+    needs: readback
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Record successful physical readback
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          printf '{"status":"SUCCESS","version":"6.1.27","source":"22ee4e96466ff93576ddf39f65d122f2691c8188","readbackRunId":%s,"falseConfirmed":0}\n' "$GITHUB_RUN_ID" > "$RUNNER_TEMP/vyron-627-readback.json"
+          CONTENT="$(base64 < "$RUNNER_TEMP/vyron-627-readback.json" | tr -d '\n')"
+          gh api --method PUT repos/ScaleUPPeisov/endlume-desktop/contents/status/vyron-627-readback.json \
+            -f message="verify(vyron): record successful physical 6.1.27 readback" \
+            -f content="$CONTENT" \
+            -f branch="diagnostics/vyron-m1-connection-20261118" >/dev/null

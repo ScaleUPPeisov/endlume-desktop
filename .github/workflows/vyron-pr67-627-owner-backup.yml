@@ -157,3 +157,23 @@ jobs:
           echo "BACKUP_PRIVATE_FOLDER=$(basename "$DEST")"
           echo 'BACKUP_LOCAL_ONLY=YES'
           echo 'INSTALL=NOT_ATTEMPTED'
+
+  publish-backup-marker:
+    name: Publish non-secret backup completion marker
+    needs: backup
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Record successful guarded backup
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          printf '{"status":"SUCCESS","installed":"6.1.26","expectedExecutableSha256":"ec909b50a2fcd6646dc43249d6a5497166694496d3da4342b07d35093f2c5307","runId":%s,"install":"NOT_ATTEMPTED"}\n' "$GITHUB_RUN_ID" > "$RUNNER_TEMP/vyron-627-backup.json"
+          CONTENT="$(base64 < "$RUNNER_TEMP/vyron-627-backup.json" | tr -d '\n')"
+          gh api --method PUT repos/ScaleUPPeisov/endlume-desktop/contents/status/vyron-627-backup.json \
+            -f message="backup(vyron): record successful 6.1.27 preinstall snapshot" \
+            -f content="$CONTENT" \
+            -f branch="diagnostics/vyron-m1-connection-20261118" >/dev/null

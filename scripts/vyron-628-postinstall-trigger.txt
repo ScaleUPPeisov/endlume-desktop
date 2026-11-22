@@ -1,0 +1,6 @@
+VYRON 6.1.28 physical postinstall readback trigger
+install_run=45028166522
+source=270f0b66d71b7a4c9f91984f98a48d0d8374e237
+expected_executable_sha256=3cbbac3bb3b8ed19f652d1bf915e90177019121ede17823411e67abf7b052c00
+evidence_version=4
+youtube_api_calls=0

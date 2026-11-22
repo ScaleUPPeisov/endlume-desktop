@@ -1,0 +1,4 @@
+VYRON PR67 6.1.28 fresh preinstall backup
+installed=6.1.27
+expected_executable_sha256=160e29229a7068270840f9858276ddb8632c3451cc25901aaa1c671f84c03937
+install=DISABLED

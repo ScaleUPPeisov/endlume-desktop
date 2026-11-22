@@ -140,7 +140,7 @@ echo 'PRIVATE_LOCAL_ADHOC_SIGNATURE=PASS'
 if /usr/sbin/spctl --assess --type execute --verbose "$SRC" >/dev/null 2>&1; then
   echo 'GATEKEEPER_ASSESS=ACCEPTED'
 else
-  echo 'GATEKEEPER_ASSESS=REJECTED_NONQUARANTINED_ADHOC'
+  echo 'GATEKEEPER_ASSESS=REJECTED_NONQUARANTINED_ADHOC'; exit 1
 fi
 test ! -e "$STAGE/VERIFIED"
 SIGNED_SHA="$(shasum -a 256 "$SRC/Contents/MacOS/$EXE" | awk '{print $1}')"
